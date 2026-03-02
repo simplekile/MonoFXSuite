@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# IDE / Editor
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# DCC / Pipeline (common)
+*.hipnc.bak
+*.ma.bak
+*.mb.bak
+*.blend1
+*.uasset
+*.umap
+
+# Logs & temp
+*.log
+*.tmp
+.cache/
