@@ -14,13 +14,18 @@ MonoFX Suite sẽ được đóng gói bằng **Inno Setup** (Windows installer)
 
 - Script Inno: `build/installer/MonoFXSuite.iss`
 - **Tự build bằng script (khuyến nghị):**
-  - **PowerShell** (từ thư mục gốc project): `.\build\build.ps1`
-  - **Batch** (từ thư mục gốc): `build\build.bat` hoặc double-click `build\build.bat`
+  - **PowerShell** (từ thư mục gốc project): `.\build\build.ps1` — đọc version từ file `VERSION` ở repo root và truyền vào installer.
+- **Batch** (từ thư mục gốc): `build\build.bat` — dùng version mặc định trong `.iss`.
 - Build tay: mở file `.iss` trong Inno Setup, hoặc dòng lệnh:
   ```text
   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" build\installer\MonoFXSuite.iss
   ```
 - Output: `build/output/MonoFXSuite_Setup.exe`
+
+## Version và publish release
+
+- **VERSION**: Một dòng (vd. `0.1.0`) ở repo root. `build.ps1` dùng nó làm AppVersion trong installer.
+- **Publish lên GitHub**: Sau khi build, commit, tag và push, chạy `.\publish_release.ps1` (cần [GitHub CLI](https://cli.github.com/) và `gh auth login`). Script tạo release từ tag, lấy notes từ `docs/changelog.md`, đính kèm file `.exe`.
 
 ## Lưu ý khi build
 
@@ -32,5 +37,5 @@ MonoFX Suite sẽ được đóng gói bằng **Inno Setup** (Windows installer)
 ## Trạng thái
 
 - [x] Script Inno tại `build/installer/MonoFXSuite.iss` (package dir, toolbar, HOUDINI_PACKAGE_DIR, phát hiện Houdini).
-- [ ] Chỉnh lại đường dẫn, tên app, version khi sẵn sàng release.
+- [x] Version từ file `VERSION`; script `publish_release.ps1` để tạo GitHub Release.
 - [ ] Test cài trên máy sạch.

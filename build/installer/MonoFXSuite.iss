@@ -2,7 +2,9 @@
 ; Chỉnh lại AppId, version, paths khi build thật.
 
 #define MyAppName "MonoFX Suite"
+#ifndef MyAppVersion
 #define MyAppVersion "0.1.0"
+#endif
 #define MyAppPublisher "MonoFX"
 #define MyAppURL "https://github.com/simplekile/MonoFXSuite"
 

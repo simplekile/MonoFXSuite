@@ -18,8 +18,15 @@ if (-not (Test-Path $IssPath)) {
     exit 1
 }
 
+$VersionFile = Join-Path $ProjectRoot "VERSION"
+$Version = "0.1.0"
+if (Test-Path $VersionFile) {
+    $Version = (Get-Content $VersionFile -Raw).Trim()
+}
+Write-Host "Version: $Version"
+
 Write-Host "Building MonoFX Suite installer..."
-& $Iscc $IssPath
+& $Iscc "/DMyAppVersion=$Version" $IssPath
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $Exe = Join-Path $OutputDir "MonoFXSuite_Setup.exe"
