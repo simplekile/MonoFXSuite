@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.1.0] — 2025-03-07
+
 ### Installer & setup
 - Installer tạo folder riêng `monofx` trong user Houdini (giống modeler): `Documents\houdiniXX.X\monofx\` với `config\Icons\`, `toolbar\MonoFX.shelf`; ghi `packages\monofx_shelf.json` (hpath = `$HOUDINI_USER_PREF_DIR/monofx`).
 - Thêm script build: `build/build.ps1`, `build/build.bat` — chạy từ thư mục gốc: `.\build\build.ps1` hoặc `build\build.bat`.
