@@ -9,7 +9,7 @@ venv/
 *.egg-info/
 .eggs/
 dist/
-build/
+build/output/
 
 # IDE / Editor
 .idea/

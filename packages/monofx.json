@@ -1,0 +1,21 @@
+{
+    "enable": true,
+    "hpath": "$MONOFX_SUITE",
+    "env": [
+        {
+            "var": "MONOFX_SUITE",
+            "value": "$HOUDINI_PACKAGE_PATH/.."
+        },
+        {
+            "var": "PYTHONPATH",
+            "value": "$MONOFX_SUITE",
+            "method": "prepend"
+        },
+        {
+            "var": "HOUDINI_TOOLBAR_PATH",
+            "value": "$MONOFX_SUITE/toolbar",
+            "method": "prepend"
+        }
+    ],
+    "show": true
+}

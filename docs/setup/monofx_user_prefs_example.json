@@ -1,0 +1,16 @@
+{
+    "enable": true,
+    "hpath": "$HOUDINI_USER_PREF_DIR/monofx",
+    "env": [
+        {
+            "var": "MONOFX_SUITE",
+            "value": "$HOUDINI_USER_PREF_DIR/monofx"
+        },
+        {
+            "var": "PYTHONPATH",
+            "value": "$HOUDINI_USER_PREF_DIR/monofx",
+            "method": "prepend"
+        }
+    ],
+    "show": true
+}
