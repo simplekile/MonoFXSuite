@@ -4,7 +4,7 @@
     "env": [
         {
             "var": "MONOFX_SUITE",
-            "value": "$HOUDINI_PACKAGE_PATH/.."
+            "value": "$HOUDINI_PACKAGE_PATH/../monofx"
         },
         {
             "var": "PYTHONPATH",

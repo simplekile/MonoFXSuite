@@ -16,7 +16,10 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}
 AppUpdatesURL={#MyAppURL}
-DefaultDirName={autopf}\MonoFXSuite
+; Modeler-style default: install into Houdini user prefs (Documents\houdiniXX.X\monofx)
+DefaultDirName={code:GetDefaultDirName}
+; We provide our own Houdini version page; skip the standard dir page in code.
+DisableDirPage=no
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=..\output
@@ -24,7 +27,7 @@ OutputBaseFilename=MonoFXSuite_Setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired=lowest
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -34,11 +37,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Source: "..\..\apps\*"; DestDir: "{app}\apps"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\core\*"; DestDir: "{app}\core"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\packages\*"; DestDir: "{app}\packages"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Houdini loads packages from Documents\houdiniXX.X\packages. We extract the package json to {tmp}
+; and copy it to each selected Houdini version in ssPostInstall.
+Source: "..\..\packages\monofx.json"; DestDir: "{tmp}"; DestName: "monofx.json"; Flags: ignoreversion deleteafterinstall
 Source: "..\..\toolbar\*"; DestDir: "{app}\toolbar"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\config\*"; DestDir: "{app}\config"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
+; MonoStudio version detection (optional): if MonoStudio is installed, drop VERSION into its tools folder.
+Source: "..\..\VERSION"; DestDir: "{code:GetMonoStudioToolsSuiteDir}"; Flags: ignoreversion; Check: ShouldInstallMonoStudioVersion
 ; Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 ; Bỏ .git nếu không cần updater từ git
 ; Source: "..\..\.git\*"; DestDir: "{app}\.git"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -47,9 +53,11 @@ Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\{#MyAppName}"; Filename: "{app}"; Comment: "MonoFX Suite root folder"
 
 [Dirs]
-; Force creation of install path (e.g. ...\MonoStudio26\tools\MonoFXSuite) before copying files
+; Ensure install root exists before copying files
 Name: "{app}"
 Name: "{app}\notes"
+; Keep docs folder empty for future user guide
+Name: "{app}\docs"
 
 ; HOUDINI_PACKAGE_DIR: append path MonoFX. Toolbar loaded via package hpath ($MONOFX_SUITE/toolbar).
 ; Houdini version detection: HKLM\SOFTWARE\Side Effects Software\Houdini (subkeys = versions).
@@ -57,29 +65,140 @@ Name: "{app}\notes"
 ; Option A path: read {localappdata}\MonoStudio\install_path.txt if present and valid, else {pf}\MonoStudio26\tools\MonoFXSuite.
 [Code]
 const
-  EnvKey = 'Environment';
-  VarName = 'HOUDINI_PACKAGE_DIR';
   HoudiniRegBase = 'SOFTWARE\Side Effects Software\Houdini';
-  InstallChoiceMonoStudio = 0;
-  InstallChoiceUser = 1;
-  InstallChoiceStandalone = 2;
 
 var
   DetectedHoudiniVersions: string;
-  InstallLocationPageID: Integer;
-  InstallChoice: Integer;
-  PrevPageID: Integer;
-  ChosenInstallPath: string;
-  OptMonoStudio, OptUser, OptStandalone: TNewRadioButton;
-  LblMonoStudio, LblUser: TNewStaticText;
+  _HoudiniUserPrefDir: string;
+  _HoudiniUserDocsBase: string;
+  HoudiniVersionPageID: Integer;
+  HoudiniVersionNames: TArrayOfString;
+  HoudiniVersionChecks: array of TNewCheckBox;
+  LblHoudiniVersionHint: TNewStaticText;
 
-function GetMonoStudioPath: string;
+function _try_parse_houdini_dir_name(const name: string; var major: Integer; var minor: Integer): Boolean;
+var
+  s, nums: string;
+  p: Integer;
+begin
+  Result := False;
+  major := 0;
+  minor := 0;
+  s := name;
+  if CompareText(Copy(s, 1, 7), 'houdini') <> 0 then
+    Exit;
+  nums := Copy(s, 8, Length(s) - 7);
+  p := Pos('.', nums);
+  if p <= 0 then
+    Exit;
+  try
+    major := StrToInt(Copy(nums, 1, p - 1));
+    minor := StrToInt(Copy(nums, p + 1, Length(nums) - p));
+    Result := True;
+  except
+    Result := False;
+  end;
+end;
+
+function _houdini_dir_version_key(const name: string): Integer;
+var
+  major, minor: Integer;
+begin
+  { Key for sorting: major*1000 + minor; invalid -> -1 }
+  if _try_parse_houdini_dir_name(name, major, minor) then
+    Result := major * 1000 + minor
+  else
+    Result := -1;
+end;
+
+procedure _swap_str(var a: string; var b: string);
+var
+  t: string;
+begin
+  t := a;
+  a := b;
+  b := t;
+end;
+
+procedure _sort_houdini_dir_names_desc(var arr: TArrayOfString);
+var
+  i, j: Integer;
+begin
+  for i := 0 to GetArrayLength(arr) - 2 do
+    for j := i + 1 to GetArrayLength(arr) - 1 do
+      if _houdini_dir_version_key(arr[j]) > _houdini_dir_version_key(arr[i]) then
+        _swap_str(arr[i], arr[j]);
+end;
+
+function GetHoudiniUserPrefDir: string;
+var
+  base, bestName, curName: string;
+  fr: TFindRec;
+  bestMajor, bestMinor, curMajor, curMinor: Integer;
+begin
+  if _HoudiniUserPrefDir <> '' then
+  begin
+    Result := _HoudiniUserPrefDir;
+    Exit;
+  end;
+
+  base := ExpandConstant('{userdocs}');
+  _HoudiniUserDocsBase := base;
+  bestName := '';
+  bestMajor := -1;
+  bestMinor := -1;
+
+  if FindFirst(base + '\houdini*', fr) then
+  begin
+    try
+      repeat
+        if (fr.Attributes and 16) <> 0 then
+        begin
+          curName := fr.Name;
+          if _try_parse_houdini_dir_name(curName, curMajor, curMinor) then
+          begin
+            if (curMajor > bestMajor) or ((curMajor = bestMajor) and (curMinor > bestMinor)) then
+            begin
+              bestMajor := curMajor;
+              bestMinor := curMinor;
+              bestName := curName;
+            end;
+          end;
+        end;
+      until not FindNext(fr);
+    finally
+      FindClose(fr);
+    end;
+  end;
+
+  if bestName <> '' then
+    _HoudiniUserPrefDir := base + '\' + bestName
+  else
+  begin
+    { Fallback: create a stable default folder under Documents }
+    _HoudiniUserPrefDir := base + '\houdini';
+  end;
+
+  Result := _HoudiniUserPrefDir;
+end;
+
+function GetDefaultDirName(Param: string): string;
+begin
+  Result := GetHoudiniUserPrefDir + '\monofx';
+end;
+
+function GetHoudiniPackagesDir(Param: string): string;
+begin
+  Result := GetHoudiniUserPrefDir + '\packages';
+end;
+
+function GetMonoStudioToolsSuiteDir(Param: string): string;
 var
   TxtPath, BasePath: string;
   Lines: TArrayOfString;
   n: Integer;
 begin
-  Result := ExpandConstant('{pf}\MonoStudio26\tools\MonoFXSuite');
+  Result := '';
   TxtPath := ExpandConstant('{localappdata}\MonoStudio\install_path.txt');
   if FileExists(TxtPath) and LoadStringsFromFile(TxtPath, Lines) and (GetArrayLength(Lines) > 0) then
   begin
@@ -92,57 +211,159 @@ begin
   end;
 end;
 
-function GetUserPath: string;
+function ShouldInstallMonoStudioVersion: Boolean;
 begin
-  Result := ExpandConstant('{localappdata}\MonoStudio\tools\MonoFXSuite');
+  Result := GetMonoStudioToolsSuiteDir('') <> '';
 end;
 
 procedure InitializeWizard;
 var
   Page: TWizardPage;
+  base: string;
+  fr: TFindRec;
+  names: TArrayOfString;
+  n: Integer;
+  cb: TNewCheckBox;
+  topY: Integer;
 begin
-  Page := CreateCustomPage(wpWelcome, 'Install location', 'Choose where to install MonoFX Suite. MonoStudio can detect the installed version and offer updates when installed under Option A or B.');
-  InstallLocationPageID := Page.ID;
+  _HoudiniUserPrefDir := '';
+  _HoudiniUserDocsBase := '';
 
-  OptMonoStudio := TNewRadioButton.Create(Page);
-  OptMonoStudio.Parent := Page.Surface;
-  OptMonoStudio.Left := 0;
-  OptMonoStudio.Top := 0;
-  OptMonoStudio.Width := Page.SurfaceWidth;
-  OptMonoStudio.Caption := 'Under MonoStudio (recommended for Settings -> Updates integration)';
-  OptMonoStudio.Checked := True;
+  base := ExpandConstant('{userdocs}');
+  _HoudiniUserDocsBase := base;
 
-  LblMonoStudio := TNewStaticText.Create(Page);
-  LblMonoStudio.Parent := Page.Surface;
-  LblMonoStudio.Left := 20;
-  LblMonoStudio.Top := 22;
-  LblMonoStudio.Caption := 'Path: ' + GetMonoStudioPath;
-  LblMonoStudio.AutoSize := True;
+  { Build list of Documents\houdiniXX.X folders }
+  SetArrayLength(names, 0);
+  if FindFirst(base + '\houdini*', fr) then
+  begin
+    try
+      repeat
+        if (fr.Attributes and 16) <> 0 then
+        begin
+          if _houdini_dir_version_key(fr.Name) >= 0 then
+          begin
+            n := GetArrayLength(names);
+            SetArrayLength(names, n + 1);
+            names[n] := fr.Name;
+          end;
+        end;
+      until not FindNext(fr);
+    finally
+      FindClose(fr);
+    end;
+  end;
+  if GetArrayLength(names) > 1 then
+    _sort_houdini_dir_names_desc(names);
 
-  OptUser := TNewRadioButton.Create(Page);
-  OptUser.Parent := Page.Surface;
-  OptUser.Left := 0;
-  OptUser.Top := 50;
-  OptUser.Width := Page.SurfaceWidth;
-  OptUser.Caption := 'User folder (no admin; MonoStudio still detects for updates)';
+  { Custom page: choose Houdini version folder }
+  Page := CreateCustomPage(wpWelcome, 'Houdini version', 'Choose which Houdini user folder to install into (Modeler-style).');
+  HoudiniVersionPageID := Page.ID;
 
-  LblUser := TNewStaticText.Create(Page);
-  LblUser.Parent := Page.Surface;
-  LblUser.Left := 20;
-  LblUser.Top := 72;
-  LblUser.Caption := 'Path: ' + GetUserPath;
-  LblUser.AutoSize := True;
+  HoudiniVersionNames := names;
+  SetArrayLength(HoudiniVersionChecks, 0);
+  topY := 0;
 
-  OptStandalone := TNewRadioButton.Create(Page);
-  OptStandalone.Parent := Page.Surface;
-  OptStandalone.Left := 0;
-  OptStandalone.Top := 100;
-  OptStandalone.Width := Page.SurfaceWidth;
-  OptStandalone.Caption := 'Standalone (choose folder on next page)';
+  if GetArrayLength(HoudiniVersionNames) = 0 then
+  begin
+    SetArrayLength(HoudiniVersionNames, 1);
+    HoudiniVersionNames[0] := 'houdini21.0';
+  end;
 
-  PrevPageID := -1;
-  InstallChoice := InstallChoiceMonoStudio;
-  ChosenInstallPath := GetMonoStudioPath;
+  for n := 0 to GetArrayLength(HoudiniVersionNames) - 1 do
+  begin
+    cb := TNewCheckBox.Create(Page);
+    cb.Parent := Page.Surface;
+    cb.Left := 0;
+    cb.Top := topY;
+    cb.Width := Page.SurfaceWidth;
+    cb.Caption := HoudiniVersionNames[n];
+    cb.Checked := (n = 0); { default: newest only }
+    topY := topY + cb.Height + 6;
+
+    SetArrayLength(HoudiniVersionChecks, n + 1);
+    HoudiniVersionChecks[n] := cb;
+  end;
+
+  LblHoudiniVersionHint := TNewStaticText.Create(Page);
+  LblHoudiniVersionHint.Parent := Page.Surface;
+  LblHoudiniVersionHint.Left := 0;
+  LblHoudiniVersionHint.Top := topY + 6;
+  LblHoudiniVersionHint.AutoSize := True;
+  LblHoudiniVersionHint.Caption :=
+    'Install path(s): ' + base + '\houdiniXX.X\monofx (checked versions).';
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  { We choose the install folder via the Houdini version page }
+  Result := (PageID = wpSelectDir);
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  folder: string;
+  i: Integer;
+  anyChecked: Boolean;
+begin
+  Result := True;
+  if CurPageID = HoudiniVersionPageID then
+  begin
+    anyChecked := False;
+    folder := '';
+    for i := 0 to GetArrayLength(HoudiniVersionChecks) - 1 do
+    begin
+      if (HoudiniVersionChecks[i] <> nil) and HoudiniVersionChecks[i].Checked then
+      begin
+        anyChecked := True;
+        if folder = '' then
+          folder := HoudiniVersionChecks[i].Caption; { primary install dir = first checked (newest order) }
+      end;
+    end;
+
+    if not anyChecked then
+    begin
+      SuppressibleMsgBox('Select at least one Houdini version.', mbError, MB_OK, IDOK);
+      Result := False;
+      Exit;
+    end;
+
+    if (folder = '') or (Pos('houdini', folder) <> 1) then
+      folder := 'houdini21.0';
+
+    _HoudiniUserPrefDir := _HoudiniUserDocsBase + '\' + folder;
+    WizardForm.DirEdit.Text := _HoudiniUserPrefDir + '\monofx';
+  end;
+end;
+
+procedure _copy_dir_tree(const srcDir, dstDir: string);
+var
+  fr: TFindRec;
+  srcPath, dstPath: string;
+begin
+  if (srcDir = '') or (dstDir = '') then Exit;
+  if not DirExists(srcDir) then Exit;
+  ForceDirectories(dstDir);
+
+  if FindFirst(srcDir + '\*', fr) then
+  begin
+    try
+      repeat
+        if (fr.Name = '.') or (fr.Name = '..') then
+          continue;
+        srcPath := srcDir + '\' + fr.Name;
+        dstPath := dstDir + '\' + fr.Name;
+        if (fr.Attributes and 16) <> 0 then
+          _copy_dir_tree(srcPath, dstPath)
+        else
+        begin
+          ForceDirectories(ExtractFileDir(dstPath));
+          CopyFile(srcPath, dstPath, False);
+        end;
+      until not FindNext(fr);
+    finally
+      FindClose(fr);
+    end;
+  end;
 end;
 
 function DetectHoudiniVersions: string;
@@ -270,109 +491,46 @@ end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
 var
-  Current, NewPath, Sep: string;
+  i: Integer;
+  baseDir, verName, targetPref, targetMonofx, targetPackages, srcMonofx, pkgSrc, pkgDst: string;
 begin
   if CurStep = ssPostInstall then
   begin
-    NewPath := ExpandConstant('{app}\packages');
-    Sep := ';';
-    if not RegQueryStringValue(HKEY_CURRENT_USER, EnvKey, VarName, Current) then
-      Current := '';
-    Current := Trim(Current);
-    if Current = '' then
-      Current := NewPath
-    else if Pos(Lowercase(NewPath), Lowercase(Current)) = 0 then
-      Current := Current + Sep + NewPath;
-    RegWriteStringValue(HKEY_CURRENT_USER, EnvKey, VarName, Current);
-    { Ensure tools can resolve suite root even if Houdini packages are not loaded yet }
-    RegWriteStringValue(HKEY_CURRENT_USER, EnvKey, 'MONOFX_SUITE', ExpandConstant('{app}'));
+    { Copy package json to each selected Houdini version, and replicate install to additional versions }
+    baseDir := _HoudiniUserDocsBase;
+    if baseDir = '' then
+      baseDir := ExpandConstant('{userdocs}');
+
+    srcMonofx := ExpandConstant('{app}');
+    pkgSrc := ExpandConstant('{tmp}\monofx.json');
+
+    for i := 0 to GetArrayLength(HoudiniVersionChecks) - 1 do
+    begin
+      if (HoudiniVersionChecks[i] = nil) or (not HoudiniVersionChecks[i].Checked) then
+        Continue;
+
+      verName := HoudiniVersionChecks[i].Caption;
+      if (verName = '') or (Pos('houdini', verName) <> 1) then
+        Continue;
+
+      targetPref := baseDir + '\' + verName;
+      targetMonofx := targetPref + '\monofx';
+      targetPackages := targetPref + '\packages';
+
+      (* If this is not the primary install location, mirror files from the primary install folder *)
+      if Lowercase(Trim(targetMonofx)) <> Lowercase(Trim(srcMonofx)) then
+        _copy_dir_tree(srcMonofx, targetMonofx);
+
+      { Ensure monofx.json exists in packages for this Houdini version }
+      if pkgSrc <> '' then
+      begin
+        ForceDirectories(targetPackages);
+        pkgDst := targetPackages + '\monofx.json';
+        CopyFile(pkgSrc, pkgDst, False);
+      end;
+    end;
+
     DetectedHoudiniVersions := DetectHoudiniVersions;
     CopyToolbarToUserHoudini;
-  end;
-end;
-
-function NextButtonClick(CurPageID: Integer): Boolean;
-begin
-  Result := True;
-  if CurPageID = InstallLocationPageID then
-  begin
-    if OptMonoStudio.Checked then begin InstallChoice := InstallChoiceMonoStudio; ChosenInstallPath := GetMonoStudioPath; end
-    else if OptUser.Checked then begin InstallChoice := InstallChoiceUser; ChosenInstallPath := GetUserPath; end
-    else begin InstallChoice := InstallChoiceStandalone; ChosenInstallPath := ExpandConstant('{autopf}\MonoFXSuite'); end;
-    WizardForm.DirEdit.Text := ChosenInstallPath;
-  end;
-end;
-
-procedure CurPageChanged(CurPageID: Integer);
-begin
-  if PrevPageID = InstallLocationPageID then
-  begin
-    if OptMonoStudio.Checked then begin InstallChoice := InstallChoiceMonoStudio; ChosenInstallPath := GetMonoStudioPath; end
-    else if OptUser.Checked then begin InstallChoice := InstallChoiceUser; ChosenInstallPath := GetUserPath; end
-    else begin InstallChoice := InstallChoiceStandalone; ChosenInstallPath := ExpandConstant('{autopf}\MonoFXSuite'); end;
-  end;
-  if CurPageID = wpSelectDir then
-  begin
-    if ChosenInstallPath <> '' then
-      WizardForm.DirEdit.Text := ChosenInstallPath
-    else if InstallChoice = InstallChoiceMonoStudio then
-      WizardForm.DirEdit.Text := GetMonoStudioPath
-    else if InstallChoice = InstallChoiceUser then
-      WizardForm.DirEdit.Text := GetUserPath
-    else
-      WizardForm.DirEdit.Text := ExpandConstant('{autopf}\MonoFXSuite');
-  end;
-  PrevPageID := CurPageID;
-
-  if CurPageID = wpFinished then
-  begin
-    if DetectedHoudiniVersions = '' then
-      DetectedHoudiniVersions := DetectHoudiniVersions;
-    WizardForm.FinishedLabel.Caption :=
-      'MonoFX Suite has been installed.' + #13#10 + #13#10 +
-      'HOUDINI_PACKAGE_DIR has been updated. Restart Houdini to load the MonoFX package and toolbar.' + #13#10 + #13#10 +
-      'Detected Houdini versions (registry): ' + DetectedHoudiniVersions;
-  end;
-end;
-
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
-var
-  Current, RemovePath, Part, NewValue: string;
-  i: Integer;
-  SuiteVar: string;
-begin
-  if CurUninstallStep = usPostUninstall then
-  begin
-    RemovePath := ExpandConstant('{app}\packages');
-    if RegQueryStringValue(HKEY_CURRENT_USER, EnvKey, VarName, Current) then
-    begin
-      NewValue := '';
-      Current := Current + ';';
-      i := 1;
-      while i <= Length(Current) do
-      begin
-        Part := '';
-        while (i <= Length(Current)) and (Current[i] <> ';') do
-        begin
-          Part := Part + Current[i];
-          i := i + 1;
-        end;
-        i := i + 1;
-        Part := Trim(Part);
-        if (Part <> '') and (Lowercase(Part) <> Lowercase(RemovePath)) then
-        begin
-          if NewValue <> '' then NewValue := NewValue + ';';
-          NewValue := NewValue + Part;
-        end;
-      end;
-      if NewValue = '' then
-        RegDeleteValue(HKEY_CURRENT_USER, EnvKey, VarName)
-      else
-        RegWriteStringValue(HKEY_CURRENT_USER, EnvKey, VarName, NewValue);
-    end;
-    { Remove MONOFX_SUITE only if it points to this install }
-    if RegQueryStringValue(HKEY_CURRENT_USER, EnvKey, 'MONOFX_SUITE', SuiteVar) then
-      if Lowercase(Trim(SuiteVar)) = Lowercase(Trim(ExpandConstant('{app}'))) then
-        RegDeleteValue(HKEY_CURRENT_USER, EnvKey, 'MONOFX_SUITE');
   end;
 end;
