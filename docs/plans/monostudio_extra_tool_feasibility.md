@@ -66,7 +66,7 @@ Không cần thay đổi thêm cho spec này.
 1. **VERSION trong installer:** Đã thêm `Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion` → đáp ứng mục 2.
 2. **GitHub Release:** Giữ nguyên (tag, asset .exe, RELEASE_NOTES.md) → đáp ứng mục 3.
 3. **Vị trí cài (Option A/B/C):** Đã thêm trang wizard **Install location** trong `MonoFXSuite.iss`:
-   - **Option A (mặc định):** Cài dưới MonoStudio → `{pf}\MonoStudio26\tools\MonoFXSuite` (MonoStudio đọc VERSION, hiển thị version + nút Download).
+   - **Option A (mặc định):** Cài dưới MonoStudio. Installer đọc `%LOCALAPPDATA%\MonoStudio\install_path.txt` (nếu có và path hợp lệ) → điền `{path}\tools\MonoFXSuite`; không thì dùng `{pf}\MonoStudio26\tools\MonoFXSuite`. MonoStudio đọc VERSION, hiển thị version + nút Download.
    - **Option B:** User folder → `%LOCALAPPDATA%\MonoStudio\tools\MonoFXSuite` (MonoStudio vẫn detect).
    - **Option C:** Standalone → `{autopf}\MonoFXSuite` (user có thể đổi trên trang chọn thư mục).
 

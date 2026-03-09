@@ -52,6 +52,7 @@ Name: "{app}\notes"
 ; HOUDINI_PACKAGE_DIR: append path MonoFX. Toolbar loaded via package hpath ($MONOFX_SUITE/toolbar).
 ; Houdini version detection: HKLM\SOFTWARE\Side Effects Software\Houdini (subkeys = versions).
 ; MonoStudio integration: Option A (under MonoStudio) / B (user folder) / C (standalone).
+; Option A path: read {localappdata}\MonoStudio\install_path.txt if present and valid, else {pf}\MonoStudio26\tools\MonoFXSuite.
 [Code]
 const
   EnvKey = 'Environment';
@@ -70,8 +71,18 @@ var
   LblMonoStudio, LblUser: TNewStaticText;
 
 function GetMonoStudioPath: string;
+var
+  TxtPath, BasePath: string;
+  Lines: TArrayOfString;
 begin
   Result := ExpandConstant('{pf}\MonoStudio26\tools\MonoFXSuite');
+  TxtPath := ExpandConstant('{localappdata}\MonoStudio\install_path.txt');
+  if FileExists(TxtPath) and LoadStringsFromFile(TxtPath, Lines) and (GetArrayLength(Lines) > 0) then
+  begin
+    BasePath := Trim(Lines[0]);
+    if (BasePath <> '') and DirExists(BasePath) then
+      Result := BasePath + '\tools\MonoFXSuite';
+  end;
 end;
 
 function GetUserPath: string;
