@@ -38,6 +38,7 @@ Source: "..\..\packages\*"; DestDir: "{app}\packages"; Flags: ignoreversion recu
 Source: "..\..\docs\*"; DestDir: "{app}\docs"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\toolbar\*"; DestDir: "{app}\toolbar"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\config\*"; DestDir: "{app}\config"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 ; Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 ; Bỏ .git nếu không cần updater từ git
 ; Source: "..\..\.git\*"; DestDir: "{app}\.git"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -50,14 +51,80 @@ Name: "{app}\notes"
 
 ; HOUDINI_PACKAGE_DIR: append path MonoFX. Toolbar loaded via package hpath ($MONOFX_SUITE/toolbar).
 ; Houdini version detection: HKLM\SOFTWARE\Side Effects Software\Houdini (subkeys = versions).
+; MonoStudio integration: Option A (under MonoStudio) / B (user folder) / C (standalone).
 [Code]
 const
   EnvKey = 'Environment';
   VarName = 'HOUDINI_PACKAGE_DIR';
   HoudiniRegBase = 'SOFTWARE\Side Effects Software\Houdini';
+  InstallChoiceMonoStudio = 0;
+  InstallChoiceUser = 1;
+  InstallChoiceStandalone = 2;
 
 var
   DetectedHoudiniVersions: string;
+  InstallLocationPageID: Integer;
+  InstallChoice: Integer;
+  PrevPageID: Integer;
+  OptMonoStudio, OptUser, OptStandalone: TNewRadioButton;
+  LblMonoStudio, LblUser: TNewStaticText;
+
+function GetMonoStudioPath: string;
+begin
+  Result := ExpandConstant('{pf}\MonoStudio26\tools\MonoFXSuite');
+end;
+
+function GetUserPath: string;
+begin
+  Result := ExpandConstant('{localappdata}\MonoStudio\tools\MonoFXSuite');
+end;
+
+procedure InitializeWizard;
+var
+  Page: TWizardPage;
+begin
+  Page := CreateCustomPage(wpWelcome, 'Install location', 'Choose where to install MonoFX Suite. MonoStudio can detect the installed version and offer updates when installed under Option A or B.');
+  InstallLocationPageID := Page.ID;
+
+  OptMonoStudio := TNewRadioButton.Create(Page);
+  OptMonoStudio.Parent := Page.Surface;
+  OptMonoStudio.Left := 0;
+  OptMonoStudio.Top := 0;
+  OptMonoStudio.Width := Page.SurfaceWidth;
+  OptMonoStudio.Caption := 'Under MonoStudio (recommended for Settings -> Updates integration)';
+  OptMonoStudio.Checked := True;
+
+  LblMonoStudio := TNewStaticText.Create(Page);
+  LblMonoStudio.Parent := Page.Surface;
+  LblMonoStudio.Left := 20;
+  LblMonoStudio.Top := 22;
+  LblMonoStudio.Caption := 'Path: ' + GetMonoStudioPath;
+  LblMonoStudio.AutoSize := True;
+
+  OptUser := TNewRadioButton.Create(Page);
+  OptUser.Parent := Page.Surface;
+  OptUser.Left := 0;
+  OptUser.Top := 50;
+  OptUser.Width := Page.SurfaceWidth;
+  OptUser.Caption := 'User folder (no admin; MonoStudio still detects for updates)';
+
+  LblUser := TNewStaticText.Create(Page);
+  LblUser.Parent := Page.Surface;
+  LblUser.Left := 20;
+  LblUser.Top := 72;
+  LblUser.Caption := 'Path: ' + GetUserPath;
+  LblUser.AutoSize := True;
+
+  OptStandalone := TNewRadioButton.Create(Page);
+  OptStandalone.Parent := Page.Surface;
+  OptStandalone.Left := 0;
+  OptStandalone.Top := 100;
+  OptStandalone.Width := Page.SurfaceWidth;
+  OptStandalone.Caption := 'Standalone (choose folder on next page)';
+
+  PrevPageID := -1;
+  InstallChoice := InstallChoiceMonoStudio;
+end;
 
 function DetectHoudiniVersions: string;
 var
@@ -207,6 +274,23 @@ end;
 
 procedure CurPageChanged(CurPageID: Integer);
 begin
+  if PrevPageID = InstallLocationPageID then
+  begin
+    if OptMonoStudio.Checked then InstallChoice := InstallChoiceMonoStudio
+    else if OptUser.Checked then InstallChoice := InstallChoiceUser
+    else InstallChoice := InstallChoiceStandalone;
+  end;
+  if CurPageID = wpSelectDir then
+  begin
+    if InstallChoice = InstallChoiceMonoStudio then
+      WizardForm.DirEdit.Text := GetMonoStudioPath
+    else if InstallChoice = InstallChoiceUser then
+      WizardForm.DirEdit.Text := GetUserPath
+    else
+      WizardForm.DirEdit.Text := ExpandConstant('{autopf}\MonoFXSuite');
+  end;
+  PrevPageID := CurPageID;
+
   if CurPageID = wpFinished then
   begin
     if DetectedHoudiniVersions = '' then
