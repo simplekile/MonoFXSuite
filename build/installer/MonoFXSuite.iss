@@ -69,6 +69,7 @@ var
   InstallLocationPageID: Integer;
   InstallChoice: Integer;
   PrevPageID: Integer;
+  ChosenInstallPath: string;
   OptMonoStudio, OptUser, OptStandalone: TNewRadioButton;
   LblMonoStudio, LblUser: TNewStaticText;
 
@@ -141,6 +142,7 @@ begin
 
   PrevPageID := -1;
   InstallChoice := InstallChoiceMonoStudio;
+  ChosenInstallPath := GetMonoStudioPath;
 end;
 
 function DetectHoudiniVersions: string;
@@ -289,17 +291,31 @@ begin
   end;
 end;
 
+function NextButtonClick(CurPageID: Integer): Boolean;
+begin
+  Result := True;
+  if CurPageID = InstallLocationPageID then
+  begin
+    if OptMonoStudio.Checked then begin InstallChoice := InstallChoiceMonoStudio; ChosenInstallPath := GetMonoStudioPath; end
+    else if OptUser.Checked then begin InstallChoice := InstallChoiceUser; ChosenInstallPath := GetUserPath; end
+    else begin InstallChoice := InstallChoiceStandalone; ChosenInstallPath := ExpandConstant('{autopf}\MonoFXSuite'); end;
+    WizardForm.DirEdit.Text := ChosenInstallPath;
+  end;
+end;
+
 procedure CurPageChanged(CurPageID: Integer);
 begin
   if PrevPageID = InstallLocationPageID then
   begin
-    if OptMonoStudio.Checked then InstallChoice := InstallChoiceMonoStudio
-    else if OptUser.Checked then InstallChoice := InstallChoiceUser
-    else InstallChoice := InstallChoiceStandalone;
+    if OptMonoStudio.Checked then begin InstallChoice := InstallChoiceMonoStudio; ChosenInstallPath := GetMonoStudioPath; end
+    else if OptUser.Checked then begin InstallChoice := InstallChoiceUser; ChosenInstallPath := GetUserPath; end
+    else begin InstallChoice := InstallChoiceStandalone; ChosenInstallPath := ExpandConstant('{autopf}\MonoFXSuite'); end;
   end;
   if CurPageID = wpSelectDir then
   begin
-    if InstallChoice = InstallChoiceMonoStudio then
+    if ChosenInstallPath <> '' then
+      WizardForm.DirEdit.Text := ChosenInstallPath
+    else if InstallChoice = InstallChoiceMonoStudio then
       WizardForm.DirEdit.Text := GetMonoStudioPath
     else if InstallChoice = InstallChoiceUser then
       WizardForm.DirEdit.Text := GetUserPath
