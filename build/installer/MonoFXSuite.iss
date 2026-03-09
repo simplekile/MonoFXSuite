@@ -74,12 +74,16 @@ function GetMonoStudioPath: string;
 var
   TxtPath, BasePath: string;
   Lines: TArrayOfString;
+  n: Integer;
 begin
   Result := ExpandConstant('{pf}\MonoStudio26\tools\MonoFXSuite');
   TxtPath := ExpandConstant('{localappdata}\MonoStudio\install_path.txt');
   if FileExists(TxtPath) and LoadStringsFromFile(TxtPath, Lines) and (GetArrayLength(Lines) > 0) then
   begin
     BasePath := Trim(Lines[0]);
+    n := Length(BasePath);
+    if (n > 10) and (CompareText(Copy(BasePath, n - 9, 10), '\_internal') = 0) then
+      BasePath := Copy(BasePath, 1, n - 10);
     if (BasePath <> '') and DirExists(BasePath) then
       Result := BasePath + '\tools\MonoFXSuite';
   end;

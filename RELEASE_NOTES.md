@@ -1,4 +1,4 @@
-## [0.1.4] - 2026-03-09
+## [0.1.5] - 2026-03-09
 
 ### Installer
-- Option A (Under MonoStudio): read `%LOCALAPPDATA%\MonoStudio\install_path.txt`; if valid, pre-fill `{path}\tools\MonoFXSuite`, else `{pf}\MonoStudio26\tools\MonoFXSuite`.
+- Option A: if path from install_path.txt ends with `\_internal`, strip it so target is `{MonoStudio root}\tools\MonoFXSuite`.
