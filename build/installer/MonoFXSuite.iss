@@ -47,6 +47,8 @@ Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 Name: "{group}\{#MyAppName}"; Filename: "{app}"; Comment: "MonoFX Suite root folder"
 
 [Dirs]
+; Force creation of install path (e.g. ...\MonoStudio26\tools\MonoFXSuite) before copying files
+Name: "{app}"
 Name: "{app}\notes"
 
 ; HOUDINI_PACKAGE_DIR: append path MonoFX. Toolbar loaded via package hpath ($MONOFX_SUITE/toolbar).
