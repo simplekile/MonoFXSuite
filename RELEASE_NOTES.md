@@ -1,4 +1,4 @@
-## [0.1.7] - 2026-03-09
+## [0.1.8] - 2026-03-09
 
-### Installer
-- Set install path in NextButtonClick when leaving Install location page so Option A path persists on Select Destination Location.
+### Docs
+- Rules: add 13_icons.md; plans: node_preset_library updates.
