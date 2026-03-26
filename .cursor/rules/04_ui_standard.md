@@ -144,6 +144,12 @@ background: rgba(color, 100);
 color: semantic color (emerald/amber/red/zinc);
 ```
 
+## Window title
+
+- Dùng **một nguồn**: `config.WINDOW_TITLE` trong controller.
+- **Chuẩn** (giống Auto Material Builder): `ui.setWindowTitle(config.WINDOW_TITLE)` — không thêm version hay text phụ vào title.
+- Mỗi tool có `config.py` với `WINDOW_TITLE = "Tên Tool"`.
+
 ## Naming (objectName)
 
 Widgets phải set `objectName` để QSS target chính xác:
@@ -156,6 +162,10 @@ Widgets phải set `objectName` để QSS target chính xác:
 | Single-select list | `SelectableList` |
 | Multi-select list | `SelectableListMulti` |
 | Mono-spaced label/input | property `mono="true"` |
+
+## Icons
+
+- Icon luôn lấy từ bộ **Lucide**; thiếu thì tải và lưu theo rule **§13 Icons** (`.cursor/rules/13_icons.md`).
 
 ## Principles
 

@@ -9,13 +9,16 @@ from typing import Any, List, Tuple
 
 from tools.fx.search_replace import config
 from tools.fx.search_replace.logic import build_preview_line, replace_in_string
-from tools.fx.search_replace.ui import SearchReplaceUI
 
 
 def run() -> None:
     import importlib
     import apps.houdini.adapter as h
     importlib.reload(h)  # ensure latest adapter without restarting Houdini
+    # Reload UI so installed/build copy is used (avoid stale .pyc)
+    import tools.fx.search_replace.ui as _sr_ui
+    importlib.reload(_sr_ui)
+    SearchReplaceUI = _sr_ui.SearchReplaceUI
 
     if not h.is_available():
         return
@@ -92,6 +95,10 @@ def run() -> None:
     parent_win = h.get_main_qt_window()
     if parent_win:
         from PySide6.QtCore import Qt
-        ui.setWindowFlags(ui.windowFlags() | Qt.WindowType.Window)
-        ui.setParent(parent_win, ui.windowFlags())
+        flags = ui.windowFlags() | Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
+        ui.setWindowFlags(flags)
+        ui.setParent(parent_win, flags)
+    else:
+        from PySide6.QtCore import Qt
+        ui.setWindowFlags(ui.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
     ui.show()

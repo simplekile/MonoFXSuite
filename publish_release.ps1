@@ -25,9 +25,16 @@ if (-not $tagExists) {
     exit 1
 }
 
-# Release notes từ changelog
+# Release notes: prefer RELEASE_NOTES.md (from bump_version), else extract from changelog
+$ReleaseNotesPath = Join-Path $ProjectRoot "RELEASE_NOTES.md"
 $Notes = "Release $Tag`n`n"
-if (Test-Path $ChangelogPath) {
+if (Test-Path $ReleaseNotesPath) {
+    $notesContent = (Get-Content $ReleaseNotesPath -Raw).Trim()
+    if ($notesContent) {
+        $Notes = $notesContent + "`n"
+    }
+}
+if ($Notes -eq "Release $Tag`n`n" -and (Test-Path $ChangelogPath)) {
     $content = Get-Content $ChangelogPath -Raw
     $verEscaped = [regex]::Escape($Version)
     $pattern = "(?s)## \[$verEscaped\][^\r\n]*(.*?)(?=\r?\n## |\z)"
@@ -37,23 +44,26 @@ if (Test-Path $ChangelogPath) {
     }
 }
 
-$NotesPath = [System.IO.Path]::GetTempFileName()
+$NotesPath = [System.IO.Path]::GetTempFileName() + ".md"
 try {
-    [System.IO.File]::WriteAllText($NotesPath, $Notes, [System.Text.Encoding]::UTF8)
+    # UTF-8 no BOM so GitHub displays the body correctly
+    [System.IO.File]::WriteAllText($NotesPath, $Notes, [System.Text.UTF8Encoding]::new($false))
 
     if (-not (Test-Path $ExePath)) {
-        Write-Error "Không tìm thấy installer: $ExePath — chạy .\build\build.ps1 trước."
+        Write-Error "Installer not found. Run .\build\build.ps1 first."
         exit 1
     }
 
     Write-Host "Creating GitHub Release: $Tag"
-    Write-Host "Notes (excerpt): $($Notes.Substring(0, [Math]::Min(80, $Notes.Length)))..."
-    gh release create $Tag --notes-file $NotesPath $ExePath
+    # --notes-file must be absolute path on Windows for gh to read correctly
+    $NotesPathFull = [System.IO.Path]::GetFullPath($NotesPath)
+    gh release create $Tag --notes-file $NotesPathFull $ExePath
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Nếu release đã tồn tại: gh release delete $Tag (rồi chạy lại) hoặc gh release edit $Tag --notes-file ..."
+        Write-Host "Release may already exist. Try: gh release delete $Tag then run again."
         exit 1
     }
-    Write-Host "Done. Release: https://github.com/simplekile/MonoFXSuite/releases/tag/$Tag"
+    $url = "https://github.com/simplekile/MonoFXSuite/releases/tag/" + $Tag
+    Write-Host "Done. Release: $url"
 }
 finally {
     if (Test-Path $NotesPath) { Remove-Item $NotesPath -Force }

@@ -576,38 +576,6 @@ def run_auto_assign(
     grp_prims = find_grp_prim_paths_and_names(stage)
     materials = get_material_names_under_scope(stage)
 
-    # Debug: print what we found in the selected node's stage
-    try:
-        node_path = selected_lop_node.path()
-    except Exception:
-        node_path = "<unknown>"
-    # print(f"[AutoAssign] Selected LOP node: {node_path}")
-    # print("[AutoAssign] --- All prims in selected stage (Traverse) ---")
-    try:
-        prim_count = 0
-        for prim in stage.Traverse():
-            prim_count += 1
-            try:
-                # Houdini USD Python bindings vary; str(Sdf.Path) is the most reliable.
-                p = str(prim.GetPath())
-            except Exception:
-                p = "<unknown-path>"
-            try:
-                t = prim.GetTypeName()
-            except Exception:
-                t = "<unknown-type>"
-            print(f"  - {p}   [{t}]")
-        print(f"[AutoAssign] Total prims traversed: {prim_count}")
-    except Exception as e:
-        print(f"[AutoAssign] Failed to traverse stage prims: {e}")
-
-    print(f"[AutoAssign] Found {len(grp_prims)} prim(s) named *_grp / *_Grp:")
-    for prim_path, base_name in grp_prims:
-        print(f"  - {prim_path}   (base: {base_name})")
-    print(f"[AutoAssign] Found {len(materials)} material(s) under {MATERIALS_SCOPE} with prefix {M_CHAR_PREFIX}:")
-    for base_name, mat_path in sorted(materials.items(), key=lambda kv: kv[0].lower()):
-        print(f"  - {base_name} -> {mat_path}")
-
     if not materials:
         return 0, "No M_char_* materials found under /materials. Create materials first or check scope path."
 

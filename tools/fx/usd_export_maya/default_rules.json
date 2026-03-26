@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "camera_renderable",
+      "enabled": true,
+      "match": { "type": "camera" },
+      "filename": { "prefix": "cam_", "name_from": "leaf" }
+    },
+    {
+      "id": "ref_geometry",
+      "enabled": true,
+      "match": { "type": "ref_geometry" },
+      "filename": { "prefix": "geo_", "name_from": "namespace" }
+    }
+  ]
+}

@@ -8,7 +8,7 @@ Tool lưu/load các node đang chọn vào thư viện preset, có thumbnail, ca
 
 | Yêu cầu | Mô tả |
 |--------|--------|
-| **Lưu nodes đang chọn** | Chọn một hoặc nhiều node (cùng parent) → Save to Library → đặt tên preset, chọn category → lưu file .hipnc + metadata. |
+| **Lưu nodes đang chọn** | Chọn một hoặc nhiều node (cùng parent) → Save to Library → đặt tên preset, chọn category → lưu file .cpio + metadata. |
 | **Paste thumbnail** | Trong form tạo/sửa preset: nút "Paste thumbnail" lấy ảnh từ clipboard (Ctrl+V) và lưu thành ảnh thumbnail của preset. |
 | **Tự tạo category** | User tạo/đổi tên/xóa category. Category = folder + bản ghi trong index. |
 | **Copy library sang máy khác & import** | Library nằm trong một folder (hoặc .zip). Copy folder/zip sang máy khác → trong tool chọn "Import library" → chọn folder/zip → merge hoặc replace. |
@@ -22,7 +22,7 @@ Tool lưu/load các node đang chọn vào thư viện preset, có thumbnail, ca
 ├── index.json          # Danh sách categories + presets (id, name, category_id, file, thumbnail, created)
 ├── categories/
 │   ├── <category_id>/   # Mỗi category một folder (slug từ tên)
-│   │   ├── preset_<id>.hipnc
+│   │   ├── preset_<id>.cpio
 │   │   ├── preset_<id>_thumb.png
 │   │   └── ...
 │   └── ...
@@ -47,7 +47,7 @@ Tool lưu/load các node đang chọn vào thư viện preset, có thumbnail, ca
       "id": "uuid-hoac-slug",
       "name": "My ROP chain",
       "category_id": "sop_utils",
-      "file": "categories/sop_utils/preset_abc123.hipnc",
+      "file": "categories/sop_utils/preset_abc123.cpio",
       "thumbnail": "categories/sop_utils/preset_abc123_thumb.png",
       "created": "2025-03-07T12:00:00",
       "node_count": 3
@@ -72,7 +72,7 @@ Tool lưu/load các node đang chọn vào thư viện preset, có thumbnail, ca
    - Thumbnail: nút "Paste thumbnail" (đọc QClipboard image, lưu PNG).
 3. Validate: ít nhất 1 node, cùng parent, tên không trống.
 4. Ghi file:
-   - Parent node gọi `saveItemsToFile(selected_items, path_to_hipnc)` (Houdini API).
+   - Parent node gọi `saveItemsToFile(selected_items, path_to_cpio)` (Houdini API).
    - Tạo/ghi category folder nếu cần.
    - Lưu thumbnail nếu đã paste.
    - Cập nhật index.json (thêm category nếu mới, thêm preset).
@@ -82,7 +82,7 @@ Tool lưu/load các node đang chọn vào thư viện preset, có thumbnail, ca
 1. Mở panel Library: list categories bên trái, list presets (có thumbnail) bên phải.
 2. User chọn preset → nút "Insert" (hoặc double-click).
 3. Lấy context Houdini: network hiện tại (hou.pwd() hoặc node từ network editor).
-4. Parent node gọi `loadItemsFromFile(path_to_hipnc)`.
+4. Parent node gọi `loadItemsFromFile(path_to_cpio)`.
 5. (Optional) Houdini có thể select items vừa load; có thể dùng `pasteItemsFromClipboard(position)` nếu ta copy vào clipboard rồi paste tại vị trí con trỏ.
 
 Chú ý: `loadItemsFromFile` load vào parent; không trả về danh sách items. Có thể clear selection, load, rồi dùng `hou.selectedItems()` để lấy items vừa load (theo SideFX forum).
@@ -115,7 +115,7 @@ Chú ý: `loadItemsFromFile` load vào parent; không trả về danh sách item
 
 - **Lấy parent của selection**: `nodes = hou.selectedNodes()` (hoặc `hou.selectedItems()` nếu cần cả sticky notes/boxes). Kiểm tra tất cả cùng parent: `parent = nodes[0].parent()`.
 - **Lưu items ra file**: `parent.saveItemsToFile(items, file_path, save_hda_fallbacks=False)`. Items phải là con của `parent` (ví dụ `hou.selectedItems()` lọc theo parent).
-- **Load vào network**: Xác định target parent (ví dụ `hou.pwd()` hoặc node từ network editor). `parent.loadItemsFromFile(hipnc_path)`. Sau đó có thể dùng `hou.selectedItems()` nếu Houdini select items vừa load.
+- **Load vào network**: Xác định target parent (ví dụ `hou.pwd()` hoặc node từ network editor). `parent.loadItemsFromFile(cpio_path)`. Sau đó có thể dùng `hou.selectedItems()` nếu Houdini select items vừa load.
 - **Vị trí paste**: Nếu cần paste tại vị trí con trỏ, có thể dùng `copyItemsToClipboard` → `pasteItemsFromClipboard(position)`; với file thì load rồi move items bằng script (phức tạp hơn). Giai đoạn 1 có thể chỉ cần load vào parent, chưa cần đặt vị trí.
 
 Tất cả gọi Houdini nên nằm trong **adapter** (ví dụ `apps/houdini/adapter.py` hoặc `apps/houdini/node_preset_adapter.py`) để tools không import `hou` trực tiếp.
@@ -145,7 +145,7 @@ tools/fx/node_preset_library/
   - `get_library_root()`: từ config hoặc env.
   - `load_index()`, `save_index()`.
   - `add_category(name)`, `rename_category(id, name)`, `delete_category(id)`.
-  - `add_preset(name, category_id, hipnc_relative_path, thumbnail_relative_path, node_count)`, `update_preset_thumbnail(...)`, `delete_preset(id)`.
+  - `add_preset(name, category_id, cpio_relative_path, thumbnail_relative_path, node_count)`, `update_preset_thumbnail(...)`, `delete_preset(id)`.
   - `resolve_path(library_root, relative_path)`.
   - Export/Import: `import_library_from_folder(path)` (merge/replace), `import_library_from_zip(path)`.
 
@@ -163,7 +163,7 @@ tools/fx/node_preset_library/
 
 1. **Config + Logic**: index format, library root, load/save index, add category/preset (file path, thumbnail path).
 2. **Adapter**: Houdini calls (selected items, parent, saveItemsToFile, loadItemsFromFile, current network).
-3. **UI cơ bản**: Save to Library (name, category, paste thumbnail), lưu .hipnc + index.
+3. **UI cơ bản**: Save to Library (name, category, paste thumbnail), lưu .cpio + index.
 4. **UI Library panel**: List categories, list presets với thumbnail, Insert.
 5. **Category**: New / Rename / Delete.
 6. **Import/Export**: Import from folder (merge/replace), Export folder hoặc zip; copy sang máy khác và import.
@@ -179,3 +179,56 @@ tools/fx/node_preset_library/
 - **Conflict id**: Khi import, nếu category hoặc preset trùng id thì merge: overwrite hoặc thêm suffix (tùy product decision).
 
 Khi implement, bắt đầu từ bước 1–3 để có luồng "chọn node → save → có thumbnail → insert lại" end-to-end, rồi mở rộng category và portable library.
+
+---
+
+## 10. Cách test
+
+### Test trong Houdini (end-to-end)
+
+1. **Chuẩn bị:** Mở Houdini, set `HOUDINI_PACKAGE_DIR` trỏ tới `MonoFXSuite/packages` (hoặc dùng installer). Tab **MonoFX** trên shelf có tool **Node Preset Library** (icon sách).
+
+2. **Save preset:**
+   - Vào bất kỳ network nào (SOP, LOP, …), tạo vài node (vd. Box + Transform).
+   - Chọn một hoặc nhiều node (cùng một parent).
+   - Bấm **Node Preset Library** trên shelf → cửa sổ Library mở.
+   - Bấm **Save to Library** → nhập tên (vd. "My setup"), chọn hoặc tạo category (vd. "SOP Utils"), (tùy chọn) copy ảnh vào clipboard rồi bấm **Paste thumbnail** → **Save**.
+   - Kiểm tra: bên trái có category, bên phải có preset với thumbnail (nếu đã paste).
+
+3. **Insert preset:**
+   - Chọn một category bên trái, chọn preset bên phải.
+   - Bấm **Insert** (hoặc double-click preset).
+   - Kiểm tra: nodes xuất hiện trong network hiện tại.
+
+4. **New category:** Bấm **New category** → nhập tên → kiểm tra category mới trong list.
+
+5. **Import library:** Copy cả folder `library/node_preset_library` sang máy/đường dẫn khác. Trên máy này bấm **Import library…** → chọn folder vừa copy → kiểm tra presets/categories xuất hiện.
+
+### Test logic (không cần Houdini)
+
+Chạy từ repo root (Python 3):
+
+```bash
+cd "e:\00 Project\Pipeline\MonoFXSuite"
+python -c "
+from pathlib import Path
+import tempfile, os
+os.environ['MONOFX_NODE_PRESET_LIBRARY'] = tempfile.mkdtemp()
+from tools.fx.node_preset_library.logic import (
+    ensure_library_root, add_category, list_categories,
+    add_preset, list_presets, get_preset, load_index
+)
+root = ensure_library_root()
+add_category('SOP Utils')
+add_category('Test')
+assert (root / 'index.json').exists()
+cats = list_categories()
+assert len(cats) >= 2
+add_preset('Preset A', 'sop_utils', 'categories/sop_utils/preset_abc.cpio', 2)
+presets = list_presets(category_id='sop_utils')
+assert len(presets) == 1 and presets[0]['name'] == 'Preset A'
+print('Logic OK')
+"
+```
+
+Nếu in ra `Logic OK` thì index + category + preset hoạt động đúng.

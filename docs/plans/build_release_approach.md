@@ -14,6 +14,8 @@
 ## Đã có trong repo
 
 - **VERSION** — một dòng version (vd. `0.1.0`). Build và publish đều đọc từ đây.
+- **bump_version.ps1** — `.\bump_version.ps1 major|minor|patch`: tăng `VERSION`, thêm section trong changelog, và ghi **RELEASE_NOTES.md** (nội dung = release note cho version đó). Chạy trước khi build/publish.
+- **RELEASE_NOTES.md** — Release note cho bản sắp phát hành; `bump_version.ps1` tạo/cập nhật, `publish_release.ps1` dùng làm body GitHub Release. Có thể chỉnh tay trước khi publish.
 - **build/build.ps1** — đọc `VERSION`, gọi Inno với `/DMyAppVersion=...`; output `build/output/MonoFXSuite_Setup.exe`.
 - **build/installer/MonoFXSuite.iss** — `#ifndef MyAppVersion` fallback; version thật lấy từ build script.
 - **publish_release.ps1** — đọc `VERSION` → tag `vx.y.z`, trích release notes từ `docs/changelog.md`, `gh release create` + đính kèm exe. Cần `gh auth login`.

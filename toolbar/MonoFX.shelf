@@ -5,6 +5,7 @@
     <memberTool name="monofx_split_geometry"/>
     <memberTool name="monofx_search_replace"/>
     <memberTool name="monofx_auto_material"/>
+    <memberTool name="monofx_node_preset_library"/>
   </toolshelf>
 
   <tool name="monofx_scene_info" label="Scene Info" icon="info">
@@ -200,6 +201,56 @@ if not _mono_suite:
 else:
     try:
         from tools.fx.auto_material import run
+        run()
+    except Exception as e:
+        import hou
+        hou.ui.displayMessage(str(e), severity=hou.severityType.Error)
+]]></script>
+  </tool>
+
+  <tool name="monofx_node_preset_library" label="Node Preset Library" icon="library">
+    <helpText><![CDATA[Save selected nodes to library with thumbnail and category. Insert presets into current network. Import/export library folder.]]></helpText>
+    <script scriptType="python"><![CDATA[
+import os, sys
+
+def _is_suite_root(p):
+    return bool(p) and os.path.isdir(p) and os.path.isdir(os.path.join(p, "tools"))
+
+def _find_suite_root():
+    p = os.environ.get("MONOFX_SUITE")
+    if _is_suite_root(p):
+        return p
+
+    pkg_dir_raw = os.environ.get("HOUDINI_PACKAGE_DIR") or ""
+    for pkg_dir in [x.strip() for x in pkg_dir_raw.split(";") if x.strip()]:
+        if os.path.isfile(os.path.join(pkg_dir, "monofx.json")) or os.path.isfile(os.path.join(pkg_dir, "monofx_standalone.json")):
+            root = os.path.normpath(os.path.join(pkg_dir, ".."))
+            if _is_suite_root(root):
+                return root
+
+    for candidate in [os.path.expandvars(r"%ProgramFiles%\MonoFXSuite"), os.path.expandvars(r"%ProgramFiles(x86)%\MonoFXSuite")]:
+        if _is_suite_root(candidate):
+            return candidate
+
+    return None
+
+_mono_suite = _find_suite_root()
+if _mono_suite and _mono_suite not in sys.path:
+    sys.path.insert(0, _mono_suite)
+
+if not _mono_suite:
+    import hou
+    hou.ui.displayMessage(
+        "MonoFX: cannot locate suite root.\n\n"
+        "1. Set HOUDINI_PACKAGE_DIR to your MonoFXSuite packages folder (e.g. C:\\Program Files\\MonoFXSuite\\packages)\n"
+        "2. Remove any monofx.json from Documents\\houdini21.0\\packages (wrong MONOFX_SUITE)\n"
+        "3. Restart Houdini.\n\n"
+        "MONOFX_SUITE=%s\nHOUDINI_PACKAGE_DIR=%s" % (os.environ.get("MONOFX_SUITE"), os.environ.get("HOUDINI_PACKAGE_DIR")),
+        severity=hou.severityType.Error,
+    )
+else:
+    try:
+        from tools.fx.node_preset_library import run
         run()
     except Exception as e:
         import hou

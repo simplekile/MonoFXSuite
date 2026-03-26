@@ -23,6 +23,7 @@ Thumbs.db
 desktop.ini
 
 # DCC / Pipeline (common)
+*.cpio.bak
 *.hipnc.bak
 *.ma.bak
 *.mb.bak

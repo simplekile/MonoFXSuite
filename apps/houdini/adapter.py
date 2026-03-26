@@ -288,6 +288,54 @@ def get_all_nodes_under(node: Any) -> List[Any]:
     return out
 
 
+def detect_network_tags_for_parent(parent: Any) -> list[str]:
+    """
+    Detect network tag(s) for a parent node (SOP, VOP, LOP, OBJ, DOP, CHOP, COP2, TOP).
+    Returns list of strings like ["SOP"].
+    """
+    if not is_available() or parent is None:
+        return []
+    try:
+        import hou  # type: ignore[import]
+    except Exception:
+        return []
+    try:
+        # Prefer childTypeCategory for network containers; fall back to node type category.
+        cat = None
+        try:
+            cat = parent.childTypeCategory()
+        except Exception:
+            pass
+        if cat is None:
+            try:
+                cat = parent.type().category()
+            except Exception:
+                cat = None
+        if cat is None:
+            return []
+        mapping = {
+            hou.sopNodeTypeCategory(): "SOP",
+            hou.vopNodeTypeCategory(): "VOP",
+            hou.lopNodeTypeCategory(): "LOP",
+            hou.objNodeTypeCategory(): "OBJ",
+            hou.dopNodeTypeCategory(): "DOP",
+            hou.chopNodeTypeCategory(): "CHOP",
+            hou.cop2NodeTypeCategory(): "COP2",
+            getattr(hou, "topNodeTypeCategory", lambda: None)(): "TOP",
+        }
+        for k, tag in mapping.items():
+            if k is not None and cat == k:
+                return [tag]
+    except Exception:
+        return []
+    return []
+
+
+def detect_network_tags_for_items(parent: Any, items: List[Any]) -> list[str]:
+    """Wrapper for detect_network_tags_for_parent; kept for future per-item logic."""
+    return detect_network_tags_for_parent(parent)
+
+
 def create_node(parent: Any, node_type: str, name: Optional[str] = None) -> Any:
     """Create a node inside parent. node_type e.g. 'partition', 'blast'. Returns new node or None."""
     if not is_available() or parent is None:
@@ -323,3 +371,171 @@ def set_parm(node: Any, parm_name: str, value: Any) -> bool:
     except Exception:
         pass
     return False
+
+
+# ----- Node Preset Library (save/load items to file) -----
+
+
+def get_selected_network_items() -> tuple[Any, List[Any]]:
+    """
+    Selected network items (nodes, sticky notes, boxes) that share the same parent.
+    Returns (parent_node, items) or (None, []) if none selected or mixed parents.
+    """
+    if not is_available():
+        return (None, [])
+    try:
+        items = list(hou.selectedItems())
+        if not items:
+            return (None, [])
+        parent = items[0].parent()
+        if parent is None:
+            return (None, [])
+        for item in items:
+            if item.parent() != parent:
+                return (None, [])
+        return (parent, items)
+    except Exception:
+        return (None, [])
+
+
+def get_current_network_parent() -> Any:
+    """
+    Network node to use as parent when inserting presets.
+
+    Prefer the active Network Editor pane's pwd (matches what user is looking at),
+    and fall back to hou.pwd().
+    """
+    if not is_available():
+        return None
+    try:
+        # Prefer network editor context (shelf tools often have ambiguous hou.pwd()).
+        try:
+            pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+            if pane is not None:
+                pwd = pane.pwd()
+                if pwd is not None:
+                    return pwd
+        except Exception:
+            pass
+
+        pwd = hou.pwd()
+        return pwd
+    except Exception:
+        return None
+
+
+def save_items_to_file(
+    parent: Any,
+    items: List[Any],
+    file_path: str,
+    save_hda_fallbacks: bool = False,
+) -> bool:
+    """Save child items to a file (e.g. .cpio). parent.saveItemsToFile(items, path)."""
+    if not is_available() or parent is None or not items:
+        return False
+    try:
+        parent.saveItemsToFile(items, file_path, save_hda_fallbacks=save_hda_fallbacks)
+        return True
+    except Exception:
+        return False
+
+
+def load_items_from_file(
+    parent: Any,
+    file_path: str,
+    ignore_load_warnings: bool = False,
+) -> bool:
+    """Load items from file into parent network. parent.loadItemsFromFile(path)."""
+    if not is_available() or parent is None:
+        return False
+    try:
+        # loadItemsFromFile must be called on a network/container node.
+        target = parent
+        try:
+            # If a non-network node is passed (e.g. SOP node), insert into its parent network.
+            if hasattr(target, "isNetwork") and not target.isNetwork():
+                target = target.parent()
+        except Exception:
+            pass
+
+        if target is None:
+            return False
+
+        target.loadItemsFromFile(file_path, ignore_load_warnings=ignore_load_warnings)
+        return True
+    except Exception:
+        return False
+
+
+def load_items_from_file_ex(
+    parent: Any,
+    file_path: str,
+    ignore_load_warnings: bool = False,
+) -> tuple[bool, str]:
+    """Same as load_items_from_file, but returns (ok, error_message)."""
+    if not is_available() or parent is None:
+        return (False, "Houdini is not available or target parent is None.")
+    try:
+        target = parent
+        try:
+            if hasattr(target, "isNetwork") and not target.isNetwork():
+                target = target.parent()
+        except Exception:
+            pass
+        if target is None:
+            return (False, "Cannot resolve a network container to paste into.")
+        # Extra safety: ensure target is a network/container.
+        try:
+            if hasattr(target, "isNetwork") and not target.isNetwork():
+                return (False, f"Target is not a network: {getattr(target, 'path', lambda: target)()}")
+        except Exception:
+            pass
+
+        # Clear selection so we can detect which items were loaded.
+        try:
+            hou.clearAllSelected()
+        except Exception:
+            pass
+
+        target.loadItemsFromFile(file_path, ignore_load_warnings=ignore_load_warnings)
+
+        # Try to offset newly loaded items to the center of the active network editor.
+        try:
+            pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+            new_items = list(hou.selectedItems())
+            if pane is not None and new_items:
+                # Compute average position of new items.
+                avg_x = sum(it.position().x() for it in new_items) / len(new_items)
+                avg_y = sum(it.position().y() for it in new_items) / len(new_items)
+                avg_pos = hou.Vector2(avg_x, avg_y)
+
+                # Visible bounds center as target.
+                vb = pane.visibleBounds()
+                center = hou.Vector2((vb.min().x() + vb.max().x()) * 0.5, (vb.min().y() + vb.max().y()) * 0.5)
+                delta = center - avg_pos
+
+                for it in new_items:
+                    try:
+                        pos = it.position()
+                        it.setPosition(hou.Vector2(pos.x() + delta.x(), pos.y() + delta.y()))
+                    except Exception:
+                        continue
+        except Exception:
+            # If centering fails, we still consider the load successful.
+            pass
+
+        return (True, "")
+    except Exception as e:
+        try:
+            tpath = target.path() if target is not None and hasattr(target, "path") else str(target)
+        except Exception:
+            tpath = "<unknown>"
+        try:
+            ttype = target.type().name() if target is not None and hasattr(target, "type") else "<unknown>"
+        except Exception:
+            ttype = "<unknown>"
+
+        msg = str(e).strip()
+        if not msg:
+            msg = repr(e)
+        return (False, f"{msg} (file={file_path}, target={tpath}, type={ttype})")

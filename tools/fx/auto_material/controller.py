@@ -142,6 +142,7 @@ def run() -> None:
             created, msg = sa.run_auto_assign(stage, selected)
             ui.hide_loading()
             if created > 0:
+                ui.show_done(msg, "Click to continue")
                 ui.set_message(msg, error=False)
                 sa.layout_nodes(stage)
             else:
@@ -159,14 +160,17 @@ def run() -> None:
                         ui.show_loading("Đang tạo Assign Material LOP...")
                         try:
                             n = sa.create_assign_for_all_materials(stage, selected, "/world/geo/*")
-                            ui.set_message(
-                                f"Đã tạo {n} Assign Material LOP (prim pattern: /world/geo/*). Gán tay sau." if n else msg,
-                                error=(n == 0),
-                            )
                             if n > 0:
+                                done_msg = f"Đã tạo {n} Assign Material LOP (prim pattern: /world/geo/*). Gán tay sau."
+                                ui.show_done(done_msg, "Click to continue")
+                                ui.set_message(done_msg, error=False)
                                 sa.layout_nodes(stage)
-                        finally:
+                            else:
+                                ui.hide_loading()
+                                ui.set_message(msg, error=True)
+                        except Exception:
                             ui.hide_loading()
+                            raise
                     else:
                         ui.set_message(msg, error=True)
                 else:
