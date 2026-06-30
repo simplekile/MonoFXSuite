@@ -15,7 +15,7 @@ Blender có stack animation mạnh (Action, NLA, Graph Editor, Pose Library) nh�
 | Trục | Quyết định |
 |------|------------|
 | **Không làm** | Auto-rig full body, facial rig ARKit, muscle simulation, AI text-to-motion |
-| **Ưu tiên** | Animator QoL, layer workflow, graph/dopesheet tools, pose/action library, retarget helper nhẹ |
+| **Ưu tiên** | Hỗ trợ quá trình animate: key/pose, graph polish, overlap, layers, rig navigation |
 | **Tích hợp** | Cùng kiến trúc MonoFX: `tools/animation/` (logic thuần) + `apps/blender/` (adapter `bpy`) |
 | **Đối tượng** | Animator indie / studio nhỏ dùng Blender 4.2+ (LTS), mở rộng Blender 5.x sau |
 
@@ -43,11 +43,129 @@ Blender có stack animation mạnh (Action, NLA, Graph Editor, Pose Library) nh�
 
 ---
 
-## 2. Khảo sát plugin top-tier
+## 2. Tính năng hỗ trợ quá trình animate — Dùng nhiều nhất
+
+Phạm vi: **chỉ tính năng dùng trong lúc đang animate** (blocking → splining → polish → layering). Loại trừ rigging, retarget, export, facial, physics.
+
+Xếp hạng theo **tần suất sử dụng thực tế** (dựa trên workflow animator chuyên nghiệp + add-on bán chạy nhất: AniMate, Animation Layers, Animaide, GraphKit).
+
+### 2.1 Theo giai đoạn pipeline animate
+
+| Giai đoạn | Animator đang làm gì | Tính năng dùng nhiều nhất |
+|-----------|----------------------|---------------------------|
+| **Setup shot** | Chọn rig, frame range, auto-key | Keying set (Loc/Rot/Scale + custom props), auto-key visual cue, frame scene to action |
+| **Blocking** | Đặt pose chính, timing | Pose library apply/blend, key all controls, constant interpolation, mirror pose L/R |
+| **Splining** | Chuyển blocking → motion mượt | Đổi interpolation batch (Constant → Bezier), breakdown/inbetween %, tween selected keys |
+| **Graph polish** | Sửa arc, ease, overlap | Select keys in range, toggle channel, Euler filter, handle type batch, curve modifiers (noise) |
+| **Overlap & secondary** | Tay/chân/đuôi chậm hơn body | **AnimOffset** (offset có mask), shift keyframes theo bone group, nudge/looper |
+| **Layering** | Thêm motion trên base (walk + head turn) | Add/mute/solo layer, influence slider, additive/override blend, speed/offset layer |
+| **Iteration** | Sửa một phần không phá cả shot | Animation layers non-destructive, copy/paste animation giữa bones, retime segment |
+| **Cleanup** | Dọn file trước handoff | Xóa static channels, delete flat keys, bake layer khi xong |
+
+### 2.2 Top 15 tính năng — Xếp theo tần suất dùng
+
+| # | Tính năng | Tần suất | Có trong Blender native? | Add-on tham chiếu | MonoFX ưu tiên |
+|---|-----------|----------|---------------------------|-------------------|----------------|
+| 1 | **Keying set / key all controls** | Hàng ngày, mỗi pose | Có (Available, Whole Character) — UX kém | AniMate auto-key cues | P1 — preset keying set per rig |
+| 2 | **Pose library apply & blend** | Hàng ngày khi blocking | Có (Asset Browser) — thiếu quick panel | GAOLIB, Action Library | P1 — quick pose panel + mirror |
+| 3 | **Graph: chọn & sửa key hàng loạt** | Hàng ngày khi polish | Có một phần — chậm | GraphKit, AniMate | P1 — select keys in range, toggle channels |
+| 4 | **Đổi interpolation / handle type batch** | Hàng ngày | Có (T, V) — từng lần một | Animaide KeyManager | P1 |
+| 5 | **AnimOffset / proportional edit trên timeline** | Rất thường xuyên | Không | Animaide, AniMate | P2 — core differentiator |
+| 6 | **Animation layers (mute/solo/influence)** | Rất thường xuyên | NLA có — UX khó | Animation Layers | P2 |
+| 7 | **Copy/paste animation giữa bones/objects** | Thường xuyên | Có — awkward | AnimCopy, Transformator | P1 |
+| 8 | **Mirror pose / mirror animation** | Thường xuyên khi blocking | Có (chậm, nhiều bước) | Nhiều add-on | P1 |
+| 9 | **Rig visibility / bone collection bookmark** | Thường xuyên mỗi shot | Bone collections có — không bookmark | Rig UI Pro, AniMate | P1 |
+| 10 | **Motion path / onion skin** | Thường khi polish arc | Motion path có; onion hạn chế | AniMate motion paths | P2 |
+| 11 | **Breakdown / inbetweener (% giữa 2 key)** | Thường khi splining | Không trực tiếp | Animation Layers, GraphKit tween | P2 |
+| 12 | **Retime / scale keys theo segment** | Thường khi director note | Có (S trong dopesheet) — thiếu UI | AniMate TimeWarper | P2 |
+| 13 | **Xóa static / flat channels** | Mỗi shot trước bàn giao | Không | Delete Static Channels | P1 — quick win |
+| 14 | **Euler filter / fix rotation flip** | Khi gặp gimbal | Có (Channel → Euler Filter) — ẩn | — | P1 — one-click operator |
+| 15 | **Noise / secondary trên layer riêng** | Shot có acting | Curve modifier có — setup lâu | Animation Layers + noise | P3 |
+
+**Chú thích ưu tiên:** P1 = MVP, P2 = ngay sau MVP, P3 = polish.
+
+### 2.3 Nhóm tính năng theo “pain point” animator
+
+#### A. Key & Pose (blocking) — Dùng nhiều nhất
+
+| Tính năng | Mô tả ngắn | Tần suất |
+|-----------|------------|----------|
+| Key all selected / whole character | Một click key toàn bộ control đang chọn | ⭐⭐⭐⭐⭐ |
+| Pose snap từ library | Apply pose đã lưu, blend % bằng drag | ⭐⭐⭐⭐⭐ |
+| Mirror pose L/R | Flip pose theo trục nhân vật | ⭐⭐⭐⭐ |
+| Jump to prev/next keyframe | Nhảy key trên timeline (J/K style) | ⭐⭐⭐⭐⭐ |
+| Auto-key indicator rõ ràng | Biết ngay auto-key đang bật/tắt | ⭐⭐⭐⭐ |
+
+#### B. Graph & Dopesheet (polish) — Thời gian chiếm nhiều nhất
+
+| Tính năng | Mô tả ngắn | Tần suất |
+|-----------|------------|----------|
+| Select all keys after/before playhead | Chọn key để retime/xóa nửa shot | ⭐⭐⭐⭐⭐ |
+| Batch interpolation & handle type | Bezier / linear / stepped hàng loạt | ⭐⭐⭐⭐⭐ |
+| Toggle F-curve channel visibility | Ẩn/hiện loc/rot/scale nhanh | ⭐⭐⭐⭐ |
+| Tween / push/pull keys | Đẩy key về pose trước/sau | ⭐⭐⭐⭐ |
+| Euler filter one-click | Sửa rotation jump | ⭐⭐⭐ |
+| Curve noise modifier preset | Secondary motion (breath, sway) | ⭐⭐⭐ |
+
+#### C. Timing & Overlap — Phân biệt amateur vs pro
+
+| Tính năng | Mô tả ngắn | Tần suất |
+|-----------|------------|----------|
+| **AnimOffset** với mask | Sửa pose tay/đầu, propagate có fade | ⭐⭐⭐⭐⭐ |
+| Shift keys theo bone set | Offset overlap thủ công nhanh | ⭐⭐⭐⭐ |
+| Retime segment (scale time) | Director bảo "chậm lại 20 frame" | ⭐⭐⭐⭐ |
+| Looper / cycle offset | Walk cycle, loopable motion | ⭐⭐⭐ |
+
+#### D. Layers — Dùng nhiều khi có base animation
+
+| Tính năng | Mô tả ngắn | Tần suất |
+|-----------|------------|----------|
+| Thêm layer additive trên walk/run | Head turn, gesture, noise | ⭐⭐⭐⭐⭐ |
+| Mute / solo / influence per layer | Mix layer trực quan | ⭐⭐⭐⭐⭐ |
+| Bake layer khi approve | Đóng layer thành action cuối | ⭐⭐⭐⭐ |
+| Speed & frame offset per layer | Walk nhanh + upper body chậm | ⭐⭐⭐ |
+
+#### E. Rig navigation — Không phải animate nhưng dùng liên tục
+
+| Tính năng | Mô tả ngắn | Tần suất |
+|-----------|------------|----------|
+| Bone collection show/hide bookmark | "Chỉ tay", "chỉ face controls" | ⭐⭐⭐⭐⭐ |
+| Select all FK / all IK | Chọn nhanh nhóm control | ⭐⭐⭐⭐ |
+| Reset control về default | Về bind pose / rest | ⭐⭐⭐⭐ |
+
+### 2.4 Tính năng KHÔNG thuộc quá trình animate (loại khỏi scope)
+
+| Loại | Ví dụ | Lý do loại |
+|------|-------|------------|
+| Rigging | Auto-Rig Pro, Rigify generate | Làm trước khi animate |
+| Retarget / mocap import | ARP Remap, Rokoko | Pre-animate hoặc cleanup ban đầu |
+| Export game engine | FBX batch, UE send | Post-animate |
+| Facial ARKit | FaceIt | Pipeline riêng |
+| Physics / muscle | X-Muscle | Sim, không keyframe |
+| Stylization | SMEAR | Post-process render |
+
+### 2.5 MVP MonoFX — Chỉ tính năng animate dùng nhiều nhất
+
+Rút gọn từ Top 15 → **8 tính năng ship đầu tiên**:
+
+| Ưu tiên | Tính năng | Lý do |
+|---------|-----------|-------|
+| 1 | Keying set preset + key all | Mỗi pose đều cần |
+| 2 | Pose quick panel (apply/blend/mirror) | Blocking nhanh gấp 2–3 lần |
+| 3 | Graph batch (select range, interpolation, toggle channel) | 60% thời gian polish |
+| 4 | Delete static channels + Euler filter | Cleanup mỗi shot |
+| 5 | Copy/paste anim giữa bones | Iteration hàng ngày |
+| 6 | Rig visibility bookmarks | Navigation liên tục |
+| 7 | AnimOffset + mask | Differentiator lớn nhất |
+| 8 | Layer helper (add/mute/influence) | Walk + additive motion |
+
+---
+
+## 3. Khảo sát plugin top-tier
 
 Phân loại theo **vai trò pipeline**, không chỉ theo tên sản phẩm.
 
-### 2.1 Animator QoL & Graph / Dopesheet
+### 3.1 Animator QoL & Graph / Dopesheet
 
 Các add-on phổ biến nhất trong nhóm này mang workflow Maya/AnimBot vào Blender.
 
@@ -64,7 +182,7 @@ Các add-on phổ biến nhất trong nhóm này mang workflow Maya/AnimBot vào
 
 ---
 
-### 2.2 Animation Layers & Non-destructive Editing
+### 3.2 Animation Layers & Non-destructive Editing
 
 | Plugin | Giá | Tính năng chính | Hữu dụng | Độ khó clone | Ghi chú |
 |--------|-----|-----------------|----------|--------------|---------|
@@ -76,7 +194,7 @@ Các add-on phổ biến nhất trong nhóm này mang workflow Maya/AnimBot vào
 
 ---
 
-### 2.3 Rigging & Character Setup
+### 3.3 Rigging & Character Setup
 
 | Plugin | Giá | Tính năng chính | Hữu dụng | Độ khó clone | Ghi chú |
 |--------|-----|-----------------|----------|--------------|---------|
@@ -90,7 +208,7 @@ Các add-on phổ biến nhất trong nhóm này mang workflow Maya/AnimBot vào
 
 ---
 
-### 2.4 Retargeting & Motion Capture
+### 3.4 Retargeting & Motion Capture
 
 | Plugin | Giá | Tính năng chính | Hữu dụng | Độ khó clone | Ghi chú |
 |--------|-----|-----------------|----------|--------------|---------|
@@ -104,7 +222,7 @@ Các add-on phổ biến nhất trong nhóm này mang workflow Maya/AnimBot vào
 
 ---
 
-### 2.5 Pose / Action Library & Pipeline
+### 3.5 Pose / Action Library & Pipeline
 
 | Plugin | Giá | Tính năng chính | Hữu dụng | Độ khó clone | Ghi chú |
 |--------|-----|-----------------|----------|--------------|---------|
@@ -116,7 +234,7 @@ Các add-on phổ biến nhất trong nhóm này mang workflow Maya/AnimBot vào
 
 ---
 
-### 2.6 Shape Keys & Facial-adjacent
+### 3.6 Shape Keys & Facial-adjacent
 
 | Plugin | Giá | Tính năng chính | Hữu dụng | Độ khó clone | Ghi chú |
 |--------|-----|-----------------|----------|--------------|---------|
@@ -125,7 +243,7 @@ Các add-on phổ biến nhất trong nhóm này mang workflow Maya/AnimBot vào
 
 ---
 
-### 2.7 Physics, Stylization & AI
+### 3.7 Physics, Stylization & AI
 
 | Plugin | Giá | Tính năng chính | Hữu dụng | Độ khó clone | Ghi chú |
 |--------|-----|-----------------|----------|--------------|---------|
@@ -137,7 +255,7 @@ Các add-on phổ biến nhất trong nhóm này mang workflow Maya/AnimBot vào
 
 ---
 
-## 3. Ma trận ưu tiên (Hữu dụng × Khả thi)
+## 4. Ma trận ưu tiên (Hữu dụng × Khả thi)
 
 ```
                     Độ khó clone thấp (1-2)    Độ khó vừa (3)           Độ khó cao (4-5)
@@ -151,9 +269,9 @@ Hữu dụng thấp (1-2) —                            SMEAR (nếu stylized) 
 
 ---
 
-## 4. Đề xuất phạm vi MonoFX Blender Animation
+## 5. Đề xuất phạm vi MonoFX Blender Animation
 
-### 4.1 Tên & module đề xuất
+### 5.1 Tên & module đề xuất
 
 ```
 tools/animation/
@@ -168,7 +286,7 @@ apps/blender/
 └── bootstrap.py
 ```
 
-### 4.2 Roadmap theo phase
+### 5.2 Roadmap theo phase
 
 #### Phase 0 — Foundation
 
@@ -217,9 +335,9 @@ apps/blender/
 
 ---
 
-## 5. Kiến trúc kỹ thuật (align MonoFX rules)
+## 6. Kiến trúc kỹ thuật (align MonoFX rules)
 
-### 5.1 Dependency
+### 6.1 Dependency
 
 ```
 tools/animation/*/logic.py   → pure Python (keyframes math, index JSON)
@@ -230,7 +348,7 @@ apps/blender/adapter.py      → bpy, bmesh, fcurve RNA only
 - `core` **không** import `bpy`.
 - Logic tính offset/mask/bake viết testable không cần Blender headless nếu có thể (mock key data).
 
-### 5.2 Blender API anchors
+### 6.2 Blender API anchors
 
 | Tính năng | API chính |
 |-----------|-----------|
@@ -240,7 +358,7 @@ apps/blender/adapter.py      → bpy, bmesh, fcurve RNA only
 | Pose library | `bpy.ops.pose`, asset marks, `AssetBrowser` |
 | Rig UI | `armature.collections`, bone visibility |
 
-### 5.3 Rủi ro kỹ thuật
+### 6.3 Rủi ro kỹ thuật
 
 | Rủi ro | Mức | Mitigation |
 |--------|-----|------------|
@@ -251,7 +369,7 @@ apps/blender/adapter.py      → bpy, bmesh, fcurve RNA only
 
 ---
 
-## 6. Bảng tổng hợp nhanh — Top plugin animation Blender
+## 7. Bảng tổng hợp nhanh — Top plugin animation Blender
 
 | # | Plugin | Nhóm | Hữu dụng | Độ khó clone | MonoFX nên |
 |---|--------|------|----------|--------------|------------|
@@ -274,7 +392,7 @@ apps/blender/adapter.py      → bpy, bmesh, fcurve RNA only
 
 ---
 
-## 7. Tiêu chí Go / No-Go cho từng tính năng
+## 8. Tiêu chí Go / No-Go cho từng tính năng
 
 Trước khi implement, mỗi feature cần pass:
 
@@ -285,9 +403,9 @@ Trước khi implement, mỗi feature cần pass:
 
 ---
 
-## 8. Bước tiếp theo
+## 9. Bước tiếp theo
 
-1. Chốt **Phase 1 scope** (5 tính năng trong mục 4.2).
+1. Chốt **MVP 8 tính năng** (mục 2.5).
 2. Tạo `apps/blender/` scaffold + add-on `bl_info` và registration.
 3. Spike **AnimOffset** trên armature đơn giản (10 bones) — validate độ khó thực tế.
 4. Viết `docs/architecture/blender_animation.md` và `docs/usage/` per tool khi bắt đầu code.
@@ -295,7 +413,7 @@ Trước khi implement, mỗi feature cần pass:
 
 ---
 
-## 9. Nguồn tham khảo
+## 10. Nguồn tham khảo
 
 - [AniMate Pro](https://www.animate-pro.org/)
 - [Animation Layers — Superhive](https://superhivemarket.com/products/animation-layers)
