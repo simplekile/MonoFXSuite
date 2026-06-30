@@ -12,12 +12,14 @@ Blender có stack animation mạnh (Action, NLA, Graph Editor, Pose Library) nh�
 
 ### 1.2 Định vị add-on MonoFX Animation
 
+> **Cập nhật (workflow thực tế):** User đã có **AniMate Core + Animation Layers + ARP**. Pain point chính là **chuyển N-tab quá nhiều** → pivot sang **[Animation Hub](./blender_animation_hub.md)** (floating/pie launcher, user tự gắn operators).
+
 | Trục | Quyết định |
 |------|------------|
-| **Không làm** | Auto-rig full body, facial rig ARKit, muscle simulation, AI text-to-motion |
-| **Ưu tiên** | Hỗ trợ quá trình animate: key/pose, graph polish, overlap, layers, rig navigation |
-| **Tích hợp** | Cùng kiến trúc MonoFX: `tools/animation/` (logic thuần) + `apps/blender/` (adapter `bpy`) |
-| **Đối tượng** | Animator indie / studio nhỏ dùng Blender 4.2+ (LTS), mở rộng Blender 5.x sau |
+| **Không làm** | Clone AnimOffset/layers/graph; auto-rig; facial; muscle sim |
+| **Ưu tiên (mới)** | **Hub UI:** pie menu + popup, layout tùy chỉnh, gọi `bpy.ops` addon có sẵn |
+| **Tích hợp** | `tools/animation/hub/` + `apps/blender/` |
+| **Đối tượng** | Animator ARP + AniMate + Animation Layers, Blender 4.2+ |
 
 ### 1.3 Thang đánh giá
 
