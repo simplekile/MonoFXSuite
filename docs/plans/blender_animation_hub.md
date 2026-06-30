@@ -132,10 +132,106 @@ Mỗi **slot** lưu theo `type`:
 
 **Workflow gán slot:**
 
-1. Mở Hub Preferences hoặc chế độ **Edit Layout**
-2. Click slot trống → **Pick Operator** (search giống F3)
-3. Hoặc chọn từ **Preset pack** (AniMate / Anim Layers / ARP / Native)
-4. Kéo thả reorder (pie position 1–8, hoặc grid order)
+1. **RMB → Add to Pie** (khuyến nghị chính) — xem mục 2.5
+2. Mở Hub Preferences → **Edit Layout** → Pick Operator / Pick Panel
+3. Preset pack (AniMate / Anim Layers / Native)
+4. Kéo thả reorder slot pie
+
+### 2.5 RMB → Add to Pie (user tự gắn)
+
+**Ý tưởng:** User RMB lên button hoặc panel đang dùng → chọn **MonoFX → Add to Pie** → chọn slot (1–8). Không cần biết `bl_idname`.
+
+#### Cơ chế Blender (native, ổn định)
+
+Hook vào context menu chuột phải của UI:
+
+```python
+def draw_add_to_pie(self, context):
+    layout = self.layout
+    layout.separator()
+    layout.menu("MONOFX_MT_add_to_pie", text="Add to MonoFX Pie", icon='PIVOT_ACTIVE')
+
+def register():
+    bpy.types.UI_MT_button_context_menu.append(draw_add_to_pie)
+```
+
+Khi user RMB, Blender set sẵn context:
+
+| RMB lên | Context có sẵn | Hub lưu |
+|---------|------------------|---------|
+| **Button operator** | `context.button_operator` | `type: operator` + idname + props |
+| **Property field** | `context.property` | `type: property` (tùy chọn phase 2) |
+| **Panel header** | ⚠️ không có API trực tiếp | Dùng **Pick Panel mode** (mục dưới) |
+
+#### Flow button (90% use case)
+
+```
+RMB "Smart Bake" trong Animation Layers
+    → Add to MonoFX Pie
+        → Slot 1 | Slot 2 | … | Slot 8 | Chọn layout…
+    → Lưu operator idname + label từ button
+```
+
+```python
+def capture_from_context(context):
+  op = context.button_operator
+  if op:
+      return {
+          "type": "operator",
+          "operator": op.bl_idname,      # e.g. anim_layers.smart_bake
+          "label": op.bl_label,
+          "operator_props": dict(op.properties)  # props đang set trên button
+      }
+  return None
+```
+
+Tương tự **Assign Shortcut** của Blender — Hub chỉ thay shortcut bằng pie slot.
+
+#### Flow panel (Animation Layers full UI)
+
+RMB lên **tiêu đề panel** Blender **không** expose `panel_idname` qua context menu chung. Hai cách:
+
+| Cách | UX | Độ khó |
+|------|-----|--------|
+| **A. Pick Panel mode** | Hub → "Capture Panel" → user click vào header panel Animation Layers | Trung bình (modal) |
+| **B. RMB trong panel** | Thêm entry "Add **this panel** to Pie" khi RMB trên vùng panel — detect panel cha | Khó, phụ thuộc Blender version |
+| **C. RMB nút bất kỳ trong panel** | User add từng **operator** hay dùng; panel full vẫn dùng Pick Panel một lần | Dễ, đủ thực tế |
+
+**Khuyến nghị:** Button → RMB Add to Pie (chính). Panel full → **một lần** Pick Panel hoặc preset "Animation Layers".
+
+#### Submenu Add to Pie
+
+```
+MonoFX Pie ▸
+    Slot 1 (AnimOffset)
+    Slot 2 (empty)
+    …
+    Slot 8
+    ─────────
+    Edit Pie Layout…
+```
+
+Hoặc sau khi chọn slot: toast *"Smart Bake → Slot 3"*.
+
+#### So với Quick Favorites (Q)
+
+| | Quick Favorites | MonoFX Hub |
+|--|-----------------|------------|
+| Gọi | Q menu | Pie hotkey |
+| Gắn | RMB → Add to Quick Favorites | RMB → Add to Pie |
+| Layout | List phẳng | Pie 8 slot + nhiều layout |
+| Panel full | Không | `wm.call_panel` |
+
+Hub = **Quick Favorites + Pie + layout + panel popup** — pattern quen với animator Maya/AnimBot.
+
+#### Edge cases
+
+| Tình huống | Xử lý |
+|------------|--------|
+| Operator cần Graph Editor | Lưu tag `context_hint: GRAPH`; dispatch dùng `temp_override` |
+| Addon chưa enable | `poll()` fail → slot grey + tooltip |
+| Trùng slot | Hỏi overwrite hoặc shift slot |
+| Menu item / không phải button | Phase 2: capture `layout.menu()` idname nếu có |
 
 **Nhiều layout:**
 
