@@ -41,6 +41,16 @@ USD selection:
 - `mx_selected_lookdev_usd_path` (string): resolved lookdev USD abs path (written by callback; geo-only)
 - `mx_geo_cam` (int): `0` = selected USD basename starts with `geo_`, `1` = `cam_`, `-1` = other/empty
 
+Groom (shot FX publish, USD sequence):
+- `mx_groom_publish_parent` (string): `<project_root>/02_shots/<shot>/02_fx/groom/publish`
+- `mx_groom_version` (menu/string): `v001` / `V001`-style folder under groom publish
+- `mx_groom_asset` (menu/string): subfolder under version (e.g. `Zephys`); token `` (empty) = USD directly under version
+- `mx_selected_groom_usd_path` (string): path with Houdini frame var, e.g. ``.../sh003a_groom.$F4.usd``
+- `mx_enable_groom` (toggle): when off, groom outputs cleared
+
+Cloth (shot FX publish, USD sequence — same layout as groom under ``02_fx/cloth``):
+- `mx_cloth_publish_parent`, `mx_cloth_version`, `mx_cloth_asset`, `mx_selected_cloth_usd_path`, `mx_enable_cloth`
+
 Optional status:
 - `mx_status` (string): status message written by callbacks (if present).
 """
@@ -76,12 +86,23 @@ _MX_ANIM_USD = "mx_anim_usd"
 _MX_SELECTED_ANIM_USD_PATH = "mx_selected_anim_usd_path"
 _MX_SELECTED_LOOKDEV_USD_PATH = "mx_selected_lookdev_usd_path"
 _MX_ENABLE_LOOKDEV = "mx_enable_lookdev"
+_MX_GROOM_PUBLISH_PARENT = "mx_groom_publish_parent"
+_MX_GROOM_VERSION = "mx_groom_version"
+_MX_GROOM_ASSET = "mx_groom_asset"
+_MX_SELECTED_GROOM_USD_PATH = "mx_selected_groom_usd_path"
+_MX_ENABLE_GROOM = "mx_enable_groom"
+_MX_CLOTH_PUBLISH_PARENT = "mx_cloth_publish_parent"
+_MX_CLOTH_VERSION = "mx_cloth_version"
+_MX_CLOTH_ASSET = "mx_cloth_asset"
+_MX_SELECTED_CLOTH_USD_PATH = "mx_selected_cloth_usd_path"
+_MX_ENABLE_CLOTH = "mx_enable_cloth"
 _MX_GEO_CAM = "mx_geo_cam"
 _META_NAME = "publish_meta.json"
 
 
-_SHOT_RE = re.compile(r"^(sh\d{3,})$", re.IGNORECASE)
-_SHOT_ANYWHERE_RE = re.compile(r"(sh\d{3,})", re.IGNORECASE)
+# e.g. sh001, sh002, sh003a (split / variant suffix after 3+ digit body)
+_SHOT_RE = re.compile(r"^(sh\d{3,}[a-z0-9]*)$", re.IGNORECASE)
+_SHOT_ANYWHERE_RE = re.compile(r"(sh\d{3,}[a-z0-9]*)", re.IGNORECASE)
 _VERSION_RE = re.compile(r"^v(\d+)$", re.IGNORECASE)
 _USD_SUFFIXES = (".usd", ".usda", ".usdc")
 
@@ -118,8 +139,8 @@ def find_project_root(path: Path) -> Optional[Path]:
 
 def detect_shot_from_path(path: Path) -> Optional[str]:
     """
-    Detect a shot token like 'sh002' from any segment of the given path.
-    Returns normalized lowercase (e.g. 'sh002') or None.
+    Detect a shot token like 'sh002' or 'sh003a' from any segment of the given path.
+    Returns normalized lowercase or None.
     """
     parts = [path.name] + [p.name for p in path.parents]
     for part in parts:
@@ -139,6 +160,207 @@ def get_shot_root(project_root: Path, shot: str) -> Path:
 
 def get_anim_publish_dir(project_root: Path, shot: str) -> Path:
     return get_shot_root(project_root, shot) / "01_anim" / "publish"
+
+
+def get_fx_shot_task_publish_dir(project_root: Path, shot: str, fx_task: str) -> Path:
+    """``<project_root>/02_shots/<shot>/02_fx/<fx_task>/publish`` (e.g. ``groom``, ``cloth``)."""
+    return get_shot_root(project_root, shot) / "02_fx" / fx_task / "publish"
+
+
+def _fx_shot_seq_re(fx_task: str):
+    return re.compile(rf"^(.+)_{re.escape(fx_task)}\.(\d+)\.(usd|usda|usdc)$", re.IGNORECASE)
+
+
+def pick_fx_shot_sequence_entry_frame(scan_dir: Path, shot: str, fx_task: str) -> str:
+    """
+    Lowest frame file matching ``{shot}_{fx_task}.####.usd`` (non-recursive).
+    ``shot`` compared case-insensitively to the filename prefix.
+    """
+    if not scan_dir.is_dir():
+        return ""
+    shot_cf = shot.strip().lower()
+    pat = _fx_shot_seq_re(fx_task)
+    best: tuple[int, Path] | None = None
+    try:
+        for p in scan_dir.iterdir():
+            if not p.is_file():
+                continue
+            m = pat.match(p.name)
+            if not m or m.group(1).lower() != shot_cf:
+                continue
+            try:
+                fr = int(m.group(2))
+            except ValueError:
+                continue
+            if best is None or fr < best[0]:
+                best = (fr, p)
+    except OSError:
+        return ""
+    return str(best[1]) if best else ""
+
+
+def fx_shot_sequence_usd_path_with_f4(abs_path: str, fx_task: str) -> str:
+    """
+    From ``.../sh003a_{task}.0000.usd`` -> ``.../sh003a_{task}.$F4.usd``.
+    If the basename does not match the pattern, return ``abs_path`` unchanged.
+    """
+    if not abs_path:
+        return ""
+    p = Path(abs_path)
+    m = _fx_shot_seq_re(fx_task).match(p.name)
+    if not m:
+        return str(p)
+    shot_part, _digits, ext = m.group(1), m.group(2), m.group(3)
+    new_name = f"{shot_part}_{fx_task}.$F4.{ext}"
+    return str(p.parent / new_name)
+
+
+def resolve_fx_shot_task_publish_and_usd(
+    project_root: str,
+    shot: str,
+    fx_task: str,
+    *,
+    geo_usd_path: str = "",
+    fx_version: str | None = None,
+    fx_asset_token: str | None = None,
+) -> tuple[str, str, str, str]:
+    """
+    Shared resolver for ``02_fx/<task>/publish`` USD sequences.
+
+    Returns ``(publish_parent, version_name, asset_subfolder_token, usd_path_with_$F4)``.
+    """
+    shot_l = (shot or "").strip().lower()
+    if not (project_root or "").strip() or not shot_l:
+        return ("", "", "", "")
+    pub = get_fx_shot_task_publish_dir(Path(project_root.strip()), shot_l, fx_task)
+    pstr = str(pub)
+    if not pub.is_dir():
+        return (pstr, "", "", "")
+    vdirs = list_version_dirs(pub)
+    if not vdirs:
+        return (pstr, "", "", "")
+    ver_name = (fx_version or "").strip()
+    if not ver_name or not (pub / ver_name).is_dir():
+        ver_name = vdirs[-1].name
+    ver_dir = pub / ver_name
+
+    inferred_asset = ""
+    if geo_usd_path:
+        _t, an = _parse_asset_from_geo_filename(geo_usd_path)
+        if an:
+            inferred_asset = an
+
+    asset_tok = ""
+    target = ver_dir
+
+    if fx_asset_token is not None:
+        gat = fx_asset_token.strip()
+        if gat:
+            target = ver_dir / gat
+            asset_tok = gat
+        else:
+            target = ver_dir
+            asset_tok = ""
+    else:
+        if inferred_asset:
+            cand = ver_dir / inferred_asset
+            if cand.is_dir() and pick_fx_shot_sequence_entry_frame(cand, shot_l, fx_task):
+                target = cand
+                asset_tok = inferred_asset
+        if not pick_fx_shot_sequence_entry_frame(target, shot_l, fx_task):
+            if pick_fx_shot_sequence_entry_frame(ver_dir, shot_l, fx_task):
+                target = ver_dir
+                asset_tok = ""
+            else:
+                try:
+                    for d in sorted(ver_dir.iterdir(), key=lambda x: x.name.lower()):
+                        if d.is_dir() and pick_fx_shot_sequence_entry_frame(d, shot_l, fx_task):
+                            target = d
+                            asset_tok = d.name
+                            break
+                except OSError:
+                    pass
+
+    usd_raw = pick_fx_shot_sequence_entry_frame(target, shot_l, fx_task) if target.is_dir() else ""
+    usd = fx_shot_sequence_usd_path_with_f4(usd_raw, fx_task) if usd_raw else ""
+    return (pstr, ver_name, asset_tok, usd)
+
+
+def get_groom_publish_dir(project_root: Path, shot: str) -> Path:
+    """`<project_root>/02_shots/<shot>/02_fx/groom/publish`"""
+    return get_fx_shot_task_publish_dir(project_root, shot, "groom")
+
+
+def pick_groom_sequence_entry_frame(groom_dir: Path, shot: str) -> str:
+    """Lowest frame ``{shot}_groom.####.*`` under ``groom_dir``."""
+    return pick_fx_shot_sequence_entry_frame(groom_dir, shot, "groom")
+
+
+def groom_usd_path_with_f4(abs_path: str) -> str:
+    """Wraps :func:`fx_shot_sequence_usd_path_with_f4` for ``task="groom"``."""
+    return fx_shot_sequence_usd_path_with_f4(abs_path, "groom")
+
+
+def resolve_groom_publish_and_usd(
+    project_root: str,
+    shot: str,
+    *,
+    geo_usd_path: str = "",
+    groom_version: str | None = None,
+    groom_asset_token: str | None = None,
+) -> tuple[str, str, str, str]:
+    """
+    Resolve groom publish layout.
+
+    Returns ``(groom_publish_parent, version_name, groom_asset_token, groom_usd_path)``.
+    ``groom_usd_path`` uses ``$F4`` (see :func:`groom_usd_path_with_f4`).
+    """
+    return resolve_fx_shot_task_publish_and_usd(
+        project_root,
+        shot,
+        "groom",
+        geo_usd_path=geo_usd_path,
+        fx_version=groom_version,
+        fx_asset_token=groom_asset_token,
+    )
+
+
+def get_cloth_publish_dir(project_root: Path, shot: str) -> Path:
+    """`<project_root>/02_shots/<shot>/02_fx/cloth/publish`"""
+    return get_fx_shot_task_publish_dir(project_root, shot, "cloth")
+
+
+def pick_cloth_sequence_entry_frame(cloth_dir: Path, shot: str) -> str:
+    """Lowest frame ``{shot}_cloth.####.*`` under ``cloth_dir``."""
+    return pick_fx_shot_sequence_entry_frame(cloth_dir, shot, "cloth")
+
+
+def cloth_usd_path_with_f4(abs_path: str) -> str:
+    """Wraps :func:`fx_shot_sequence_usd_path_with_f4` for ``task="cloth"``."""
+    return fx_shot_sequence_usd_path_with_f4(abs_path, "cloth")
+
+
+def resolve_cloth_publish_and_usd(
+    project_root: str,
+    shot: str,
+    *,
+    geo_usd_path: str = "",
+    cloth_version: str | None = None,
+    cloth_asset_token: str | None = None,
+) -> tuple[str, str, str, str]:
+    """
+    Resolve cloth publish (``{shot}_cloth.####.usd``). Same layout rules as groom.
+
+    Returns ``(cloth_publish_parent, version_name, cloth_asset_token, cloth_usd_path)`` with ``$F4``.
+    """
+    return resolve_fx_shot_task_publish_and_usd(
+        project_root,
+        shot,
+        "cloth",
+        geo_usd_path=geo_usd_path,
+        fx_version=cloth_version,
+        fx_asset_token=cloth_asset_token,
+    )
 
 
 def _iter_version_dirs(publish_dir: Path) -> Iterable[Path]:
@@ -335,6 +557,106 @@ def _set_mx_geo_cam_parm(node: Any, usd_path: str) -> None:
         pass
 
 
+def _clear_mx_groom_parms(node: Any, *, clear_publish_parent: bool = False) -> None:
+    _set_first_existing_parm(node, (_MX_SELECTED_GROOM_USD_PATH,), "")
+    _set_first_existing_parm(node, (_MX_GROOM_VERSION,), "")
+    _set_first_existing_parm(node, (_MX_GROOM_ASSET,), "")
+    if clear_publish_parent:
+        _set_first_existing_parm(node, (_MX_GROOM_PUBLISH_PARENT,), "")
+
+
+def _clear_mx_cloth_parms(node: Any, *, clear_publish_parent: bool = False) -> None:
+    _set_first_existing_parm(node, (_MX_SELECTED_CLOTH_USD_PATH,), "")
+    _set_first_existing_parm(node, (_MX_CLOTH_VERSION,), "")
+    _set_first_existing_parm(node, (_MX_CLOTH_ASSET,), "")
+    if clear_publish_parent:
+        _set_first_existing_parm(node, (_MX_CLOTH_PUBLISH_PARENT,), "")
+
+
+def _mx_groom_version_folder(node: Any) -> str:
+    """Resolve ``<mx_groom_publish_parent>/<mx_groom_version>``."""
+    try:
+        p_parent = node.parm(_MX_GROOM_PUBLISH_PARENT)
+        p_ver = node.parm(_MX_GROOM_VERSION)
+    except Exception:
+        return ""
+    if p_parent is None or p_ver is None:
+        return ""
+    try:
+        parent = p_parent.evalAsString().strip()
+        ver = p_ver.evalAsString().strip()
+    except Exception:
+        return ""
+    if not parent or not ver:
+        return ""
+    folder = Path(parent) / ver
+    return str(folder) if folder.is_dir() else ""
+
+
+def _apply_mx_groom_resolve(
+    node: Any,
+    *,
+    project_root: str,
+    shot: str,
+    geo_usd_path: str,
+    groom_version: str | None,
+    groom_asset_token: str | None,
+) -> None:
+    gpg, gv, ga, gp = resolve_groom_publish_and_usd(
+        project_root,
+        shot,
+        geo_usd_path=geo_usd_path,
+        groom_version=groom_version,
+        groom_asset_token=groom_asset_token,
+    )
+    _set_first_existing_parm(node, (_MX_GROOM_PUBLISH_PARENT,), gpg)
+    _set_first_existing_parm(node, (_MX_GROOM_VERSION,), gv)
+    _set_first_existing_parm(node, (_MX_GROOM_ASSET,), ga)
+    _set_first_existing_parm(node, (_MX_SELECTED_GROOM_USD_PATH,), gp)
+
+
+def _mx_cloth_version_folder(node: Any) -> str:
+    """Resolve ``<mx_cloth_publish_parent>/<mx_cloth_version>``."""
+    try:
+        p_parent = node.parm(_MX_CLOTH_PUBLISH_PARENT)
+        p_ver = node.parm(_MX_CLOTH_VERSION)
+    except Exception:
+        return ""
+    if p_parent is None or p_ver is None:
+        return ""
+    try:
+        parent = p_parent.evalAsString().strip()
+        ver = p_ver.evalAsString().strip()
+    except Exception:
+        return ""
+    if not parent or not ver:
+        return ""
+    folder = Path(parent) / ver
+    return str(folder) if folder.is_dir() else ""
+
+
+def _apply_mx_cloth_resolve(
+    node: Any,
+    *,
+    project_root: str,
+    shot: str,
+    geo_usd_path: str,
+    cloth_version: str | None,
+    cloth_asset_token: str | None,
+) -> None:
+    cpb, cv, ca, cp = resolve_cloth_publish_and_usd(
+        project_root,
+        shot,
+        geo_usd_path=geo_usd_path,
+        cloth_version=cloth_version,
+        cloth_asset_token=cloth_asset_token,
+    )
+    _set_first_existing_parm(node, (_MX_CLOTH_PUBLISH_PARENT,), cpb)
+    _set_first_existing_parm(node, (_MX_CLOTH_VERSION,), cv)
+    _set_first_existing_parm(node, (_MX_CLOTH_ASSET,), ca)
+    _set_first_existing_parm(node, (_MX_SELECTED_CLOTH_USD_PATH,), cp)
+
+
 def _resolve_version_folder_from_node(node: Any) -> str:
     """
     Resolve the active version folder for scanning USD:
@@ -524,6 +846,7 @@ def cb_autofill_mx_from_hip(kwargs: dict) -> None:
     - mx_shot
     - mx_anim_publish_parent + mx_anim_version
     - mx_lookdev_publish_parent + mx_lookdev_version
+    - mx_groom_publish_parent / mx_cloth_publish_parent (from shot; USD filled when anim resolves)
     """
     node = kwargs.get("node")
     if hou is not None and (node is None or not isinstance(node, hou.Node)):
@@ -584,6 +907,16 @@ def cb_autofill_mx_from_hip(kwargs: dict) -> None:
 
     anim_parent = str(get_anim_publish_dir(Path(project_root), shot))
     _set_first_existing_parm(node, (_MX_ANIM_PUBLISH_PARENT,), anim_parent)
+    _set_first_existing_parm(
+        node,
+        (_MX_GROOM_PUBLISH_PARENT,),
+        str(get_groom_publish_dir(Path(project_root), shot)),
+    )
+    _set_first_existing_parm(
+        node,
+        (_MX_CLOTH_PUBLISH_PARENT,),
+        str(get_cloth_publish_dir(Path(project_root), shot)),
+    )
 
     # Latest anim version (if any)
     anim_vdirs = list_version_dirs(Path(anim_parent))
@@ -595,6 +928,8 @@ def cb_autofill_mx_from_hip(kwargs: dict) -> None:
     _set_first_existing_parm(node, (_MX_SELECTED_LOOKDEV_USD_PATH,), "")
     _set_first_existing_parm(node, (_MX_LOOKDEV_PUBLISH_PARENT,), "")
     _set_first_existing_parm(node, (_MX_LOOKDEV_VERSION,), "")
+    _clear_mx_groom_parms(node, clear_publish_parent=True)
+    _clear_mx_cloth_parms(node, clear_publish_parent=True)
     _set_first_existing_parm(node, ("mx_meta_summary", "mx_timeline_meta_summary", "mx_meta_text"), "")
     _set_first_existing_parm(node, ("mx_meta_fps", "mx_timeline_meta_fps"), "")
     _set_first_existing_parm(node, ("mx_meta_playback_range", "mx_timeline_meta_playback_range"), "")
@@ -740,6 +1075,160 @@ def menu_mx_lookdev_version_list(node: Any) -> list[str]:
     return menu
 
 
+def menu_mx_groom_version_list(node: Any) -> list[str]:
+    """Menu for ``mx_groom_version`` from ``mx_groom_publish_parent`` (or project + ``mx_shot``)."""
+    if hou is not None and (node is None or not isinstance(node, hou.Node)):
+        return ["", "Not in Houdini node"]
+    if node is None:
+        return ["", "Invalid node"]
+
+    parent = ""
+    try:
+        p = node.parm(_MX_GROOM_PUBLISH_PARENT)
+        if p is not None:
+            parent = p.evalAsString().strip()
+    except Exception:
+        parent = ""
+
+    if not parent or not Path(parent).is_dir():
+        try:
+            pr = node.parm(_MX_PROJECT_ROOT)
+            sh = node.parm(_MX_SHOT)
+            project_root = pr.evalAsString().strip() if pr is not None else ""
+            shot = sh.evalAsString().strip().lower() if sh is not None else ""
+        except Exception:
+            project_root, shot = "", ""
+        if project_root and shot:
+            parent = str(get_groom_publish_dir(Path(project_root), shot))
+            _set_first_existing_parm(node, (_MX_GROOM_PUBLISH_PARENT,), parent)
+
+    if not parent or not Path(parent).is_dir():
+        return ["", "Invalid mx_groom_publish_parent"]
+
+    vdirs = list_version_dirs(Path(parent))
+    if not vdirs:
+        return ["", "No v### folders"]
+
+    menu: list[str] = []
+    for vd in vdirs:
+        menu.extend([vd.name, vd.name])
+    return menu
+
+
+def menu_mx_groom_asset_list(node: Any) -> list[str]:
+    """Menu for ``mx_groom_asset``: subfolder under groom version, or empty token = files in version root."""
+    if hou is not None and (node is None or not isinstance(node, hou.Node)):
+        return ["", "Not in Houdini node"]
+    if node is None:
+        return ["", "Invalid node"]
+
+    shot = ""
+    try:
+        p_sh = node.parm(_MX_SHOT)
+        shot = p_sh.evalAsString().strip().lower() if p_sh is not None else ""
+    except Exception:
+        shot = ""
+
+    ver_folder = _mx_groom_version_folder(node)
+    if not ver_folder:
+        return ["", "Invalid groom version folder"]
+    if not shot:
+        return ["", "Missing mx_shot"]
+
+    vpath = Path(ver_folder)
+    menu: list[str] = []
+    if pick_groom_sequence_entry_frame(vpath, shot):
+        menu.extend(["", "(version root)"])
+    try:
+        for d in sorted(vpath.iterdir(), key=lambda x: x.name.lower()):
+            if not d.is_dir():
+                continue
+            if pick_groom_sequence_entry_frame(d, shot):
+                menu.extend([d.name, d.name])
+    except OSError:
+        pass
+    if not menu:
+        return ["", "No groom sequences"]
+    return menu
+
+
+def menu_mx_cloth_version_list(node: Any) -> list[str]:
+    """Menu for ``mx_cloth_version`` from ``mx_cloth_publish_parent`` (or project + ``mx_shot``)."""
+    if hou is not None and (node is None or not isinstance(node, hou.Node)):
+        return ["", "Not in Houdini node"]
+    if node is None:
+        return ["", "Invalid node"]
+
+    parent = ""
+    try:
+        p = node.parm(_MX_CLOTH_PUBLISH_PARENT)
+        if p is not None:
+            parent = p.evalAsString().strip()
+    except Exception:
+        parent = ""
+
+    if not parent or not Path(parent).is_dir():
+        try:
+            pr = node.parm(_MX_PROJECT_ROOT)
+            sh = node.parm(_MX_SHOT)
+            project_root = pr.evalAsString().strip() if pr is not None else ""
+            shot = sh.evalAsString().strip().lower() if sh is not None else ""
+        except Exception:
+            project_root, shot = "", ""
+        if project_root and shot:
+            parent = str(get_cloth_publish_dir(Path(project_root), shot))
+            _set_first_existing_parm(node, (_MX_CLOTH_PUBLISH_PARENT,), parent)
+
+    if not parent or not Path(parent).is_dir():
+        return ["", "Invalid mx_cloth_publish_parent"]
+
+    vdirs = list_version_dirs(Path(parent))
+    if not vdirs:
+        return ["", "No v### folders"]
+
+    menu: list[str] = []
+    for vd in vdirs:
+        menu.extend([vd.name, vd.name])
+    return menu
+
+
+def menu_mx_cloth_asset_list(node: Any) -> list[str]:
+    """Menu for ``mx_cloth_asset``: subfolder under cloth version; empty token = USD in version root."""
+    if hou is not None and (node is None or not isinstance(node, hou.Node)):
+        return ["", "Not in Houdini node"]
+    if node is None:
+        return ["", "Invalid node"]
+
+    shot = ""
+    try:
+        p_sh = node.parm(_MX_SHOT)
+        shot = p_sh.evalAsString().strip().lower() if p_sh is not None else ""
+    except Exception:
+        shot = ""
+
+    ver_folder = _mx_cloth_version_folder(node)
+    if not ver_folder:
+        return ["", "Invalid cloth version folder"]
+    if not shot:
+        return ["", "Missing mx_shot"]
+
+    vpath = Path(ver_folder)
+    menu: list[str] = []
+    if pick_cloth_sequence_entry_frame(vpath, shot):
+        menu.extend(["", "(version root)"])
+    try:
+        for d in sorted(vpath.iterdir(), key=lambda x: x.name.lower()):
+            if not d.is_dir():
+                continue
+            if pick_cloth_sequence_entry_frame(d, shot):
+                menu.extend([d.name, d.name])
+    except OSError:
+        pass
+    if not menu:
+        return ["", "No cloth sequences"]
+    return menu
+
+
 def _mx_anim_version_folder(node: Any) -> str:
     """Resolve `<mx_anim_publish_parent>/<mx_anim_version>`."""
     try:
@@ -808,6 +1297,8 @@ def cb_on_mx_anim_usd_change(kwargs: dict) -> None:
       - mx_lookdev_publish_parent
       - mx_lookdev_version (latest)
       - mx_selected_lookdev_usd_path
+    - if `mx_enable_groom` on: resolves groom sequence (``{shot}_groom.####.usd``) and related parms
+    - if `mx_enable_cloth` on: same for cloth (``{shot}_cloth.####.usd`` under ``02_fx/cloth``)
     """
     node = kwargs.get("node")
     if hou is not None and (node is None or not isinstance(node, hou.Node)):
@@ -821,6 +1312,8 @@ def cb_on_mx_anim_usd_change(kwargs: dict) -> None:
         _set_first_existing_parm(node, (_MX_SELECTED_LOOKDEV_USD_PATH,), "")
         _set_first_existing_parm(node, (_MX_LOOKDEV_PUBLISH_PARENT,), "")
         _set_first_existing_parm(node, (_MX_LOOKDEV_VERSION,), "")
+        _clear_mx_groom_parms(node, clear_publish_parent=True)
+        _clear_mx_cloth_parms(node, clear_publish_parent=True)
         _set_mx_geo_cam_parm(node, "")
         _status_set(node, "Selected USD is empty or missing on disk.")
         return
@@ -829,41 +1322,122 @@ def cb_on_mx_anim_usd_change(kwargs: dict) -> None:
     _set_first_existing_parm(node, (_MX_SELECTED_ANIM_USD_PATH,), selected)
     _set_mx_geo_cam_parm(node, selected)
 
-    # Checkbox gate: resolve lookdev only when enabled.
-    enabled = True
-    try:
-        p_en = node.parm(_MX_ENABLE_LOOKDEV)
-        if p_en is not None:
-            enabled = int(p_en.eval()) != 0
-    except Exception:
-        enabled = True
-
-    if not enabled:
-        _set_first_existing_parm(node, (_MX_SELECTED_LOOKDEV_USD_PATH,), "")
-        _set_first_existing_parm(node, (_MX_LOOKDEV_PUBLISH_PARENT,), "")
-        _set_first_existing_parm(node, (_MX_LOOKDEV_VERSION,), "")
-        _status_set(node, f"Anim USD selected: {Path(selected).name} | Lookdev disabled (mx_enable_lookdev=0).")
-        return
-
     try:
         p_pr = node.parm(_MX_PROJECT_ROOT)
         project_root = p_pr.evalAsString().strip() if p_pr is not None else ""
     except Exception:
         project_root = ""
 
-    look_parent, look_ver, look_path = resolve_geo_lookdev_path_from_geo_usd(selected, project_root)
-    _set_first_existing_parm(node, (_MX_LOOKDEV_PUBLISH_PARENT,), look_parent)
-    _set_first_existing_parm(node, (_MX_LOOKDEV_VERSION,), look_ver)
-    _set_first_existing_parm(node, (_MX_SELECTED_LOOKDEV_USD_PATH,), look_path)
+    # Lookdev (optional gate)
+    enabled_ld = True
+    try:
+        p_en = node.parm(_MX_ENABLE_LOOKDEV)
+        if p_en is not None:
+            enabled_ld = int(p_en.eval()) != 0
+    except Exception:
+        enabled_ld = True
+
+    look_path = ""
+    look_ver = ""
+    if enabled_ld:
+        look_parent, look_ver, look_path = resolve_geo_lookdev_path_from_geo_usd(selected, project_root)
+        _set_first_existing_parm(node, (_MX_LOOKDEV_PUBLISH_PARENT,), look_parent)
+        _set_first_existing_parm(node, (_MX_LOOKDEV_VERSION,), look_ver)
+        _set_first_existing_parm(node, (_MX_SELECTED_LOOKDEV_USD_PATH,), look_path)
+    else:
+        _set_first_existing_parm(node, (_MX_SELECTED_LOOKDEV_USD_PATH,), "")
+        _set_first_existing_parm(node, (_MX_LOOKDEV_PUBLISH_PARENT,), "")
+        _set_first_existing_parm(node, (_MX_LOOKDEV_VERSION,), "")
+
+    # Groom (optional gate; infer asset folder from geo/cam basename)
+    enabled_gr = True
+    try:
+        p_gr = node.parm(_MX_ENABLE_GROOM)
+        if p_gr is not None:
+            enabled_gr = int(p_gr.eval()) != 0
+    except Exception:
+        enabled_gr = True
+
+    try:
+        p_sh = node.parm(_MX_SHOT)
+        shot = p_sh.evalAsString().strip().lower() if p_sh is not None else ""
+    except Exception:
+        shot = ""
+
+    if enabled_gr and project_root and shot:
+        _apply_mx_groom_resolve(
+            node,
+            project_root=project_root,
+            shot=shot,
+            geo_usd_path=selected,
+            groom_version=None,
+            groom_asset_token=None,
+        )
+    else:
+        _clear_mx_groom_parms(node, clear_publish_parent=True)
+
+    enabled_cl = True
+    try:
+        p_cl = node.parm(_MX_ENABLE_CLOTH)
+        if p_cl is not None:
+            enabled_cl = int(p_cl.eval()) != 0
+    except Exception:
+        enabled_cl = True
+
+    if enabled_cl and project_root and shot:
+        _apply_mx_cloth_resolve(
+            node,
+            project_root=project_root,
+            shot=shot,
+            geo_usd_path=selected,
+            cloth_version=None,
+            cloth_asset_token=None,
+        )
+    else:
+        _clear_mx_cloth_parms(node, clear_publish_parent=True)
 
     # Immediately display timeline metadata (if available).
     # This is intentionally not gated by the "Apply Timeline" button.
     _maybe_update_mx_timeline_meta_from_current_anim(node)
 
-    if look_path:
-        _status_set(node, f"Anim USD: {Path(selected).name} | Lookdev found ({look_ver}).")
+    # Status: anim + lookdev + groom + cloth
+    parts: list[str] = [f"Anim USD: {Path(selected).name}"]
+    if not enabled_ld:
+        parts.append("Lookdev off")
+    elif look_path:
+        parts.append(f"Lookdev ({look_ver})")
     else:
-        _status_set(node, f"Anim USD: {Path(selected).name} | Lookdev not found.")
+        parts.append("Lookdev not found")
+
+    gp = ""
+    try:
+        p_gp = node.parm(_MX_SELECTED_GROOM_USD_PATH)
+        gp = p_gp.evalAsString().strip() if p_gp is not None else ""
+    except Exception:
+        gp = ""
+
+    if not enabled_gr:
+        parts.append("Groom off")
+    elif gp:
+        parts.append("Groom OK")
+    else:
+        parts.append("Groom not found")
+
+    cp = ""
+    try:
+        p_cp = node.parm(_MX_SELECTED_CLOTH_USD_PATH)
+        cp = p_cp.evalAsString().strip() if p_cp is not None else ""
+    except Exception:
+        cp = ""
+
+    if not enabled_cl:
+        parts.append("Cloth off")
+    elif cp:
+        parts.append("Cloth OK")
+    else:
+        parts.append("Cloth not found")
+
+    _status_set(node, " | ".join(parts))
 
 
 def cb_on_mx_enable_lookdev_change(kwargs: dict) -> None:
@@ -924,6 +1498,246 @@ def cb_on_mx_enable_lookdev_change(kwargs: dict) -> None:
         _status_set(node, f"Lookdev not found for {Path(selected).name}.")
 
 
+def cb_on_mx_enable_groom_change(kwargs: dict) -> None:
+    """
+    When ``mx_enable_groom`` toggles: clear groom parms if off; else resolve from current anim USD + shot.
+    """
+    node = kwargs.get("node")
+    if hou is not None and (node is None or not isinstance(node, hou.Node)):
+        return
+    if node is None:
+        return
+
+    enabled = False
+    try:
+        p_en = node.parm(_MX_ENABLE_GROOM)
+        if p_en is not None:
+            enabled = int(p_en.eval()) != 0
+    except Exception:
+        enabled = False
+
+    if not enabled:
+        _clear_mx_groom_parms(node, clear_publish_parent=True)
+        _status_set(node, "Groom disabled (mx_enable_groom=0). Cleared groom outputs.")
+        return
+
+    try:
+        p_sel = node.parm(_MX_SELECTED_ANIM_USD_PATH)
+        selected = p_sel.evalAsString().strip() if p_sel is not None else ""
+    except Exception:
+        selected = ""
+
+    if not selected or not Path(selected).is_file():
+        _status_set(node, "Groom enabled but selected anim USD is empty/missing on disk.")
+        return
+
+    try:
+        p_pr = node.parm(_MX_PROJECT_ROOT)
+        project_root = p_pr.evalAsString().strip() if p_pr is not None else ""
+        p_sh = node.parm(_MX_SHOT)
+        shot = p_sh.evalAsString().strip().lower() if p_sh is not None else ""
+    except Exception:
+        project_root, shot = "", ""
+
+    if not project_root or not shot:
+        _status_set(node, "Groom enabled but project_root or mx_shot is missing.")
+        return
+
+    _apply_mx_groom_resolve(
+        node,
+        project_root=project_root,
+        shot=shot,
+        geo_usd_path=selected,
+        groom_version=None,
+        groom_asset_token=None,
+    )
+
+    gp = ""
+    try:
+        p_gp = node.parm(_MX_SELECTED_GROOM_USD_PATH)
+        gp = p_gp.evalAsString().strip() if p_gp is not None else ""
+    except Exception:
+        gp = ""
+
+    if gp:
+        _status_set(node, f"Groom resolved for {Path(selected).name}.")
+    else:
+        _status_set(node, f"Groom not found for {Path(selected).name}.")
+
+
+def cb_on_mx_groom_version_change(kwargs: dict) -> None:
+    """Re-resolve groom USD when ``mx_groom_version`` changes (keeps ``mx_groom_asset`` if parm exists)."""
+    node = kwargs.get("node")
+    if hou is not None and (node is None or not isinstance(node, hou.Node)):
+        return
+    if node is None:
+        return
+
+    try:
+        p_gr = node.parm(_MX_ENABLE_GROOM)
+        if p_gr is not None and int(p_gr.eval()) == 0:
+            _clear_mx_groom_parms(node, clear_publish_parent=True)
+            return
+    except Exception:
+        pass
+
+    try:
+        p_pr = node.parm(_MX_PROJECT_ROOT)
+        project_root = p_pr.evalAsString().strip() if p_pr is not None else ""
+        p_sh = node.parm(_MX_SHOT)
+        shot = p_sh.evalAsString().strip().lower() if p_sh is not None else ""
+        p_sel = node.parm(_MX_SELECTED_ANIM_USD_PATH)
+        geo = p_sel.evalAsString().strip() if p_sel is not None else ""
+        p_ver = node.parm(_MX_GROOM_VERSION)
+        ver = p_ver.evalAsString().strip() if p_ver is not None else ""
+        p_ast = node.parm(_MX_GROOM_ASSET)
+    except Exception:
+        return
+
+    if not project_root or not shot:
+        _clear_mx_groom_parms(node, clear_publish_parent=True)
+        return
+
+    ast: str | None
+    if p_ast is None:
+        ast = None
+    else:
+        ast = p_ast.evalAsString()
+
+    _apply_mx_groom_resolve(
+        node,
+        project_root=project_root,
+        shot=shot,
+        geo_usd_path=geo,
+        groom_version=ver or None,
+        groom_asset_token=ast,
+    )
+
+
+def cb_on_mx_groom_asset_change(kwargs: dict) -> None:
+    """Re-resolve groom USD when ``mx_groom_asset`` changes."""
+    cb_on_mx_groom_version_change(kwargs)
+
+
+def cb_on_mx_enable_cloth_change(kwargs: dict) -> None:
+    """When ``mx_enable_cloth`` toggles: clear cloth parms if off; else resolve from current anim USD + shot."""
+    node = kwargs.get("node")
+    if hou is not None and (node is None or not isinstance(node, hou.Node)):
+        return
+    if node is None:
+        return
+
+    enabled = False
+    try:
+        p_en = node.parm(_MX_ENABLE_CLOTH)
+        if p_en is not None:
+            enabled = int(p_en.eval()) != 0
+    except Exception:
+        enabled = False
+
+    if not enabled:
+        _clear_mx_cloth_parms(node, clear_publish_parent=True)
+        _status_set(node, "Cloth disabled (mx_enable_cloth=0). Cleared cloth outputs.")
+        return
+
+    try:
+        p_sel = node.parm(_MX_SELECTED_ANIM_USD_PATH)
+        selected = p_sel.evalAsString().strip() if p_sel is not None else ""
+    except Exception:
+        selected = ""
+
+    if not selected or not Path(selected).is_file():
+        _status_set(node, "Cloth enabled but selected anim USD is empty/missing on disk.")
+        return
+
+    try:
+        p_pr = node.parm(_MX_PROJECT_ROOT)
+        project_root = p_pr.evalAsString().strip() if p_pr is not None else ""
+        p_sh = node.parm(_MX_SHOT)
+        shot = p_sh.evalAsString().strip().lower() if p_sh is not None else ""
+    except Exception:
+        project_root, shot = "", ""
+
+    if not project_root or not shot:
+        _status_set(node, "Cloth enabled but project_root or mx_shot is missing.")
+        return
+
+    _apply_mx_cloth_resolve(
+        node,
+        project_root=project_root,
+        shot=shot,
+        geo_usd_path=selected,
+        cloth_version=None,
+        cloth_asset_token=None,
+    )
+
+    cp = ""
+    try:
+        p_cp = node.parm(_MX_SELECTED_CLOTH_USD_PATH)
+        cp = p_cp.evalAsString().strip() if p_cp is not None else ""
+    except Exception:
+        cp = ""
+
+    if cp:
+        _status_set(node, f"Cloth resolved for {Path(selected).name}.")
+    else:
+        _status_set(node, f"Cloth not found for {Path(selected).name}.")
+
+
+def cb_on_mx_cloth_version_change(kwargs: dict) -> None:
+    """Re-resolve cloth USD when ``mx_cloth_version`` changes."""
+    node = kwargs.get("node")
+    if hou is not None and (node is None or not isinstance(node, hou.Node)):
+        return
+    if node is None:
+        return
+
+    try:
+        p_cl = node.parm(_MX_ENABLE_CLOTH)
+        if p_cl is not None and int(p_cl.eval()) == 0:
+            _clear_mx_cloth_parms(node, clear_publish_parent=True)
+            return
+    except Exception:
+        pass
+
+    try:
+        p_pr = node.parm(_MX_PROJECT_ROOT)
+        project_root = p_pr.evalAsString().strip() if p_pr is not None else ""
+        p_sh = node.parm(_MX_SHOT)
+        shot = p_sh.evalAsString().strip().lower() if p_sh is not None else ""
+        p_sel = node.parm(_MX_SELECTED_ANIM_USD_PATH)
+        geo = p_sel.evalAsString().strip() if p_sel is not None else ""
+        p_ver = node.parm(_MX_CLOTH_VERSION)
+        ver = p_ver.evalAsString().strip() if p_ver is not None else ""
+        p_ast = node.parm(_MX_CLOTH_ASSET)
+    except Exception:
+        return
+
+    if not project_root or not shot:
+        _clear_mx_cloth_parms(node, clear_publish_parent=True)
+        return
+
+    ast: str | None
+    if p_ast is None:
+        ast = None
+    else:
+        ast = p_ast.evalAsString()
+
+    _apply_mx_cloth_resolve(
+        node,
+        project_root=project_root,
+        shot=shot,
+        geo_usd_path=geo,
+        cloth_version=ver or None,
+        cloth_asset_token=ast,
+    )
+
+
+def cb_on_mx_cloth_asset_change(kwargs: dict) -> None:
+    """Re-resolve cloth USD when ``mx_cloth_asset`` changes."""
+    cb_on_mx_cloth_version_change(kwargs)
+
+
 def cb_on_mx_anim_publish_parent_change(kwargs: dict) -> None:
     """
     Callback when `mx_anim_publish_parent` changes:
@@ -943,6 +1757,8 @@ def cb_on_mx_anim_publish_parent_change(kwargs: dict) -> None:
     _set_first_existing_parm(node, (_MX_SELECTED_LOOKDEV_USD_PATH,), "")
     _set_first_existing_parm(node, (_MX_LOOKDEV_PUBLISH_PARENT,), "")
     _set_first_existing_parm(node, (_MX_LOOKDEV_VERSION,), "")
+    _clear_mx_groom_parms(node, clear_publish_parent=True)
+    _clear_mx_cloth_parms(node, clear_publish_parent=True)
     _set_first_existing_parm(node, ("mx_meta_summary", "mx_timeline_meta_summary", "mx_meta_text"), "")
     _set_first_existing_parm(node, ("mx_meta_fps", "mx_timeline_meta_fps"), "")
     _set_first_existing_parm(node, ("mx_meta_playback_range", "mx_timeline_meta_playback_range"), "")
@@ -995,6 +1811,8 @@ def cb_on_mx_anim_version_change(kwargs: dict) -> None:
     _set_first_existing_parm(node, (_MX_SELECTED_LOOKDEV_USD_PATH,), "")
     _set_first_existing_parm(node, (_MX_LOOKDEV_PUBLISH_PARENT,), "")
     _set_first_existing_parm(node, (_MX_LOOKDEV_VERSION,), "")
+    _clear_mx_groom_parms(node, clear_publish_parent=True)
+    _clear_mx_cloth_parms(node, clear_publish_parent=True)
     _set_first_existing_parm(node, ("mx_meta_summary", "mx_timeline_meta_summary", "mx_meta_text"), "")
     _set_first_existing_parm(node, ("mx_meta_fps", "mx_timeline_meta_fps"), "")
     _set_first_existing_parm(node, ("mx_meta_playback_range", "mx_timeline_meta_playback_range"), "")
@@ -1039,6 +1857,8 @@ def cb_on_mx_shot_change(kwargs: dict) -> None:
     _set_first_existing_parm(node, (_MX_SELECTED_LOOKDEV_USD_PATH,), "")
     _set_first_existing_parm(node, (_MX_LOOKDEV_PUBLISH_PARENT,), "")
     _set_first_existing_parm(node, (_MX_LOOKDEV_VERSION,), "")
+    _clear_mx_groom_parms(node, clear_publish_parent=True)
+    _clear_mx_cloth_parms(node, clear_publish_parent=True)
     _set_first_existing_parm(node, ("mx_meta_summary", "mx_timeline_meta_summary", "mx_meta_text"), "")
     _set_first_existing_parm(node, ("mx_meta_fps", "mx_timeline_meta_fps"), "")
     _set_first_existing_parm(node, ("mx_meta_playback_range", "mx_timeline_meta_playback_range"), "")
@@ -1078,6 +1898,16 @@ def cb_on_mx_shot_change(kwargs: dict) -> None:
 
     anim_parent = str(get_anim_publish_dir(Path(project_root), shot.lower()))
     _set_first_existing_parm(node, (_MX_ANIM_PUBLISH_PARENT,), anim_parent)
+    _set_first_existing_parm(
+        node,
+        (_MX_GROOM_PUBLISH_PARENT,),
+        str(get_groom_publish_dir(Path(project_root), shot.lower())),
+    )
+    _set_first_existing_parm(
+        node,
+        (_MX_CLOTH_PUBLISH_PARENT,),
+        str(get_cloth_publish_dir(Path(project_root), shot.lower())),
+    )
 
     vdirs = list_version_dirs(Path(anim_parent))
     anim_latest = vdirs[-1].name if vdirs else ""
@@ -1471,6 +2301,8 @@ def cb_mx_create_hdas_from_anim_version(kwargs: dict) -> None:
             _MX_ANIM_PUBLISH_PARENT,
             _MX_ANIM_VERSION,
             _MX_ENABLE_LOOKDEV,
+            _MX_ENABLE_GROOM,
+            _MX_ENABLE_CLOTH,
         ):
             _set_parm_if_exists(node, child, parm_name)
 

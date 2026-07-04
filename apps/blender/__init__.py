@@ -1,0 +1,1 @@
+# Blender DCC adapter package.

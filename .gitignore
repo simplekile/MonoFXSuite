@@ -35,3 +35,8 @@ desktop.ini
 *.log
 *.tmp
 .cache/
+.pytest_cache/
+
+# Blender addon build artifacts (source only in repo)
+tools/fx/monofx_pipeline_blender/releases/
+tools/fx/monofx_pipeline_blender/archive/

@@ -1,0 +1,65 @@
+{
+  "name": "character_geo",
+  "nodes": [
+    {
+      "name": "geo",
+      "parent": "",
+      "match_keywords": "",
+      "is_leaf": false
+    },
+    {
+      "name": "Base_grp",
+      "parent": "geo",
+      "match_keywords": "",
+      "is_leaf": false
+    },
+    {
+      "name": "Body_grp",
+      "parent": "Base_grp",
+      "match_keywords": "body,arm_extra,armextra",
+      "is_leaf": true
+    },
+    {
+      "name": "Head_grp",
+      "parent": "Base_grp",
+      "match_keywords": "eyeballs,teeth,saliva,head",
+      "is_leaf": true
+    },
+    {
+      "name": "groom_grp",
+      "parent": "geo",
+      "match_keywords": "",
+      "is_leaf": false
+    },
+    {
+      "name": "HairDriver_grp",
+      "parent": "groom_grp",
+      "match_keywords": "hair_back,hair_bang,hair_band,hair_tail,hair_base",
+      "is_leaf": true
+    },
+    {
+      "name": "HairProxy_grp",
+      "parent": "groom_grp",
+      "match_keywords": "brows,lashes",
+      "is_leaf": true
+    },
+    {
+      "name": "Outfit_grp",
+      "parent": "geo",
+      "match_keywords": "",
+      "is_leaf": false
+    },
+    {
+      "name": "Accessory_grp",
+      "parent": "Outfit_grp",
+      "match_keywords": "belt_access,belt_disc,dress_access,arm_access,armextra_access,earing,faceaccess,leg_access,shirt_access,hair_mask,hair_ring",
+      "is_leaf": true
+    },
+    {
+      "name": "Costume_grp",
+      "parent": "Outfit_grp",
+      "match_keywords": "belt,dress,dress_extra,dress_front,shirt,shirt_back,shirt_in,shirt_out,leg",
+      "is_leaf": true
+    }
+  ]
+}
