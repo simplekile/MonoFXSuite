@@ -15,7 +15,7 @@
 
 - **Script**: `build/build.ps1` hoặc `build/build.bat`. Chạy từ **repo root**: `.\build\build.ps1`.
 - **Prerequisite**: Inno Setup 6 (ISCC.exe). Script tìm `C:\Program Files (x86)\Inno Setup 6\ISCC.exe`.
-- **Output**: `build/output/MonoFXSuite_Setup.exe`.
+- **Output**: `build/output/MonoFXSuite_Setup.exe` và `build/output/monofx_pipeline_blender_v*.zip` (Blender add-on, Install from disk).
 - **Version**: `build.ps1` đọc file `VERSION` ở repo root và truyền `/DMyAppVersion=...` cho Inno. File `VERSION` là nguồn version duy nhất cho installer.
 - **Inno script**: `build/installer/MonoFXSuite.iss` — fallback `#define MyAppVersion "0.1.0"` khi không truyền từ script.
 
@@ -43,7 +43,7 @@
 3. Commit: `git add VERSION docs/changelog.md RELEASE_NOTES.md`, `git commit -m "docs: release vx.y.z"`.
 4. Tag: `git tag -a vx.y.z -m "Release vx.y.z"`.
 5. Push: `git push origin main`, `git push origin vx.y.z`.
-6. Publish: `.\publish_release.ps1` — cần GitHub CLI (`gh`), đã `gh auth login`. Script đọc `VERSION`, lấy release notes từ **RELEASE_NOTES.md** (nếu có) hoặc từ changelog, tạo release và đính kèm `build/output/MonoFXSuite_Setup.exe`. Nếu tag chưa có thì báo tạo/push tag trước.
+6. Publish: `.\publish_release.ps1` — cần GitHub CLI (`gh`), đã `gh auth login`. Script đọc `VERSION`, lấy release notes từ **RELEASE_NOTES.md** (nếu có) hoặc từ changelog, tạo release và đính kèm `build/output/MonoFXSuite_Setup.exe` và `build/output/monofx_pipeline_blender_v*.zip` (Blender add-on). Nếu tag chưa có thì báo tạo/push tag trước.
 
 ## Checklist khi release
 

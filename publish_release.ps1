@@ -7,6 +7,15 @@ $ProjectRoot = $PSScriptRoot
 $VersionFile = Join-Path $ProjectRoot "VERSION"
 $ChangelogPath = Join-Path $ProjectRoot "docs\changelog.md"
 $ExePath = Join-Path $ProjectRoot "build\output\MonoFXSuite_Setup.exe"
+$OutputDir = Join-Path $ProjectRoot "build\output"
+
+function Get-BlenderAddonZipPath {
+    $zip = Get-ChildItem -Path $OutputDir -Filter "monofx_pipeline_blender_v*.zip" -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime -Descending |
+        Select-Object -First 1
+    if ($zip) { return $zip.FullName }
+    return $null
+}
 
 if (-not (Test-Path $VersionFile)) {
     Write-Error "Không tìm thấy file VERSION tại: $VersionFile"
@@ -54,10 +63,17 @@ try {
         exit 1
     }
 
+    $BlenderZipPath = Get-BlenderAddonZipPath
+    if (-not $BlenderZipPath) {
+        Write-Error "Blender add-on ZIP not found in build\output. Run .\build\build.ps1 (builds installer + Blender ZIP)."
+        exit 1
+    }
+
     Write-Host "Creating GitHub Release: $Tag"
+    Write-Host "Assets: MonoFXSuite_Setup.exe, $(Split-Path $BlenderZipPath -Leaf)"
     # --notes-file must be absolute path on Windows for gh to read correctly
     $NotesPathFull = [System.IO.Path]::GetFullPath($NotesPath)
-    gh release create $Tag --notes-file $NotesPathFull $ExePath
+    gh release create $Tag --notes-file $NotesPathFull $ExePath $BlenderZipPath
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Release may already exist. Try: gh release delete $Tag then run again."
         exit 1
