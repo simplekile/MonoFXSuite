@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Blender
+- Add **GitHub Releases updater** in add-on preferences (check/install from `monofx_pipeline_blender_v*.zip`); bump add-on to **0.9.86**.
+
 
 ## [0.1.14] - 2026-07-04
 

@@ -110,10 +110,14 @@ class MonoFXPipelinePreferences(AddonPreferences):
     ui_sec_anim_camera_tools: BoolProperty(name="Camera Tools", default=True)
 
     def draw(self, _context: Context) -> None:
+        from . import addon_updater
+
         layout = self.layout
         layout.label(text="Sidebar UI state is saved automatically (tabs and sections).")
         layout.separator()
         layout.prop(self, "pipeline_project_root")
+        layout.separator()
+        addon_updater.draw_preferences(layout)
 
 
 _SECTION_PROP_BY_PANEL_ID = {

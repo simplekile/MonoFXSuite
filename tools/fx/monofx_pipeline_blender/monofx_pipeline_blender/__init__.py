@@ -110,12 +110,13 @@ from . import geo_usd_publish_list
 from . import anim_camera
 from . import scene_version
 from . import keymaps
+from . import addon_updater
 
 
 bl_info = {
     "name": "MonoFX Pipeline Blender",
     "author": "MonoFXSuite",
-    "version": (0, 9, 84),
+    "version": (0, 9, 86),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > MonoFX",
     "description": (
@@ -3429,6 +3430,7 @@ classes = (
     MONOFX_PT_anim,
     *rig_linking.RIG_OPERATOR_CLASSES,
     *rig_ui.RIG_UI_CLASSES,
+    *addon_updater.ADDON_UPDATER_OPERATOR_CLASSES,
 )
 
 
