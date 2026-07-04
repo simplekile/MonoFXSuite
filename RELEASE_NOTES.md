@@ -1,16 +1,7 @@
-## [0.1.12] - 2026-07-04
-
-### Maya tools
-- Add Reference Manager, Position/Scale, Scale From Last, Render Preview, and USD Export updates.
-- Shared Maya adapter improvements.
+## [0.1.13] - 2026-07-04
 
 ### Houdini
-- Add USD Batch Loader (`apps/houdini/usd_batch_loader.py`, `tools/fx/usd_batch_loader`).
-- Update anim loader HDA script.
+- Add **USD Batch Load** shelf tool and `file_usd` icon.
 
-### Blender
-- Add `monofx_pipeline_blender` addon (pipeline tools, anim USD cache, rig linking).
-
-### Shared / tests
-- Add `apps/common` shared pipeline modules; `apps/blender` adapter.
-- Add pytest suite for pipeline naming, paths, and tool logic.
+### Release
+- GitHub releases attach Blender add-on ZIP (`monofx_pipeline_blender_v*.zip`) alongside `MonoFXSuite_Setup.exe`.
