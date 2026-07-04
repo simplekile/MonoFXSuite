@@ -12,6 +12,7 @@ import importlib
 import io
 import json
 import re
+import shutil
 import tempfile
 import urllib.error
 import urllib.request
@@ -63,6 +64,8 @@ _last_check: Optional[UpdateInfo] = None
 _last_error: str = ""
 _cached_zip_bytes: Optional[bytes] = None
 _cached_asset_name: str = ""
+_restart_required: bool = False
+_pending_version: str = ""
 
 
 def format_version(version: tuple[int, int, int]) -> str:
@@ -74,9 +77,27 @@ def current_addon_version() -> tuple[int, int, int]:
     return tuple(pkg.bl_info.get("version", (0, 0, 0)))
 
 
+def addon_package_dir() -> Path:
+    """Installed ``monofx_pipeline_blender`` package folder."""
+    return Path(__file__).resolve().parent
+
+
 def addons_install_dir() -> Path:
     """Parent of the installed ``monofx_pipeline_blender`` package folder."""
-    return Path(__file__).resolve().parent.parent
+    return addon_package_dir().parent
+
+
+def purge_bytecode(addon_root: Path) -> None:
+    """Drop stale ``__pycache__`` so the next Blender start loads fresh code."""
+    if not addon_root.is_dir():
+        return
+    for cache_dir in addon_root.rglob("__pycache__"):
+        shutil.rmtree(cache_dir, ignore_errors=True)
+    for pyc in addon_root.rglob("*.pyc"):
+        try:
+            pyc.unlink()
+        except OSError:
+            pass
 
 
 def parse_version_from_init_text(text: str) -> Optional[tuple[int, int, int]]:
@@ -303,21 +324,6 @@ def extract_release_zip_bytes(data: bytes, addons_dir: Path) -> tuple[bool, str]
     return True, ""
 
 
-def reload_addon(context: Context, module_name: str) -> tuple[bool, str]:
-    was_enabled = module_name in context.preferences.addons
-    try:
-        if was_enabled:
-            bpy.ops.preferences.addon_disable(module=module_name)
-        bpy.ops.preferences.addon_enable(module=module_name)
-    except Exception as exc:
-        return False, str(exc)
-    try:
-        bpy.ops.wm.save_userpref()
-    except Exception:
-        pass
-    return True, ""
-
-
 def _redraw_preferences() -> None:
     screen = getattr(bpy.context, "screen", None)
     if screen is None:
@@ -346,6 +352,14 @@ def draw_preferences(layout) -> None:
     box.label(text="Add-on Updates (GitHub Releases)")
     current = current_addon_version()
     box.label(text=f"Installed: v{format_version(current)}")
+
+    if _restart_required:
+        row = box.row()
+        row.alert = True
+        row.label(
+            text=f"Restart Blender to finish update to v{_pending_version}.",
+            icon="ERROR",
+        )
 
     if _last_error:
         row = box.row()
@@ -396,21 +410,29 @@ class MONOFX_OT_addon_check_updates(Operator):
 class MONOFX_OT_addon_install_update(Operator):
     bl_idname = "wm.mono_fx_addon_install_update"
     bl_label = "Update Add-on"
-    bl_description = "Download and install the latest release from GitHub"
+    bl_description = (
+        "Download and install the latest release from GitHub. "
+        "Restart Blender when finished."
+    )
     bl_options = {"REGISTER"}
 
     @classmethod
     def poll(cls, _context: Context) -> bool:
         return _last_check is not None and _last_check.has_update
 
+    def invoke(self, context: Context, event) -> set[str]:
+        return context.window_manager.invoke_confirm(self, event)
+
     def execute(self, context: Context) -> set[str]:
+        global _restart_required, _pending_version
+
         if _last_check is None or not _last_check.has_update:
             self.report({"WARNING"}, "No update available. Check for updates first.")
             return {"CANCELLED"}
 
         wm = context.window_manager
-        module_name = __package__
         addons_dir = addons_install_dir()
+        addon_root = addon_package_dir()
         zip_path: Optional[Path] = None
         use_cache = bool(
             _cached_zip_bytes and _cached_asset_name == _last_check.asset_name
@@ -439,25 +461,22 @@ class MONOFX_OT_addon_install_update(Operator):
                     self.report({"ERROR"}, err)
                     return {"CANCELLED"}
 
-            try:
-                bpy.ops.preferences.addon_disable(module=module_name)
-            except Exception as exc:
-                self.report({"ERROR"}, f"Could not disable add-on: {exc}")
-                return {"CANCELLED"}
-
             if use_cache:
+                assert _cached_zip_bytes is not None
                 ok, err = extract_release_zip_bytes(_cached_zip_bytes, addons_dir)
             else:
                 assert zip_path is not None
                 ok, err = extract_release_zip(zip_path, addons_dir)
 
             if not ok:
-                try:
-                    bpy.ops.preferences.addon_enable(module=module_name)
-                except Exception:
-                    pass
                 self.report({"ERROR"}, err)
                 return {"CANCELLED"}
+
+            purge_bytecode(addon_root)
+            try:
+                bpy.ops.wm.save_userpref()
+            except Exception:
+                pass
         finally:
             if zip_path is not None:
                 try:
@@ -473,17 +492,15 @@ class MONOFX_OT_addon_install_update(Operator):
             except Exception:
                 pass
 
-        reloaded, reload_err = reload_addon(context, module_name)
         mark_check_up_to_date()
+        _restart_required = True
+        _pending_version = format_version(_last_check.remote)
         _redraw_preferences()
 
-        if reloaded:
-            self.report({"INFO"}, "Add-on updated. Reloaded successfully.")
-        else:
-            self.report(
-                {"WARNING"},
-                f"Files installed, but reload failed: {reload_err}. Restart Blender.",
-            )
+        self.report(
+            {"INFO"},
+            f"Installed v{_pending_version}. Restart Blender to apply the update.",
+        )
         return {"FINISHED"}
 
 
