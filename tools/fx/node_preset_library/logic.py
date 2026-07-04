@@ -98,19 +98,61 @@ def rename_category(category_id: str, new_name: str, library_root: Optional[Path
     return False
 
 
+def _reassign_preset_files(
+    preset: dict[str, Any],
+    new_category_id: str,
+    root: Path,
+) -> None:
+    """Move preset .cpio / thumbnail into another category folder and update index paths."""
+    import shutil
+
+    pid = preset.get("id")
+    if not pid:
+        return
+    new_cpio, new_thumb = preset_relative_paths(new_category_id, pid)
+    for key, new_rel in (("file", new_cpio), ("thumbnail", new_thumb)):
+        old_rel = preset.get(key)
+        if key == "thumbnail" and not old_rel:
+            continue
+        dst = root / new_rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        if old_rel:
+            src = root / old_rel
+            if src.is_file():
+                if src.resolve() != dst.resolve():
+                    shutil.move(str(src), str(dst))
+                preset[key] = new_rel
+            elif key == "file":
+                preset[key] = new_rel
+        else:
+            preset[key] = new_rel
+
+
 def delete_category(category_id: str, library_root: Optional[Path] = None) -> bool:
+    if not category_id or category_id == "uncategorized":
+        return False
     root = library_root or config.get_library_root()
     data = load_index(root)
-    data["categories"] = [c for c in data["categories"] if c.get("id") != category_id]
+    if not any(c.get("id") == category_id for c in data["categories"]):
+        return False
+
+    add_category("Uncategorized", library_root=root)
     for p in data["presets"]:
         if p.get("category_id") == category_id:
             p["category_id"] = "uncategorized"
+            _reassign_preset_files(p, "uncategorized", root)
+
+    data["categories"] = [c for c in data["categories"] if c.get("id") != category_id]
     save_index(data, root)
+
     cat_dir = root / config.CATEGORIES_DIR / category_id
     if cat_dir.is_dir():
-        for f in cat_dir.iterdir():
-            f.unlink()
-        cat_dir.rmdir()
+        try:
+            for f in cat_dir.iterdir():
+                f.unlink()
+            cat_dir.rmdir()
+        except OSError:
+            pass
     return True
 
 
@@ -119,6 +161,10 @@ def delete_category(category_id: str, library_root: Optional[Path] = None) -> bo
 
 def _preset_id() -> str:
     return uuid.uuid4().hex[:12]
+
+
+def new_preset_id() -> str:
+    return _preset_id()
 
 
 def add_preset(

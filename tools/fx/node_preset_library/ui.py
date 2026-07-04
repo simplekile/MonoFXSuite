@@ -33,6 +33,8 @@ from PySide6.QtWidgets import (
     QStyledItemDelegate,
 )
 
+from tools.fx.node_preset_library.logic import category_id_from_name
+
 # ---------------------------------------------------------------------------
 # MONOS palette (aligned with auto_material, search_replace)
 # ---------------------------------------------------------------------------
@@ -329,12 +331,15 @@ class SavePresetDialog(QDialog):
         self._category_combo.setCurrentText(category_id)
 
     def get_category_id(self) -> str:
+        text = self.get_category()
+        if not text:
+            return "uncategorized"
         idx = self._category_combo.currentIndex()
         if idx >= 0:
             cid = self._category_combo.itemData(idx)
-            if cid:
+            if cid and self._category_combo.itemText(idx).strip() == text:
                 return str(cid)
-        return self.get_category().lower().replace(" ", "_") or "uncategorized"
+        return category_id_from_name(text)
 
     def get_description(self) -> str:
         return self._desc_edit.toPlainText().strip()
@@ -461,6 +466,10 @@ class NodePresetLibraryUI(QWidget):
         self._insert_btn.setStyleSheet(STYLE_BTN_PRIMARY)
         header_row.addWidget(self._insert_btn)
 
+        self._delete_btn = QPushButton("Delete")
+        self._delete_btn.setStyleSheet(STYLE_BTN)
+        header_row.addWidget(self._delete_btn)
+
         preset_layout.addLayout(header_row)
 
         self._preset_list = QListWidget()
@@ -515,6 +524,10 @@ class NodePresetLibraryUI(QWidget):
         if item:
             return item.data(Qt.ItemDataRole.UserRole)
         return None
+
+    def ensure_category_selected(self) -> None:
+        if self.get_selected_category_id() is None and self._category_list.count() > 0:
+            self._category_list.setCurrentRow(0)
 
     def set_presets(self, presets: list[dict[str, Any]], library_root: Optional[Path] = None) -> None:
         self._preset_list.clear()
@@ -585,6 +598,9 @@ class NodePresetLibraryUI(QWidget):
 
     def on_insert_clicked(self, callback: Callable[[], None]) -> None:
         self._insert_btn.clicked.connect(callback)
+
+    def on_delete_clicked(self, callback: Callable[[], None]) -> None:
+        self._delete_btn.clicked.connect(callback)
 
     def on_search_changed(self, callback: Callable[[str], None]) -> None:
         self._search_edit.textChanged.connect(callback)

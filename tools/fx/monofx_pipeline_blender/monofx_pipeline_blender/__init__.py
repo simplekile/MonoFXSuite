@@ -115,7 +115,7 @@ from . import keymaps
 bl_info = {
     "name": "MonoFX Pipeline Blender",
     "author": "MonoFXSuite",
-    "version": (0, 9, 82),
+    "version": (0, 9, 84),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > MonoFX",
     "description": (
@@ -2396,7 +2396,7 @@ def _draw_material_bake_usd_settings(
     layout.separator()
     note = layout.column(align=True)
     note.scale_y = 0.85
-        note.label(text="Bake blocks the UI until all passes finish.", icon="TIME")
+    note.label(text="Bake blocks the UI until all passes finish.", icon="TIME")
 
 
 def _create_material_bake_session(

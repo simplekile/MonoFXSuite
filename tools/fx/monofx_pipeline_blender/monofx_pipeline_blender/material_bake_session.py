@@ -10,6 +10,7 @@ from typing import Callable, Optional, Sequence
 
 import bpy
 
+from . import config
 from .material_bake_targets import MaterialBakeRestoreRecord
 from .material_bake import (
     BAKE_PASS_SPECS,

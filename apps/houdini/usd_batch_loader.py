@@ -3,13 +3,13 @@
 Usage (Houdini Python shell)::
 
     from apps.houdini.usd_batch_loader import run
-    run()  # folder picker + mode menu
+    run()  # opens MONOS UI
 
     from apps.houdini.usd_batch_loader import load_usd_folder
     load_usd_folder(
         r"D:/shot/01_anim/publish/v001",
         mode="sublayer",
-        connect_after=hou.node("/stage/merge1"),
+        strip_name="prop_,publish",
     )
 
 Shelf button::
@@ -19,32 +19,25 @@ Shelf button::
 
 from __future__ import annotations
 
-import os
 import re
 from pathlib import Path
 from typing import Literal
 
 import hou
 
-from apps.houdini.hda.anim_publish_loader import _configure_single_file_sublayer
+from apps.houdini.lop_usd_helpers import configure_single_file_sublayer
+from tools.fx.usd_batch_loader.logic import collect_usd_files, node_name_from_label
 
 LoadMode = Literal["sublayer", "reference"]
-USD_EXTS = (".usd", ".usda", ".usdc")
-NODE_PREFIX = "usdload_"
+NODE_LAYOUT_SPACING_X = 2.5
 
 
 def _log(msg: str) -> None:
     print(f"[MonoFX usd_batch_loader] {msg}", flush=True)
 
 
-def _safe_node_name(label: str) -> str:
-    body = Path(label).stem
-    safe = re.sub(r"[^A-Za-z0-9_]", "_", body).strip("_")
-    return safe or "usd"
-
-
-def _prim_path_from_label(label: str, idx: int, used: set[str]) -> str:
-    stem = Path(label).stem
+def _prim_path_from_label(label: str, strip_raw: str, idx: int, used: set[str]) -> str:
+    stem = node_name_from_label(label, strip_raw)
     safe = re.sub(r"[^A-Za-z0-9_]", "_", stem).strip("_") or f"ref_{idx}"
     candidate = f"/{safe}"
     n = 1
@@ -55,31 +48,42 @@ def _prim_path_from_label(label: str, idx: int, used: set[str]) -> str:
     return candidate
 
 
-def collect_usd_files(
-    folder: str,
-    *,
-    recursive: bool = False,
-    extensions: tuple[str, ...] = USD_EXTS,
-) -> list[tuple[str, str]]:
-    """Return sorted ``(abs_path, filename)`` pairs from *folder*."""
-    root = os.path.normpath(folder)
-    if not os.path.isdir(root):
-        return []
+def _unique_node_name(parent: hou.Node, base: str) -> str:
+    name = base
+    n = 1
+    while parent.node(name) is not None:
+        n += 1
+        name = f"{base}_{n}"
+    return name
 
-    paths: list[str] = []
-    if recursive:
-        for dirpath, _dirnames, filenames in os.walk(root):
-            for name in filenames:
-                if name.lower().endswith(extensions):
-                    paths.append(os.path.join(dirpath, name))
-    else:
-        for name in os.listdir(root):
-            full = os.path.join(root, name)
-            if os.path.isfile(full) and name.lower().endswith(extensions):
-                paths.append(full)
 
-    paths.sort(key=lambda p: os.path.basename(p).lower())
-    return [(p, os.path.basename(p)) for p in paths]
+def _layout_nodes_in_view(nodes: list[hou.Node]) -> None:
+    """Place *nodes* in a horizontal row centered in the active Network Editor view."""
+    if not nodes:
+        return
+
+    count = len(nodes)
+    start_x = -((count - 1) * NODE_LAYOUT_SPACING_X) * 0.5
+    for i, node in enumerate(nodes):
+        node.setPosition((start_x + i * NODE_LAYOUT_SPACING_X, 0.0))
+
+    try:
+        pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+        if pane is None:
+            return
+        avg_x = sum(n.position()[0] for n in nodes) / count
+        avg_y = sum(n.position()[1] for n in nodes) / count
+        vb = pane.visibleBounds()
+        center = hou.Vector2(
+            (vb.min().x() + vb.max().x()) * 0.5,
+            (vb.min().y() + vb.max().y()) * 0.5,
+        )
+        delta = center - hou.Vector2(avg_x, avg_y)
+        for node in nodes:
+            pos = node.position()
+            node.setPosition(hou.Vector2(pos[0] + delta[0], pos[1] + delta[1]))
+    except (hou.OperationFailed, AttributeError, ZeroDivisionError):
+        pass
 
 
 def _configure_reference_lop(ref: hou.Node, filepath: str, prim_path: str) -> bool:
@@ -124,89 +128,52 @@ def _configure_reference_lop(ref: hou.Node, filepath: str, prim_path: str) -> bo
     return True
 
 
-def _stage_parent(connect_after: hou.Node | None) -> hou.Node:
-    if connect_after is not None:
-        return connect_after.parent()
+def _resolve_parent() -> hou.Node:
+    """Network where new LOPs are created — active Network Editor pwd."""
+    try:
+        pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+        if pane is not None:
+            pwd = pane.pwd()
+            if pwd is not None:
+                return pwd
+    except hou.OperationFailed:
+        pass
+
     stage = hou.node("/stage")
     if stage is None:
-        raise RuntimeError("No /stage network found. Open Solaris first.")
+        raise RuntimeError("Open a LOP network in the Network Editor first.")
     return stage
-
-
-def _rewire_outputs(old_node: hou.Node, new_node: hou.Node) -> None:
-    """Point downstream nodes from *old_node* to *new_node*."""
-    for child in old_node.parent().children():
-        if child == new_node:
-            continue
-        for idx in range(len(child.inputConnectors())):
-            try:
-                if child.input(idx) == old_node:
-                    child.setInput(idx, new_node)
-            except hou.OperationFailed:
-                continue
-
-
-def _apply_display_flag(source: hou.Node | None, target: hou.Node) -> None:
-    if source is None:
-        return
-    try:
-        if source.isDisplayFlagSet():
-            target.setDisplayFlag(True)
-    except hou.OperationFailed:
-        pass
-    try:
-        if source.isRenderFlagSet():
-            target.setRenderFlag(True)
-    except hou.OperationFailed:
-        pass
 
 
 def load_usd_folder(
     folder: str,
     *,
     mode: LoadMode = "sublayer",
-    connect_after: hou.Node | None = None,
     recursive: bool = False,
     parent_prim_prefix: str = "/",
+    strip_name: str = "",
 ) -> tuple[int, str]:
     """
-    Batch-create Sublayer or Reference LOPs for every USD file in *folder*.
+    Batch-create standalone Sublayer or Reference LOPs for every USD file in *folder*.
 
-    When *connect_after* is set, a **merge** LOP is inserted after it:
-    merge input 0 = existing branch, inputs 1..N = new USD branches.
-    Downstream wires and display flag move to the merge node.
+    Nodes are created in the active Network Editor view (no selection required).
+    Not wired to each other. Names from filename after *strip_name*.
 
     Returns ``(count, message)``.
     """
-    if connect_after is None:
-        connect_after = hou.node("/stage")
-        if connect_after is not None:
-            for n in connect_after.allSubChildren():
-                if n.type().category() != hou.lopNodeTypeCategory():
-                    continue
-                try:
-                    if n.isDisplayFlagSet():
-                        connect_after = n
-                        break
-                except hou.OperationFailed:
-                    continue
-
-    if connect_after is not None and connect_after.type().category() != hou.lopNodeTypeCategory():
-        return 0, "connect_after must be a LOP node."
-
     layers = collect_usd_files(folder, recursive=recursive)
     if not layers:
         return 0, f"No USD files found in {folder!r}"
 
-    parent = _stage_parent(connect_after)
+    parent = _resolve_parent()
     lop_type = "sublayer" if mode == "sublayer" else "reference"
-    branch_heads: list[hou.Node] = []
+    created_nodes: list[hou.Node] = []
     used_prim_paths: set[str] = set()
     created = 0
 
     for idx, (abs_path, label) in enumerate(layers):
-        base = _safe_node_name(label)
-        node_name = f"{NODE_PREFIX}{idx}_{base}"
+        base = node_name_from_label(label, strip_name)
+        node_name = _unique_node_name(parent, base)
         try:
             node = parent.createNode(lop_type, node_name=node_name)
         except hou.OperationFailed as exc:
@@ -215,10 +182,10 @@ def load_usd_folder(
 
         ok = False
         if mode == "sublayer":
-            ok = _configure_single_file_sublayer(node, abs_path)
+            ok = configure_single_file_sublayer(node, abs_path)
         else:
             prefix = parent_prim_prefix.rstrip("/")
-            prim_path = _prim_path_from_label(label, idx=idx, used=used_prim_paths)
+            prim_path = _prim_path_from_label(label, strip_name, idx=idx, used=used_prim_paths)
             if prefix:
                 prim_path = f"{prefix}{prim_path}"
             ok = _configure_reference_lop(node, abs_path, prim_path)
@@ -227,79 +194,17 @@ def load_usd_folder(
             node.destroy()
             continue
 
-        node.moveToGoodPosition()
-        branch_heads.append(node)
+        created_nodes.append(node)
         created += 1
 
     if created == 0:
         return 0, f"Could not configure any USD LOPs from {folder!r}"
 
-    if connect_after is None:
-        msg = f"Created {created} {lop_type} LOP(s) in {parent.path()}."
-        _log(msg)
-        return created, msg
+    _layout_nodes_in_view(created_nodes)
 
-    try:
-        merge = parent.createNode("merge", node_name=f"{NODE_PREFIX}merge")
-    except hou.OperationFailed as exc:
-        for n in branch_heads:
-            n.destroy()
-        return 0, f"Could not create merge LOP: {exc}"
-
-    in_idx = 0
-    try:
-        merge.setInput(in_idx, connect_after)
-        in_idx += 1
-    except hou.OperationFailed:
-        pass
-
-    for head in branch_heads:
-        try:
-            merge.setInput(in_idx, head)
-            in_idx += 1
-        except hou.OperationFailed as exc:
-            _log(f"merge setInput failed: {exc}")
-
-    _rewire_outputs(connect_after, merge)
-    _apply_display_flag(connect_after, merge)
-
-    pos = connect_after.position()
-    merge.setPosition((pos[0], pos[1] - 1.5))
-    for i, head in enumerate(branch_heads):
-        head.setPosition((pos[0] - 2.0 * (i + 1), pos[1] - 2.5))
-
-    msg = f"Loaded {created} USD file(s) via {mode} into {merge.path()}."
+    msg = f"Created {created} {lop_type} LOP(s) in {parent.path()}."
     _log(msg)
     return created, msg
-
-
-def _pick_folder() -> str | None:
-    try:
-        picked = hou.ui.selectFile(
-            title="Select USD folder",
-            file_type=hou.fileType.Directory,
-            pattern="*",
-        )
-    except hou.OperationFailed:
-        return None
-    if not picked:
-        return None
-    return os.path.normpath(hou.expandString(picked))
-
-
-def _pick_mode() -> LoadMode | None:
-    try:
-        choice = hou.ui.selectFromList(
-            ["Sublayer (compose layers)", "Reference (prim per file)"],
-            title="USD load mode",
-            column_header="Mode",
-            exclusive=True,
-        )
-    except hou.OperationFailed:
-        return None
-    if not choice:
-        return None
-    return "sublayer" if choice[0] == 0 else "reference"
 
 
 def run(
@@ -307,29 +212,21 @@ def run(
     *,
     mode: LoadMode | None = None,
     recursive: bool = False,
+    strip_name: str = "",
 ) -> None:
-    """Interactive entry: folder picker, mode menu, load into selected/display LOP."""
-    selected: hou.Node | None = None
-    for n in hou.selectedNodes():
-        if n.type().category() == hou.lopNodeTypeCategory():
-            selected = n
-            break
+    """Open MONOS UI (preferred). Programmatic args skip the dialog fields."""
+    from tools.fx.usd_batch_loader.controller import run as _run_ui
 
-    if folder is None:
-        folder = _pick_folder()
-    if not folder:
+    if folder is None and mode is None and not recursive and not strip_name:
+        _run_ui()
         return
 
-    if mode is None:
-        mode = _pick_mode()
-    if mode is None:
-        return
-
+    load_mode: LoadMode = mode or "sublayer"
     count, msg = load_usd_folder(
-        folder,
-        mode=mode,
-        connect_after=selected,
+        folder or "",
+        mode=load_mode,
         recursive=recursive,
+        strip_name=strip_name,
     )
     if count == 0:
         try:

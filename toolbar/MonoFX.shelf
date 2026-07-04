@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <shelfDocument>
   <toolshelf name="MonoFX" label="MonoFX">
+    <memberTool name="monofx_restart_houdini"/>
     <memberTool name="monofx_scene_info"/>
     <memberTool name="monofx_split_geometry"/>
     <memberTool name="monofx_search_replace"/>
@@ -8,6 +9,76 @@
     <memberTool name="monofx_usd_batch_loader"/>
     <memberTool name="monofx_node_preset_library"/>
   </toolshelf>
+
+  <tool name="monofx_restart_houdini" label="Restart Houdini" icon="restart">
+    <helpText><![CDATA[Save (optional) and restart Houdini, reopening the current .hip file.]]></helpText>
+    <script scriptType="python"><![CDATA[
+import hou
+import os
+import subprocess
+import sys
+
+def _houdini_executable():
+    path_fn = getattr(hou, "applicationBinaryPath", None)
+    if callable(path_fn):
+        return path_fn()
+
+    hfs = hou.getenv("HFS") or os.environ.get("HFS", "")
+    if not hfs:
+        raise hou.Error("Cannot locate Houdini install (HFS is not set).")
+
+    bin_dir = os.path.join(hfs, "bin")
+    candidates = []
+    app = hou.applicationName()
+    if app:
+        candidates.append(app)
+    candidates.extend(("houdini", "houdinifx", "houdinicore"))
+
+    seen = set()
+    for name in candidates:
+        if name in seen:
+            continue
+        seen.add(name)
+        exe_name = name if name.lower().endswith(".exe") else name + (".exe" if sys.platform == "win32" else "")
+        path = os.path.join(bin_dir, exe_name)
+        if os.path.isfile(path):
+            return os.path.normpath(path)
+
+    raise hou.Error("Cannot locate Houdini executable in %s." % bin_dir)
+
+def _restart():
+    exe = _houdini_executable()
+    hip = hou.hipFile.path()
+    args = [exe] + ([hip] if hip else [])
+    flags = 0
+    if sys.platform == "win32":
+        flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
+    subprocess.Popen(args, cwd=os.path.dirname(exe), creationflags=flags)
+    hou.exit(suppress_save_prompt=True)
+
+if hou.hipFile.hasUnsavedChanges():
+    choice = hou.ui.displayMessage(
+        "Restart Houdini?\n\nThe current scene has unsaved changes.",
+        buttons=("Save & Restart", "Restart Without Saving", "Cancel"),
+        default_choice=0,
+        close_choice=2,
+        severity=hou.severityType.Warning,
+    )
+    if choice == 0 and hou.hipFile.save():
+        _restart()
+    elif choice == 1:
+        _restart()
+else:
+    choice = hou.ui.displayMessage(
+        "Restart Houdini?",
+        buttons=("Restart", "Cancel"),
+        default_choice=0,
+        close_choice=1,
+    )
+    if choice == 0:
+        _restart()
+]]></script>
+  </tool>
 
   <tool name="monofx_scene_info" label="Scene Info" icon="info">
     <helpText><![CDATA[Show current .hip path and selected node count.]]></helpText>

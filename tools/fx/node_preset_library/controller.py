@@ -4,7 +4,6 @@ Node Preset Library controller — UI + logic + Houdini adapter.
 
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -16,11 +15,13 @@ from tools.fx.node_preset_library.logic import (
     add_category,
     add_preset,
     category_id_from_name,
+    delete_preset,
     ensure_library_root,
     list_categories,
     list_presets,
     get_preset,
     merge_library_from_folder,
+    new_preset_id,
     preset_relative_paths,
     count_presets_by_category,
 )
@@ -97,10 +98,8 @@ def run() -> None:
 
     ui.on_category_selected(on_category_selected)
     refresh_categories()
+    ui.ensure_category_selected()
     cid = ui.get_selected_category_id() or "__all__"
-    if cid is None and ui._category_list.count() > 0:
-        ui._category_list.setCurrentRow(0)
-        cid = ui.get_selected_category_id() or "__all__"
     refresh_presets(cid)
 
     def open_save_dialog() -> None:
@@ -152,11 +151,10 @@ def run() -> None:
             state["network"] = networks[0]
             if hasattr(ui, "set_network_filter_value"):
                 ui.set_network_filter_value(state["network"])
-        cat_id = dialog.get_category_id()
-        if not cat_id:
-            cat_id = "uncategorized"
-        add_category(dialog.get_category() or "Uncategorized", library_root)
-        preset_id = uuid.uuid4().hex[:12]
+        cat_name = dialog.get_category() or "Uncategorized"
+        cat_id = category_id_from_name(cat_name)
+        add_category(cat_name, library_root)
+        preset_id = new_preset_id()
         rel_cpio, rel_thumb = preset_relative_paths(cat_id, preset_id)
         full_cpio = library_root / rel_cpio
         full_cpio.parent.mkdir(parents=True, exist_ok=True)
@@ -277,6 +275,34 @@ def run() -> None:
 
     ui.on_insert_clicked(lambda: on_insert_clicked())
     ui.on_preset_double_clicked(lambda pid: on_insert_clicked(pid))
+
+    def on_delete_clicked() -> None:
+        pid = ui.get_selected_preset_id()
+        if not pid:
+            ui.set_message("Select a preset first.", error=True)
+            return
+        preset = get_preset(pid, library_root)
+        if not preset:
+            ui.set_message("Preset not found.", error=True)
+            return
+        name = preset.get("name", pid)
+        answer = QMessageBox.question(
+            ui,
+            "Delete preset",
+            f"Delete preset \"{name}\"? This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        if not delete_preset(pid, library_root):
+            ui.set_message("Failed to delete preset.", error=True)
+            return
+        ui.set_message(f"Deleted preset: {name}")
+        refresh_categories(ui.get_selected_category_id())
+        refresh_presets(state["category_id"])
+
+    ui.on_delete_clicked(on_delete_clicked)
 
     parent_win = h.get_main_qt_window()
     if parent_win:
