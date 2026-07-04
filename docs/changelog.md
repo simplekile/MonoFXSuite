@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Houdini
+- Add **USD Batch Load** shelf tool and `file_usd` icon.
+
+### Release
+- GitHub releases attach Blender add-on ZIP (`monofx_pipeline_blender_v*.zip`) alongside `MonoFXSuite_Setup.exe`.
+
 
 ## [0.1.12] - 2026-07-04
 
