@@ -1,5 +1,6 @@
 ; MonoFX Suite — Inno Setup script (skeleton)
-; Chỉnh lại AppId, version, paths khi build thật.
+; AppId MUST differ from MonoStudio26 — shared AppId makes Inno reuse the previous install dir
+; (e.g. Documents\houdiniXX.X\monofx) when updating Mono Studio after MonoFX Suite was installed.
 
 #define MyAppName "MonoFX Suite"
 #ifndef MyAppVersion
@@ -9,7 +10,7 @@
 #define MyAppURL "https://github.com/simplekile/MonoFXSuite"
 
 [Setup]
-AppId={{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+AppId={{2DF1F03B-9A9D-4AEE-AC29-FFD72DE15618}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}

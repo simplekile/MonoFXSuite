@@ -1,4 +1,7 @@
-## [0.1.15] - 2026-07-05
+## [0.1.16] - 2026-07-05
+
+### Installer
+- Fix **Inno Setup AppId** collision with MonoStudio26 — updating Mono Studio no longer installs into `Documents\houdiniXX.X\monofx` after MonoFX Suite was installed first.
 
 ### Blender
-- Add **GitHub Releases updater** in add-on preferences (check/install from `monofx_pipeline_blender_v*.zip`); bump add-on to **0.9.86**.
+- Bump add-on to **0.9.88**.

@@ -8,6 +8,7 @@
 
 ## Khác với MonoStudio
 
+- **AppId Inno Setup riêng**: `MonoFXSuite.iss` phải dùng AppId khác MonoStudio26. Trùng AppId khiến Inno nhớ nhầm thư mục cài (vd. update Mono Studio sau khi cài MonoFX Suite → cài vào `Documents\houdiniXX.X\monofx`).
 - **Không dùng PyInstaller**: MonoFXSuite là toolkit (Python chạy trong DCC), chỉ đóng gói file nguồn + config bằng Inno Setup.
 - **Không** có `build_version.py` hay auto-commit. Version lấy từ file `VERSION` (một nguồn); đồng bộ với `docs/changelog.md` (section `## [x.y.z]`).
 
