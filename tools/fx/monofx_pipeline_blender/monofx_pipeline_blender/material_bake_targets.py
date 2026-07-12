@@ -13,7 +13,6 @@ import bpy
 from bpy.props import BoolProperty, CollectionProperty, EnumProperty, IntProperty, PointerProperty, StringProperty
 from bpy.types import Context, PropertyGroup, UIList, UILayout
 
-from . import config
 from .asset_hierarchy import (
     asset_collection_name_for,
     get_asset_hierarchy_from_collection,

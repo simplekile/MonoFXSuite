@@ -12,7 +12,7 @@ import bpy
 
 from . import anim_collections
 from . import anim_keys_bpy
-from .pipeline_common.camera_naming import (
+from monofx_pipeline_common.camera_naming import (
     _CAMERA_RIG_PART_KEYS,
     camera_name_from_rig_part,
     camera_rig_names,

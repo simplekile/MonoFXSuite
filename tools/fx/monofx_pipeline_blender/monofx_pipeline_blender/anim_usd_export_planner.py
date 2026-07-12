@@ -18,9 +18,9 @@ from .anim_usd_cache_exporter import (
     collect_publish_geo_groups,
 )
 from .anim_usd_cache_paths_ui import ensure_usd_extension, scene_blend_path
-from .pipeline_common.anim_geo_naming import resolve_geo_usd_basename
-from .pipeline_common.anim_geo_merge import group_publish_geo_by_link
-from .pipeline_common.project_layout import find_project_root, parse_asset_from_project_path
+from monofx_pipeline_common.anim_geo_naming import resolve_geo_usd_basename
+from monofx_pipeline_common.anim_geo_merge import group_publish_geo_by_link
+from monofx_pipeline_common.project_layout import find_project_root, parse_asset_from_project_path
 from .rig_adapter import _collection_rig_paths
 
 

@@ -7,8 +7,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from .pipeline_common.project_layout import find_project_root, list_asset_groups
-from .pipeline_common.rig_library import (
+from monofx_pipeline_common.project_layout import find_project_root, list_asset_groups
+from monofx_pipeline_common.rig_library import (
     BLENDER_EXTENSIONS,
     DEFAULT_BLENDER_WORK_SUBPATH,
     DEFAULT_PUBLISH_SUBPATH,

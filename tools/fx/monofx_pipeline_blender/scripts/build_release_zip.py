@@ -14,39 +14,22 @@ _PKG_ROOT = Path(__file__).resolve().parents[1]
 _ADDON_DIR = _PKG_ROOT / "monofx_pipeline_blender"
 _RELEASES = _PKG_ROOT / "releases"
 _REPO_ROOT = _PKG_ROOT.parents[2]
-_COMMON_SRC = _REPO_ROOT / "apps" / "common"
-_BUNDLED_COMMON = _ADDON_DIR / "pipeline_common"
+_PKG_COMMON_SRC = _REPO_ROOT / "packages" / "monofx_pipeline_common" / "src" / "monofx_pipeline_common"
+_VENDOR_DIR = _ADDON_DIR / "vendor" / "monofx_pipeline_common"
 
 
-def _sync_pipeline_common() -> None:
-    """Copy shared apps/common modules into the add-on bundle."""
-    if not _COMMON_SRC.is_dir():
-        return
-    _BUNDLED_COMMON.mkdir(parents=True, exist_ok=True)
-    for name in ("project_layout.py", "rig_library.py", "rig_naming.py"):
-        src = _COMMON_SRC / name
-        if src.is_file():
-            shutil.copy2(src, _BUNDLED_COMMON / name)
-    init_py = _BUNDLED_COMMON / "__init__.py"
-    if not init_py.is_file():
-        init_py.write_text("# Bundled pipeline_common (from apps/common).\n", encoding="utf-8")
-    for bundled_name, replacements in (
-        (
-            "rig_library.py",
-            (("from apps.common.project_layout import", "from .project_layout import"),),
-        ),
-        (
-            "rig_naming.py",
-            (("from apps.common.rig_library import", "from .rig_library import"),),
-        ),
-    ):
-        bundled = _BUNDLED_COMMON / bundled_name
-        if not bundled.is_file():
-            continue
-        text = bundled.read_text(encoding="utf-8")
-        for old, new in replacements:
-            text = text.replace(old, new)
-        bundled.write_text(text, encoding="utf-8")
+def _vendor_pipeline_common() -> None:
+    """Bundle monofx_pipeline_common into the add-on vendor folder for ZIP installs."""
+    if not _PKG_COMMON_SRC.is_dir():
+        raise SystemExit(f"monofx_pipeline_common package not found: {_PKG_COMMON_SRC}")
+    _VENDOR_DIR.parent.mkdir(parents=True, exist_ok=True)
+    if _VENDOR_DIR.exists():
+        shutil.rmtree(_VENDOR_DIR)
+    shutil.copytree(
+        _PKG_COMMON_SRC,
+        _VENDOR_DIR,
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
 
 
 _VERSION_RE = re.compile(
@@ -101,7 +84,7 @@ def build(out_path: Path | None = None) -> Path:
     if not _ADDON_DIR.is_dir():
         raise SystemExit(f"Add-on folder not found: {_ADDON_DIR}")
 
-    _sync_pipeline_common()
+    _vendor_pipeline_common()
     major, minor, patch = _read_version()
     _RELEASES.mkdir(parents=True, exist_ok=True)
     if out_path is None:
@@ -124,7 +107,7 @@ def build(out_path: Path | None = None) -> Path:
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sync pipeline_common, optionally bump add-on version, build install ZIP.",
+        description="Vendor monofx_pipeline_common, optionally bump add-on version, build install ZIP.",
     )
     parser.add_argument(
         "--bump",

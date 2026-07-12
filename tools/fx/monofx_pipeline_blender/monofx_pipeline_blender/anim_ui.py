@@ -5,13 +5,16 @@ Anim Tools tab UI.
 from __future__ import annotations
 
 import bpy
-from bpy.types import Context, UILayout
+from bpy.types import Context, Panel, UILayout
 
 from . import anim_camera
 from . import anim_collections
+from . import anim_sine_chain_bpy
+from . import anim_sine_ramp_bpy
 from . import anim_transform
 from . import preferences
 from . import ui_style
+from monofx_pipeline_common.anim_sine_chain import resolve_sine_axis_settings
 
 
 def _draw_anim_shot_section(body: UILayout, _context: Context) -> None:
@@ -78,6 +81,11 @@ def _draw_anim_transform_section(body: UILayout, context: Context) -> None:
 
 def _draw_anim_keys_section(body: UILayout, context: Context) -> None:
     props = context.scene.monofx_pipeline_blender_props
+    body.operator(
+        "wm.mono_fx_anim_edit_exact_key",
+        text="Edit Exact Keyframe",
+        icon="KEYFRAME",
+    )
     ui_style.prop_checkbox(body, props, "anim_clean_single_key")
     ui_style.prop_checkbox(body, props, "anim_clean_static_key")
     body.operator(
@@ -85,6 +93,161 @@ def _draw_anim_keys_section(body: UILayout, context: Context) -> None:
         text="Clean Static Keys",
         icon="BRUSH_DATA",
     )
+
+
+def draw_sine_amp_ramp_popover(
+    layout: UILayout,
+    context: Context,
+    *,
+    channel: str,
+    axis: str,
+) -> None:
+    props = context.scene.monofx_pipeline_blender_props
+    axis_props = resolve_sine_axis_settings(props, channel, axis)
+    layout.label(
+        text=f"{channel.title()} {axis} — Amplitude Ramp",
+        icon="GRAPH",
+    )
+    ui_style.draw_panel_tabs(layout, axis_props, "amp_ramp_mode")
+    body = layout.column()
+    if axis_props.amp_ramp_mode == "ROOT_TIP":
+        body.prop(axis_props, "amp_root")
+        body.prop(axis_props, "amp_tip")
+        body.label(text="Linear amplitude from root → tip", icon="INFO")
+    else:
+        body.label(text="Y multiplies main Amplitude; X is root → tip", icon="INFO")
+        ramp_node = anim_sine_ramp_bpy.get_amp_ramp_node(channel, axis, create=False)
+        if ramp_node is None:
+            anim_sine_ramp_bpy.schedule_amp_ramp_node_ensure(channel, axis)
+            row = body.row()
+            row.enabled = False
+            row.label(text="Ramp curve loading…", icon="INFO")
+        else:
+            body.template_curve_mapping(ramp_node, "mapping", type="NONE")
+    row = body.row()
+    refresh = row.operator(
+        "wm.mono_fx_anim_refresh_sine_ramp",
+        text="Refresh Ramp",
+        icon="FILE_REFRESH",
+    )
+    refresh.channel = channel
+    refresh.axis = axis
+
+
+class MONOFX_PT_sine_amp_ramp(Panel):
+    bl_label = "Amplitude Ramp"
+    bl_idname = "MONOFX_PT_sine_amp_ramp"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_ui_units_x = 20
+
+    def draw(self, context: Context) -> None:
+        props = context.scene.monofx_pipeline_blender_props
+        channel = str(props.anim_sine_channel)
+        axis = str(props.anim_sine_axis).upper()
+        if axis not in {"X", "Y", "Z"}:
+            axis = "Z"
+        draw_sine_amp_ramp_popover(self.layout, context, channel=channel, axis=axis)
+
+
+def _draw_sine_axis_params(body: UILayout, props, *, channel: str, axis: str) -> None:
+    axis_props = resolve_sine_axis_settings(props, channel, axis)
+    body.label(text=f"{channel.title()} {axis}", icon="NONE")
+    row = body.row(align=True)
+    row.prop(axis_props, "amplitude")
+    anim_sine_ramp_bpy.schedule_amp_ramp_node_ensure(channel, axis)
+    row.popover(
+        panel="MONOFX_PT_sine_amp_ramp",
+        text="",
+        icon="PREFERENCES",
+    )
+    body.prop(axis_props, "speed")
+    body.prop(axis_props, "frequency")
+    row = body.row(align=True)
+    row.prop(axis_props, "phase")
+    row.operator(
+        "wm.mono_fx_anim_randomize_sine_phase",
+        text="",
+        icon="FILE_REFRESH",
+    )
+
+
+def _draw_anim_chain_section(body: UILayout, context: Context, *, prefs) -> None:
+    props = context.scene.monofx_pipeline_blender_props
+    rows, chain_err = anim_sine_chain_bpy.preview_sine_chain_rows(context)
+    chain_title = (
+        f"Chain Targets ({len(rows)})" if rows else "Chain Targets"
+    )
+
+    ui_style.draw_panel_tabs(body, props, "anim_sine_channel")
+    channel = str(props.anim_sine_channel)
+    _tabs, tab_body = ui_style.draw_vertical_tabs(body, props, "anim_sine_axis")
+    axis = str(props.anim_sine_axis).upper()
+    if axis not in {"X", "Y", "Z"}:
+        axis = "Z"
+    _draw_sine_axis_params(tab_body, props, channel=channel, axis=axis)
+
+    body.prop(props, "anim_sine_bone_mode", text="Chain Mode")
+    body.prop(props, "anim_sine_multi_chain", text="Multi Chains")
+    if props.anim_sine_multi_chain:
+        hint = body.row()
+        hint.enabled = False
+        hint.label(
+            text="Select one bone/object per chain; params apply to all chains",
+            icon="INFO",
+        )
+    if props.anim_sine_bone_mode == "SELECTION":
+        hint = body.row()
+        hint.enabled = False
+        if context.mode == "POSE":
+            hint.label(text="Select pose bones for the chain", icon="INFO")
+        elif context.mode == "OBJECT":
+            hint.label(text="Select objects for the chain", icon="INFO")
+
+    row = body.row(align=True)
+    row.operator(
+        "wm.mono_fx_anim_apply_sine_chain",
+        text="Apply Sine Chain",
+        icon="FORCE_CURVE",
+    )
+    row.operator(
+        "wm.mono_fx_anim_clear_sine_chain",
+        text="Clear Sine Chain",
+        icon="X",
+    )
+    row = body.row(align=True)
+    row.operator(
+        "wm.mono_fx_anim_bake_sine_chain",
+        text="Bake Sine Chain",
+        icon="REC",
+    )
+    row.prop(props, "anim_sine_bake_clear_drivers", text="Clear Drivers")
+
+    list_body, list_open = ui_style.collapsible_section(
+        body,
+        "monofx_anim_chain_targets",
+        chain_title,
+        icon="OUTLINER",
+        default_closed=False,
+        prefs=prefs,
+    )
+    if list_open and list_body is not None:
+        if chain_err:
+            hint = list_body.row()
+            hint.enabled = False
+            hint.label(text=chain_err, icon="INFO")
+        elif not rows:
+            hint = list_body.row()
+            hint.enabled = False
+            hint.label(text="No chain resolved", icon="INFO")
+        else:
+            col = list_body.column(align=True)
+            col.enabled = False
+            for label, has_driver in rows:
+                col.label(
+                    text=label,
+                    icon="DRIVER" if has_driver else "DOT",
+                )
 
 
 def _draw_camera_motion_guide(
@@ -667,3 +830,5 @@ def draw_anim_tools_tab(layout: UILayout, context: Context) -> None:
         _draw_anim_transform_section(body, context)
     elif section == "KEYS":
         _draw_anim_keys_section(body, context)
+    elif section == "CHAIN":
+        _draw_anim_chain_section(body, context, prefs=prefs)

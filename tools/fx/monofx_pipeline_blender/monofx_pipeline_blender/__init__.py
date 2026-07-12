@@ -12,6 +12,27 @@ Smoke test (manual):
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+
+def _ensure_pipeline_common_on_path() -> None:
+    addon_root = Path(__file__).resolve().parent
+    vendor = addon_root / "vendor"
+    if vendor.is_dir():
+        v = str(vendor)
+        if v not in sys.path:
+            sys.path.insert(0, v)
+        return
+    repo_common = addon_root.parents[4] / "packages" / "monofx_pipeline_common" / "src"
+    if repo_common.is_dir():
+        v = str(repo_common)
+        if v not in sys.path:
+            sys.path.insert(0, v)
+
+
+_ensure_pipeline_common_on_path()
+
 import json
 import os
 from dataclasses import dataclass
@@ -103,12 +124,15 @@ from . import rig_linking
 from . import rig_ui
 from . import anim_ui
 from . import anim_ops
+from . import anim_sine_props
+from . import anim_sine_ramp_bpy
 from . import anim_usd_cache_ui
 from . import anim_usd_cache_ops
 from . import anim_usd_cache_asset_list
 from . import geo_usd_publish_list
 from . import anim_camera
 from . import scene_version
+from monofx_pipeline_common.version_description_presets import DEPARTMENT_ENUM_ITEMS
 from . import keymaps
 from . import addon_updater
 
@@ -116,7 +140,7 @@ from . import addon_updater
 bl_info = {
     "name": "MonoFX Pipeline Blender",
     "author": "MonoFXSuite",
-    "version": (0, 9, 88),
+    "version": (0, 9, 109),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > MonoFX",
     "description": (
@@ -736,6 +760,20 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         description="Optional note appended to the version filename (e.g. layoutPass)",
         default="",
     )
+    save_version_department: EnumProperty(
+        name="Department",
+        description="Pipeline department for version-description presets",
+        items=DEPARTMENT_ENUM_ITEMS,
+        default=6,
+        update=scene_version.on_save_version_department,
+    )
+    save_version_description_preset: EnumProperty(
+        name="Preset",
+        description="Common version-description suffix for the selected department",
+        items=scene_version.save_version_description_preset_items,
+        default=0,
+        update=scene_version.on_save_version_description_preset,
+    )
     save_version_preview_num: IntProperty(
         name="Next Version",
         description="Cached next save-version number for the UI button label",
@@ -1010,6 +1048,55 @@ class MonoFXProperties(bpy.types.PropertyGroup):
     anim_clean_static_key: BoolProperty(
         name="Clean Static Curves",
         description="Remove fcurves where all key values are identical",
+        default=True,
+    )
+    anim_sine_channel: EnumProperty(
+        name="Channel",
+        description="Transform channel for sine chain parameters",
+        items=[
+            ("ROTATION", "Rotation", "Rotation euler parameters"),
+            ("LOCATION", "Location", "Location parameters"),
+        ],
+        default="ROTATION",
+    )
+    anim_sine_axis: EnumProperty(
+        name="Axis",
+        description="Axis for sine chain parameters",
+        items=[
+            ("X", "X", "X axis", "AXIS_FRONT", 0),
+            ("Y", "Y", "Y axis", "AXIS_SIDE", 1),
+            ("Z", "Z", "Z axis", "AXIS_TOP", 2),
+        ],
+        default="Z",
+    )
+    anim_sine_rot_x: PointerProperty(type=anim_sine_props.AnimSineRotXParams)
+    anim_sine_rot_y: PointerProperty(type=anim_sine_props.AnimSineRotYParams)
+    anim_sine_rot_z: PointerProperty(type=anim_sine_props.AnimSineRotZParams)
+    anim_sine_loc_x: PointerProperty(type=anim_sine_props.AnimSineLocXParams)
+    anim_sine_loc_y: PointerProperty(type=anim_sine_props.AnimSineLocYParams)
+    anim_sine_loc_z: PointerProperty(type=anim_sine_props.AnimSineLocZParams)
+    anim_sine_bone_mode: EnumProperty(
+        name="Chain Mode",
+        description="How to resolve the sine chain from the current selection",
+        items=[
+            ("SELECTION", "Selection", "Use manually selected bones or objects (root → leaf order)"),
+            ("AUTO", "Auto", "Numbered c_ series when found, else local parent branch"),
+            ("HIERARCHY", "Hierarchy", "Parent branch at fork only (not full rig to root)"),
+            ("NAMING", "Naming", "Numbered c_ control series by bone name"),
+        ],
+        default="AUTO",
+    )
+    anim_sine_multi_chain: BoolProperty(
+        name="Multi Chains",
+        description=(
+            "When several bones or objects from different chains are selected, "
+            "resolve each chain separately and apply the same parameters to all"
+        ),
+        default=True,
+    )
+    anim_sine_bake_clear_drivers: BoolProperty(
+        name="Clear Drivers After Bake",
+        description="Remove sine drivers after baking keyframes",
         default=True,
     )
     anim_camera_active_rig: EnumProperty(
@@ -3388,6 +3475,7 @@ classes = (
     *MATERIAL_BAKE_TARGET_PROPERTY_GROUP_CLASSES,
     *MATERIAL_BAKE_TARGET_UI_LIST_CLASSES,
     *MATERIAL_BAKE_TARGET_OPERATOR_CLASSES,
+    *anim_sine_props.SINE_AXIS_PROPERTY_GROUPS,
     MonoFXProperties,
     MONOFX_OT_create_hierarchy,
     MONOFX_OT_auto_parent,
@@ -3427,6 +3515,7 @@ classes = (
     *anim_usd_cache_ops.ANIM_USD_OPERATOR_CLASSES,
     *anim_ops.ANIM_OPERATOR_CLASSES,
     MONOFX_PT_model,
+    anim_ui.MONOFX_PT_sine_amp_ramp,
     MONOFX_PT_anim,
     *rig_linking.RIG_OPERATOR_CLASSES,
     *rig_ui.RIG_UI_CLASSES,
@@ -3578,6 +3667,11 @@ def register() -> None:
     scene_version.register_scene_version_handlers()
     keymaps.register_keymaps(classes)
     keymaps.register_legacy_aliases(classes)
+    try:
+        bpy.app.timers.register(anim_sine_ramp_bpy._deferred_init_ramp_nodes_timer, first_interval=0.5)
+    except Exception:
+        pass
+    anim_sine_ramp_bpy.register_ramp_listeners()
 
 
 def unregister() -> None:
@@ -3587,6 +3681,7 @@ def unregister() -> None:
     anim_camera.unregister_aim_to_cursor_listeners()
     geo_usd_publish_list.unregister_publish_list_listeners()
     rig_linking.unregister_rig_listeners()
+    anim_sine_ramp_bpy.unregister_ramp_listeners()
     try:
         bpy.types.VIEW3D_MT_object_context_menu.remove(rig_ui.draw_rig_context_menu)
     except Exception:

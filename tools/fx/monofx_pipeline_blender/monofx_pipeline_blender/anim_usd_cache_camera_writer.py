@@ -31,7 +31,7 @@ def collect_camera_usd_export_objects(cam_obj: bpy.types.Object) -> list[bpy.typ
 
     Includes ``*_aim`` (TRACK_TO target) which is not in the camera parent chain.
     """
-    from .pipeline_common.camera_naming import (
+    from monofx_pipeline_common.camera_naming import (
         camera_name_from_rig_part,
         iter_camera_rig_object_names,
     )
@@ -139,7 +139,7 @@ def camera_usd_output_path(
     """``cam_sh###.usd`` beside geo files (shot-based, not geo asset name)."""
     from pathlib import Path
 
-    from .pipeline_common.camera_naming import resolve_camera_usd_basename
+    from monofx_pipeline_common.camera_naming import resolve_camera_usd_basename
 
     base = resolve_camera_usd_basename(cam_object_name, scene_path=scene_path)
     return Path(output_dir) / f"{base}.usd"

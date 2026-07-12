@@ -13,7 +13,13 @@ from . import anim_transform
 from .anim_camera import resolve_view3d
 from . import anim_collections
 from . import anim_keys_bpy
-from .pipeline_common.anim_chains import chain_members_from_hierarchy
+import random
+
+from . import anim_sine_chain_bpy
+from . import anim_exact_key_bpy
+from . import anim_sine_ramp_bpy
+from monofx_pipeline_common.anim_sine_chain import resolve_sine_axis_settings
+from monofx_pipeline_common.anim_chains import chain_members_from_hierarchy
 from bpy.props import EnumProperty, StringProperty
 
 
@@ -195,21 +201,272 @@ class MONOFX_OT_anim_select_chain(Operator):
         return {"FINISHED"}
 
 
+class MONOFX_OT_anim_apply_sine_chain(Operator):
+    bl_idname = "wm.mono_fx_anim_apply_sine_chain"
+    bl_label = "Apply Sine Chain"
+    bl_description = (
+        "Add procedural sine drivers along the selected bone or object chain "
+        "for the active Rotation/Location and X/Y/Z tab"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context: Context) -> bool:
+        if context.mode == "POSE":
+            obj = context.active_object
+            return (
+                obj is not None
+                and obj.type == "ARMATURE"
+                and bool(context.selected_pose_bones)
+            )
+        if context.mode == "OBJECT":
+            props = _pipeline_props(context)
+            if str(props.anim_sine_bone_mode) == "SELECTION":
+                return len(context.selected_objects) >= 1
+            return context.active_object is not None
+        return False
+
+    def execute(self, context: Context) -> set[str]:
+        props = _pipeline_props(context)
+        try:
+            groups, err = anim_sine_chain_bpy.resolve_sine_chain_groups(context)
+            if err:
+                self.report({"WARNING"}, err)
+                return {"CANCELLED"}
+
+            applied, warnings = anim_sine_chain_bpy.apply_sine_chain_groups(
+                context,
+                groups,
+                channel=str(props.anim_sine_channel),
+                axis=str(props.anim_sine_axis),
+            )
+        except Exception as exc:
+            self.report({"ERROR"}, f"Sine chain failed: {exc}")
+            return {"CANCELLED"}
+
+        if applied == 0:
+            self.report({"WARNING"}, "No sine drivers were applied.")
+            return {"CANCELLED"}
+
+        for msg in warnings:
+            self.report({"WARNING"}, msg)
+        anim_sine_ramp_bpy.refresh_all_sine_ramp_drivers(context)
+        chain_count = len(groups)
+        if chain_count > 1:
+            self.report(
+                {"INFO"},
+                f"Applied sine chain to {applied} target(s) across {chain_count} chains.",
+            )
+        else:
+            self.report({"INFO"}, f"Applied sine chain to {applied} target(s).")
+        return {"FINISHED"}
+
+
+class MONOFX_OT_anim_clear_sine_chain(Operator):
+    bl_idname = "wm.mono_fx_anim_clear_sine_chain"
+    bl_label = "Clear Sine Chain"
+    bl_description = "Remove MonoFX sine drivers from the resolved chain"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context: Context) -> bool:
+        if context.mode == "POSE":
+            obj = context.active_object
+            return (
+                obj is not None
+                and obj.type == "ARMATURE"
+                and bool(context.selected_pose_bones)
+            )
+        if context.mode == "OBJECT":
+            props = _pipeline_props(context)
+            if str(props.anim_sine_bone_mode) == "SELECTION":
+                return len(context.selected_objects) >= 1
+            return context.active_object is not None
+        return False
+
+    def execute(self, context: Context) -> set[str]:
+        targets, err = anim_sine_chain_bpy.resolve_sine_chain_targets(context)
+        if err:
+            self.report({"WARNING"}, err)
+            return {"CANCELLED"}
+
+        to_clear = anim_sine_chain_bpy.targets_with_sine_drivers(targets)
+        if not to_clear:
+            self.report({"WARNING"}, "No MonoFX sine drivers found on this chain.")
+            return {"CANCELLED"}
+
+        cleared = anim_sine_chain_bpy.clear_sine_chain_drivers(to_clear)
+        self.report({"INFO"}, f"Cleared sine chain from {cleared} target(s).")
+        return {"FINISHED"}
+
+
+class MONOFX_OT_anim_bake_sine_chain(Operator):
+    bl_idname = "wm.mono_fx_anim_bake_sine_chain"
+    bl_label = "Bake Sine Chain"
+    bl_description = (
+        "Bake resolved sine drivers to keyframes over the scene frame range"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def poll(cls, context: Context) -> bool:
+        if context.mode == "POSE":
+            obj = context.active_object
+            return (
+                obj is not None
+                and obj.type == "ARMATURE"
+                and bool(context.selected_pose_bones)
+            )
+        if context.mode == "OBJECT":
+            props = _pipeline_props(context)
+            if str(props.anim_sine_bone_mode) == "SELECTION":
+                return len(context.selected_objects) >= 1
+            return context.active_object is not None
+        return False
+
+    def execute(self, context: Context) -> set[str]:
+        props = _pipeline_props(context)
+        targets, err = anim_sine_chain_bpy.resolve_sine_chain_targets(context)
+        if err:
+            self.report({"WARNING"}, err)
+            return {"CANCELLED"}
+
+        to_bake = anim_sine_chain_bpy.targets_with_sine_drivers(targets)
+        if not to_bake:
+            self.report({"WARNING"}, "No MonoFX sine drivers found on this chain.")
+            return {"CANCELLED"}
+
+        scene = context.scene
+        frame_start = int(scene.frame_start)
+        frame_end = int(scene.frame_end)
+        try:
+            key_count, baked_count = anim_sine_chain_bpy.bake_sine_chain_drivers(
+                context,
+                to_bake,
+                frame_start,
+                frame_end,
+                clear_drivers=bool(props.anim_sine_bake_clear_drivers),
+            )
+        except Exception as exc:
+            self.report({"ERROR"}, f"Sine chain bake failed: {exc}")
+            return {"CANCELLED"}
+
+        if key_count == 0:
+            self.report({"WARNING"}, "No keyframes were baked.")
+            return {"CANCELLED"}
+
+        self.report(
+            {"INFO"},
+            f"Baked {key_count} keyframe(s) on {baked_count} target(s) "
+            f"({frame_start}-{frame_end}).",
+        )
+        return {"FINISHED"}
+
+
+class MONOFX_OT_anim_refresh_sine_ramp(Operator):
+    bl_idname = "wm.mono_fx_anim_refresh_sine_ramp"
+    bl_label = "Refresh Sine Ramp"
+    bl_description = (
+        "Re-sample the amp ramp curve onto existing sine drivers "
+        "for the chosen channel and axis"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    channel: StringProperty(default="")
+    axis: StringProperty(default="")
+
+    def execute(self, context: Context) -> set[str]:
+        props = _pipeline_props(context)
+        channel = self.channel or str(props.anim_sine_channel)
+        axis = self.axis or str(props.anim_sine_axis)
+        updated = anim_sine_ramp_bpy.refresh_sine_ramp_drivers(
+            context,
+            channel=channel,
+            axis=axis,
+        )
+        if updated == 0:
+            self.report({"WARNING"}, "No sine drivers found for this channel/axis.")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Refreshed amp ramp on {updated} driver(s).")
+        return {"FINISHED"}
+
+
+class MONOFX_OT_anim_randomize_sine_phase(Operator):
+    bl_idname = "wm.mono_fx_anim_randomize_sine_phase"
+    bl_label = "Randomize Sine Phase"
+    bl_description = "Randomize the global phase offset for the active channel/axis tab"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context: Context) -> set[str]:
+        props = _pipeline_props(context)
+        settings = resolve_sine_axis_settings(
+            props,
+            str(props.anim_sine_channel),
+            str(props.anim_sine_axis),
+        )
+        settings.phase = random.uniform(0.0, 360.0)
+        self.report({"INFO"}, f"Phase set to {settings.phase:.1f}°.")
+        return {"FINISHED"}
+
+
 class MONOFX_OT_anim_select_keyed_objects(Operator):
     bl_idname = "wm.mono_fx_anim_select_keyed_objects"
     bl_label = "Select Keyed Objects"
-    bl_description = "Select all objects in the scene that have keyframes"
+    bl_description = (
+        "Select keyed pose bones in Pose mode, then select all keyed objects "
+        "in Object mode"
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context: Context) -> set[str]:
         keyed = anim_keys_bpy.iter_scene_keyed_objects()
-        bpy.ops.object.select_all(action="DESELECT")
         view_layer = context.view_layer
-        selected_count = 0
+        selected_object_count = 0
+        selected_bone_count = 0
+
+        for obj in bpy.data.objects:
+            if obj.type == "ARMATURE":
+                anim_pose.deselect_all_pose_bones(obj)
+
+        armatures_with_bones: list[tuple[bpy.types.Object, list[str]]] = []
+        for obj in keyed:
+            if obj.type != "ARMATURE":
+                continue
+            bone_names = anim_keys_bpy.iter_keyed_pose_bone_names(obj)
+            if bone_names:
+                armatures_with_bones.append((obj, bone_names))
+
+        for armature, bone_names in armatures_with_bones:
+            try:
+                view_layer.objects.active = armature
+            except Exception:
+                continue
+            if context.mode != "POSE":
+                try:
+                    bpy.ops.object.mode_set(mode="POSE")
+                except Exception:
+                    continue
+            anim_pose.deselect_all_pose_bones(armature)
+            selected_bone_count += anim_pose.select_pose_bones_by_name(armature, bone_names)
+            active_pb = armature.pose.bones.get(bone_names[0])
+            anim_pose.set_active_pose_bone(context, armature, active_pb)
+
+        if context.mode != "OBJECT":
+            try:
+                bpy.ops.object.mode_set(mode="OBJECT")
+            except Exception:
+                if keyed:
+                    try:
+                        view_layer.objects.active = keyed[0]
+                        bpy.ops.object.mode_set(mode="OBJECT")
+                    except Exception:
+                        pass
+
+        bpy.ops.object.select_all(action="DESELECT")
         for obj in keyed:
             try:
                 obj.select_set(True)
-                selected_count += 1
+                selected_object_count += 1
             except Exception:
                 pass
 
@@ -219,7 +476,10 @@ class MONOFX_OT_anim_select_keyed_objects(Operator):
             except Exception:
                 pass
 
-        self.report({"INFO"}, f"Selected {selected_count} keyed object(s).")
+        message = f"Selected {selected_object_count} keyed object(s)"
+        if selected_bone_count:
+            message += f", {selected_bone_count} keyed bone(s)"
+        self.report({"INFO"}, message + ".")
         return {"FINISHED"}
 
 
@@ -776,10 +1036,16 @@ ANIM_OPERATOR_CLASSES = (
     MONOFX_OT_anim_create_shot_collections,
     MONOFX_OT_anim_fix_shot_collections,
     MONOFX_OT_anim_select_chain,
+    MONOFX_OT_anim_apply_sine_chain,
+    MONOFX_OT_anim_clear_sine_chain,
+    MONOFX_OT_anim_bake_sine_chain,
+    MONOFX_OT_anim_refresh_sine_ramp,
+    MONOFX_OT_anim_randomize_sine_phase,
     MONOFX_OT_anim_select_keyed_objects,
     MONOFX_OT_anim_copy_world_transform,
     MONOFX_OT_anim_paste_world_transform,
     MONOFX_OT_anim_clean_static_keys,
+    *anim_exact_key_bpy.EXACT_KEY_OPERATOR_CLASSES,
     MONOFX_OT_anim_camera_from_view,
     MONOFX_OT_anim_name_fixer,
     MONOFX_OT_anim_copy_camera_rig,

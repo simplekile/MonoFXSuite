@@ -2,17 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
-_MOD = (
-    Path(__file__).resolve().parents[1]
-    / "tools/fx/monofx_pipeline_blender/monofx_pipeline_blender/pipeline_common/anim_keys.py"
-)
-_spec = importlib.util.spec_from_file_location("monofx_anim_keys", _MOD)
-assert _spec and _spec.loader
-_keys = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_keys)
+from monofx_pipeline_common import anim_keys as _keys
 
 
 def test_is_static_values() -> None:
@@ -29,3 +19,27 @@ def test_should_remove_single_key() -> None:
 def test_should_remove_static_curve() -> None:
     assert _keys.should_remove_fcurve(3, [2.0, 2.0, 2.0], clean_single=True, clean_static=True)
     assert not _keys.should_remove_fcurve(0, [], clean_single=True, clean_static=True)
+
+
+def test_pose_bone_name_from_fcurve_data_path() -> None:
+    assert _keys.pose_bone_name_from_fcurve_data_path('pose.bones["spine"]') == "spine"
+    assert (
+        _keys.pose_bone_name_from_fcurve_data_path('pose.bones["spine"].location')
+        == "spine"
+    )
+    assert (
+        _keys.pose_bone_name_from_fcurve_data_path(
+            'pose.bones["hand.L"].constraints["IK"].influence'
+        )
+        == "hand.L"
+    )
+    assert _keys.pose_bone_name_from_fcurve_data_path("location") is None
+    assert _keys.pose_bone_name_from_fcurve_data_path(None) is None
+
+
+def test_is_constraint_fcurve_data_path() -> None:
+    assert _keys.is_constraint_fcurve_data_path('constraints["Copy Location"].influence')
+    assert _keys.is_constraint_fcurve_data_path(
+        'pose.bones["spine"].constraints["Stretch To"].influence'
+    )
+    assert not _keys.is_constraint_fcurve_data_path('pose.bones["spine"].location')

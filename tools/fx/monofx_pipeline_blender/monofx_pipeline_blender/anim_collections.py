@@ -9,13 +9,13 @@ from typing import List, Optional, Tuple
 
 import bpy
 
-from .pipeline_common.shot_collection_fix import (
+from monofx_pipeline_common.shot_collection_fix import (
     canonical_child_collection_name,
     child_names_to_fix,
     is_shot_collection_root_name,
     plan_shot_root_rename,
 )
-from .pipeline_common.shot_paths import (
+from monofx_pipeline_common.shot_paths import (
     SHOT_CHILD_COLLECTIONS,
     SHOT_COLLECTION_COLORS,
     SHOT_ROOT_COLLECTION_COLOR,

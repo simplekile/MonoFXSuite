@@ -11,6 +11,14 @@
 
 **Lý do**: Toolkit chạy trong Houdini, không cần exe đóng băng; pipeline đơn giản, một nguồn version, publish một lệnh.
 
+## Shared package (`monofx_pipeline_common`)
+
+- Source: `packages/monofx_pipeline_common/src/monofx_pipeline_common/`
+- Version: `packages/monofx_pipeline_common/VERSION` (độc lập suite / Blender add-on)
+- Suite installer: copy `packages/monofx_pipeline_common/src/` + prepend `PYTHONPATH` trong `packages/monofx.json`
+- Blender add-on ZIP: `build_release_zip.py` vendors package vào `monofx_pipeline_blender/vendor/` (không copy/sync `apps/common` nữa)
+- Blender-only helper `camera_rig_pose.py` (mathutils) giữ trong add-on `pipeline_common/`
+
 ## Đã có trong repo
 
 - **VERSION** — một dòng version (vd. `0.1.0`). Build và publish đều đọc từ đây.

@@ -68,6 +68,7 @@ class MonoFXPipelinePreferences(AddonPreferences):
             ("SELECTION", "Select", "Selection tools", "RESTRICT_SELECT_OFF", 0),
             ("TRANSFORM", "Xform", "World transform copy/paste", "OBJECT_ORIGIN", 1),
             ("KEYS", "Keys", "Keyframe cleanup", "KEYINGSET", 2),
+            ("CHAIN", "Chain", "Sine chain drivers", "FORCE_CURVE", 3),
         ],
         default="SELECTION",
     )
@@ -108,6 +109,7 @@ class MonoFXPipelinePreferences(AddonPreferences):
     ui_sec_anim_camera_motion_orbit: BoolProperty(name="Orbit", default=False)
     ui_sec_anim_camera_motion_guide: BoolProperty(name="Motion Guide", default=False)
     ui_sec_anim_camera_tools: BoolProperty(name="Camera Tools", default=True)
+    ui_sec_anim_chain_targets: BoolProperty(name="Chain Targets", default=True)
 
     def draw(self, _context: Context) -> None:
         from . import addon_updater
@@ -136,6 +138,7 @@ _SECTION_PROP_BY_PANEL_ID = {
     "monofx_anim_camera_motion_guide": "ui_sec_anim_camera_motion_guide",
     "monofx_anim_camera_rig_tools": "ui_sec_anim_camera_rig_tools",
     "monofx_anim_camera_tools": "ui_sec_anim_camera_tools",
+    "monofx_anim_chain_targets": "ui_sec_anim_chain_targets",
 }
 
 

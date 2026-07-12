@@ -2,25 +2,7 @@
 
 from __future__ import annotations
 
-import importlib.util
-from pathlib import Path
-
-_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _load_module(relative: str, name: str):
-    path = _ROOT / relative
-    spec = importlib.util.spec_from_file_location(name, path)
-    assert spec and spec.loader
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-_naming = _load_module(
-    "tools/fx/monofx_pipeline_blender/monofx_pipeline_blender/pipeline_common/anim_geo_naming.py",
-    "anim_geo_naming",
-)
+from monofx_pipeline_common import anim_geo_naming as _naming
 
 
 def test_geo_basename_from_asset_folder():

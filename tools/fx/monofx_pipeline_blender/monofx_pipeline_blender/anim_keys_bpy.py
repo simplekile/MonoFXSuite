@@ -10,7 +10,11 @@ from typing import Iterable, Iterator, List, Set, Tuple
 
 import bpy
 
-from .pipeline_common.anim_keys import should_remove_fcurve
+from monofx_pipeline_common.anim_keys import (
+    is_constraint_fcurve_data_path,
+    pose_bone_name_from_fcurve_data_path,
+    should_remove_fcurve,
+)
 
 def _legacy_action_fcurves(action: bpy.types.Action):
     return getattr(action, "fcurves", None)
@@ -86,6 +90,29 @@ def _iter_object_fcurve_pairs(obj: bpy.types.Object) -> Iterator[Tuple[bpy.types
     yield from _iter_anim_data_fcurve_pairs(anim)
 
 
+def _iter_object_nla_fcurve_pairs(obj: bpy.types.Object) -> Iterator[Tuple[bpy.types.FCurve, object]]:
+    anim = obj.animation_data
+    if anim is None or anim.nla_tracks is None:
+        return
+    for track in anim.nla_tracks:
+        for strip in track.strips:
+            if strip.action is not None:
+                yield from _iter_action_fcurve_pairs(strip.action)
+
+
+def _iter_all_object_fcurve_pairs(obj: bpy.types.Object) -> Iterator[Tuple[bpy.types.FCurve, object]]:
+    yield from _iter_object_fcurve_pairs(obj)
+    yield from _iter_object_nla_fcurve_pairs(obj)
+
+
+def _iter_object_driver_fcurves(obj: bpy.types.Object) -> Iterator[bpy.types.FCurve]:
+    anim = obj.animation_data
+    if anim is None or anim.drivers is None:
+        return
+    for fcu in anim.drivers:
+        yield fcu
+
+
 def _keyframe_anim_owners(obj: bpy.types.Object) -> List[bpy.types.ID]:
     """Object plus data-block owners that may hold rig keys (e.g. camera lens on Camera data)."""
     owners: List[bpy.types.ID] = [obj]
@@ -99,6 +126,17 @@ def _fcurve_has_keys(fcu: bpy.types.FCurve) -> bool:
         return bool(fcu.keyframe_points) and len(fcu.keyframe_points) > 0
     except Exception:
         return False
+
+
+def _fcurve_counts_for_keyed_selection(fcu: bpy.types.FCurve) -> bool:
+    """Keyframes, or drivers on constraint properties (e.g. influence)."""
+    if _fcurve_has_keys(fcu):
+        return True
+    if getattr(fcu, "driver", None) is not None and is_constraint_fcurve_data_path(
+        fcu.data_path
+    ):
+        return True
+    return False
 
 
 def _action_has_keyed_fcurves(action: bpy.types.Action) -> bool:
@@ -121,14 +159,12 @@ def _nla_has_keyed_strips(anim_data: bpy.types.AnimData) -> bool:
 
 
 def object_has_keyframes(obj: bpy.types.Object) -> bool:
-    anim = obj.animation_data
-    if anim is None:
-        return False
-    for fcu, _ in _iter_object_fcurve_pairs(obj):
-        if _fcurve_has_keys(fcu):
+    for fcu, _ in _iter_all_object_fcurve_pairs(obj):
+        if _fcurve_counts_for_keyed_selection(fcu):
             return True
-    if _nla_has_keyed_strips(anim):
-        return True
+    for fcu in _iter_object_driver_fcurves(obj):
+        if _fcurve_counts_for_keyed_selection(fcu):
+            return True
     return False
 
 
@@ -138,6 +174,27 @@ def iter_scene_keyed_objects() -> List[bpy.types.Object]:
         if object_has_keyframes(obj):
             out.append(obj)
     return out
+
+
+def iter_keyed_pose_bone_names(obj: bpy.types.Object) -> List[str]:
+    """Pose-bone names on an armature with keyed or driven constraint/transform fcurves."""
+    if obj.type != "ARMATURE":
+        return []
+
+    names: Set[str] = set()
+    for fcu, _ in _iter_all_object_fcurve_pairs(obj):
+        if not _fcurve_counts_for_keyed_selection(fcu):
+            continue
+        bone_name = pose_bone_name_from_fcurve_data_path(fcu.data_path)
+        if bone_name and obj.pose.bones.get(bone_name) is not None:
+            names.add(bone_name)
+    for fcu in _iter_object_driver_fcurves(obj):
+        if not _fcurve_counts_for_keyed_selection(fcu):
+            continue
+        bone_name = pose_bone_name_from_fcurve_data_path(fcu.data_path)
+        if bone_name and obj.pose.bones.get(bone_name) is not None:
+            names.add(bone_name)
+    return sorted(names)
 
 
 def _fcurve_y_values(fcu: bpy.types.FCurve) -> List[float]:

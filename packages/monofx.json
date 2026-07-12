@@ -8,6 +8,11 @@
         },
         {
             "var": "PYTHONPATH",
+            "value": "$MONOFX_SUITE/packages/monofx_pipeline_common/src",
+            "method": "prepend"
+        },
+        {
+            "var": "PYTHONPATH",
             "value": "$MONOFX_SUITE",
             "method": "prepend"
         },

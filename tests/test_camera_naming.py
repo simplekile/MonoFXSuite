@@ -2,60 +2,10 @@
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 
-_MOD = (
-    Path(__file__).resolve().parents[1]
-    / "tools/fx/monofx_pipeline_blender/monofx_pipeline_blender/pipeline_common/camera_naming.py"
-)
-_spec = importlib.util.spec_from_file_location("monofx_camera_naming", _MOD)
-assert _spec and _spec.loader
-_cam = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(_cam)
-
-import importlib.util
-import sys
-import types
-
-_PC = (
-    Path(__file__).resolve().parents[1]
-    / "tools/fx/monofx_pipeline_blender/monofx_pipeline_blender/pipeline_common"
-)
-_PKG_NAME = "monofx_pipeline_blender.pipeline_common"
-
-
-def _load_shot_paths():
-    root_pkg = types.ModuleType("monofx_pipeline_blender")
-    pc_pkg = types.ModuleType(_PKG_NAME)
-    sys.modules["monofx_pipeline_blender"] = root_pkg
-    sys.modules[_PKG_NAME] = pc_pkg
-
-    pl_spec = importlib.util.spec_from_file_location(
-        f"{_PKG_NAME}.project_layout",
-        _PC / "project_layout.py",
-    )
-    assert pl_spec and pl_spec.loader
-    pl_mod = importlib.util.module_from_spec(pl_spec)
-    pl_mod.__package__ = _PKG_NAME
-    sys.modules[f"{_PKG_NAME}.project_layout"] = pl_mod
-    pl_spec.loader.exec_module(pl_mod)
-    pc_pkg.project_layout = pl_mod
-
-    sp_spec = importlib.util.spec_from_file_location(
-        f"{_PKG_NAME}.shot_paths",
-        _PC / "shot_paths.py",
-    )
-    assert sp_spec and sp_spec.loader
-    sp_mod = importlib.util.module_from_spec(sp_spec)
-    sp_mod.__package__ = _PKG_NAME
-    sys.modules[f"{_PKG_NAME}.shot_paths"] = sp_mod
-    sp_spec.loader.exec_module(sp_mod)
-    return sp_mod
-
-
-_shot = _load_shot_paths()
-detect_shot_from_path = _shot.detect_shot_from_path
+from monofx_pipeline_common import camera_naming as _cam
+from monofx_pipeline_common.shot_paths import detect_shot_from_path
 
 
 def test_normalize_shot_token() -> None:
@@ -165,13 +115,6 @@ def test_usd_basename_from_camera_leaf_no_double_prefix() -> None:
 def test_resolve_camera_usd_basename_from_shot_path() -> None:
     assert _cam.resolve_camera_usd_basename("cam_sh010") == "cam_sh010"
     blend = Path(r"D:\proj\02_shots\sh003a\01_anim\blender\work\scene.blend")
-    import types
-
-    pc_pkg = types.ModuleType("monofx_pipeline_blender.pipeline_common")
-    pc_pkg.shot_paths = _shot
-    sys.modules["monofx_pipeline_blender"] = types.ModuleType("monofx_pipeline_blender")
-    sys.modules["monofx_pipeline_blender.pipeline_common"] = pc_pkg
-    _cam.__package__ = "monofx_pipeline_blender.pipeline_common"
     assert _cam.resolve_camera_usd_basename("Dolly_Camera", scene_path=blend) == "cam_sh003a"
 
 

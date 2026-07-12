@@ -224,7 +224,7 @@ def _namespace_prefixes_for_publish(publish_name: str) -> tuple[str, ...]:
     pub_coll = _find_publish_collection(publish_name)
     if pub_coll is None:
         return ()
-    from .pipeline_common.anim_geo_namespace import namespace_prefixes_from_geo_collections
+    from monofx_pipeline_common.anim_geo_namespace import namespace_prefixes_from_geo_collections
 
     geo_names: list[str] = []
     for coll in _iter_collections_recursive(pub_coll):

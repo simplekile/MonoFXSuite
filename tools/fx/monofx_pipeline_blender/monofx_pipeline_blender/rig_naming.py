@@ -2,4 +2,4 @@
 
 from __future__ import annotations
 
-from .pipeline_common.rig_naming import *  # noqa: F403
+from monofx_pipeline_common.rig_naming import *  # noqa: F403

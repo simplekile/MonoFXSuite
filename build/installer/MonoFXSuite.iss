@@ -35,6 +35,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Files]
 ; Source = repo root (chạy ISCC từ repo root)
+Source: "..\..\packages\monofx_pipeline_common\src\*"; DestDir: "{app}\packages\monofx_pipeline_common\src"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\apps\*"; DestDir: "{app}\apps"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\core\*"; DestDir: "{app}\core"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs createallsubdirs

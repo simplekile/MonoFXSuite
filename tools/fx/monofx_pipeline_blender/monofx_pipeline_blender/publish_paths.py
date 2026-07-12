@@ -360,6 +360,17 @@ def build_blend_save_path_for_version(
     return True, str(parent / new_name), ""
 
 
+def blend_path_with_version_description(
+    scene_path: Path,
+    description: str = "",
+) -> tuple[bool, str, str]:
+    """Same version number as *scene_path*, with an updated description suffix."""
+    version = version_number_from_blend_stem(scene_path.stem)
+    if version is None:
+        return False, "", "Current file has no version suffix (_v001)."
+    return build_blend_save_path_for_version(scene_path, version, description)
+
+
 def next_blend_save_path(
     scene_path: Path,
     description: str = "",

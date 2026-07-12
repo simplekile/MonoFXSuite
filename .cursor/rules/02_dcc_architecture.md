@@ -5,13 +5,17 @@ Each DCC must act as a **thin adapter layer**.
 ## Allowed dependency direction
 
 ```
-tools → core → shared
+tools → core → monofx_pipeline_common
 apps → tools
 apps → core
+apps → monofx_pipeline_common
 ```
 
 ## Forbidden
 
+- `monofx_pipeline_common` importing `maya.cmds`
+- `monofx_pipeline_common` importing `hou`
+- `monofx_pipeline_common` importing `bpy`
 - `core` importing `maya.cmds`
 - `core` importing `hou`
 - `core` importing `bpy`

@@ -146,6 +146,33 @@ def test_next_blend_save_path_first_version(tmp_path):
     assert path.endswith("char_Zephys_anim_v001.blend")
 
 
+def test_blend_path_with_version_description(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    current = work / "char_Zephys_anim_v002_layout.blend"
+    current.write_text("blend", encoding="utf-8")
+
+    ok, path, err = _pp.blend_path_with_version_description(current, "blockedCam")
+    assert ok, err
+    assert path.endswith("char_Zephys_anim_v002_blockedCam.blend")
+
+    ok, path, err = _pp.blend_path_with_version_description(current, "")
+    assert ok, err
+    assert path.endswith("char_Zephys_anim_v002.blend")
+
+
+def test_blend_path_with_version_description_requires_version_suffix(tmp_path):
+    work = tmp_path / "work"
+    work.mkdir()
+    current = work / "char_Zephys_anim.blend"
+    current.write_text("blend", encoding="utf-8")
+
+    ok, path, err = _pp.blend_path_with_version_description(current, "note")
+    assert not ok
+    assert not path
+    assert "version suffix" in err.lower()
+
+
 def test_next_blend_save_path_requires_saved_file():
     ok, path, err = _pp.next_blend_save_path(Path(""))
     assert not ok

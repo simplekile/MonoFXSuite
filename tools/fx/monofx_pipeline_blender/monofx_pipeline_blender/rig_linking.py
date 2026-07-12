@@ -18,12 +18,12 @@ from . import preferences
 from . import rig_adapter
 from . import rig_focus
 from . import rig_paths
-from .pipeline_common.project_context import (
+from monofx_pipeline_common.project_context import (
     project_context_error,
     resolve_project_root,
     valid_project_root,
 )
-from .pipeline_common.project_layout import parse_asset_from_project_path
+from monofx_pipeline_common.project_layout import parse_asset_from_project_path
 
 _MSGBUS_OWNER = object()
 _rig_refresh_timer = None
@@ -710,6 +710,7 @@ class MONOFX_OT_rig_update_all(Operator):
 class MONOFX_OT_rig_open_file(Operator):
     bl_idname = "wm.mono_fx_rig_open_file"
     bl_label = "Open Rig File"
+    bl_description = "Open the rig .blend in a new Blender session"
     bl_options = {"REGISTER"}
 
     filepath: StringProperty(default="")
@@ -720,10 +721,11 @@ class MONOFX_OT_rig_open_file(Operator):
             self.report({"ERROR"}, "No rig file path.")
             return {"CANCELLED"}
         try:
-            bpy.ops.wm.open_mainfile(filepath=os.path.normpath(path), load_ui=True)
+            rig_adapter.open_scene_path_new_session(path)
         except Exception as e:
             self.report({"ERROR"}, str(e))
             return {"CANCELLED"}
+        self.report({"INFO"}, "Opened rig in a new Blender session.")
         return {"FINISHED"}
 
 
@@ -884,9 +886,11 @@ class MONOFX_UL_rig_scene(UIList):
                 sub.alert = True
                 sub.label(text=f"{item.namespace}  {ver} → {item.newest_token}", icon="ERROR")
             else:
-                label = item.namespace or (Path(item.resolved_path).name if item.resolved_path else "Rig")
-            icon = "LIBRARY_DATA_OVERRIDE" if item.is_override else "LINK_BLEND"
-            row.label(text=f"{label}  {ver}", icon=icon)
+                label = item.namespace or (
+                    Path(item.resolved_path).name if item.resolved_path else "Rig"
+                )
+                icon = "LIBRARY_DATA_OVERRIDE" if item.is_override else "LINK_BLEND"
+                row.label(text=f"{label}  {ver}", icon=icon)
         elif self.layout_type == "GRID":
             layout.alignment = "CENTER"
             layout.label(text=item.namespace, icon="LINKED")

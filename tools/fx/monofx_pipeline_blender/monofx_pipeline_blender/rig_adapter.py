@@ -6,14 +6,16 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 import bpy
 
 from . import rig_naming
-from .pipeline_common.project_layout import find_project_root, parse_asset_from_project_path
-from .pipeline_common.rig_library import suggest_namespace_from_asset
+from monofx_pipeline_common.project_layout import find_project_root, parse_asset_from_project_path
+from monofx_pipeline_common.rig_library import suggest_namespace_from_asset
 
 ASSET_ROOT_PREFIX = "Geo_"
 
@@ -46,6 +48,24 @@ def scene_is_modified() -> bool:
 def open_scene_path(path: str, *, force: bool = False) -> None:
     del force
     bpy.ops.wm.open_mainfile(filepath=os.path.normpath(path), load_ui=True)
+
+
+def open_scene_path_new_session(path: str) -> None:
+    """Open a .blend file in a new Blender process (leave the current session untouched)."""
+    fp = os.path.normpath(path)
+    if not os.path.isfile(fp):
+        raise RuntimeError(f"File not found: {fp}")
+    exe = str(getattr(bpy.app, "binary_path", "") or "").strip()
+    if not exe:
+        raise RuntimeError("Could not resolve Blender executable path.")
+    kwargs: dict = {}
+    if sys.platform == "win32":
+        creationflags = getattr(subprocess, "DETACHED_PROCESS", 0)
+        if creationflags:
+            kwargs["creationflags"] = creationflags
+    else:
+        kwargs["start_new_session"] = True
+    subprocess.Popen([exe, fp], **kwargs)
 
 
 def _abs_path(path: str) -> str:

@@ -11,8 +11,10 @@ MonoFX/
 │   ├── houdini/
 │   ├── maya/
 │   ├── blender/
-│   ├── unreal/
-│   └── shared/
+│   └── common/          # backward-compat re-exports → monofx_pipeline_common
+│
+├── packages/
+│   └── monofx_pipeline_common/   # DCC-agnostic shared pipeline logic (src layout)
 │
 ├── core/
 │   ├── ui/
@@ -43,7 +45,8 @@ MonoFX/
 
 - No script is allowed at root level.
 - DCC specific code must stay inside `/apps`.
-- Shared logic must NEVER depend on a DCC API.
+- Shared pipeline logic lives in `packages/monofx_pipeline_common/` (no `hou` / `maya` / `bpy`).
+- `apps/common/` re-exports from `monofx_pipeline_common` for backward compatibility.
 - UI must live in `/core/ui`.
 
 👉 **This is the most important rule.** 90% of pipelines fail because the **DCC layer is not separated**.

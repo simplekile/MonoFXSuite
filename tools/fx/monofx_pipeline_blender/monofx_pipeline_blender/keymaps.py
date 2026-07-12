@@ -12,6 +12,11 @@ import bpy
 _addon_keymaps: List[Tuple[bpy.types.KeyMap, bpy.types.KeyMapItem]] = []
 _legacy_classes: List[type] = []
 
+_EXACT_KEY_KEYMAPS: Tuple[Tuple[str, str], ...] = (
+    ("Graph Editor", "GRAPH_EDITOR"),
+    ("Dope Sheet", "DOPESHEET_EDITOR"),
+)
+
 
 def _iter_registerable_operators(classes: Iterable[type]) -> Iterable[type]:
     for cls in classes:
@@ -58,6 +63,22 @@ def register_keymaps(classes: Iterable[type]) -> None:
     for cls in _iter_registerable_operators(classes):
         kmi = km.keymap_items.new(cls.bl_idname, "NONE", "PRESS")
         _addon_keymaps.append((km, kmi))
+
+    for space_name, space_type in _EXACT_KEY_KEYMAPS:
+        km = kc.keymaps.new(name=space_name, space_type=space_type)
+        kmi = km.keymap_items.new(
+            "wm.mono_fx_anim_edit_exact_key",
+            type="LEFTMOUSE",
+            value="DOUBLE_CLICK",
+        )
+        _addon_keymaps.append((km, kmi))
+        kmi_multi = km.keymap_items.new(
+            "wm.mono_fx_anim_edit_exact_key",
+            type="LEFTMOUSE",
+            value="DOUBLE_CLICK",
+            shift=True,
+        )
+        _addon_keymaps.append((km, kmi_multi))
 
 
 def register_legacy_aliases(classes: Iterable[type]) -> None:

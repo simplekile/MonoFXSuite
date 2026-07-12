@@ -40,3 +40,4 @@ desktop.ini
 # Blender addon build artifacts (source only in repo)
 tools/fx/monofx_pipeline_blender/releases/
 tools/fx/monofx_pipeline_blender/archive/
+tools/fx/monofx_pipeline_blender/monofx_pipeline_blender/vendor/
