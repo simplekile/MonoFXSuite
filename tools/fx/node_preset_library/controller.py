@@ -43,6 +43,7 @@ from tools.fx.node_preset_library.ui import (
 from tools.fx.node_preset_library.prefs import (
     default_library_root,
     get_card_scale,
+    get_window_geometry,
     is_favorite,
     list_favorite_ids,
     list_pinned_library_roots,
@@ -53,9 +54,40 @@ from tools.fx.node_preset_library.prefs import (
     remember_recent_preset,
     remove_recent_library_root,
     set_card_scale,
+    set_window_geometry,
     toggle_favorite,
     toggle_pin_library_root,
 )
+
+
+def _find_open_library_window() -> Optional[NodePresetLibraryUI]:
+    app = QApplication.instance()
+    if app is None:
+        return None
+    w = app.property(config.UI_INSTANCE_PROPERTY)
+    if w is None:
+        return None
+    try:
+        # Touch a Qt property — raises RuntimeError if C++ object was deleted
+        _ = w.objectName()
+    except RuntimeError:
+        app.setProperty(config.UI_INSTANCE_PROPERTY, None)
+        return None
+    if isinstance(w, NodePresetLibraryUI):
+        return w
+    # After module reload the instance may be an older class — still usable as QWidget
+    try:
+        if hasattr(w, "show") and hasattr(w, "raise_"):
+            return w  # type: ignore[return-value]
+    except RuntimeError:
+        app.setProperty(config.UI_INSTANCE_PROPERTY, None)
+    return None
+
+
+def _register_library_window(ui: NodePresetLibraryUI) -> None:
+    app = QApplication.instance()
+    if app is not None:
+        app.setProperty(config.UI_INSTANCE_PROPERTY, ui)
 
 
 def run() -> None:
@@ -67,6 +99,19 @@ def run() -> None:
         h.ui_display_message("Houdini is not available.", "Node Preset Library")
         return
 
+    existing = _find_open_library_window()
+    if existing is not None:
+        try:
+            if hasattr(existing, "persist_window_geometry"):
+                existing.persist_window_geometry()
+            existing.close()
+            existing.deleteLater()
+        except RuntimeError:
+            pass
+        app = QApplication.instance()
+        if app is not None:
+            app.setProperty(config.UI_INSTANCE_PROPERTY, None)
+
     library_root = config.get_library_root()
     ensure_library_root(library_root)
     # Mutable holder so Settings can switch active root without rewriting closures
@@ -77,6 +122,8 @@ def run() -> None:
     ui.setWindowTitle(f"{config.WINDOW_TITLE}  —  v{suite_version}")
     ui.set_version_text(f"v{suite_version}")
     ui.apply_card_scale(get_card_scale())
+    ui.restore_window_geometry(get_window_geometry())
+    ui.on_geometry_save(set_window_geometry)
 
     state = {
         "category_id": "__all__",
@@ -804,4 +851,7 @@ def run() -> None:
     else:
         from PySide6.QtCore import Qt as QtCore
         ui.setWindowFlags(ui.windowFlags() | QtCore.WindowType.WindowStaysOnTopHint)
+    _register_library_window(ui)
     ui.show()
+    ui.raise_()
+    ui.activateWindow()

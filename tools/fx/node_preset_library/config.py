@@ -8,6 +8,8 @@ import os
 from pathlib import Path
 
 WINDOW_TITLE = "Node Preset Library"
+# Survives module reload — used to find the open library window on QApplication
+UI_INSTANCE_PROPERTY = "monofx_node_preset_library_window"
 
 INDEX_VERSION = 1
 INDEX_FILENAME = "index.json"

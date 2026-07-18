@@ -117,6 +117,40 @@ def test_card_scale_default_and_clamp(prefs_env: Path, tmp_path: Path) -> None:
     assert get_card_scale() == MAX_CARD_SCALE
 
 
+def test_window_geometry_roundtrip(prefs_env: Path) -> None:
+    from tools.fx.node_preset_library.prefs import (
+        DEFAULT_WINDOW_H,
+        DEFAULT_WINDOW_W,
+        get_window_geometry,
+        set_window_geometry,
+    )
+
+    geom = get_window_geometry()
+    assert geom["w"] == DEFAULT_WINDOW_W
+    assert geom["h"] == DEFAULT_WINDOW_H
+    saved = set_window_geometry(
+        {
+            "w": 1400,
+            "h": 800,
+            "x": 40,
+            "y": 60,
+            "main_splitter": [220, 900],
+            "content_splitter": [500, 280],
+        }
+    )
+    assert saved["w"] == 1400
+    assert saved["h"] == 800
+    assert saved["x"] == 40
+    assert saved["main_splitter"] == [220, 900]
+    again = get_window_geometry()
+    assert again["w"] == 1400
+    assert again["content_splitter"] == [500, 280]
+    # Too-small sizes clamp up
+    tiny = set_window_geometry({"w": 100, "h": 50})
+    assert tiny["w"] >= 900
+    assert tiny["h"] >= 520
+
+
 def test_pinned_root_survives_mru_overflow(prefs_env: Path, tmp_path: Path) -> None:
     from tools.fx.node_preset_library.prefs import (
         is_pinned_library_root,

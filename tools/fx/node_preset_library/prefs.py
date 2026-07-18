@@ -52,7 +52,45 @@ def _empty_prefs() -> dict[str, Any]:
         "favorite_ids": [],
         "recent_preset_ids": [],
         "card_scale": DEFAULT_CARD_SCALE,
+        "window_geometry": {},
     }
+
+
+DEFAULT_WINDOW_W = 1120
+DEFAULT_WINDOW_H = 640
+MIN_WINDOW_W = 900
+MIN_WINDOW_H = 520
+
+
+def _clamp_int(value: Any, default: int, lo: int, hi: int = 100_000) -> int:
+    try:
+        n = int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def normalize_window_geometry(raw: Any) -> dict[str, Any]:
+    """Return {w,h,x?,y?,main_splitter?,content_splitter?} with sane clamps."""
+    data = raw if isinstance(raw, dict) else {}
+    out: dict[str, Any] = {
+        "w": _clamp_int(data.get("w"), DEFAULT_WINDOW_W, MIN_WINDOW_W),
+        "h": _clamp_int(data.get("h"), DEFAULT_WINDOW_H, MIN_WINDOW_H),
+    }
+    for key in ("x", "y"):
+        if key in data and data[key] is not None:
+            try:
+                out[key] = int(data[key])
+            except (TypeError, ValueError):
+                pass
+    for key in ("main_splitter", "content_splitter"):
+        sizes = data.get(key)
+        if isinstance(sizes, list) and len(sizes) >= 2:
+            try:
+                out[key] = [max(40, int(sizes[0])), max(40, int(sizes[1]))]
+            except (TypeError, ValueError):
+                pass
+    return out
 
 
 def load_prefs() -> dict[str, Any]:
@@ -77,12 +115,14 @@ def load_prefs() -> dict[str, Any]:
     if not isinstance(base["recent_preset_ids"], list):
         base["recent_preset_ids"] = []
     base["card_scale"] = clamp_card_scale(base.get("card_scale"))
+    base["window_geometry"] = normalize_window_geometry(base.get("window_geometry"))
     return base
 
 
 def save_prefs(data: dict[str, Any]) -> None:
     path = prefs_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    geom = normalize_window_geometry(data.get("window_geometry"))
     payload = {
         "library_root": str(data.get("library_root") or ""),
         "recent_roots": [str(p) for p in (data.get("recent_roots") or [])],
@@ -90,6 +130,7 @@ def save_prefs(data: dict[str, Any]) -> None:
         "favorite_ids": [str(x) for x in (data.get("favorite_ids") or [])],
         "recent_preset_ids": [str(x) for x in (data.get("recent_preset_ids") or [])][:MAX_RECENT_PRESETS],
         "card_scale": clamp_card_scale(data.get("card_scale", DEFAULT_CARD_SCALE)),
+        "window_geometry": geom,
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
@@ -104,6 +145,17 @@ def set_card_scale(scale: int) -> int:
     data["card_scale"] = clamp_card_scale(scale)
     save_prefs(data)
     return int(data["card_scale"])
+
+
+def get_window_geometry() -> dict[str, Any]:
+    return normalize_window_geometry(load_prefs().get("window_geometry"))
+
+
+def set_window_geometry(geometry: dict[str, Any]) -> dict[str, Any]:
+    data = load_prefs()
+    data["window_geometry"] = normalize_window_geometry(geometry)
+    save_prefs(data)
+    return dict(data["window_geometry"])
 
 
 def _normalize(path: Path | str) -> Path:

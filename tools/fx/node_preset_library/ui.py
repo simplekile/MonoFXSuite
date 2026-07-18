@@ -21,6 +21,7 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
+    QCloseEvent,
 )
 from PySide6.QtWidgets import (
     QDialog,
@@ -51,6 +52,7 @@ from PySide6.QtWidgets import (
     QColorDialog,
 )
 
+from tools.fx.node_preset_library import config
 from tools.fx.node_preset_library.logic import (
     category_id_from_name,
     color_for_category_id,
@@ -59,10 +61,14 @@ from tools.fx.node_preset_library.logic import (
 )
 from tools.fx.node_preset_library.prefs import (
     DEFAULT_CARD_SCALE,
+    DEFAULT_WINDOW_H,
+    DEFAULT_WINDOW_W,
     MAX_CARD_SCALE,
     MIN_CARD_SCALE,
     PRESET_MIME,
     clamp_card_scale,
+    get_window_geometry,
+    set_window_geometry,
 )
 
 
@@ -603,6 +609,65 @@ NETWORK_TAG_COLORS = {
     "TOP": "#b09a3d",
 }
 
+STYLE_SCROLLBAR = f"""
+    QScrollBar:vertical {{
+        background: transparent;
+        width: 10px;
+        margin: 4px 1px 4px 0;
+        border: none;
+    }}
+    QScrollBar::handle:vertical {{
+        background: rgba(255, 255, 255, 0.14);
+        border-radius: 5px;
+        min-height: 28px;
+    }}
+    QScrollBar::handle:vertical:hover {{
+        background: rgba(94, 196, 182, 0.45);
+    }}
+    QScrollBar::handle:vertical:pressed {{
+        background: rgba(94, 196, 182, 0.6);
+    }}
+    QScrollBar::add-line:vertical,
+    QScrollBar::sub-line:vertical {{
+        height: 0;
+        width: 0;
+        border: none;
+        background: none;
+    }}
+    QScrollBar::add-page:vertical,
+    QScrollBar::sub-page:vertical {{
+        background: transparent;
+    }}
+    QScrollBar:horizontal {{
+        background: transparent;
+        height: 10px;
+        margin: 0 4px 1px 4px;
+        border: none;
+    }}
+    QScrollBar::handle:horizontal {{
+        background: rgba(255, 255, 255, 0.14);
+        border-radius: 5px;
+        min-width: 28px;
+    }}
+    QScrollBar::handle:horizontal:hover {{
+        background: rgba(94, 196, 182, 0.45);
+    }}
+    QScrollBar::handle:horizontal:pressed {{
+        background: rgba(94, 196, 182, 0.6);
+    }}
+    QScrollBar::add-line:horizontal,
+    QScrollBar::sub-line:horizontal {{
+        height: 0;
+        width: 0;
+        border: none;
+        background: none;
+    }}
+    QScrollBar::add-page:horizontal,
+    QScrollBar::sub-page:horizontal {{
+        background: transparent;
+    }}
+"""
+
 STYLE_WINDOW = f"""
     QWidget#NodePresetLibraryWindow {{
         background-color: {BG_APP};
@@ -623,7 +688,7 @@ STYLE_WINDOW = f"""
         font-weight: 600;
         padding-bottom: 2px;
     }}
-"""
+""" + STYLE_SCROLLBAR
 
 STYLE_INPUT = f"""
     QLineEdit {{
@@ -665,7 +730,7 @@ STYLE_TEXTAREA = f"""
         border: 1px solid {FOCUS};
         background: {BG_ELEVATED};
     }}
-"""
+""" + STYLE_SCROLLBAR
 
 STYLE_BTN = f"""
     QPushButton {{
@@ -763,7 +828,7 @@ STYLE_COMBO = f"""
         outline: none;
         padding: 4px;
     }}
-"""
+""" + STYLE_SCROLLBAR
 
 STYLE_CHECKBOX = f"""
     QCheckBox {{
@@ -891,7 +956,7 @@ STYLE_SIDEBAR_LIST = f"""
         color: {TEXT_PRIMARY};
         border: 1px solid {ACCENT_BORDER};
     }}
-"""
+""" + STYLE_SCROLLBAR
 
 # Dense list row — fixed columns: thumb | name | tag | description
 LIST_ROW_H = 36
@@ -975,7 +1040,7 @@ STYLE_PRESET_LIST = f"""
     QListWidget#PresetList[view="list"]::item:hover {{
         background: transparent;
     }}
-"""
+""" + STYLE_SCROLLBAR
 
 STYLE_DIALOG = f"""
     QDialog {{
@@ -994,7 +1059,7 @@ STYLE_DIALOG = f"""
     QDialog QWidget {{
         color: {TEXT_PRIMARY};
     }}
-"""
+""" + STYLE_SCROLLBAR
 
 
 def _apply_dialog_style(dialog: QDialog) -> None:
@@ -2125,6 +2190,9 @@ class NodePresetLibraryUI(QWidget):
         self._category_list.setStyleSheet(STYLE_SIDEBAR_LIST)
         self._category_list.setSpacing(1)
         self._category_list.setIconSize(QSize(16, 16))
+        self._category_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._category_list.setTextElideMode(Qt.TextElideMode.ElideRight)
+        self._category_list.setWordWrap(False)
         self._category_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         cat_layout.addWidget(self._category_list, 1)
 
@@ -2305,6 +2373,8 @@ class NodePresetLibraryUI(QWidget):
         splitter.addWidget(preset_widget)
         splitter.setSizes([200, 720])
         main.addWidget(splitter, 1)
+        self._main_splitter = splitter
+        self._content_splitter = content_split
 
         footer = QHBoxLayout()
         footer.setContentsMargins(2, 0, 2, 0)
@@ -2318,7 +2388,75 @@ class NodePresetLibraryUI(QWidget):
 
         self._presets_data: list[dict[str, Any]] = []
         self._library_root: Optional[Path] = None
+        self._geometry_save_cb: Optional[Callable[[dict[str, Any]], None]] = None
         self.clear_inspector()
+
+    def on_geometry_save(self, callback: Callable[[dict[str, Any]], None]) -> None:
+        self._geometry_save_cb = callback
+
+    def capture_window_geometry(self) -> dict[str, Any]:
+        geo = self.geometry()
+        out: dict[str, Any] = {
+            "w": max(geo.width(), self.minimumWidth()),
+            "h": max(geo.height(), self.minimumHeight()),
+            "x": geo.x(),
+            "y": geo.y(),
+        }
+        main = getattr(self, "_main_splitter", None)
+        content = getattr(self, "_content_splitter", None)
+        if main is not None:
+            sizes = main.sizes()
+            if len(sizes) >= 2:
+                out["main_splitter"] = [int(sizes[0]), int(sizes[1])]
+        if content is not None:
+            sizes = content.sizes()
+            if len(sizes) >= 2:
+                out["content_splitter"] = [int(sizes[0]), int(sizes[1])]
+        return out
+
+    def restore_window_geometry(self, geometry: Optional[dict[str, Any]] = None) -> None:
+        data = geometry if isinstance(geometry, dict) else get_window_geometry()
+        w = int(data.get("w") or DEFAULT_WINDOW_W)
+        h = int(data.get("h") or DEFAULT_WINDOW_H)
+        self.resize(w, h)
+        if "x" in data and "y" in data:
+            try:
+                self.move(int(data["x"]), int(data["y"]))
+            except (TypeError, ValueError):
+                pass
+        main = getattr(self, "_main_splitter", None)
+        content = getattr(self, "_content_splitter", None)
+        ms = data.get("main_splitter")
+        if main is not None and isinstance(ms, list) and len(ms) >= 2:
+            main.setSizes([int(ms[0]), int(ms[1])])
+        cs = data.get("content_splitter")
+        if content is not None and isinstance(cs, list) and len(cs) >= 2:
+            content.setSizes([int(cs[0]), int(cs[1])])
+
+    def persist_window_geometry(self) -> None:
+        geom = self.capture_window_geometry()
+        if self._geometry_save_cb is not None:
+            try:
+                self._geometry_save_cb(geom)
+                return
+            except Exception:
+                pass
+        set_window_geometry(geom)
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        try:
+            self.persist_window_geometry()
+        except Exception:
+            pass
+        try:
+            app = QApplication.instance()
+            if app is not None:
+                cur = app.property(config.UI_INSTANCE_PROPERTY)
+                if cur is self:
+                    app.setProperty(config.UI_INSTANCE_PROPERTY, None)
+        except Exception:
+            pass
+        super().closeEvent(event)
 
     def set_categories(self, categories: list[dict[str, Any]], select_id: Optional[str] = None) -> None:
         self._category_list.clear()
