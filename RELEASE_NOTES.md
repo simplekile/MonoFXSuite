@@ -1,14 +1,11 @@
-## [0.1.17] - 2026-07-18
-
-### Blender
-- Extract shared logic via **monofx_pipeline_common** (vendored in ZIP); fix Rig Scene list crash when a linked rig is outdated.
-- Add **Manual / Current / Next** publish version modes for Geo USD and Anim USD Cache.
-- Improve anim transform / sine chain tools and USD cache export/list UI. Bump add-on to **0.9.122**.
+## [0.1.18] - 2026-07-18
 
 ### Houdini
-- Expand **Node Preset Library** (prefs, preview, favorites/recent roots, larger UI).
-- Adapter: network-editor insert position helpers for tool placement.
+- **Node Preset Library**: category colors, richer UI, and drop Houdini network nodes into the library via MIME.
+- Adapter helpers for Houdini node-path drag MIME (parse/select).
 
-### Shared / tests
-- Broaden `anim_chains` numbering patterns and multi-chain seed helpers.
-- Add/extend tests for anim chains, USD cache paths, and node preset library.
+### Installer
+- Exclude Blender add-on sources from the Houdini `monofx` install payload (shipped as separate ZIP only).
+
+### Tests
+- Add MIME payload and Node Preset Library logic coverage.
