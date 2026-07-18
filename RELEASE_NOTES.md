@@ -1,4 +1,5 @@
-## [0.1.19] - 2026-07-18
+## [0.1.20] - 2026-07-18
 
 ### Houdini
-- **Node Preset Library**: persist window size/position, reopen as a single instance after reload, and polish scrollbars.
+- **Node Preset Library**: insert dragged presets at the mouse network position; find open windows via `objectName` (avoids shiboken property errors).
+- Adapter: resolve network insert point from screen mouse via `screenToNetwork`.
