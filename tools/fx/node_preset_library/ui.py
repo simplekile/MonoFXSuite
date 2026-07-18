@@ -52,7 +52,6 @@ from PySide6.QtWidgets import (
     QColorDialog,
 )
 
-from tools.fx.node_preset_library import config
 from tools.fx.node_preset_library.logic import (
     category_id_from_name,
     color_for_category_id,
@@ -2446,14 +2445,6 @@ class NodePresetLibraryUI(QWidget):
     def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
         try:
             self.persist_window_geometry()
-        except Exception:
-            pass
-        try:
-            app = QApplication.instance()
-            if app is not None:
-                cur = app.property(config.UI_INSTANCE_PROPERTY)
-                if cur is self:
-                    app.setProperty(config.UI_INSTANCE_PROPERTY, None)
         except Exception:
             pass
         super().closeEvent(event)

@@ -599,7 +599,7 @@ def load_items_from_file(
 def get_network_insert_position() -> Any:
     """
     Best-effort insert position in network space.
-    Prefer cursor in Network Editor under mouse; else active editor cursor;
+    Prefer mouse→network under Network Editor; else editor cursorPosition;
     else visible-bounds center. Returns hou.Vector2 or None.
     """
     if not is_available():
@@ -620,7 +620,18 @@ def get_network_insert_position() -> Any:
         if pane is None:
             return None
 
-        # Cursor (last pos in that editor when mouse is elsewhere)
+        # Drop / hover: convert screen mouse to network coords when possible
+        try:
+            screen_pos = None
+            if hasattr(hou, "qt") and hasattr(hou.qt, "getCursorPosition"):
+                screen_pos = hou.qt.getCursorPosition()
+            elif hasattr(hou, "qt") and hasattr(hou.qt, "mousePosition"):
+                screen_pos = hou.qt.mousePosition()
+            if screen_pos is not None and hasattr(pane, "screenToNetwork"):
+                return pane.screenToNetwork(screen_pos)
+        except Exception:
+            pass
+
         try:
             if hasattr(pane, "cursorPosition"):
                 return pane.cursorPosition()

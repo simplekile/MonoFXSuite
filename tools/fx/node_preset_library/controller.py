@@ -5,7 +5,7 @@ Node Preset Library controller — UI + logic + Houdini adapter.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from PySide6.QtCore import QPoint
 from PySide6.QtWidgets import QApplication, QInputDialog, QMessageBox
@@ -60,34 +60,30 @@ from tools.fx.node_preset_library.prefs import (
 )
 
 
-def _find_open_library_window() -> Optional[NodePresetLibraryUI]:
+def _find_open_library_windows() -> list[Any]:
+    """Find live library windows by objectName (no QVariant/QWidget property — avoids shiboken errors)."""
     app = QApplication.instance()
     if app is None:
-        return None
-    w = app.property(config.UI_INSTANCE_PROPERTY)
-    if w is None:
-        return None
-    try:
-        # Touch a Qt property — raises RuntimeError if C++ object was deleted
-        _ = w.objectName()
-    except RuntimeError:
-        app.setProperty(config.UI_INSTANCE_PROPERTY, None)
-        return None
-    if isinstance(w, NodePresetLibraryUI):
-        return w
-    # After module reload the instance may be an older class — still usable as QWidget
-    try:
-        if hasattr(w, "show") and hasattr(w, "raise_"):
-            return w  # type: ignore[return-value]
-    except RuntimeError:
-        app.setProperty(config.UI_INSTANCE_PROPERTY, None)
-    return None
+        return []
+    found: list[Any] = []
+    for w in app.topLevelWidgets():
+        try:
+            if w.objectName() == "NodePresetLibraryWindow":
+                found.append(w)
+        except RuntimeError:
+            continue
+    return found
 
 
-def _register_library_window(ui: NodePresetLibraryUI) -> None:
-    app = QApplication.instance()
-    if app is not None:
-        app.setProperty(config.UI_INSTANCE_PROPERTY, ui)
+def _close_open_library_windows() -> None:
+    for w in _find_open_library_windows():
+        try:
+            if hasattr(w, "persist_window_geometry"):
+                w.persist_window_geometry()
+            w.close()
+            w.deleteLater()
+        except RuntimeError:
+            continue
 
 
 def run() -> None:
@@ -99,18 +95,8 @@ def run() -> None:
         h.ui_display_message("Houdini is not available.", "Node Preset Library")
         return
 
-    existing = _find_open_library_window()
-    if existing is not None:
-        try:
-            if hasattr(existing, "persist_window_geometry"):
-                existing.persist_window_geometry()
-            existing.close()
-            existing.deleteLater()
-        except RuntimeError:
-            pass
-        app = QApplication.instance()
-        if app is not None:
-            app.setProperty(config.UI_INSTANCE_PROPERTY, None)
+    # One window only — close prior instance (saves geometry) before opening fresh
+    _close_open_library_windows()
 
     library_root = config.get_library_root()
     ensure_library_root(library_root)
@@ -733,7 +719,11 @@ def run() -> None:
 
     ui.on_view_mode_changed(on_view_mode)
 
-    def on_insert_clicked(preset_id: Optional[str] = None) -> None:
+    def on_insert_clicked(
+        preset_id: Optional[str] = None,
+        *,
+        place_at_cursor: bool = False,
+    ) -> None:
         pid = preset_id or ui.get_selected_preset_id()
         if not pid:
             ui.set_message("Select a preset first.", error=True)
@@ -755,7 +745,11 @@ def run() -> None:
             ui.set_message("Open a network (e.g. double-click a node) and try again.", error=True)
             return
         if hasattr(h, "load_items_from_file_ex"):
-            ok, err = h.load_items_from_file_ex(parent, str(full_path), place_at_cursor=False)
+            ok, err = h.load_items_from_file_ex(
+                parent,
+                str(full_path),
+                place_at_cursor=place_at_cursor,
+            )
         else:
             ok, err = h.load_items_from_file(parent, str(full_path)), ""
         if not ok:
@@ -763,15 +757,16 @@ def run() -> None:
             return
         remember_recent_preset(pid)
         refresh_categories(state["category_id"])
-        ui.set_message(f"Inserted at center view: {preset.get('name', pid)}")
+        where = "at cursor" if place_at_cursor else "at center view"
+        ui.set_message(f"Inserted {where}: {preset.get('name', pid)}")
 
     ui.on_insert_clicked(lambda: on_insert_clicked())
     ui.on_preset_double_clicked(lambda pid: on_insert_clicked(pid))
 
     def on_drag_finished(pid: str) -> None:
-        # Approx drag-drop: if mouse is over Network Editor after drag, insert there
+        # Drag-drop onto Network Editor → insert at cursor under mouse
         if hasattr(h, "is_network_editor_under_cursor") and h.is_network_editor_under_cursor():
-            on_insert_clicked(pid)
+            on_insert_clicked(pid, place_at_cursor=True)
         else:
             ui.set_message("Drop on the Network Editor to insert (or right-click → Insert).")
 
@@ -851,7 +846,6 @@ def run() -> None:
     else:
         from PySide6.QtCore import Qt as QtCore
         ui.setWindowFlags(ui.windowFlags() | QtCore.WindowType.WindowStaysOnTopHint)
-    _register_library_window(ui)
     ui.show()
     ui.raise_()
     ui.activateWindow()
