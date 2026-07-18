@@ -174,6 +174,9 @@ def main() -> int:
     ui.on_open_folder_clicked(lambda: ui.set_message(f"Would open: {tmp}"))
     ui.on_favorite_clicked(lambda: ui.set_message("Favorite toggled in preview."))
     ui.on_preset_drag_finished(lambda pid: ui.set_message(f"Drag finished: {pid}"))
+    ui.on_houdini_nodes_dropped(
+        lambda paths: ui.set_message(f"Drop save (preview): {', '.join(paths[:4])}")
+    )
     ui.on_preset_double_clicked(lambda _pid: ui.set_message("Double-click insert skipped in preview."))
 
     def on_preset_ctx(pid: str, global_pos) -> None:
@@ -189,6 +192,9 @@ def main() -> int:
             favorited=is_favorite(pid),
             on_insert=lambda: ui.set_message(f"Insert (preview): {pid}"),
             on_edit=lambda: open_dialog("edit"),
+            on_update_from_selection=lambda: ui.set_message(
+                f"Update from selection (preview): {pid}"
+            ),
             on_delete=lambda: ui.set_message(f"Delete (preview): {pid}", error=True),
             on_favorite=do_fav,
         )
@@ -226,7 +232,22 @@ def main() -> int:
 
         dlg.on_paste_thumbnail(do_paste)
         dlg.on_capture_thumbnail(do_capture)
-        dlg.on_new_category(lambda: None)
+        def do_new_category() -> None:
+            from tools.fx.node_preset_library.logic import add_category, category_id_from_name, list_categories
+            from tools.fx.node_preset_library.ui import CategoryDialog
+
+            used = {str(c.get("color")) for c in list_categories(tmp) if c.get("color")}
+            cat_dlg = CategoryDialog(dlg, used_colors=used)
+            if cat_dlg.exec() != CategoryDialog.DialogCode.Accepted:
+                return
+            name = cat_dlg.get_name()
+            if not name:
+                return
+            add_category(name, tmp, color=cat_dlg.get_color())
+            dlg.set_categories(list_categories(tmp))
+            dlg.set_category(category_id_from_name(name))
+
+        dlg.on_new_category(do_new_category)
 
         if mode == "edit":
             pid = ui.get_selected_preset_id()
@@ -256,6 +277,9 @@ def main() -> int:
 
     ui.on_save_clicked(lambda: open_dialog("save"))
     ui.on_edit_clicked(lambda: open_dialog("edit"))
+    ui.on_update_from_selection_clicked(
+        lambda: ui.set_message("Update from selection skipped in preview.")
+    )
 
     def on_cat_menu(cid: str, display_name: str, global_pos) -> None:
         from tools.fx.node_preset_library.logic import rename_category, delete_category

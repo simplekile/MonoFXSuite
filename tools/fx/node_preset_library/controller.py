@@ -16,11 +16,13 @@ from tools.fx.node_preset_library.logic import (
     add_category,
     add_preset,
     category_id_from_name,
+    color_for_category_id,
     count_presets_by_category,
     delete_category,
     delete_preset,
     ensure_library_root,
     export_library_to_zip,
+    get_category,
     get_preset,
     list_categories,
     list_presets,
@@ -29,9 +31,15 @@ from tools.fx.node_preset_library.logic import (
     new_preset_id,
     preset_relative_paths,
     rename_category,
+    set_category_color,
     update_preset,
 )
-from tools.fx.node_preset_library.ui import NodePresetLibraryUI, SavePresetDialog, SettingsDialog
+from tools.fx.node_preset_library.ui import (
+    CategoryDialog,
+    NodePresetLibraryUI,
+    SavePresetDialog,
+    SettingsDialog,
+)
 from tools.fx.node_preset_library.prefs import (
     default_library_root,
     get_card_scale,
@@ -91,9 +99,17 @@ def run() -> None:
         fav_n = len([pid for pid in list_favorite_ids() if get_preset(pid, root())])
         recent_n = len([pid for pid in list_recent_preset_ids() if get_preset(pid, root())])
         enriched: list[dict] = [
-            {"id": "__all__", "name": f"All ({total})"},
-            {"id": "__favorites__", "name": f"Favorites ({fav_n})"},
-            {"id": "__recent__", "name": f"Recent ({recent_n})"},
+            {"id": "__all__", "name": f"All ({total})", "color": color_for_category_id("__all__")},
+            {
+                "id": "__favorites__",
+                "name": f"Favorites ({fav_n})",
+                "color": color_for_category_id("__favorites__"),
+            },
+            {
+                "id": "__recent__",
+                "name": f"Recent ({recent_n})",
+                "color": color_for_category_id("__recent__"),
+            },
         ]
         for c in cats:
             cid = c.get("id", "")
@@ -234,11 +250,20 @@ def run() -> None:
             do_capture()
 
         def do_new_category() -> None:
-            name, ok = QInputDialog.getText(dialog, "New category", "Category name:")
-            if ok and name.strip():
-                add_category(name.strip(), root())
-                dialog.set_categories(list_categories(root()))
-                dialog.set_category(category_id_from_name(name))
+            used = {
+                str(c.get("color"))
+                for c in list_categories(root())
+                if c.get("color")
+            }
+            cat_dlg = CategoryDialog(dialog, used_colors=used)
+            if cat_dlg.exec() != CategoryDialog.DialogCode.Accepted:
+                return
+            name = cat_dlg.get_name()
+            if not name:
+                return
+            add_category(name, root(), color=cat_dlg.get_color())
+            dialog.set_categories(list_categories(root()))
+            dialog.set_category(category_id_from_name(name))
 
         dialog.on_new_category(do_new_category)
 
@@ -284,7 +309,7 @@ def run() -> None:
             state["network"] = networks[0]
             ui.set_network_filter_value(state["network"])
         cat_name = dialog.get_category() or "Uncategorized"
-        cat_id = category_id_from_name(cat_name)
+        cat_id = dialog.get_category_id() or category_id_from_name(cat_name)
         add_category(cat_name, root())
         preset_id = new_preset_id()
         rel_cpio, rel_thumb = preset_relative_paths(cat_id, preset_id)
@@ -350,7 +375,7 @@ def run() -> None:
             ui.set_message("Enter a preset name.", error=True)
             return
         cat_name = dialog.get_category() or "Uncategorized"
-        cat_id = category_id_from_name(cat_name)
+        cat_id = dialog.get_category_id() or category_id_from_name(cat_name)
         add_category(cat_name, root())
 
         ok = update_preset(
@@ -375,16 +400,129 @@ def run() -> None:
         refresh_categories(cat_id)
         refresh_presets(cat_id)
 
+    def update_preset_from_selection(preset_id: Optional[str] = None) -> None:
+        pid = preset_id or ui.get_selected_preset_id()
+        if not pid:
+            ui.set_message("Select a preset first.", error=True)
+            return
+        preset = get_preset(pid, root())
+        if not preset:
+            ui.set_message("Preset not found.", error=True)
+            return
+        parent, items = h.get_selected_network_items()
+        if not parent or not items:
+            ui.set_message("Select one or more nodes in the same network first.", error=True)
+            return
+
+        name = preset.get("name", pid)
+        n = len(items)
+        answer = QMessageBox.question(
+            ui,
+            "Update preset",
+            (
+                f'Overwrite preset "{name}" with the current selection ({n} node'
+                f'{"s" if n != 1 else ""})?\n\n'
+                "Saved nodes will be replaced. Name, category, and description stay the same."
+            ),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+
+        rel_path = preset.get("file")
+        if not rel_path:
+            ui.set_message("Preset has no file.", error=True)
+            return
+        full_cpio = root() / rel_path
+        full_cpio.parent.mkdir(parents=True, exist_ok=True)
+        if not h.save_items_to_file(parent, items, str(full_cpio), save_hda_fallbacks=False):
+            ui.set_message("Failed to update preset nodes.", error=True)
+            return
+
+        networks: list[str] = []
+        if hasattr(h, "detect_network_tags_for_items"):
+            try:
+                networks = h.detect_network_tags_for_items(parent, items)
+            except Exception:
+                networks = []
+        networks = networks[:1]
+
+        update_kwargs: dict = {
+            "node_count": n,
+            "library_root": root(),
+        }
+        if networks:
+            update_kwargs["networks"] = networks
+        if not update_preset(pid, **update_kwargs):
+            ui.set_message("Saved nodes but failed to update preset metadata.", error=True)
+            return
+
+        # Refresh thumbnail from current selection when possible
+        pix = None
+        if hasattr(h, "capture_selection_thumbnail"):
+            try:
+                pix = h.capture_selection_thumbnail()
+            except Exception:
+                pix = None
+        if pix is not None and not (hasattr(pix, "isNull") and pix.isNull()):
+            cat_id = preset.get("category_id") or "uncategorized"
+            _, rel_thumb = preset_relative_paths(cat_id, pid)
+            saved = _save_thumbnail(pix, rel_thumb)
+            if saved:
+                update_preset(pid, thumbnail_relative=saved, library_root=root())
+
+        if state["auto_detect"] and networks:
+            state["network"] = networks[0]
+            ui.set_network_filter_value(state["network"])
+
+        ui.set_message(f"Updated preset from selection: {name} ({n} nodes)")
+        refresh_categories(state["category_id"])
+        refresh_presets(state["category_id"])
+        refreshed = get_preset(pid, root())
+        ui.set_inspector_preset(refreshed, root(), favorited=is_favorite(pid))
+
     ui.on_save_clicked(open_save_dialog)
 
+    def on_houdini_nodes_dropped(paths: list[str]) -> None:
+        parent, items = (None, [])
+        if hasattr(h, "select_network_items_by_paths"):
+            try:
+                parent, items = h.select_network_items_by_paths(paths)
+            except Exception:
+                parent, items = (None, [])
+        if not parent or not items:
+            # Fallback: current selection (some Houdini builds omit MIME outside Python Panel)
+            parent, items = h.get_selected_network_items()
+        if not parent or not items:
+            ui.set_message(
+                "Drop nodes from the Network Editor (same network), or select nodes then drop.",
+                error=True,
+            )
+            return
+        open_save_dialog()
+
+    if hasattr(h, "parse_node_paths_from_mime"):
+        ui.set_houdini_mime_extractor(h.parse_node_paths_from_mime)
+    ui.on_houdini_nodes_dropped(on_houdini_nodes_dropped)
+
     def on_new_category_clicked() -> None:
-        name, ok = QInputDialog.getText(ui, "New category", "Category name:")
-        if ok and name.strip():
-            add_category(name.strip(), root())
-            cid = category_id_from_name(name.strip())
-            refresh_categories(cid)
-            refresh_presets(cid)
-            ui.set_message(f"Added category: {name}")
+        used = {
+            str(c.get("color"))
+            for c in list_categories(root())
+            if c.get("color")
+        }
+        cat_dlg = CategoryDialog(ui, used_colors=used)
+        if cat_dlg.exec() != CategoryDialog.DialogCode.Accepted:
+            return
+        name = cat_dlg.get_name()
+        if not name:
+            return
+        add_category(name, root(), color=cat_dlg.get_color())
+        cid = category_id_from_name(name)
+        refresh_categories(cid)
+        refresh_presets(cid)
+        ui.set_message(f"Added category: {name}")
 
     ui.on_new_category_clicked(on_new_category_clicked)
 
@@ -406,6 +544,33 @@ def run() -> None:
                 refresh_presets(state["category_id"])
             else:
                 ui.set_message("Failed to rename category.", error=True)
+
+        def do_set_color() -> None:
+            cat = get_category(cid, root()) or {}
+            used = {
+                str(c.get("color"))
+                for c in list_categories(root())
+                if c.get("color") and c.get("id") != cid
+            }
+            cat_dlg = CategoryDialog(
+                ui,
+                title="Set category color",
+                name=bare or str(cat.get("name") or cid),
+                color=str(cat.get("color") or color_for_category_id(cid)),
+                used_colors=used,
+            )
+            if cat_dlg.exec() != CategoryDialog.DialogCode.Accepted:
+                return
+            # Keep name if unchanged; allow rename from this dialog too
+            new_name = cat_dlg.get_name()
+            if new_name and new_name != bare:
+                rename_category(cid, new_name, root())
+            if set_category_color(cid, cat_dlg.get_color(), root()):
+                ui.set_message(f"Updated color for: {new_name or bare}")
+                refresh_categories(cid)
+                refresh_presets(state["category_id"])
+            else:
+                ui.set_message("Failed to set category color.", error=True)
 
         def do_delete() -> None:
             answer = QMessageBox.question(
@@ -430,6 +595,7 @@ def run() -> None:
             can_delete=can_delete,
             show_edit_actions=not special,
             on_rename=do_rename,
+            on_set_color=do_set_color,
             on_delete=do_delete,
             on_open_folder=on_open_folder,
         )
@@ -542,7 +708,7 @@ def run() -> None:
             ui.set_message("Open a network (e.g. double-click a node) and try again.", error=True)
             return
         if hasattr(h, "load_items_from_file_ex"):
-            ok, err = h.load_items_from_file_ex(parent, str(full_path), place_at_cursor=True)
+            ok, err = h.load_items_from_file_ex(parent, str(full_path), place_at_cursor=False)
         else:
             ok, err = h.load_items_from_file(parent, str(full_path)), ""
         if not ok:
@@ -550,7 +716,7 @@ def run() -> None:
             return
         remember_recent_preset(pid)
         refresh_categories(state["category_id"])
-        ui.set_message(f"Inserted near cursor: {preset.get('name', pid)}")
+        ui.set_message(f"Inserted at center view: {preset.get('name', pid)}")
 
     ui.on_insert_clicked(lambda: on_insert_clicked())
     ui.on_preset_double_clicked(lambda pid: on_insert_clicked(pid))
@@ -613,6 +779,7 @@ def run() -> None:
         refresh_presets(state["category_id"])
 
     ui.on_edit_clicked(open_edit_dialog)
+    ui.on_update_from_selection_clicked(update_preset_from_selection)
     ui.on_delete_clicked(on_delete_clicked)
 
     def on_preset_ctx(pid: str, global_pos: QPoint) -> None:
@@ -621,6 +788,7 @@ def run() -> None:
             favorited=is_favorite(pid),
             on_insert=lambda: on_insert_clicked(pid),
             on_edit=open_edit_dialog,
+            on_update_from_selection=lambda: update_preset_from_selection(pid),
             on_delete=on_delete_clicked,
             on_favorite=on_favorite_clicked,
         )

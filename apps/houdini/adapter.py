@@ -398,6 +398,135 @@ def get_selected_network_items() -> tuple[Any, List[Any]]:
         return (None, [])
 
 
+def houdini_node_path_mime_type() -> Optional[str]:
+    """MIME type string for Houdini node-path drags, or None if unavailable."""
+    if not is_available():
+        return None
+    try:
+        return str(hou.qt.mimeType.nodePath)
+    except Exception:
+        return None
+
+
+def split_node_path_payload(raw: str) -> List[str]:
+    """Split Houdini node-path MIME/text payload into unique path strings."""
+    text = (raw or "").strip()
+    if not text:
+        return []
+    # Houdini uses tab; some examples also use comma / newlines
+    for sep in ("\t", "\n", "\r", ","):
+        text = text.replace(sep, "\n")
+    out: List[str] = []
+    seen: set[str] = set()
+    for part in text.split("\n"):
+        p = part.strip().strip('"').strip("'")
+        if not p or p in seen:
+            continue
+        # Prefer absolute houdini paths; also allow relative-looking tokens
+        if p.startswith("/") or "/" in p:
+            seen.add(p)
+            out.append(p)
+    return out
+
+
+def _mime_bytes_to_str(data: Any) -> str:
+    if data is None:
+        return ""
+    try:
+        if hasattr(data, "data"):
+            data = data.data()
+    except Exception:
+        pass
+    if isinstance(data, bytes):
+        return data.decode("utf-8", errors="ignore")
+    if isinstance(data, (bytearray, memoryview)):
+        return bytes(data).decode("utf-8", errors="ignore")
+    return str(data)
+
+
+def parse_node_paths_from_mime(mime: Any) -> List[str]:
+    """
+    Extract node paths from a Qt QMimeData drop (Houdini network drag).
+    Prefers hou.qt.mimeType.nodePath, then plain text.
+    """
+    if mime is None:
+        return []
+    try:
+        # Never treat our own preset drags as Houdini nodes
+        from tools.fx.node_preset_library.prefs import PRESET_MIME
+
+        if hasattr(mime, "hasFormat") and mime.hasFormat(PRESET_MIME):
+            return []
+    except Exception:
+        pass
+
+    node_mime = houdini_node_path_mime_type()
+    if node_mime and hasattr(mime, "hasFormat") and mime.hasFormat(node_mime):
+        try:
+            raw = _mime_bytes_to_str(mime.data(node_mime))
+            paths = split_node_path_payload(raw)
+            if paths:
+                return paths
+        except Exception:
+            pass
+
+    try:
+        if hasattr(mime, "hasText") and mime.hasText():
+            return split_node_path_payload(mime.text() or "")
+    except Exception:
+        pass
+    return []
+
+
+def mime_has_houdini_nodes(mime: Any) -> bool:
+    """True if mime looks like a Houdini node drag (not a library preset)."""
+    return bool(parse_node_paths_from_mime(mime))
+
+
+def select_network_items_by_paths(paths: List[str]) -> tuple[Any, List[Any]]:
+    """
+    Resolve paths to network items, select them in Houdini, return (parent, items).
+    Returns (None, []) if nothing usable / mixed parents.
+    """
+    if not is_available() or not paths:
+        return (None, [])
+    try:
+        found: List[Any] = []
+        for raw in paths:
+            item = None
+            try:
+                item = hou.node(raw)
+            except Exception:
+                item = None
+            if item is None:
+                try:
+                    item = hou.item(raw)  # type: ignore[attr-defined]
+                except Exception:
+                    item = None
+            if item is not None:
+                found.append(item)
+        if not found:
+            return (None, [])
+        parent = found[0].parent()
+        if parent is None:
+            return (None, [])
+        same = [it for it in found if it.parent() == parent]
+        if not same:
+            return (None, [])
+        try:
+            hou.clearAllSelected()
+            for it in same:
+                try:
+                    it.setSelected(True)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return (parent, same)
+    except Exception:
+        return (None, [])
+
+
 def get_current_network_parent() -> Any:
     """
     Network node to use as parent when inserting presets.

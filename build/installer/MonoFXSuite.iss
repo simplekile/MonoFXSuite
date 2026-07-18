@@ -36,9 +36,10 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 ; Source = repo root (chạy ISCC từ repo root)
 Source: "..\..\packages\monofx_pipeline_common\src\*"; DestDir: "{app}\packages\monofx_pipeline_common\src"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\apps\*"; DestDir: "{app}\apps"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Blender add-on ships as a separate ZIP (build.ps1) — do not install into Houdini monofx.
+Source: "..\..\apps\*"; DestDir: "{app}\apps"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "blender,blender\*"
 Source: "..\..\core\*"; DestDir: "{app}\core"; Flags: ignoreversion recursesubdirs createallsubdirs
-Source: "..\..\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "fx\monofx_pipeline_blender,fx\monofx_pipeline_blender\*"
 ; Houdini loads packages from Documents\houdiniXX.X\packages. We extract the package json to {tmp}
 ; and copy it to each selected Houdini version in ssPostInstall.
 Source: "..\..\packages\monofx.json"; DestDir: "{tmp}"; DestName: "monofx.json"; Flags: ignoreversion deleteafterinstall

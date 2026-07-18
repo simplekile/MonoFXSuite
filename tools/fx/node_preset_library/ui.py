@@ -18,6 +18,9 @@ from PySide6.QtGui import (
     QFont,
     QPen,
     QDrag,
+    QDragEnterEvent,
+    QDragMoveEvent,
+    QDropEvent,
 )
 from PySide6.QtWidgets import (
     QDialog,
@@ -45,9 +48,15 @@ from PySide6.QtWidgets import (
     QApplication,
     QTabWidget,
     QSlider,
+    QColorDialog,
 )
 
-from tools.fx.node_preset_library.logic import category_id_from_name
+from tools.fx.node_preset_library.logic import (
+    category_id_from_name,
+    color_for_category_id,
+    normalize_category_color,
+    random_category_color,
+)
 from tools.fx.node_preset_library.prefs import (
     DEFAULT_CARD_SCALE,
     MAX_CARD_SCALE,
@@ -209,18 +218,223 @@ def icon_search() -> QIcon:
     )
 
 
+def icon_layers() -> QIcon:
+    # Lucide "layers" — All
+    return _lucide_icon(
+        '<path d="M12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/>'
+        '<path d="M2 12a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 12"/>'
+        '<path d="M2 17a1 1 0 0 0 .58.91l8.6 3.91a2 2 0 0 0 1.65 0l8.58-3.9A1 1 0 0 0 22 17"/>',
+        size=16,
+        color="#9aa3b5",
+    )
+
+
+def icon_star() -> QIcon:
+    # Lucide "star" — Favorites
+    return _lucide_icon(
+        '<path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/>',
+        size=16,
+        color="#fbbf24",
+    )
+
+
+def icon_clock() -> QIcon:
+    # Lucide "clock" — Recent
+    return _lucide_icon(
+        '<circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>',
+        size=16,
+        color="#6ea8fe",
+    )
+
+
+def icon_color_tag(hex_color: str, *, size: int = 16) -> QIcon:
+    """Filled rounded tag chip for category color."""
+    color = normalize_category_color(hex_color, fallback="#5ec4b6")
+    dpr = 1.0
+    try:
+        from PySide6.QtGui import QGuiApplication
+
+        screen = QGuiApplication.primaryScreen()
+        if screen is not None:
+            dpr = max(1.0, float(screen.devicePixelRatio()))
+    except Exception:
+        pass
+
+    icon = QIcon()
+    for scale in sorted({1.0, float(dpr), 2.0}):
+        phys = max(1, int(round(size * scale)))
+        pm = QPixmap(phys, phys)
+        pm.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pm)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        margin = max(1.0, phys * 0.18)
+        rect = QRectF(margin, margin, phys - 2 * margin, phys - 2 * margin)
+        radius = max(2.0, phys * 0.22)
+        painter.setPen(QPen(QColor(0, 0, 0, 60), max(1.0, phys * 0.06)))
+        painter.setBrush(QColor(color))
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.end()
+        pm.setDevicePixelRatio(scale)
+        icon.addPixmap(pm)
+    return icon
+
+
+def category_list_icon(category: dict[str, Any]) -> QIcon:
+    """Icon for a sidebar / combo category row."""
+    cid = str(category.get("id") or "")
+    if cid == "__all__":
+        return icon_layers()
+    if cid == "__favorites__":
+        return icon_star()
+    if cid == "__recent__":
+        return icon_clock()
+    color = category.get("color") or color_for_category_id(cid)
+    return icon_color_tag(str(color))
+
+
+# ---------------------------------------------------------------------------
+# Category dialog (name + color tag)
+# ---------------------------------------------------------------------------
+
+
+class CategoryDialog(QDialog):
+    """Create / edit category name and color tag."""
+
+    def __init__(
+        self,
+        parent: Optional[QWidget] = None,
+        *,
+        title: str = "New category",
+        name: str = "",
+        color: Optional[str] = None,
+        used_colors: Optional[set[str]] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("CategoryDialog")
+        self.setWindowTitle(title)
+        self.setMinimumWidth(360)
+        _apply_dialog_style(self)
+        self._used = {normalize_category_color(c) for c in (used_colors or set())}
+        self._color = normalize_category_color(
+            color,
+            fallback=random_category_color(avoid=self._used),
+        )
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(20, 18, 20, 16)
+
+        title_lbl = QLabel(title)
+        title_lbl.setStyleSheet(
+            f"color: {TEXT_PRIMARY}; font-size: 15px; font-weight: 700; padding-bottom: 2px;"
+        )
+        layout.addWidget(title_lbl)
+
+        layout.addWidget(_field_label("Name"))
+        self._name_edit = QLineEdit(name)
+        self._name_edit.setPlaceholderText("Category name")
+        self._name_edit.setStyleSheet(STYLE_INPUT)
+        layout.addWidget(self._name_edit)
+
+        layout.addWidget(_field_label("Color tag"))
+        color_row = QHBoxLayout()
+        color_row.setSpacing(8)
+        self._swatch_btn = QToolButton()
+        self._swatch_btn.setFixedSize(36, 36)
+        self._swatch_btn.setToolTip("Pick color")
+        self._swatch_btn.setAutoRaise(False)
+        self._swatch_btn.clicked.connect(self._pick_color)
+        color_row.addWidget(self._swatch_btn)
+
+        self._hex_label = QLabel()
+        self._hex_label.setStyleSheet(f"color: {TEXT_SECONDARY}; font-size: 12px;")
+        color_row.addWidget(self._hex_label, 1)
+
+        pick_btn = QPushButton("Pick…")
+        pick_btn.setStyleSheet(STYLE_BTN)
+        pick_btn.clicked.connect(self._pick_color)
+        color_row.addWidget(pick_btn)
+
+        rand_btn = QPushButton("Random")
+        rand_btn.setStyleSheet(STYLE_BTN)
+        rand_btn.clicked.connect(self._random_color)
+        color_row.addWidget(rand_btn)
+        layout.addLayout(color_row)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.setStyleSheet(STYLE_BTN)
+        ok = buttons.button(QDialogButtonBox.StandardButton.Ok)
+        if ok:
+            ok.setStyleSheet(STYLE_BTN_PRIMARY)
+            ok.setText("Create" if not name.strip() else "Save")
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        self._apply_swatch()
+        self._name_edit.setFocus()
+        self._name_edit.selectAll()
+
+    def _apply_swatch(self) -> None:
+        self._hex_label.setText(self._color.upper())
+        self._swatch_btn.setIcon(icon_color_tag(self._color, size=20))
+        self._swatch_btn.setIconSize(QSize(20, 20))
+        self._swatch_btn.setStyleSheet(
+            f"""
+            QToolButton {{
+                background: {BG_SURFACE};
+                border: 1px solid {BORDER_STRONG};
+                border-radius: 10px;
+            }}
+            QToolButton:hover {{
+                border-color: {ACCENT};
+            }}
+            """
+        )
+
+    def _pick_color(self) -> None:
+        initial = QColor(self._color)
+        chosen = QColorDialog.getColor(initial, self, "Category color")
+        if chosen.isValid():
+            self._color = normalize_category_color(chosen.name())
+            self._apply_swatch()
+
+    def _random_color(self) -> None:
+        avoid = set(self._used)
+        avoid.add(self._color)
+        self._color = random_category_color(avoid=avoid)
+        self._apply_swatch()
+
+    def get_name(self) -> str:
+        return self._name_edit.text().strip()
+
+    def get_color(self) -> str:
+        return self._color
+
+    def accept(self) -> None:  # type: ignore[override]
+        if not self.get_name():
+            QMessageBox.information(self, "New category", "Enter a category name.")
+            return
+        super().accept()
+
+
 class PresetListWidget(QListWidget):
-    """List/grid with left-drag insert + reliable right-click context menu."""
+    """List/grid with left-drag insert + drop from Houdini to save + RBM menu."""
 
     def __init__(self, parent: Optional[QWidget] = None) -> None:
         super().__init__(parent)
         self.setDragEnabled(True)
-        self.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.CopyAction)
         # DefaultContextMenu → contextMenuEvent(); CustomContextMenu skips it.
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.DefaultContextMenu)
         self._drag_finished_cb: Optional[Callable[[str], None]] = None
         self._context_menu_cb: Optional[Callable[[str, QPoint], None]] = None
+        self._houdini_drop_cb: Optional[Callable[[list[str]], None]] = None
+        self._mime_paths_fn: Optional[Callable[[QMimeData], list[str]]] = None
         self._press_pos: Optional[QPoint] = None
         self._press_item: Optional[QListWidgetItem] = None
 
@@ -229,6 +443,58 @@ class PresetListWidget(QListWidget):
 
     def on_context_menu(self, callback: Callable[[str, QPoint], None]) -> None:
         self._context_menu_cb = callback
+
+    def on_houdini_nodes_dropped(self, callback: Callable[[list[str]], None]) -> None:
+        self._houdini_drop_cb = callback
+
+    def set_mime_paths_extractor(self, fn: Callable[[QMimeData], list[str]]) -> None:
+        self._mime_paths_fn = fn
+
+    def _drop_paths(self, mime: QMimeData) -> list[str]:
+        if self._mime_paths_fn is not None:
+            try:
+                return list(self._mime_paths_fn(mime) or [])
+            except Exception:
+                return []
+        # Fallback without Houdini: ignore library preset MIME
+        if mime.hasFormat(PRESET_MIME):
+            return []
+        if mime.hasText():
+            text = mime.text() or ""
+            out = []
+            for part in text.replace("\t", "\n").replace(",", "\n").split("\n"):
+                p = part.strip()
+                if p.startswith("/"):
+                    out.append(p)
+            return out
+        return []
+
+    def _can_accept_houdini_drop(self, mime: QMimeData) -> bool:
+        return bool(self._drop_paths(mime))
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # type: ignore[override]
+        mime = event.mimeData()
+        if mime and self._can_accept_houdini_drop(mime):
+            event.acceptProposedAction()
+            return
+        # Allow internal preset drag to pass through without accepting as "save"
+        event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # type: ignore[override]
+        mime = event.mimeData()
+        if mime and self._can_accept_houdini_drop(mime):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # type: ignore[override]
+        mime = event.mimeData()
+        paths = self._drop_paths(mime) if mime else []
+        if paths and self._houdini_drop_cb:
+            self._houdini_drop_cb(paths)
+            event.acceptProposedAction()
+            return
+        event.ignore()
 
     def _item_at(self, pos: QPoint) -> Optional[QListWidgetItem]:
         item = self.itemAt(pos)
@@ -712,11 +978,35 @@ STYLE_PRESET_LIST = f"""
 """
 
 STYLE_DIALOG = f"""
-    QDialog#SavePresetDialog {{
+    QDialog {{
+        background-color: {BG_APP};
         background: {BG_APP};
+        color: {TEXT_PRIMARY};
+        font-size: 13px;
+    }}
+    QDialog QLabel {{
+        background: transparent;
+        color: {TEXT_PRIMARY};
+    }}
+    QDialog QDialogButtonBox {{
+        background: transparent;
+    }}
+    QDialog QWidget {{
         color: {TEXT_PRIMARY};
     }}
 """
+
+
+def _apply_dialog_style(dialog: QDialog) -> None:
+    """Force Quiet Studio chrome on QDialog (stylesheet alone often skips dialog bg)."""
+    dialog.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+    dialog.setAutoFillBackground(True)
+    pal = dialog.palette()
+    bg = QColor(BG_APP)
+    pal.setColor(dialog.backgroundRole(), bg)
+    pal.setColor(dialog.foregroundRole(), QColor(TEXT_PRIMARY))
+    dialog.setPalette(pal)
+    dialog.setStyleSheet(STYLE_DIALOG + STYLE_WINDOW)
 
 
 def _field_label(text: str) -> QLabel:
@@ -1155,8 +1445,8 @@ class SavePresetDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("SavePresetDialog")
         self.setWindowTitle("Save to Library")
-        self.setMinimumWidth(420)
-        self.setStyleSheet(STYLE_DIALOG + STYLE_WINDOW)
+        self.setMinimumWidth(480)
+        _apply_dialog_style(self)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
@@ -1179,10 +1469,12 @@ class SavePresetDialog(QDialog):
         cat_layout.setSpacing(8)
         self._category_combo = QComboBox()
         self._category_combo.setStyleSheet(STYLE_COMBO)
-        self._category_combo.setEditable(True)
+        self._category_combo.setEditable(False)
+        self._category_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         cat_layout.addWidget(self._category_combo, 1)
         self._new_cat_btn = QPushButton("New…")
         self._new_cat_btn.setStyleSheet(STYLE_BTN)
+        self._new_cat_btn.setToolTip("Create a new category")
         cat_layout.addWidget(self._new_cat_btn)
         layout.addLayout(cat_layout)
 
@@ -1196,11 +1488,13 @@ class SavePresetDialog(QDialog):
         layout.addWidget(_field_label("Thumbnail"))
         thumb_row = QHBoxLayout()
         thumb_row.setSpacing(12)
+        # 2× previous 88×66 preview
+        self._thumb_preview_size = QSize(176, 132)
         self._thumb_preview = QLabel()
-        self._thumb_preview.setFixedSize(88, 66)
+        self._thumb_preview.setFixedSize(self._thumb_preview_size)
         self._thumb_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._thumb_preview.setStyleSheet(
-            f"background: {BG_SURFACE}; border: 1px dashed {BORDER_STRONG}; "
+            f"background: {BG_SURFACE}; border: 2px dashed {BORDER_STRONG}; "
             f"border-radius: 12px; color: {TEXT_MUTED}; font-size: 11px;"
         )
         self._thumb_preview.setText("No image")
@@ -1276,27 +1570,47 @@ class SavePresetDialog(QDialog):
         return self._category_combo.currentText().strip()
 
     def set_categories(self, categories: list[dict[str, Any]]) -> None:
+        current = self._category_combo.currentData()
         self._category_combo.clear()
         for c in categories:
-            self._category_combo.addItem(c.get("name", ""), c.get("id", ""))
+            self._category_combo.addItem(
+                category_list_icon(c),
+                str(c.get("name", "")),
+                c.get("id", ""),
+            )
+        if self._category_combo.count() == 0:
+            self._category_combo.addItem(
+                icon_color_tag(color_for_category_id("uncategorized")),
+                "Uncategorized",
+                "uncategorized",
+            )
+        # Restore previous selection when possible
+        if current is not None:
+            self.set_category(str(current))
+        elif self._category_combo.count() > 0:
+            self._category_combo.setCurrentIndex(0)
 
     def set_category(self, category_id: str) -> None:
         for i in range(self._category_combo.count()):
             if self._category_combo.itemData(i) == category_id:
                 self._category_combo.setCurrentIndex(i)
                 return
-        self._category_combo.setCurrentText(category_id)
+        # Fallback: match by display name
+        for i in range(self._category_combo.count()):
+            if self._category_combo.itemText(i).strip().lower() == str(category_id).strip().lower():
+                self._category_combo.setCurrentIndex(i)
+                return
+        if self._category_combo.count() > 0:
+            self._category_combo.setCurrentIndex(0)
 
     def get_category_id(self) -> str:
-        text = self.get_category()
-        if not text:
-            return "uncategorized"
         idx = self._category_combo.currentIndex()
         if idx >= 0:
             cid = self._category_combo.itemData(idx)
-            if cid and self._category_combo.itemText(idx).strip() == text:
+            if cid:
                 return str(cid)
-        return category_id_from_name(text)
+        text = self.get_category()
+        return category_id_from_name(text) if text else "uncategorized"
 
     def get_description(self) -> str:
         return self._desc_edit.toPlainText().strip()
@@ -1307,10 +1621,11 @@ class SavePresetDialog(QDialog):
     def set_thumbnail_from_pixmap(self, pixmap: Optional[QPixmap]) -> None:
         self._thumb_pixmap = pixmap
         if pixmap and not pixmap.isNull():
+            size = getattr(self, "_thumb_preview_size", QSize(176, 132))
             rounded = _rounded_cover_pixmap(
                 pixmap,
-                QSize(84, 62),
-                radius=10.0,
+                size,
+                radius=12.0,
                 border_color=ACCENT,
                 border_width=2.0,
             )
@@ -1353,7 +1668,7 @@ class SettingsDialog(QDialog):
         self.setWindowTitle("Library Settings")
         self.setMinimumWidth(540)
         self.setMinimumHeight(420)
-        self.setStyleSheet(STYLE_DIALOG + STYLE_WINDOW)
+        _apply_dialog_style(self)
 
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
@@ -1638,6 +1953,9 @@ class NodePresetLibraryUI(QWidget):
         self._card_scale = DEFAULT_CARD_SCALE
         self._view_mode = "grid"
         self._open_folder_cb: Optional[Callable[[], None]] = None
+        self._houdini_drop_cb: Optional[Callable[[list[str]], None]] = None
+        self._mime_paths_fn: Optional[Callable[[QMimeData], list[str]]] = None
+        self.setAcceptDrops(True)
 
         main = QVBoxLayout(self)
         main.setSpacing(12)
@@ -1806,6 +2124,7 @@ class NodePresetLibraryUI(QWidget):
         self._category_list = QListWidget()
         self._category_list.setStyleSheet(STYLE_SIDEBAR_LIST)
         self._category_list.setSpacing(1)
+        self._category_list.setIconSize(QSize(16, 16))
         self._category_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         cat_layout.addWidget(self._category_list, 1)
 
@@ -1869,7 +2188,11 @@ class NodePresetLibraryUI(QWidget):
         list_wrap.setContentsMargins(0, 0, 0, 0)
         list_wrap.setSpacing(4)
         list_wrap.addWidget(self._preset_list, 1)
-        drag_hint = QLabel("Right-click preset for Insert / Edit / Delete. Drag to Network Editor to insert.")
+        drag_hint = QLabel(
+            "Right-click preset for Insert / Edit / Update / Delete. "
+            "Drag preset → Network Editor to insert. "
+            "Drag nodes from Network Editor → here to save."
+        )
         drag_hint.setStyleSheet(f"color: {TEXT_MUTED}; font-size: 11px; padding: 0 4px;")
         drag_hint.setWordWrap(True)
         list_wrap.addWidget(drag_hint)
@@ -1955,7 +2278,7 @@ class NodePresetLibraryUI(QWidget):
         self._insp_fav_btn.setCheckable(True)
         insp_layout.addWidget(self._insp_fav_btn)
 
-        self._insp_insert_btn = QPushButton("Insert at cursor")
+        self._insp_insert_btn = QPushButton("Insert at center view")
         self._insp_insert_btn.setStyleSheet(STYLE_BTN_PRIMARY)
         self._insp_insert_btn.setEnabled(False)
         insp_layout.addWidget(self._insp_insert_btn)
@@ -1964,6 +2287,14 @@ class NodePresetLibraryUI(QWidget):
         self._insp_edit_btn.setStyleSheet(STYLE_BTN)
         self._insp_edit_btn.setEnabled(False)
         insp_layout.addWidget(self._insp_edit_btn)
+
+        self._insp_update_btn = QPushButton("Update from selection")
+        self._insp_update_btn.setStyleSheet(STYLE_BTN)
+        self._insp_update_btn.setEnabled(False)
+        self._insp_update_btn.setToolTip(
+            "Overwrite this preset's nodes with the current Network Editor selection"
+        )
+        insp_layout.addWidget(self._insp_update_btn)
 
         content_split.addWidget(insp)
         content_split.setSizes([480, 240])
@@ -1993,8 +2324,11 @@ class NodePresetLibraryUI(QWidget):
         self._category_list.clear()
         for c in categories:
             name = c.get("name", c.get("id", ""))
-            item = QListWidgetItem(name)
+            item = QListWidgetItem(category_list_icon(c), name)
             item.setData(Qt.ItemDataRole.UserRole, c.get("id", ""))
+            color = c.get("color")
+            if color:
+                item.setData(Qt.ItemDataRole.UserRole + 1, str(color))
             self._category_list.addItem(item)
         if select_id:
             for i in range(self._category_list.count()):
@@ -2063,6 +2397,7 @@ class NodePresetLibraryUI(QWidget):
         self._insp_meta.setText("")
         self._insp_insert_btn.setEnabled(False)
         self._insp_edit_btn.setEnabled(False)
+        self._insp_update_btn.setEnabled(False)
         self._insp_fav_btn.setEnabled(False)
         self._insp_fav_btn.setChecked(False)
         self._insp_fav_btn.setText("☆  Favorite")
@@ -2132,6 +2467,7 @@ class NodePresetLibraryUI(QWidget):
 
         self._insp_insert_btn.setEnabled(True)
         self._insp_edit_btn.setEnabled(True)
+        self._insp_update_btn.setEnabled(True)
         self._insp_fav_btn.setEnabled(True)
         self.set_inspector_favorite(favorited)
 
@@ -2203,6 +2539,45 @@ class NodePresetLibraryUI(QWidget):
     def on_preset_drag_finished(self, callback: Callable[[str], None]) -> None:
         self._preset_list.on_drag_finished(callback)
 
+    def on_houdini_nodes_dropped(self, callback: Callable[[list[str]], None]) -> None:
+        self._houdini_drop_cb = callback
+        self._preset_list.on_houdini_nodes_dropped(callback)
+
+    def set_houdini_mime_extractor(self, fn: Callable[[QMimeData], list[str]]) -> None:
+        self._mime_paths_fn = fn
+        self._preset_list.set_mime_paths_extractor(fn)
+
+    def _window_drop_paths(self, mime: QMimeData) -> list[str]:
+        if self._mime_paths_fn is not None:
+            try:
+                return list(self._mime_paths_fn(mime) or [])
+            except Exception:
+                return []
+        return self._preset_list._drop_paths(mime)
+
+    def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # type: ignore[override]
+        mime = event.mimeData()
+        if mime and self._window_drop_paths(mime):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dragMoveEvent(self, event: QDragMoveEvent) -> None:  # type: ignore[override]
+        mime = event.mimeData()
+        if mime and self._window_drop_paths(mime):
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent) -> None:  # type: ignore[override]
+        mime = event.mimeData()
+        paths = self._window_drop_paths(mime) if mime else []
+        if paths and self._houdini_drop_cb:
+            self._houdini_drop_cb(paths)
+            event.acceptProposedAction()
+            return
+        event.ignore()
+
     def on_insert_clicked(self, callback: Callable[[], None]) -> None:
         self._insp_insert_btn.clicked.connect(callback)
         self._insert_callback = callback
@@ -2210,6 +2585,9 @@ class NodePresetLibraryUI(QWidget):
     def on_edit_clicked(self, callback: Callable[[], None]) -> None:
         self._insp_edit_btn.clicked.connect(callback)
         self._edit_callback = callback
+
+    def on_update_from_selection_clicked(self, callback: Callable[[], None]) -> None:
+        self._insp_update_btn.clicked.connect(callback)
 
     def on_delete_clicked(self, callback: Callable[[], None]) -> None:
         self._delete_callback = callback
@@ -2225,6 +2603,7 @@ class NodePresetLibraryUI(QWidget):
         favorited: bool = False,
         on_insert: Optional[Callable[[], None]] = None,
         on_edit: Optional[Callable[[], None]] = None,
+        on_update_from_selection: Optional[Callable[[], None]] = None,
         on_delete: Optional[Callable[[], None]] = None,
         on_favorite: Optional[Callable[[], None]] = None,
     ) -> None:
@@ -2247,8 +2626,9 @@ class NodePresetLibraryUI(QWidget):
             }}
             """
         )
-        act_insert = menu.addAction("Insert at cursor")
+        act_insert = menu.addAction("Insert at center view")
         act_edit = menu.addAction("Edit…")
+        act_update = menu.addAction("Update from selection…")
         act_fav = menu.addAction("Remove from Favorites" if favorited else "Add to Favorites")
         menu.addSeparator()
         act_delete = menu.addAction("Delete…")
@@ -2257,6 +2637,8 @@ class NodePresetLibraryUI(QWidget):
             on_insert()
         elif chosen == act_edit and on_edit:
             on_edit()
+        elif chosen == act_update and on_update_from_selection:
+            on_update_from_selection()
         elif chosen == act_fav and on_favorite:
             on_favorite()
         elif chosen == act_delete and on_delete:
@@ -2379,6 +2761,7 @@ class NodePresetLibraryUI(QWidget):
         can_delete: bool = True,
         show_edit_actions: bool = True,
         on_rename: Optional[Callable[[], None]] = None,
+        on_set_color: Optional[Callable[[], None]] = None,
         on_delete: Optional[Callable[[], None]] = None,
         on_open_folder: Optional[Callable[[], None]] = None,
     ) -> None:
@@ -2404,10 +2787,12 @@ class NodePresetLibraryUI(QWidget):
             }}
             """
         )
-        act_rename = act_delete = act_open = None
+        act_rename = act_color = act_delete = act_open = None
         if show_edit_actions:
             act_rename = menu.addAction("Rename…")
             act_rename.setEnabled(can_rename)
+            act_color = menu.addAction("Set color…")
+            act_color.setEnabled(can_rename)
             act_delete = menu.addAction("Delete…")
             act_delete.setEnabled(can_delete)
         open_cb = on_open_folder or getattr(self, "_open_folder_cb", None)
@@ -2420,6 +2805,8 @@ class NodePresetLibraryUI(QWidget):
         chosen = menu.exec(global_pos)
         if act_rename is not None and chosen == act_rename and on_rename:
             on_rename()
+        elif act_color is not None and chosen == act_color and on_set_color:
+            on_set_color()
         elif act_delete is not None and chosen == act_delete and on_delete:
             on_delete()
         elif act_open is not None and chosen == act_open and open_cb:
@@ -2437,17 +2824,32 @@ class NodePresetLibraryUI(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Import library — select folder")
         return path if path else None
 
-    def show_import_zip_or_folder_dialog(self) -> Optional[str]:
-        """Return a folder path or a .zip file path."""
+    def show_import_zip_dialog(self) -> Optional[str]:
         path, _filt = QFileDialog.getOpenFileName(
             self,
-            "Import library — select zip (or Cancel then pick folder)",
+            "Import library — select zip",
             "",
             "Library zip (*.zip);;All files (*.*)",
         )
-        if path:
-            return path
-        return self.show_import_folder_dialog()
+        return path if path else None
+
+    def show_import_zip_or_folder_dialog(self) -> Optional[str]:
+        """Ask zip vs folder once, then open a single picker."""
+        box = QMessageBox(self)
+        box.setWindowTitle("Import library")
+        box.setText("Import from a zip file or a library folder?")
+        box.setIcon(QMessageBox.Icon.Question)
+        zip_btn = box.addButton("Zip…", QMessageBox.ButtonRole.AcceptRole)
+        folder_btn = box.addButton("Folder…", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton(QMessageBox.StandardButton.Cancel)
+        box.setDefaultButton(zip_btn)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked == zip_btn:
+            return self.show_import_zip_dialog()
+        if clicked == folder_btn:
+            return self.show_import_folder_dialog()
+        return None
 
     def show_export_zip_dialog(self, suggested_name: str = "node_preset_library.zip") -> Optional[str]:
         path, _ = QFileDialog.getSaveFileName(

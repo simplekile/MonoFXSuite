@@ -15,6 +15,70 @@ from typing import Any, Optional
 from tools.fx.node_preset_library import config
 
 
+# Soft tags that stay readable on graphite sidebar
+CATEGORY_COLOR_PALETTE: tuple[str, ...] = (
+    "#5ec4b6",  # teal (brand)
+    "#6ea8fe",  # sky
+    "#a78bfa",  # violet
+    "#f0abfc",  # pink
+    "#fb923c",  # orange
+    "#fbbf24",  # amber
+    "#34d399",  # emerald
+    "#22d3ee",  # cyan
+    "#f87171",  # red
+    "#94a3b8",  # slate
+)
+
+_SPECIAL_CATEGORY_COLORS: dict[str, str] = {
+    "__all__": "#9aa3b5",
+    "__favorites__": "#fbbf24",
+    "__recent__": "#6ea8fe",
+    "uncategorized": "#8b93a7",
+}
+
+
+def normalize_category_color(value: Any, *, fallback: str = "#5ec4b6") -> str:
+    """Return #RRGGBB or fallback."""
+    raw = str(value or "").strip()
+    if raw.startswith("#") and len(raw) == 7:
+        try:
+            int(raw[1:], 16)
+            return raw.lower()
+        except ValueError:
+            pass
+    if raw.startswith("#") and len(raw) == 4:
+        try:
+            r, g, b = raw[1], raw[2], raw[3]
+            int(r + g + b, 16)
+            return f"#{r}{r}{g}{g}{b}{b}".lower()
+        except ValueError:
+            pass
+    return fallback.lower()
+
+
+def color_for_category_id(category_id: str) -> str:
+    """Stable color for a category id (migration / specials)."""
+    cid = (category_id or "").strip() or "uncategorized"
+    if cid in _SPECIAL_CATEGORY_COLORS:
+        return _SPECIAL_CATEGORY_COLORS[cid]
+    # Deterministic pick from palette
+    h = 0
+    for ch in cid:
+        h = (h * 31 + ord(ch)) & 0xFFFFFFFF
+    return CATEGORY_COLOR_PALETTE[h % len(CATEGORY_COLOR_PALETTE)]
+
+
+def random_category_color(*, avoid: Optional[set[str]] = None) -> str:
+    """Pick a palette color, preferring ones not already used."""
+    import random
+
+    used = {normalize_category_color(c) for c in (avoid or set())}
+    choices = [c for c in CATEGORY_COLOR_PALETTE if c not in used]
+    if not choices:
+        choices = list(CATEGORY_COLOR_PALETTE)
+    return random.choice(choices)
+
+
 def _slug(s: str) -> str:
     """Lowercase, replace spaces with underscore, non-alnum to empty."""
     s = s.strip().lower()
@@ -33,6 +97,12 @@ def load_index(library_root: Optional[Path] = None) -> dict[str, Any]:
     data.setdefault("categories", [])
     data.setdefault("presets", [])
     # Backward-compat defaults for new fields
+    for c in data["categories"]:
+        cid = c.get("id") or "uncategorized"
+        c["color"] = normalize_category_color(
+            c.get("color"),
+            fallback=color_for_category_id(str(cid)),
+        )
     for p in data["presets"]:
         p.setdefault("description", "")
         # networks: list of strings like ["SOP", "VOP"]
@@ -63,7 +133,12 @@ def ensure_library_root(library_root: Optional[Path] = None) -> Path:
 # --- Categories ---
 
 
-def add_category(name: str, library_root: Optional[Path] = None) -> Optional[dict[str, Any]]:
+def add_category(
+    name: str,
+    library_root: Optional[Path] = None,
+    *,
+    color: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
     root = ensure_library_root(library_root)
     data = load_index(root)
     cid = _slug(name)
@@ -71,9 +146,28 @@ def add_category(name: str, library_root: Optional[Path] = None) -> Optional[dic
         cid = "uncategorized"
     for c in data["categories"]:
         if c.get("id") == cid:
+            # Ensure legacy categories gain a color when touched
+            if not c.get("color"):
+                c["color"] = normalize_category_color(
+                    color,
+                    fallback=color_for_category_id(cid),
+                )
+                save_index(data, root)
             return c
     order = max((c.get("order", 0) for c in data["categories"]), default=-1) + 1
-    cat = {"id": cid, "name": name.strip() or cid, "order": order}
+    used = {normalize_category_color(c.get("color")) for c in data["categories"] if c.get("color")}
+    if color:
+        cat_color = normalize_category_color(color, fallback=color_for_category_id(cid))
+    elif cid in _SPECIAL_CATEGORY_COLORS or cid == "uncategorized":
+        cat_color = color_for_category_id(cid)
+    else:
+        cat_color = random_category_color(avoid=used)
+    cat = {
+        "id": cid,
+        "name": name.strip() or cid,
+        "order": order,
+        "color": cat_color,
+    }
     data["categories"].append(cat)
     cat_dir = root / config.CATEGORIES_DIR / cid
     cat_dir.mkdir(parents=True, exist_ok=True)
@@ -97,6 +191,30 @@ def rename_category(category_id: str, new_name: str, library_root: Optional[Path
             return True
     return False
 
+
+def set_category_color(
+    category_id: str,
+    color: str,
+    library_root: Optional[Path] = None,
+) -> bool:
+    root = library_root or config.get_library_root()
+    data = load_index(root)
+    for c in data["categories"]:
+        if c.get("id") == category_id:
+            c["color"] = normalize_category_color(
+                color,
+                fallback=color_for_category_id(category_id),
+            )
+            save_index(data, root)
+            return True
+    return False
+
+
+def get_category(category_id: str, library_root: Optional[Path] = None) -> Optional[dict[str, Any]]:
+    for c in list_categories(library_root):
+        if c.get("id") == category_id:
+            return c
+    return None
 
 def _reassign_preset_files(
     preset: dict[str, Any],
@@ -220,11 +338,14 @@ def update_preset(
     category_id: Optional[str] = None,
     description: Optional[str] = None,
     thumbnail_relative: Any = ...,
+    node_count: Optional[int] = None,
+    networks: Any = ...,
     library_root: Optional[Path] = None,
 ) -> bool:
     """
     Update preset metadata. Pass thumbnail_relative=... (ellipsis) to leave unchanged;
     pass None to clear thumbnail path in index (caller may remove file).
+    Pass networks=... to leave network tags unchanged.
     Moves .cpio/thumb when category_id changes.
     """
     root = library_root or config.get_library_root()
@@ -243,12 +364,21 @@ def update_preset(
         preset["description"] = description.strip()
     if thumbnail_relative is not ...:
         preset["thumbnail"] = thumbnail_relative
+    if node_count is not None:
+        preset["node_count"] = int(node_count)
+    if networks is not ...:
+        preset["networks"] = list(networks or [])
 
     if category_id is not None and category_id != preset.get("category_id"):
         # Ensure target category exists in index
         if not any(c.get("id") == category_id for c in data["categories"]):
             data["categories"].append(
-                {"id": category_id, "name": category_id.replace("_", " ").title(), "order": 999}
+                {
+                    "id": category_id,
+                    "name": category_id.replace("_", " ").title(),
+                    "order": 999,
+                    "color": color_for_category_id(category_id),
+                }
             )
             (root / config.CATEGORIES_DIR / category_id).mkdir(parents=True, exist_ok=True)
         preset["category_id"] = category_id
@@ -349,6 +479,11 @@ def merge_library_from_folder(
     for c in source_data.get("categories", []):
         cid = c.get("id")
         if cid and cid not in existing_cat_ids:
+            c = dict(c)
+            c["color"] = normalize_category_color(
+                c.get("color"),
+                fallback=color_for_category_id(str(cid)),
+            )
             data["categories"].append(c)
             existing_cat_ids.add(cid)
             cats_added += 1
@@ -361,7 +496,14 @@ def merge_library_from_folder(
         cid = p.get("category_id", "uncategorized")
         (target_root / config.CATEGORIES_DIR / cid).mkdir(parents=True, exist_ok=True)
         if cid not in existing_cat_ids:
-            data["categories"].append({"id": cid, "name": cid.replace("_", " ").title(), "order": 999})
+            data["categories"].append(
+                {
+                    "id": cid,
+                    "name": cid.replace("_", " ").title(),
+                    "order": 999,
+                    "color": color_for_category_id(str(cid)),
+                }
+            )
             existing_cat_ids.add(cid)
         for key in ("file", "thumbnail"):
             rel = p.get(key)

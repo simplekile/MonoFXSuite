@@ -35,6 +35,23 @@ def test_category_id_from_name_slug() -> None:
     assert category_id_from_name("SOP Utils") == "sop_utils"
 
 
+def test_add_category_assigns_color(library_root: Path) -> None:
+    from tools.fx.node_preset_library.logic import (
+        normalize_category_color,
+        set_category_color,
+    )
+
+    cat = add_category("Colored FX", library_root, color="#a78bfa")
+    assert cat is not None
+    assert normalize_category_color(cat["color"]) == "#a78bfa"
+    cats = list_categories(library_root)
+    match = next(c for c in cats if c["id"] == "colored_fx")
+    assert match["color"] == "#a78bfa"
+    assert set_category_color("colored_fx", "#fb923c", library_root)
+    match = next(c for c in list_categories(library_root) if c["id"] == "colored_fx")
+    assert match["color"] == "#fb923c"
+
+
 def test_add_category_and_preset(library_root: Path) -> None:
     add_category("SOP Utils", library_root)
     rel_cpio, _ = preset_relative_paths("sop_utils", "abc123")
@@ -42,6 +59,7 @@ def test_add_category_and_preset(library_root: Path) -> None:
 
     cats = list_categories(library_root)
     assert any(c["id"] == "sop_utils" for c in cats)
+    assert any(c.get("color") for c in cats if c["id"] == "sop_utils")
 
     presets = list_presets(category_id="sop_utils", library_root=library_root)
     assert len(presets) == 1
@@ -150,6 +168,39 @@ def test_update_preset_rename_and_move_category(library_root: Path) -> None:
     assert (library_root / preset["file"]).is_file()
     assert preset["thumbnail"] == f"categories/archive/preset_edit1_thumb{config.THUMB_EXT}"
     assert (library_root / preset["thumbnail"]).is_file()
+
+
+def test_update_preset_node_count_and_networks(library_root: Path) -> None:
+    from tools.fx.node_preset_library.logic import update_preset
+
+    add_category("SOP", library_root)
+    rel_cpio, _ = preset_relative_paths("sop", "nc1")
+    (library_root / rel_cpio).parent.mkdir(parents=True, exist_ok=True)
+    (library_root / rel_cpio).write_text("data", encoding="utf-8")
+    add_preset(
+        "Nodes",
+        "sop",
+        rel_cpio,
+        1,
+        networks=["sop"],
+        library_root=library_root,
+        preset_id="nc1",
+    )
+    assert update_preset(
+        "nc1",
+        node_count=5,
+        networks=["dop"],
+        library_root=library_root,
+    )
+    preset = get_preset("nc1", library_root)
+    assert preset is not None
+    assert preset["node_count"] == 5
+    assert preset["networks"] == ["dop"]
+    assert update_preset("nc1", node_count=6, library_root=library_root)
+    preset = get_preset("nc1", library_root)
+    assert preset is not None
+    assert preset["node_count"] == 6
+    assert preset["networks"] == ["dop"]
 
 
 def test_rename_category(library_root: Path) -> None:
