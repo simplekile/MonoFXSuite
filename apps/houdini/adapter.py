@@ -467,12 +467,71 @@ def load_items_from_file(
         return False
 
 
+def get_network_insert_position() -> Any:
+    """
+    Best-effort insert position in network space.
+    Prefer cursor in Network Editor under mouse; else active editor cursor;
+    else visible-bounds center. Returns hou.Vector2 or None.
+    """
+    if not is_available():
+        return None
+    try:
+        pane = None
+        try:
+            under = hou.ui.paneTabUnderCursor()
+            if under is not None and under.type() == hou.paneTabType.NetworkEditor:
+                pane = under
+        except Exception:
+            pane = None
+        if pane is None:
+            try:
+                pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+            except Exception:
+                pane = None
+        if pane is None:
+            return None
+
+        # Cursor (last pos in that editor when mouse is elsewhere)
+        try:
+            if hasattr(pane, "cursorPosition"):
+                return pane.cursorPosition()
+        except Exception:
+            pass
+
+        try:
+            vb = pane.visibleBounds()
+            return hou.Vector2(
+                (vb.min().x() + vb.max().x()) * 0.5,
+                (vb.min().y() + vb.max().y()) * 0.5,
+            )
+        except Exception:
+            return None
+    except Exception:
+        return None
+
+
+def is_network_editor_under_cursor() -> bool:
+    """True if the pane under the mouse is a Network Editor."""
+    if not is_available():
+        return False
+    try:
+        under = hou.ui.paneTabUnderCursor()
+        return under is not None and under.type() == hou.paneTabType.NetworkEditor
+    except Exception:
+        return False
+
+
 def load_items_from_file_ex(
     parent: Any,
     file_path: str,
     ignore_load_warnings: bool = False,
+    place_at_cursor: bool = True,
 ) -> tuple[bool, str]:
-    """Same as load_items_from_file, but returns (ok, error_message)."""
+    """Same as load_items_from_file, but returns (ok, error_message).
+
+    When place_at_cursor is True, newly loaded items are offset so their
+    average position lands on Network Editor cursor (fallback: view center).
+    """
     if not is_available() or parent is None:
         return (False, "Houdini is not available or target parent is None.")
     try:
@@ -484,14 +543,12 @@ def load_items_from_file_ex(
             pass
         if target is None:
             return (False, "Cannot resolve a network container to paste into.")
-        # Extra safety: ensure target is a network/container.
         try:
             if hasattr(target, "isNetwork") and not target.isNetwork():
                 return (False, f"Target is not a network: {getattr(target, 'path', lambda: target)()}")
         except Exception:
             pass
 
-        # Clear selection so we can detect which items were loaded.
         try:
             hou.clearAllSelected()
         except Exception:
@@ -499,20 +556,24 @@ def load_items_from_file_ex(
 
         target.loadItemsFromFile(file_path, ignore_load_warnings=ignore_load_warnings)
 
-        # Try to offset newly loaded items to the center of the active network editor.
         try:
             pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
             new_items = list(hou.selectedItems())
             if pane is not None and new_items:
-                # Compute average position of new items.
                 avg_x = sum(it.position().x() for it in new_items) / len(new_items)
                 avg_y = sum(it.position().y() for it in new_items) / len(new_items)
                 avg_pos = hou.Vector2(avg_x, avg_y)
 
-                # Visible bounds center as target.
-                vb = pane.visibleBounds()
-                center = hou.Vector2((vb.min().x() + vb.max().x()) * 0.5, (vb.min().y() + vb.max().y()) * 0.5)
-                delta = center - avg_pos
+                dest = None
+                if place_at_cursor:
+                    dest = get_network_insert_position()
+                if dest is None:
+                    vb = pane.visibleBounds()
+                    dest = hou.Vector2(
+                        (vb.min().x() + vb.max().x()) * 0.5,
+                        (vb.min().y() + vb.max().y()) * 0.5,
+                    )
+                delta = dest - avg_pos
 
                 for it in new_items:
                     try:
@@ -521,7 +582,6 @@ def load_items_from_file_ex(
                     except Exception:
                         continue
         except Exception:
-            # If centering fails, we still consider the load successful.
             pass
 
         return (True, "")
@@ -539,3 +599,141 @@ def load_items_from_file_ex(
         if not msg:
             msg = repr(e)
         return (False, f"{msg} (file={file_path}, target={tpath}, type={ttype})")
+
+
+def capture_selection_thumbnail(
+    max_width: int = 320,
+    max_height: int = 240,
+) -> Any:
+    """
+    Build a thumbnail for the current network selection.
+
+    Prefer a schematic render from selection positions (reliable).
+    Optionally try grabbing the Network Editor Qt widget as enrichment.
+    Returns a QPixmap or None. Does not import PySide at module level beyond adapter use.
+    """
+    if not is_available():
+        return None
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QPixmap, QColor, QPainter, QFont, QPen
+    except Exception:
+        return None
+
+    parent, items = get_selected_network_items()
+    if not items:
+        return None
+
+    # --- Schematic from node positions (primary) ---
+    positions: list[tuple[float, float, str]] = []
+    for it in items:
+        try:
+            pos = it.position()
+            label = ""
+            try:
+                label = it.name()
+            except Exception:
+                label = ""
+            positions.append((float(pos.x()), float(pos.y()), str(label)[:18]))
+        except Exception:
+            continue
+    if not positions:
+        return None
+
+    xs = [p[0] for p in positions]
+    ys = [p[1] for p in positions]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    # Pad so single-node selections still look fine
+    pad = 1.5
+    min_x -= pad
+    max_x += pad
+    min_y -= pad
+    max_y += pad
+    span_x = max(max_x - min_x, 2.0)
+    span_y = max(max_y - min_y, 2.0)
+
+    pm = QPixmap(max_width, max_height)
+    pm.fill(QColor("#141820"))
+    painter = QPainter(pm)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+    margin = 16
+    usable_w = max_width - margin * 2
+    usable_h = max_height - margin * 2
+    scale = min(usable_w / span_x, usable_h / span_y)
+
+    def to_px(nx: float, ny: float) -> tuple[int, int]:
+        # Network Y often grows upward; flip for screen coords
+        px = int(margin + (nx - min_x) * scale)
+        py = int(margin + (max_y - ny) * scale)
+        return px, py
+
+    node_w, node_h = 44, 22
+    for nx, ny, label in positions:
+        cx, cy = to_px(nx, ny)
+        rect_x = cx - node_w // 2
+        rect_y = cy - node_h // 2
+        painter.setBrush(QColor("#2a3142"))
+        painter.setPen(QPen(QColor("#5ec4b6"), 1))
+        painter.drawRoundedRect(rect_x, rect_y, node_w, node_h, 5, 5)
+        if label:
+            painter.setPen(QColor("#eef1f6"))
+            font = QFont()
+            font.setPointSize(7)
+            painter.setFont(font)
+            painter.drawText(
+                rect_x,
+                rect_y,
+                node_w,
+                node_h,
+                int(Qt.AlignmentFlag.AlignCenter),
+                label,
+            )
+
+    # Tiny caption
+    painter.setPen(QColor("#6b7385"))
+    font = QFont()
+    font.setPointSize(8)
+    painter.setFont(font)
+    painter.drawText(
+        8,
+        max_height - 10,
+        f"{len(positions)} node{'s' if len(positions) != 1 else ''}",
+    )
+    painter.end()
+
+    # --- Optional: overlay / replace with editor grab if available ---
+    try:
+        pane = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+        widget = None
+        if pane is not None:
+            if hasattr(pane, "qtWidget"):
+                widget = pane.qtWidget()
+            elif hasattr(pane, "qtScreenGrab"):
+                grab = pane.qtScreenGrab()
+                if grab is not None and hasattr(grab, "isNull") and not grab.isNull():
+                    return grab.scaled(
+                        max_width,
+                        max_height,
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation,
+                    )
+        if widget is not None and hasattr(widget, "grab"):
+            # Frame selection first for a useful crop
+            try:
+                pane.homeToSelection()
+            except Exception:
+                pass
+            grabbed = widget.grab()
+            if grabbed is not None and not grabbed.isNull():
+                return grabbed.scaled(
+                    max_width,
+                    max_height,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+    except Exception:
+        pass
+
+    return pm

@@ -116,3 +116,25 @@ def test_partition_selection_chains() -> None:
 def test_multi_chain_seeds_dedupe_order() -> None:
     names = ["c_kilt_01_02.l", "c_kilt_01_04.l", "c_index1.l"]
     assert list(dict.fromkeys(names)) == names
+
+
+def test_charm_numbered_chain_from_naming() -> None:
+    bones = [f"CharmB.{i:02d}" for i in range(1, 6)]
+    result = _chains.chain_members_from_bone("CharmB.03", bones)
+    assert result == bones
+
+
+def test_multi_chain_seeds_from_selection() -> None:
+    parent_of = {
+        "B1": None,
+        "B2": "B1",
+        "C1": None,
+        "C2": "C1",
+    }
+    children_of = {"B1": ["B2"], "B2": [], "C1": ["C2"], "C2": []}
+    seeds = _chains.multi_chain_seeds_from_selection(
+        ["B2", "C2", "B1", "C1"],
+        parent_of,
+        children_of,
+    )
+    assert seeds == ["B1", "C1"]

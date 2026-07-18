@@ -128,8 +128,10 @@ from . import anim_sine_props
 from . import anim_sine_ramp_bpy
 from . import anim_usd_cache_ui
 from . import anim_usd_cache_ops
+from . import anim_usd_cache_paths_ui
 from . import anim_usd_cache_asset_list
 from . import geo_usd_publish_list
+from . import geo_usd_publish_paths_ui
 from . import anim_camera
 from . import scene_version
 from monofx_pipeline_common.version_description_presets import DEPARTMENT_ENUM_ITEMS
@@ -140,7 +142,7 @@ from . import addon_updater
 bl_info = {
     "name": "MonoFX Pipeline Blender",
     "author": "MonoFXSuite",
-    "version": (0, 9, 110),
+    "version": (0, 9, 122),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > MonoFX",
     "description": (
@@ -199,10 +201,15 @@ def _describe_publish_target(props) -> tuple[bool, str, str, str]:
             "Save .blend under 01_assets/.../01_modelling/<task>/...",
         )
     task_folder = _modelling_task_folder_from_scene(scene_path) or "?"
-    vname = _version_folder(props)
-    usd_path = Path(_build_publish_usd_path(props, publish_root, scene_path))
-    preset_tag = "auto" if props.output_preset == "uv" else "custom"
-    summary = f"Will publish {vname} · {task_folder} · {preset_tag}"
+    version = geo_usd_publish_paths_ui.resolve_geo_publish_version_number(props)
+    vname = publish_paths.version_folder_from_number(version)
+    usd_path = Path(
+        geo_usd_publish_paths_ui.build_geo_publish_usd_path(
+            publish_root, scene_path, version
+        )
+    )
+    mode = str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT").casefold()
+    summary = f"Will publish {vname} · {task_folder} · {mode}"
     rel = publish_paths.relative_publish_display(scene_path, usd_path)
     return True, summary, rel, ""
 
@@ -312,28 +319,33 @@ def sync_asset_name_from_scene(props) -> None:
 
 
 def sync_auto_publish_output(props) -> None:
-    """Auto preset: next version number + matching USD path."""
+    """Keep NEXT mode aligned with the latest publish folder scan."""
+    if str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT") != "NEXT":
+        return
+    sync_geo_publish_output(props)
+
+
+def sync_geo_publish_output(props) -> None:
+    """Apply geo Manual/Current/Next mode to ``publish_version`` and filepath."""
     global _SYNCING_OUTPUT_FILEPATH, _SYNCING_PUBLISH_VERSION
-    if props.output_preset != "uv":
-        return
-    scene_path, publish_root = _publish_root_for_props(props)
-    if scene_path is None or publish_root is None:
-        return
-    auto_num = _auto_publish_version_number(publish_root)
+
+    geo_usd_publish_paths_ui.invalidate_geo_publish_version_cache()
+    version = geo_usd_publish_paths_ui.resolve_geo_publish_version_number(props)
     _SYNCING_PUBLISH_VERSION = True
     try:
-        props.publish_version = auto_num
+        props.publish_version = version
     finally:
         _SYNCING_PUBLISH_VERSION = False
-    ok, path, _ = _compute_auto_publish_usd_path(props)
+    ok, path, _ = geo_usd_publish_paths_ui.compute_geo_publish_usd_path(version)
     _SYNCING_OUTPUT_FILEPATH = True
     try:
-        if ok and path:
-            props.output_filepath = path
-        elif not ok:
-            props.output_filepath = ""
+        props.output_filepath = path if ok and path else ""
     finally:
         _SYNCING_OUTPUT_FILEPATH = False
+
+
+def _mono_fx_on_geo_usd_version_mode(self, _context: Context) -> None:
+    sync_geo_publish_output(self)
 
 
 def _mono_fx_on_publish_version(self, _context: Context) -> None:
@@ -797,14 +809,43 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         ],
         default="uv",
         update=_mono_fx_on_output_preset,
+        options={"HIDDEN"},
+    )
+    geo_usd_version_mode: EnumProperty(
+        name="Version Mode",
+        items=[
+            ("MANUAL", "Manual", "Pick an existing publish version folder"),
+            ("CURRENT", "Current", "Latest existing publish version folder"),
+            ("NEXT", "Next", "Next publish folder after the latest existing one"),
+        ],
+        default="NEXT",
+        update=_mono_fx_on_geo_usd_version_mode,
+    )
+    geo_usd_manual_version: IntProperty(
+        name="Manual Version",
+        description="Publish version chosen from existing publish folders",
+        default=1,
+        min=1,
+        max=999,
+        options={"HIDDEN"},
+    )
+    geo_usd_manual_version_pick_index: IntProperty(
+        name="Manual Version Pick Index",
+        default=0,
+        min=0,
+        options={"HIDDEN"},
+    )
+    geo_usd_manual_version_items: CollectionProperty(
+        type=geo_usd_publish_paths_ui.GeoUsdManualVersionItem,
     )
     publish_version: IntProperty(
         name="Version",
-        description="Publish version number (folder v001–v999)",
+        description="Resolved publish version number (folder v001–v999)",
         default=1,
         min=1,
         max=999,
         update=_mono_fx_on_publish_version,
+        options={"HIDDEN"},
     )
     select_hierarchy: BoolProperty(
         name="Full Asset Tree",
@@ -1434,27 +1475,45 @@ class MonoFXProperties(bpy.types.PropertyGroup):
 
     anim_usd_output_filepath: StringProperty(
         name="Output File",
-        description="Anim cache .usd output path",
+        description="Resolved anim cache .usd output path",
         default="",
         subtype="FILE_PATH",
-        update=anim_usd_cache_ui._on_anim_usd_output_filepath,
+        options={"HIDDEN"},
     )
-    anim_usd_output_preset: EnumProperty(
-        name="Output Preset",
+    anim_usd_version_mode: EnumProperty(
+        name="Version Mode",
         items=[
-            ("auto", "Shot (Auto Path)", "Resolve 01_anim/publish from saved .blend path"),
-            ("custom", "Custom", "Use Output File path as-is"),
+            ("MANUAL", "Manual", "Pick an existing publish version folder"),
+            ("CURRENT", "Current", "Latest existing publish version folder"),
+            ("NEXT", "Next", "Next publish folder after the latest existing one"),
         ],
-        default="auto",
-        update=anim_usd_cache_ui._on_anim_usd_output_preset,
+        default="NEXT",
+        update=anim_usd_cache_ui._on_anim_usd_version_mode,
     )
-    anim_usd_publish_version: IntProperty(
-        name="Version",
-        description="Publish version folder v001–v999",
+    anim_usd_manual_version: IntProperty(
+        name="Manual Version",
+        description="Publish version chosen from existing publish folders",
         default=1,
         min=1,
         max=999,
-        update=anim_usd_cache_ui._on_anim_usd_publish_version,
+        options={"HIDDEN"},
+    )
+    anim_usd_manual_version_pick_index: IntProperty(
+        name="Manual Version Pick Index",
+        default=0,
+        min=0,
+        options={"HIDDEN"},
+    )
+    anim_usd_manual_version_items: CollectionProperty(
+        type=anim_usd_cache_paths_ui.AnimUsdManualVersionItem,
+    )
+    anim_usd_publish_version: IntProperty(
+        name="Version",
+        description="Resolved publish version folder v001–v999",
+        default=1,
+        min=1,
+        max=999,
+        options={"HIDDEN"},
     )
     anim_usd_use_scene_range: BoolProperty(
         name="Use Scene Range",
@@ -1506,6 +1565,13 @@ class MonoFXProperties(bpy.types.PropertyGroup):
     )
     anim_usd_export_assets: CollectionProperty(
         type=anim_usd_cache_asset_list.AnimUsdExportAssetItem,
+    )
+    anim_usd_export_list_locked: BoolProperty(
+        name="Lock Export List",
+        description=(
+            "When locked, the export target list is not auto-refreshed on scene changes"
+        ),
+        default=False,
     )
 
 
@@ -2792,7 +2858,9 @@ def _finish_collection_publish_jobs(
     for job in jobs:
         _run_usd_export(props, job.objects, job.output_path)
     props.publish_status_report = f"Created version {published_version} · {len(jobs)} file(s)"
-    if props.output_preset == "uv":
+    if str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT") == "NEXT":
+        sync_geo_publish_output(props)
+    elif props.output_preset == "uv":
         sync_auto_publish_output(props)
     names = ", ".join(Path(j.output_path).name for j in jobs[:4])
     if len(jobs) > 4:
@@ -2830,6 +2898,7 @@ def _format_publish_plan_lines(
 
 
 def _summarize_publish_plan(context: Context, props) -> tuple[bool, list[str], str]:
+    sync_geo_publish_output(props)
     ok_list, jobs, objs, out_path, err_list = _plan_publish_jobs_from_list(context, props)
     if ok_list:
         if jobs is not None:
@@ -2875,6 +2944,7 @@ def _draw_publish_confirm_dialog(layout: bpy.types.UILayout, context: Context) -
 
 def _execute_publish_usd(op: Operator, context: Context) -> set[str]:
     props = _pipeline_props(context)
+    sync_geo_publish_output(props)
 
     ok_list, jobs, objs, out_path, err_list = _plan_publish_jobs_from_list(context, props)
     if ok_list:
@@ -2890,8 +2960,8 @@ def _execute_publish_usd(op: Operator, context: Context) -> set[str]:
         published_version = _version_folder(props)
         _run_usd_export(props, objs, out_path)
         props.publish_status_report = f"Created version {published_version}"
-        if props.output_preset == "uv":
-            sync_auto_publish_output(props)
+        if str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT") == "NEXT":
+            sync_geo_publish_output(props)
         op.report({"INFO"}, f"Published USD: {out_path}")
         return {"FINISHED"}
 
@@ -2929,8 +2999,8 @@ def _execute_publish_usd(op: Operator, context: Context) -> set[str]:
     published_version = _version_folder(props)
     _run_usd_export(props, objs, out_path)
     props.publish_status_report = f"Created version {published_version}"
-    if props.output_preset == "uv":
-        sync_auto_publish_output(props)
+    if str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT") == "NEXT":
+        sync_geo_publish_output(props)
     op.report({"INFO"}, f"Published USD: {out_path}")
     return {"FINISHED"}
 
@@ -3285,16 +3355,11 @@ def _draw_asset_publish(layout, context: Context) -> None:
     box = layout.box()
     body = box.column(align=True)
 
-    body.prop(props, "output_preset", icon="FILE_HIDDEN")
-    ver_row = body.row(align=True)
-    ver_row.operator(
-        "wm.mono_fx_refresh_publish_version",
-        text="",
-        icon="FILE_REFRESH",
-    )
-    ver_row.prop(props, "publish_version", text="Version")
-    ver_row.menu("MONOFX_MT_publish_versions", text="", icon="TRIA_DOWN")
-    body.prop(props, "output_filepath", icon="FILE")
+    geo_usd_publish_paths_ui.draw_geo_usd_version_toggles(body, props)
+    if props.output_filepath:
+        body.label(text=props.output_filepath, icon="FILE")
+    else:
+        body.label(text="Save .blend under modelling task to resolve path", icon="ERROR")
 
     body.separator()
 
@@ -3470,6 +3535,11 @@ classes = (
     *rig_linking.RIG_UI_LIST_CLASSES,
     *anim_usd_cache_asset_list.ANIM_USD_ASSET_PROPERTY_GROUP_CLASSES,
     *anim_usd_cache_asset_list.ANIM_USD_ASSET_UI_LIST_CLASSES,
+    *anim_usd_cache_asset_list.ANIM_USD_ASSET_OPERATOR_CLASSES,
+    *anim_usd_cache_paths_ui.ANIM_USD_MANUAL_VERSION_PROPERTY_GROUP_CLASSES,
+    *anim_usd_cache_paths_ui.ANIM_USD_MANUAL_VERSION_UI_LIST_CLASSES,
+    *geo_usd_publish_paths_ui.GEO_USD_MANUAL_VERSION_PROPERTY_GROUP_CLASSES,
+    *geo_usd_publish_paths_ui.GEO_USD_MANUAL_VERSION_UI_LIST_CLASSES,
     *geo_usd_publish_list.GEO_USD_PUBLISH_PROPERTY_GROUP_CLASSES,
     *geo_usd_publish_list.GEO_USD_PUBLISH_UI_LIST_CLASSES,
     *MATERIAL_BAKE_TARGET_PROPERTY_GROUP_CLASSES,
@@ -3503,6 +3573,7 @@ classes = (
     MONOFX_OT_set_publish_version,
     MONOFX_OT_refresh_publish_version,
     MONOFX_MT_publish_versions,
+    *geo_usd_publish_paths_ui.GEO_USD_VERSION_OPERATOR_CLASSES,
     MONOFX_OT_prepare_transform,
     MONOFX_OT_export_usd,
     MONOFX_OT_restore,
@@ -3539,9 +3610,11 @@ def _mono_fx_sync_publish_from_scene(scenes: Optional[List[bpy.types.Scene]] = N
         if p is None:
             continue
         sync_asset_name_from_scene(p)
-        if p.output_preset == "uv":
+        if str(getattr(p, "geo_usd_version_mode", "NEXT") or "NEXT") == "NEXT":
+            sync_geo_publish_output(p)
+        elif getattr(p, "output_preset", "uv") == "uv":
             sync_auto_publish_output(p)
-        if p.anim_usd_output_preset == "auto":
+        if p.anim_usd_version_mode == "NEXT":
             anim_path_ui.sync_auto_anim_output(p)
 
 
@@ -3558,6 +3631,10 @@ def _mono_fx_sync_rig_cache(scenes: Optional[List[bpy.types.Scene]] = None) -> N
 
 @persistent
 def _mono_fx_on_load_post(_dummy=None) -> None:
+    from . import anim_usd_cache_paths_ui as anim_path_ui
+
+    anim_path_ui.invalidate_publish_version_cache()
+    geo_usd_publish_paths_ui.invalidate_geo_publish_version_cache()
     scenes = _iter_scenes_safe()
     if not scenes:
         return
@@ -3569,6 +3646,10 @@ def _mono_fx_on_load_post(_dummy=None) -> None:
 @persistent
 def _mono_fx_on_save_post(_dummy=None) -> None:
     """Refresh publish paths on save; do not copy legacy props (stale tab defaults)."""
+    from . import anim_usd_cache_paths_ui as anim_path_ui
+
+    anim_path_ui.invalidate_publish_version_cache()
+    geo_usd_publish_paths_ui.invalidate_geo_publish_version_cache()
     _mono_fx_sync_publish_from_scene()
     _mono_fx_sync_rig_cache()
 

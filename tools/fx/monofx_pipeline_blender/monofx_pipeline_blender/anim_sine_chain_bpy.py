@@ -14,6 +14,7 @@ from monofx_pipeline_common.anim_chains import (
     chain_members_from_bone,
     chain_members_from_hierarchy,
     chain_members_from_hierarchy_branch,
+    multi_chain_seeds_from_selection,
     partition_selection_chains,
     sort_chain_selection,
 )
@@ -33,6 +34,9 @@ from monofx_pipeline_common.anim_sine_chain import (
     sine_axis_key,
 )
 from . import anim_sine_ramp_bpy
+
+
+_EULER_ROTATION_MODES = frozenset({"XYZ", "XZY", "YXZ", "YZX", "ZXY", "ZYX"})
 
 
 @dataclass(frozen=True)
@@ -76,13 +80,12 @@ def resolve_bone_chain_members(
     if mode == "NAMING":
         return chain_members_from_bone(seed, all_names)
 
+    named = chain_members_from_bone(seed, all_names)
+    if len(named) > 1:
+        return named
+
     if mode == "HIERARCHY":
         return chain_members_from_hierarchy_branch(seed, parent_of, children_of)
-
-    if seed.startswith("c_"):
-        named = chain_members_from_bone(seed, all_names)
-        if len(named) > 1:
-            return named
 
     branch = chain_members_from_hierarchy_branch(seed, parent_of, children_of)
     if len(branch) > 1:
@@ -203,7 +206,11 @@ def _bone_chain_name_lists(
             return partition_selection_chains(names, parent_of, children_of)
         return [sort_chain_selection(names, parent_of, children_of)]
 
-    seeds = list(dict.fromkeys(selected_names)) if multi_chain else [seed]
+    seeds = (
+        multi_chain_seeds_from_selection(selected_names, parent_of, children_of)
+        if multi_chain
+        else [seed]
+    )
     chain_lists: List[List[str]] = []
     seen: set[tuple[str, ...]] = set()
     for chain_seed in seeds:
@@ -256,7 +263,29 @@ def _object_chain_name_lists(
         return []
 
     selected = [obj for obj in context.selected_objects if obj is not None]
-    seed_objects = selected if multi_chain and len(selected) > 1 else [seed_obj]
+    if multi_chain and len(selected) > 1:
+        names = [obj.name for obj in selected]
+        names_set = set(names)
+        parent_of = {
+            obj.name: (
+                obj.parent.name
+                if obj.parent is not None and obj.parent.name in names_set
+                else None
+            )
+            for obj in selected
+        }
+        children_of: dict[str, list[str]] = {name: [] for name in names}
+        for obj in selected:
+            if obj.parent is not None and obj.parent.name in names_set:
+                children_of.setdefault(obj.parent.name, []).append(obj.name)
+        seed_names = multi_chain_seeds_from_selection(names, parent_of, children_of)
+        seed_objects = [
+            obj
+            for name in seed_names
+            if (obj := bpy.data.objects.get(name)) is not None
+        ]
+    else:
+        seed_objects = [seed_obj]
     chain_lists: List[List[str]] = []
     seen: set[tuple[str, ...]] = set()
     for obj in seed_objects:
@@ -415,6 +444,24 @@ def preview_sine_chain_rows(
     return rows, ""
 
 
+def _ensure_rotation_euler_target(target: SineChainTarget, channel: str) -> None:
+    if (channel or "").upper() != "ROTATION":
+        return
+    owner = _custom_prop_owner(target.id_block, target.base_data_path)
+    if getattr(owner, "rotation_mode", None) not in _EULER_ROTATION_MODES:
+        owner.rotation_mode = "XYZ"
+
+
+def _sync_root_tip_amplitude(axis_props) -> None:
+    if str(axis_props.amp_ramp_mode) != "ROOT_TIP":
+        return
+    amp = float(axis_props.amplitude)
+    if abs(amp) <= 1e-6:
+        return
+    if abs(float(axis_props.amp_tip) - 1.0) < 1e-3:
+        axis_props.amp_tip = amp
+
+
 def apply_sine_chain_groups(
     context: bpy.types.Context,
     groups: Sequence[Sequence[SineChainTarget]],
@@ -503,6 +550,7 @@ def apply_sine_chain_drivers(
     axis_key = sine_axis_key(channel, axis)
     axis_props = resolve_sine_axis_settings(scene.monofx_pipeline_blender_props, channel, axis)
     ramp_mode = str(axis_props.amp_ramp_mode)
+    _sync_root_tip_amplitude(axis_props)
     mapping = anim_sine_ramp_bpy.get_amp_ramp_mapping(channel, axis)
     if mapping is not None:
         anim_sine_ramp_bpy.ensure_amp_ramp_curve(mapping)
@@ -510,6 +558,7 @@ def apply_sine_chain_drivers(
     for member_index, target in enumerate(targets):
         if target.id_block is None:
             continue
+        _ensure_rotation_euler_target(target, channel)
         owner = _custom_prop_owner(target.id_block, target.base_data_path)
         try:
             current = _read_channel_value(

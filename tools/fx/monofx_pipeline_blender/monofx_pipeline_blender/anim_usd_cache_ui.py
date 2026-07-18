@@ -10,55 +10,21 @@ from bpy.types import Context, UILayout
 from . import anim_usd_cache_paths_ui as path_ui
 from . import anim_usd_cache_scene
 from . import anim_usd_cache_asset_list as asset_list
-from . import preferences
 from . import ui_style
-from .anim_usd_cache_exporter import (
-    check_pxr_available,
-)
+from .anim_usd_cache_exporter import check_pxr_available
 
 
 _SYNCING_ANIM_USD_FILEPATH: bool = False
 _SYNCING_ANIM_USD_VERSION: bool = False
 
 
+def _on_anim_usd_version_mode(props, context: Context) -> None:
+    path_ui.sync_anim_publish_output(props)
+    _on_anim_usd_export_options_changed(props, context)
+
+
 def _on_anim_usd_publish_version(props, _context: Context) -> None:
-    global _SYNCING_ANIM_USD_VERSION, _SYNCING_ANIM_USD_FILEPATH
-    if _SYNCING_ANIM_USD_VERSION:
-        return
-    scene_path = path_ui.scene_blend_path()
-    publish_root = (
-        path_ui.anim_publish_root_for_scene(scene_path) if scene_path else None
-    )
-    if scene_path is None or publish_root is None:
-        return
-    if props.anim_usd_output_preset == "auto":
-        props.anim_usd_output_preset = "custom"
-    ok, filepath, _ = path_ui.compute_auto_anim_usd_path(props.anim_usd_publish_version)
-    if not ok:
-        return
-    _SYNCING_ANIM_USD_FILEPATH = True
-    try:
-        props.anim_usd_output_filepath = filepath
-    finally:
-        _SYNCING_ANIM_USD_FILEPATH = False
-
-
-def _on_anim_usd_output_filepath(props, _context: Context) -> None:
-    global _SYNCING_ANIM_USD_FILEPATH
-    if _SYNCING_ANIM_USD_FILEPATH:
-        return
-    if props.anim_usd_output_preset != "auto":
-        return
-    ok, auto_path, _ = path_ui.compute_auto_anim_usd_path(props.anim_usd_publish_version)
-    if not ok:
-        return
-    if not path_ui.paths_equal(props.anim_usd_output_filepath, auto_path):
-        props.anim_usd_output_preset = "custom"
-
-
-def _on_anim_usd_output_preset(props, _context: Context) -> None:
-    if props.anim_usd_output_preset == "auto":
-        path_ui.sync_auto_anim_output(props)
+    del props, _context
 
 
 def _on_anim_usd_merge_by_link(props, context: Context) -> None:
@@ -69,15 +35,45 @@ def _on_anim_usd_export_options_changed(props, context: Context) -> None:
     if context is None or getattr(context, "scene", None) is None:
         return
     props.anim_usd_export_assets_signature = ""
-    from . import anim_usd_cache_asset_list as asset_list
-
     asset_list.refresh_export_assets(context, props, force=True)
 
 
+def draw_anim_usd_version_toggles(layout: UILayout, props) -> None:
+    manual_v = max(1, min(999, int(getattr(props, "anim_usd_manual_version", 1) or 1)))
+    current_v, next_v = path_ui.cached_version_toggle_numbers()
+    mode = str(getattr(props, "anim_usd_version_mode", "NEXT") or "NEXT")
+
+    row = layout.row(align=True)
+    ui_style.operator_row(
+        row,
+        "wm.mono_fx_pick_anim_publish_version",
+        text=f"Manual (v{manual_v:03d})",
+        depress=mode == "MANUAL",
+    )
+    op = ui_style.operator_row(
+        row,
+        "wm.mono_fx_set_anim_version_mode",
+        text=f"Current (v{current_v:03d})",
+        depress=mode == "CURRENT",
+    )
+    op.mode = "CURRENT"
+    op = ui_style.operator_row(
+        row,
+        "wm.mono_fx_set_anim_version_mode",
+        text=f"Next (v{next_v:03d})",
+        depress=mode == "NEXT",
+    )
+    op.mode = "NEXT"
+
+
+def draw_anim_usd_publish_settings(layout: UILayout, props) -> None:
+    layout.label(text="Export Options", icon="PREFERENCES")
+    layout.prop(props, "anim_usd_root_prim", text="Root Prim")
+    layout.prop(props, "anim_usd_merge_by_link", text="Merge Same Link")
+    layout.prop(props, "anim_usd_skip_view_hidden", text="Skip Hidden / Excluded")
+
+
 def draw_anim_usd_cache_tab(layout: UILayout, context: Context) -> None:
-    prefs = preferences.get_addon_prefs(context)
-    if prefs is None:
-        return
     props = context.scene.monofx_pipeline_blender_props
 
     pxr_ok, pxr_err = check_pxr_available()
@@ -91,46 +87,27 @@ def draw_anim_usd_cache_tab(layout: UILayout, context: Context) -> None:
             return
 
     box = layout.box()
-    _tabs, body = ui_style.draw_vertical_tabs(box, prefs, "ui_anim_usd_section")
-    section = prefs.ui_anim_usd_section
+    body = box.column(align=True)
 
-    if section == "OUTPUT":
-        ok, summary, rel, err = path_ui.describe_anim_publish_target(props)
-        if ok:
-            ui_style.status_label(body, summary, ok=True, icon="CHECKMARK")
-            body.label(text=rel, icon="FILE_FOLDER")
-        else:
-            ui_style.status_label(body, err, ok=False, icon="ERROR")
+    draw_anim_usd_version_toggles(body, props)
+    ok_path, filepath, path_err = path_ui.resolve_output_path(props)
+    if ok_path:
+        body.label(text=filepath, icon="FILE")
+    elif path_err:
+        body.label(text=path_err, icon="ERROR")
 
-        body.prop(props, "anim_usd_output_preset", text="Preset")
-        if props.anim_usd_output_preset == "auto":
-            row = body.row(align=True)
-            row.prop(props, "anim_usd_publish_version", text="Version")
-        body.prop(props, "anim_usd_output_filepath", text="File")
-        ui_style.operator_row(
-            body,
-            "wm.mono_fx_anim_usd_open_publish_folder",
-            text="Open Publish Folder",
-            icon=ui_style.ICON_FOLDER,
-        )
-    elif section == "RANGE":
-        body.prop(props, "anim_usd_use_scene_range", text="Use Scene Range")
-        row = body.row()
-        row.enabled = not props.anim_usd_use_scene_range
-        row.prop(props, "anim_usd_frame_start", text="Start")
-        row.prop(props, "anim_usd_frame_end", text="End")
-        fps = context.scene.render.fps / (context.scene.render.fps_base or 1.0)
-        body.label(text=f"FPS: {fps:g}", icon="RENDER_ANIMATION")
-    elif section == "ADVANCED":
-        body.prop(props, "anim_usd_root_prim", text="Root Prim")
-        body.prop(props, "anim_usd_merge_by_link", text="Merge Same Link")
-        body.prop(props, "anim_usd_skip_view_hidden", text="Skip Hidden / Excluded")
-    elif section == "ASSETS":
-        asset_list.ensure_export_assets_refresh(context, props)
-        anim_usd_cache_scene.draw_scene_assets_list(body, context, props)
+    body.separator()
 
-    asset_list.ensure_export_assets_refresh(context, props)
-    enabled_count = asset_list.enabled_export_target_count(props)
+    ui_style.prop_checkbox(body, props, "anim_usd_use_scene_range", text="Use Scene Range")
+    range_row = body.row()
+    range_row.enabled = not props.anim_usd_use_scene_range
+    range_row.prop(props, "anim_usd_frame_start", text="Start")
+    range_row.prop(props, "anim_usd_frame_end", text="End")
+    fps = context.scene.render.fps / (context.scene.render.fps_base or 1.0)
+    body.label(text=f"FPS: {fps:g}", icon="RENDER_ANIMATION")
+
+    body.separator()
+    enabled_count = anim_usd_cache_scene.draw_scene_assets_list(body, context, props)
 
     if props.anim_usd_status_report:
         ui_style.status_label(
@@ -139,25 +116,40 @@ def draw_anim_usd_cache_tab(layout: UILayout, context: Context) -> None:
             ok=True,
             icon="SORTTIME" if props.anim_usd_export_running else "INFO",
         )
+    ok_plan, summary, _rel, err_plan = path_ui.describe_anim_publish_target(props)
+    if ok_plan:
+        layout.label(text=summary, icon="FILE_TICK")
+    else:
+        ui_style.status_label(layout, err_plan or "Path unavailable", ok=False)
 
     layout.separator()
-    row = layout.row()
+    pub_row = layout.row(align=True)
+    pub_row.scale_y = 1.55
     if props.anim_usd_export_running:
-        ui_style.operator_row(
-            row,
+        pub_row.operator(
             "wm.mono_fx_cancel_anim_usd_export",
-            text="Cancel Export",
+            text="CANCEL EXPORT",
             icon="PANEL_CLOSE",
-            scale_y=1.25,
         )
     else:
-        row.enabled = enabled_count > 0
-        ui_style.operator_row(
-            row,
+        pub_main = pub_row.row(align=True)
+        pub_main.enabled = enabled_count > 0
+        pub_main.operator(
             "wm.mono_fx_export_anim_usd_cache",
-            text="Export Anim Cache",
-            icon=ui_style.ICON_EXPORT,
-            scale_y=1.25,
+            text="PUBLISH ANIM",
+            icon=ui_style.ICON_PUBLISH,
+        )
+        pub_row.operator(
+            "wm.mono_fx_anim_usd_open_publish_folder",
+            text="",
+            icon=ui_style.ICON_FOLDER,
+        )
+        pub_settings = pub_row.row(align=True)
+        pub_settings.scale_x = 1.15
+        pub_settings.operator(
+            "wm.mono_fx_anim_usd_publish_settings",
+            text="",
+            icon="PREFERENCES",
         )
 
 

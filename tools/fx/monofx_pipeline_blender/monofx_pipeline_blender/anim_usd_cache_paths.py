@@ -5,6 +5,7 @@ USD prim path helpers for animation cache export (no bpy).
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Iterable, Optional
 
 _SANITIZE_RE = re.compile(r"[^A-Za-z0-9_]")
@@ -68,6 +69,22 @@ def is_namespace_geo_name(name: str) -> bool:
         return False
     namespace, tail = text.rsplit("::", 1)
     return bool(namespace.strip()) and tail.casefold() == "geo"
+
+
+def is_namespace_geo_branch_name(name: str) -> bool:
+    """
+    True for geo roots and sub-branches like ``tachirig::Geo`` or ``tachirig::Geo_Proxy``.
+
+    The tail must be exactly ``Geo`` or start with ``Geo_`` (case-insensitive).
+    """
+    text = (name or "").strip()
+    if "::" not in text:
+        return False
+    namespace, tail = text.rsplit("::", 1)
+    if not namespace.strip():
+        return False
+    t = tail.casefold()
+    return t == "geo" or t.startswith("geo_")
 
 
 def sanitize_prim_segment(name: str) -> str:
@@ -159,10 +176,27 @@ def prim_path_from_object_chain(
     )
 
 
+def existing_output_paths(paths: Iterable[str | Path]) -> list[Path]:
+    """Subset of ``paths`` that already exist on disk."""
+    found: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        candidate = Path(path)
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        if candidate.is_file():
+            found.append(candidate)
+    return found
+
+
 __all__ = [
     "build_prim_path_segments",
     "dedupe_sibling_segment",
+    "existing_output_paths",
     "is_camera_collection_name",
+    "is_namespace_geo_branch_name",
     "is_namespace_geo_name",
     "is_publish_collection_name",
     "multi_instance_root_path",

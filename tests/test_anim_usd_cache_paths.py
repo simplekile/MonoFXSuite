@@ -84,6 +84,12 @@ def test_publish_geo_name_helpers():
     assert not _paths.is_namespace_geo_name("tachirig::Geo_Body")
     assert not _paths.is_namespace_geo_name("tachirig_Geo")
 
+    assert _paths.is_namespace_geo_branch_name("tachirig::Geo")
+    assert _paths.is_namespace_geo_branch_name("tachirig::Geo_Proxy")
+    assert _paths.is_namespace_geo_branch_name("tachirig::geo_proxy")
+    assert not _paths.is_namespace_geo_branch_name("tachirig::Rig")
+    assert not _paths.is_namespace_geo_branch_name("tachirig_Geo")
+
 
 def test_sanitize_prim_segment():
     assert _paths.sanitize_prim_segment("geo-Body.001") == "geo_Body_001"
@@ -124,3 +130,37 @@ def test_usd_output_uses_dot_usd_extension():
     blend = Path(r"D:\proj\02_shots\sh002\01_anim\publish")
     usd = blend / "v001" / f"{_pp.default_anim_geo_usd_basename(Path('char_Zephys_anim.blend'))}.usd"
     assert usd.suffix == ".usd"
+
+
+def test_version_number_from_blend_stem():
+    assert _pp.version_number_from_blend_stem("char_Zephys_anim_v005") == 5
+    assert _pp.version_number_from_blend_stem("char_Zephys_anim") is None
+
+
+def test_preview_next_blend_version_from_work_files(tmp_path: Path):
+    work = tmp_path / "02_shots" / "sh016" / "01_anim" / "blender" / "work"
+    work.mkdir(parents=True)
+    blend = work / "sh016_anim_v003_spline.blend"
+    blend.write_bytes(b"")
+    ok, next_v, err = _pp.preview_next_blend_version(blend)
+    assert ok, err
+    assert next_v == 4
+
+
+def test_preview_next_respects_current_stem_when_work_folder_is_behind(tmp_path: Path):
+    work = tmp_path / "02_shots" / "sh005" / "01_anim" / "blender" / "work"
+    work.mkdir(parents=True)
+    (work / "sh005_anim_v003.blend").write_bytes(b"")
+    blend = work / "sh005_anim_v005_test.blend"
+    blend.write_bytes(b"")
+    ok, next_v, err = _pp.preview_next_blend_version(blend)
+    assert ok, err
+    assert next_v >= 6
+
+
+def test_existing_anim_export_paths(tmp_path: Path):
+    existing_file = tmp_path / "geo_char.usd"
+    existing_file.write_text("usd", encoding="utf-8")
+    missing_file = tmp_path / "cam_sh001.usd"
+    found = _paths.existing_output_paths([existing_file, missing_file])
+    assert found == [existing_file]

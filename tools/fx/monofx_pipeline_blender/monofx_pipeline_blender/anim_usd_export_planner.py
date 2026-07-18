@@ -218,7 +218,7 @@ def plan_geo_export_jobs(
         return [], path_err
 
     scene_path = scene_blend_path()
-    if props.anim_usd_output_preset == "auto" and scene_path is not None:
+    if scene_path is not None:
         basename = publish_paths.default_anim_geo_usd_basename(scene_path)
     else:
         basename = Path(filepath).stem or "geo_asset"

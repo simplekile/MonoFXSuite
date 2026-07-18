@@ -21,10 +21,10 @@ def _suite_root() -> Path:
 
 
 def get_library_root() -> Path:
-    env = os.environ.get("MONOFX_NODE_PRESET_LIBRARY", "").strip()
-    if env:
-        return Path(env)
-    return _suite_root() / "library" / "node_preset_library"
+    """Active library folder. See prefs.resolve_library_root for priority."""
+    from tools.fx.node_preset_library.prefs import resolve_library_root
+
+    return resolve_library_root()
 
 
 def get_suite_version() -> str:

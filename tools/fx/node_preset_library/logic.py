@@ -213,6 +213,51 @@ def update_preset_thumbnail(
     return False
 
 
+def update_preset(
+    preset_id: str,
+    *,
+    name: Optional[str] = None,
+    category_id: Optional[str] = None,
+    description: Optional[str] = None,
+    thumbnail_relative: Any = ...,
+    library_root: Optional[Path] = None,
+) -> bool:
+    """
+    Update preset metadata. Pass thumbnail_relative=... (ellipsis) to leave unchanged;
+    pass None to clear thumbnail path in index (caller may remove file).
+    Moves .cpio/thumb when category_id changes.
+    """
+    root = library_root or config.get_library_root()
+    data = load_index(root)
+    preset = None
+    for p in data["presets"]:
+        if p.get("id") == preset_id:
+            preset = p
+            break
+    if not preset:
+        return False
+
+    if name is not None:
+        preset["name"] = name.strip()
+    if description is not None:
+        preset["description"] = description.strip()
+    if thumbnail_relative is not ...:
+        preset["thumbnail"] = thumbnail_relative
+
+    if category_id is not None and category_id != preset.get("category_id"):
+        # Ensure target category exists in index
+        if not any(c.get("id") == category_id for c in data["categories"]):
+            data["categories"].append(
+                {"id": category_id, "name": category_id.replace("_", " ").title(), "order": 999}
+            )
+            (root / config.CATEGORIES_DIR / category_id).mkdir(parents=True, exist_ok=True)
+        preset["category_id"] = category_id
+        _reassign_preset_files(preset, category_id, root)
+
+    save_index(data, root)
+    return True
+
+
 def list_presets(
     category_id: Optional[str] = None,
     library_root: Optional[Path] = None,
@@ -332,3 +377,63 @@ def merge_library_from_folder(
         presets_added += 1
     save_index(data, target_root)
     return (cats_added, presets_added)
+
+
+def export_library_to_zip(
+    zip_path: Path | str,
+    library_root: Optional[Path] = None,
+) -> Path:
+    """
+    Zip the whole library folder (index.json + categories/).
+    Returns the written zip Path.
+    """
+    import zipfile
+    from datetime import datetime
+
+    root = library_root or config.get_library_root()
+    ensure_library_root(root)
+    out = Path(zip_path)
+    if out.is_dir():
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        out = out / f"node_preset_library_{stamp}.zip"
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        index_path = root / config.INDEX_FILENAME
+        if index_path.is_file():
+            zf.write(index_path, config.INDEX_FILENAME)
+        cats = root / config.CATEGORIES_DIR
+        if cats.is_dir():
+            for fp in cats.rglob("*"):
+                if fp.is_file():
+                    zf.write(fp, fp.relative_to(root).as_posix())
+    return out
+
+
+def merge_library_from_zip(
+    zip_path: Path | str,
+    target_root: Optional[Path] = None,
+) -> tuple[int, int]:
+    """Extract zip to a temp dir then merge. Returns (categories_added, presets_added)."""
+    import shutil
+    import tempfile
+    import zipfile
+
+    zpath = Path(zip_path)
+    if not zpath.is_file():
+        raise FileNotFoundError(str(zpath))
+    tmp = Path(tempfile.mkdtemp(prefix="npl_import_"))
+    try:
+        with zipfile.ZipFile(zpath, "r") as zf:
+            zf.extractall(tmp)
+        # Support zip that wraps a single top-level folder
+        src = tmp
+        index = tmp / config.INDEX_FILENAME
+        if not index.is_file():
+            for child in tmp.iterdir():
+                if child.is_dir() and (child / config.INDEX_FILENAME).is_file():
+                    src = child
+                    break
+        return merge_library_from_folder(src, target_root)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)

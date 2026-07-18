@@ -28,6 +28,7 @@ from .anim_usd_cache_xform_writer import (
 from .anim_usd_cache_paths import (
     dedupe_sibling_segment,
     is_camera_collection_name,
+    is_namespace_geo_branch_name,
     is_namespace_geo_name,
     is_publish_collection_name,
     multi_instance_root_path,
@@ -180,6 +181,64 @@ def _iter_collections_recursive(coll: bpy.types.Collection):
         yield from _iter_collections_recursive(child)
 
 
+def _iter_mesh_descendants(roots: Sequence[bpy.types.Object]) -> list[bpy.types.Object]:
+    """All mesh objects under ``roots`` via Blender parenting (not collection links)."""
+    meshes: list[bpy.types.Object] = []
+    stack = list(roots)
+    while stack:
+        current = stack.pop()
+        if current.type == "MESH":
+            meshes.append(current)
+        stack.extend(list(current.children))
+    return meshes
+
+
+def _direct_collection_member_objects(coll: bpy.types.Collection) -> list[bpy.types.Object]:
+    """Direct members of ``coll`` and nested child collections (not parented-only children)."""
+    out: list[bpy.types.Object] = []
+    seen: set[int] = set()
+    for child_coll in _iter_collections_recursive(coll):
+        for obj in child_coll.objects:
+            key = id(obj)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(obj)
+    return out
+
+
+def _object_or_ancestor_ids(obj: bpy.types.Object) -> set[int]:
+    ids: set[int] = set()
+    current: Optional[bpy.types.Object] = obj
+    while current is not None:
+        ids.add(id(current))
+        current = current.parent
+    return ids
+
+
+def _mesh_under_namespace_geo_in_publish(
+    obj: bpy.types.Object,
+    pub_coll: bpy.types.Collection,
+) -> bool:
+    """True when ``obj`` is parented under a geo branch inside ``pub_coll``."""
+    for coll in _iter_collections_recursive(pub_coll):
+        if coll is pub_coll:
+            continue
+        if not is_namespace_geo_name(coll.name):
+            continue
+        root_ids = {id(o) for o in _direct_collection_member_objects(coll)}
+        if root_ids & _object_or_ancestor_ids(obj):
+            return True
+
+    for root_obj in pub_coll.all_objects:
+        if not is_namespace_geo_branch_name(root_obj.name):
+            continue
+        for mesh in _iter_mesh_descendants([root_obj]):
+            if mesh == obj:
+                return True
+    return False
+
+
 def _find_publish_collection(name: str) -> Optional[bpy.types.Collection]:
     coll = bpy.data.collections.get(name)
     if coll is not None:
@@ -308,40 +367,14 @@ def collect_publish_geo_mesh_objects_for_publish(
     if pub_coll is None or not is_publish_collection_name(pub_coll.name):
         return []
 
-    prefixes = _namespace_prefixes_for_publish(publish_name)
-    if prefixes:
-        meshes: list[bpy.types.Object] = []
-        seen: set[int] = set()
-        for obj in bpy.data.objects:
-            if obj.type != "MESH":
-                continue
-            obj_prefix = _namespace_prefix_from_name(obj.name)
-            if not obj_prefix or obj_prefix not in prefixes:
-                continue
-            if not _object_in_publish_collection(obj, pub_coll):
-                continue
-            key = id(obj)
-            if key in seen:
-                continue
-            seen.add(key)
-            meshes.append(obj)
-        if meshes:
-            meshes.sort(key=lambda o: o.name.lower())
-            return filter_objects_for_export(
-                meshes,
-                view_layer,
-                respect_visibility=respect_visibility,
-            )
-
-    allowed = _object_names_in_collection(pub_coll)
     meshes: list[bpy.types.Object] = []
     seen: set[int] = set()
     for obj in collect_publish_geo_mesh_objects(
         context,
         view_layer=view_layer,
-        respect_visibility=respect_visibility,
+        respect_visibility=False,
     ):
-        if obj.name not in allowed:
+        if _publish_root_for_mesh(obj) != publish_name:
             continue
         key = id(obj)
         if key in seen:
@@ -486,10 +519,19 @@ def collect_publish_geo_mesh_objects(
     Meshes under ``<namespace>::Geo`` collections inside any *publish* collection.
 
     Walks linked rig override trees such as ``CHAR_TACHI_RIG_PUBLISH`` →
-    ``tachirig::Geo`` → character meshes.
+    ``tachirig::Geo`` → character meshes (including ``Geo_Proxy`` sub-branches).
     """
     meshes: list[bpy.types.Object] = []
     seen: set[int] = set()
+
+    def _add_mesh(obj: bpy.types.Object) -> None:
+        if obj.type != "MESH":
+            return
+        key = id(obj)
+        if key in seen:
+            return
+        seen.add(key)
+        meshes.append(obj)
 
     for pub_coll in bpy.data.collections:
         if not is_publish_collection_name(pub_coll.name):
@@ -499,27 +541,14 @@ def collect_publish_geo_mesh_objects(
                 continue
             if not is_namespace_geo_name(coll.name):
                 continue
-            for obj in coll.all_objects:
-                if obj.type != "MESH":
-                    continue
-                key = id(obj)
-                if key in seen:
-                    continue
-                seen.add(key)
-                meshes.append(obj)
+            for mesh in _iter_mesh_descendants(_direct_collection_member_objects(coll)):
+                _add_mesh(mesh)
 
         for obj in pub_coll.all_objects:
-            if not is_namespace_geo_name(obj.name):
+            if not is_namespace_geo_branch_name(obj.name):
                 continue
-            stack = [obj]
-            while stack:
-                current = stack.pop()
-                if current.type == "MESH":
-                    key = id(current)
-                    if key not in seen:
-                        seen.add(key)
-                        meshes.append(current)
-                stack.extend(list(current.children))
+            for mesh in _iter_mesh_descendants([obj]):
+                _add_mesh(mesh)
 
     meshes.sort(key=lambda o: o.name.lower())
     view_layer, respect_visibility = resolve_export_visibility(
@@ -550,13 +579,18 @@ class PublishGeoGroup:
 def _publish_root_for_mesh(obj: bpy.types.Object) -> Optional[str]:
     """Pick the publish override that owns this mesh (namespace-aware)."""
     obj_ns = _namespace_prefix_from_name(obj.name)
-    candidates: list[str] = []
+    best: Optional[str] = None
+    best_key = -1
 
     for pub_coll in bpy.data.collections:
         if not is_publish_collection_name(pub_coll.name):
             continue
-        if not _object_in_publish_collection(obj, pub_coll):
+        in_publish = _object_in_publish_collection(
+            obj, pub_coll
+        ) or _mesh_under_namespace_geo_in_publish(obj, pub_coll)
+        if not in_publish:
             continue
+
         if obj_ns:
             for coll in _iter_collections_recursive(pub_coll):
                 if not is_namespace_geo_name(coll.name):
@@ -564,11 +598,13 @@ def _publish_root_for_mesh(obj: bpy.types.Object) -> Optional[str]:
                 geo_ns = _namespace_prefix_from_name(coll.name)
                 if geo_ns == obj_ns:
                     return pub_coll.name
-        candidates.append(pub_coll.name)
 
-    if not candidates:
-        return None
-    return max(candidates, key=len)
+        key = len(pub_coll.name)
+        if key > best_key:
+            best_key = key
+            best = pub_coll.name
+
+    return best
 
 
 def collect_publish_geo_groups(
@@ -697,6 +733,15 @@ def _camera_has_rig_constraints(cam: bpy.types.Object) -> bool:
     return False
 
 
+def camera_motion_hint_light(cam: bpy.types.Object) -> str:
+    """UI hint without depsgraph frame sampling (safe during panel draw)."""
+    if _camera_has_object_keyframes(cam):
+        return "Keyed"
+    if _camera_has_rig_constraints(cam):
+        return "Rig-driven"
+    return "Static"
+
+
 def camera_motion_hint(
     cam: bpy.types.Object,
     context: bpy.types.Context,
@@ -723,12 +768,18 @@ def describe_camera_export_rows(
     *,
     frame_start: Optional[int] = None,
     frame_end: Optional[int] = None,
+    lightweight: bool = False,
 ) -> tuple[list[CameraExportRow], Optional[bpy.types.Object]]:
     scene = context.scene
     cameras = collect_camera_collection_objects(context)
     export_cam = pick_export_camera(cameras, scene, context)
     f0 = int(frame_start if frame_start is not None else scene.frame_start)
     f1 = int(frame_end if frame_end is not None else scene.frame_end)
+
+    def _motion_hint(cam: bpy.types.Object) -> str:
+        if lightweight:
+            return camera_motion_hint_light(cam)
+        return camera_motion_hint(cam, context, frame_start=f0, frame_end=f1)
 
     rows: list[CameraExportRow] = []
     if cameras:
@@ -737,7 +788,7 @@ def describe_camera_export_rows(
                 CameraExportRow(
                     object_name=cam.name,
                     collection_label=camera_collection_label(cam),
-                    motion_hint=camera_motion_hint(cam, context, frame_start=f0, frame_end=f1),
+                    motion_hint=_motion_hint(cam),
                     will_export=export_cam is not None and cam == export_cam,
                     is_scene_camera=scene is not None and scene.camera == cam,
                     source="Cameras",
@@ -761,7 +812,7 @@ def describe_camera_export_rows(
                 CameraExportRow(
                     object_name=cam.name,
                     collection_label=camera_collection_label(cam),
-                    motion_hint=camera_motion_hint(cam, context, frame_start=f0, frame_end=f1),
+                    motion_hint=_motion_hint(cam),
                     will_export=True,
                     is_scene_camera=True,
                     source="Scene Camera",

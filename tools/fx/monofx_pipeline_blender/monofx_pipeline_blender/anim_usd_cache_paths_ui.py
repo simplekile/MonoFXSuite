@@ -8,7 +8,15 @@ import os
 from pathlib import Path
 from typing import Optional
 
+import bpy
+from bpy.props import IntProperty, StringProperty
+from bpy.types import Context, PropertyGroup, UIList, UILayout
+
 from . import publish_paths
+
+
+_PUBLISH_VERSION_SCAN_CACHE: dict[str, int] = {}
+_VERSION_TOGGLE_CACHE: dict[str, float | int] = {"mono": 0.0, "current": 1, "next": 1}
 
 
 def scene_blend_path() -> Optional[Path]:
@@ -62,14 +70,114 @@ def compute_auto_anim_usd_path(version_number: int) -> tuple[bool, str, str]:
     )
 
 
-def auto_next_anim_version() -> int:
+def list_anim_publish_versions() -> tuple[list[int], str]:
+    """Version numbers with existing folders under ``01_anim/publish``."""
+    scene_path = scene_blend_path()
+    if scene_path is None:
+        return [], "Save the .blend file first."
+    publish_root = anim_publish_root_for_scene(scene_path)
+    if publish_root is None:
+        return [], "Save .blend under 02_shots/<shot>/01_anim/..."
+    return publish_paths.list_version_numbers(publish_root), ""
+
+
+def current_anim_version_from_scene(*, use_cache: bool = True) -> int:
+    """Latest existing publish folder (same list as Manual), or ``1`` if none."""
     scene_path = scene_blend_path()
     if scene_path is None:
         return 1
-    publish_root = anim_publish_root_for_scene(scene_path)
-    if publish_root is None:
+    cache_key = f"current|{scene_path}"
+    if use_cache:
+        cached = _PUBLISH_VERSION_SCAN_CACHE.get(cache_key)
+        if cached is not None:
+            return int(cached)
+    versions, _ = list_anim_publish_versions()
+    version = versions[-1] if versions else 1
+    if use_cache:
+        _PUBLISH_VERSION_SCAN_CACHE[cache_key] = version
+    return version
+
+
+def next_anim_version_from_scene(*, use_cache: bool = True) -> int:
+    """Next publish folder after the latest Manual list entry (or ``1`` if empty)."""
+    scene_path = scene_blend_path()
+    if scene_path is None:
         return 1
-    return publish_paths.auto_next_version_number(publish_root)
+    cache_key = f"next|{scene_path}"
+    if use_cache:
+        cached = _PUBLISH_VERSION_SCAN_CACHE.get(cache_key)
+        if cached is not None:
+            return int(cached)
+    versions, _ = list_anim_publish_versions()
+    if versions:
+        version = min(versions[-1] + 1, 999)
+    else:
+        version = 1
+    if use_cache:
+        _PUBLISH_VERSION_SCAN_CACHE[cache_key] = version
+    return version
+
+
+def auto_next_anim_version(*, use_cache: bool = True) -> int:
+    return next_anim_version_from_scene(use_cache=use_cache)
+
+
+def invalidate_publish_version_cache() -> None:
+    _PUBLISH_VERSION_SCAN_CACHE.clear()
+    _VERSION_TOGGLE_CACHE["mono"] = 0.0
+
+
+def cached_version_toggle_numbers(*, max_age_s: float = 2.0) -> tuple[int, int]:
+    """Throttle disk scans used by version toggle labels during panel draw."""
+    import time
+
+    now = time.monotonic()
+    if now - float(_VERSION_TOGGLE_CACHE["mono"]) < max_age_s:
+        return (
+            int(_VERSION_TOGGLE_CACHE["current"]),
+            int(_VERSION_TOGGLE_CACHE["next"]),
+        )
+    current_v = current_anim_version_from_scene(use_cache=True)
+    next_v = next_anim_version_from_scene(use_cache=True)
+    _VERSION_TOGGLE_CACHE["mono"] = now
+    _VERSION_TOGGLE_CACHE["current"] = current_v
+    _VERSION_TOGGLE_CACHE["next"] = next_v
+    return current_v, next_v
+
+
+def resolve_anim_publish_version_number(props) -> int:
+    mode = str(getattr(props, "anim_usd_version_mode", "NEXT") or "NEXT")
+    if mode == "MANUAL":
+        manual = max(1, min(999, int(getattr(props, "anim_usd_manual_version", 1) or 1)))
+        versions, _ = list_anim_publish_versions()
+        if not versions:
+            return 1
+        if manual in versions:
+            return manual
+        return versions[-1]
+    if mode == "CURRENT":
+        return current_anim_version_from_scene()
+    return next_anim_version_from_scene()
+
+
+def sync_anim_publish_output(props) -> None:
+    """Apply version mode to ``anim_usd_publish_version`` and output filepath."""
+    from . import anim_usd_cache_ui as anim_ui
+
+    invalidate_publish_version_cache()
+    version = resolve_anim_publish_version_number(props)
+    anim_ui._SYNCING_ANIM_USD_VERSION = True
+    try:
+        props.anim_usd_publish_version = version
+    finally:
+        anim_ui._SYNCING_ANIM_USD_VERSION = False
+    ok, path, _ = compute_auto_anim_usd_path(version)
+    if ok and path:
+        anim_ui._SYNCING_ANIM_USD_FILEPATH = True
+        try:
+            props.anim_usd_output_filepath = path
+        finally:
+            anim_ui._SYNCING_ANIM_USD_FILEPATH = False
 
 
 def describe_anim_publish_target(props) -> tuple[bool, str, str, str]:
@@ -85,12 +193,11 @@ def describe_anim_publish_target(props) -> tuple[bool, str, str, str]:
             "Save .blend under 02_shots/<shot>/01_anim/...",
         )
     shot = publish_paths.detect_shot_from_scene_path(scene_path) or "?"
-    vname = publish_paths.version_folder_from_number(props.anim_usd_publish_version)
-    usd_path = Path(
-        build_anim_usd_path(publish_root, scene_path, props.anim_usd_publish_version)
-    )
-    preset_tag = "auto" if props.anim_usd_output_preset == "auto" else "custom"
-    summary = f"Will export {vname} · {shot} · {preset_tag}"
+    version = resolve_anim_publish_version_number(props)
+    vname = publish_paths.version_folder_from_number(version)
+    usd_path = Path(build_anim_usd_path(publish_root, scene_path, version))
+    mode = str(getattr(props, "anim_usd_version_mode", "NEXT") or "NEXT").casefold()
+    summary = f"Will export {vname} · {shot} · {mode}"
     rel = publish_paths.relative_anim_publish_display(scene_path, usd_path)
     return True, summary, rel, ""
 
@@ -107,16 +214,11 @@ def paths_equal(a: str, b: str) -> bool:
 
 
 def resolve_output_path(props) -> tuple[bool, str, str]:
-    if props.anim_usd_output_preset == "custom":
-        raw = str(props.anim_usd_output_filepath or "").strip()
-        if not raw:
-            return False, "", "Output USD file path is empty."
-        return True, ensure_usd_extension(raw), ""
-    return compute_auto_anim_usd_path(props.anim_usd_publish_version)
+    return compute_auto_anim_usd_path(resolve_anim_publish_version_number(props))
 
 
 def resolve_anim_publish_folder(props) -> tuple[bool, Path, str]:
-    """Version folder for auto preset, or output file parent for custom."""
+    """Publish version folder for the resolved anim USD output."""
     ok, filepath, err = resolve_output_path(props)
     if not ok:
         return False, Path(), err
@@ -124,23 +226,115 @@ def resolve_anim_publish_folder(props) -> tuple[bool, Path, str]:
 
 
 def sync_auto_anim_output(props) -> None:
-    if props.anim_usd_output_preset != "auto":
+    """Keep NEXT mode aligned with the latest publish folder scan."""
+    if str(getattr(props, "anim_usd_version_mode", "NEXT") or "NEXT") != "NEXT":
         return
-    scene_path = scene_blend_path()
-    publish_root = anim_publish_root_for_scene(scene_path) if scene_path else None
-    if scene_path is None or publish_root is None:
-        return
-    from . import anim_usd_cache_ui as anim_ui
+    sync_anim_publish_output(props)
 
-    anim_ui._SYNCING_ANIM_USD_VERSION = True
-    try:
-        props.anim_usd_publish_version = auto_next_anim_version()
-    finally:
-        anim_ui._SYNCING_ANIM_USD_VERSION = False
-    ok, path, _ = compute_auto_anim_usd_path(props.anim_usd_publish_version)
-    if ok and path:
-        anim_ui._SYNCING_ANIM_USD_FILEPATH = True
-        try:
-            props.anim_usd_output_filepath = path
-        finally:
-            anim_ui._SYNCING_ANIM_USD_FILEPATH = False
+
+def plan_anim_export_output_paths(context, props) -> list[Path]:
+    """Absolute paths that enabled anim USD export targets will write."""
+    from . import anim_usd_cache_asset_list as asset_list
+    from .anim_usd_cache_camera_writer import camera_usd_output_path
+    from .anim_usd_cache_exporter import (
+        collect_camera_collection_objects,
+        pick_export_camera,
+    )
+    from .anim_usd_export_planner import plan_geo_export_jobs, resolve_export_output_dir
+
+    paths: list[Path] = []
+    jobs, _ = plan_geo_export_jobs(context, props)
+    for job in asset_list.filter_enabled_geo_jobs(jobs, props):
+        paths.append(Path(job.filepath))
+
+    ok_dir, out_dir, _ = resolve_export_output_dir(props)
+    if ok_dir:
+        if asset_list.is_camera_export_enabled(props):
+            cameras = collect_camera_collection_objects(context)
+            export_cam = pick_export_camera(cameras, context.scene, context)
+            if export_cam is not None:
+                paths.append(
+                    camera_usd_output_path(
+                        out_dir,
+                        export_cam.name,
+                        scene_path=scene_blend_path(),
+                    )
+                )
+        if paths:
+            paths.append(out_dir / "publish_meta.json")
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in paths:
+        key = normalize_path(str(path))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(path)
+    return unique
+
+
+def existing_anim_export_paths(paths: list[Path]) -> list[Path]:
+    """Subset of ``paths`` that already exist on disk."""
+    from .anim_usd_cache_paths import existing_output_paths
+
+    return existing_output_paths(paths)
+
+
+def populate_manual_version_pick_list(
+    props,
+    versions: list[int],
+    *,
+    select_version: int | None = None,
+) -> None:
+    """Fill the manual publish-version picker list and set the active row."""
+    items = props.anim_usd_manual_version_items
+    items.clear()
+    for version in versions:
+        item = items.add()
+        item.version_num = int(version)
+        item.label = f"v{version:03d}"
+    if select_version is not None and select_version in versions:
+        pick_index = versions.index(select_version)
+    else:
+        pick_index = max(0, len(versions) - 1)
+    props.anim_usd_manual_version_pick_index = pick_index
+
+
+def picked_manual_version_number(props) -> int | None:
+    items = props.anim_usd_manual_version_items
+    index = int(getattr(props, "anim_usd_manual_version_pick_index", 0) or 0)
+    if index < 0 or index >= len(items):
+        return None
+    return int(items[index].version_num)
+
+
+class AnimUsdManualVersionItem(PropertyGroup):
+    version_num: IntProperty(name="Version", min=1, max=999, default=1)
+    label: StringProperty(name="Label", default="")
+
+
+class MONOFX_UL_anim_manual_publish_versions(UIList):
+    bl_idname = "MONOFX_UL_anim_manual_publish_versions"
+
+    def draw_item(
+        self,
+        context: Context,
+        layout: UILayout,
+        data,
+        item: AnimUsdManualVersionItem,
+        icon,
+        active_data,
+        active_propname,
+        index: int,
+    ) -> None:
+        del context, data, icon, active_data, active_propname, index
+        if self.layout_type in {"DEFAULT", "COMPACT"}:
+            layout.label(text=item.label, icon="FILE_FOLDER")
+        elif self.layout_type == "GRID":
+            layout.alignment = "CENTER"
+            layout.label(text=item.label, icon="FILE_FOLDER")
+
+
+ANIM_USD_MANUAL_VERSION_PROPERTY_GROUP_CLASSES = (AnimUsdManualVersionItem,)
+ANIM_USD_MANUAL_VERSION_UI_LIST_CLASSES = (MONOFX_UL_anim_manual_publish_versions,)

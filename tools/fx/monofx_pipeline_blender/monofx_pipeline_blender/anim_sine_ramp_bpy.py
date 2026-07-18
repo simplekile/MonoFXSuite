@@ -115,6 +115,40 @@ def schedule_amp_ramp_node_ensure(channel: str, axis: str) -> None:
         pass
 
 
+def schedule_sine_axis_driver_refresh(channel: str, axis: str) -> None:
+    """Re-wire existing sine drivers after ramp mode or root/tip edits."""
+    channel = str(channel)
+    axis = str(axis)
+
+    def _run() -> None:
+        try:
+            context = bpy.context
+            if context is None or context.scene is None:
+                return None
+            refresh_sine_ramp_drivers(context, channel=channel, axis=axis)
+        except Exception:
+            pass
+        return None
+
+    try:
+        bpy.app.timers.register(_run, first_interval=0.01)
+    except Exception:
+        pass
+
+
+def make_sine_ramp_settings_update(channel: str, axis: str):
+    """RNA update callback for per-axis amp ramp settings."""
+
+    def _update(self, _context) -> None:
+        if getattr(self, "amp_ramp_mode", None) == "ROOT_TIP":
+            amp = float(getattr(self, "amplitude", 0.0))
+            if abs(amp) > 1e-6 and abs(float(getattr(self, "amp_tip", 1.0)) - 1.0) < 1e-3:
+                self.amp_tip = amp
+        schedule_sine_axis_driver_refresh(channel, axis)
+
+    return _update
+
+
 def get_amp_ramp_mapping(channel: str, axis: str, *, create: bool = True) -> bpy.types.CurveMapping | None:
     node = get_amp_ramp_node(channel, axis, create=create)
     if node is None:

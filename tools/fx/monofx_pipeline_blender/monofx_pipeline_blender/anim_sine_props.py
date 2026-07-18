@@ -9,6 +9,15 @@ from __future__ import annotations
 from bpy.props import EnumProperty, FloatProperty
 from bpy.types import PropertyGroup
 
+from . import anim_sine_ramp_bpy as _sine_ramp
+
+_on_rot_x_ramp_settings = _sine_ramp.make_sine_ramp_settings_update("ROTATION", "X")
+_on_rot_y_ramp_settings = _sine_ramp.make_sine_ramp_settings_update("ROTATION", "Y")
+_on_rot_z_ramp_settings = _sine_ramp.make_sine_ramp_settings_update("ROTATION", "Z")
+_on_loc_x_ramp_settings = _sine_ramp.make_sine_ramp_settings_update("LOCATION", "X")
+_on_loc_y_ramp_settings = _sine_ramp.make_sine_ramp_settings_update("LOCATION", "Y")
+_on_loc_z_ramp_settings = _sine_ramp.make_sine_ramp_settings_update("LOCATION", "Z")
+
 
 class AnimSineRotXParams(PropertyGroup):
     amplitude: FloatProperty(
@@ -25,6 +34,7 @@ class AnimSineRotXParams(PropertyGroup):
             ("CURVE", "Curve Map", "Curve ramp multiplied by main Amplitude"),
         ],
         default="CURVE",
+        update=_on_rot_x_ramp_settings,
     )
     amp_root: FloatProperty(
         name="Amp Root",
@@ -32,6 +42,7 @@ class AnimSineRotXParams(PropertyGroup):
         default=0.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_rot_x_ramp_settings,
     )
     amp_tip: FloatProperty(
         name="Amp Tip",
@@ -39,6 +50,7 @@ class AnimSineRotXParams(PropertyGroup):
         default=1.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_rot_x_ramp_settings,
     )
     frequency: FloatProperty(
         name="Frequency",
@@ -78,6 +90,7 @@ class AnimSineRotYParams(PropertyGroup):
             ("CURVE", "Curve Map", "Curve ramp multiplied by main Amplitude"),
         ],
         default="CURVE",
+        update=_on_rot_y_ramp_settings,
     )
     amp_root: FloatProperty(
         name="Amp Root",
@@ -85,6 +98,7 @@ class AnimSineRotYParams(PropertyGroup):
         default=0.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_rot_y_ramp_settings,
     )
     amp_tip: FloatProperty(
         name="Amp Tip",
@@ -92,6 +106,7 @@ class AnimSineRotYParams(PropertyGroup):
         default=1.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_rot_y_ramp_settings,
     )
     frequency: FloatProperty(
         name="Frequency",
@@ -131,6 +146,7 @@ class AnimSineRotZParams(PropertyGroup):
             ("CURVE", "Curve Map", "Curve ramp multiplied by main Amplitude"),
         ],
         default="CURVE",
+        update=_on_rot_z_ramp_settings,
     )
     amp_root: FloatProperty(
         name="Amp Root",
@@ -138,6 +154,7 @@ class AnimSineRotZParams(PropertyGroup):
         default=0.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_rot_z_ramp_settings,
     )
     amp_tip: FloatProperty(
         name="Amp Tip",
@@ -145,6 +162,7 @@ class AnimSineRotZParams(PropertyGroup):
         default=1.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_rot_z_ramp_settings,
     )
     frequency: FloatProperty(
         name="Frequency",
@@ -184,6 +202,7 @@ class AnimSineLocXParams(PropertyGroup):
             ("CURVE", "Curve Map", "Curve ramp multiplied by main Amplitude"),
         ],
         default="CURVE",
+        update=_on_loc_x_ramp_settings,
     )
     amp_root: FloatProperty(
         name="Amp Root",
@@ -191,6 +210,7 @@ class AnimSineLocXParams(PropertyGroup):
         default=0.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_loc_x_ramp_settings,
     )
     amp_tip: FloatProperty(
         name="Amp Tip",
@@ -198,6 +218,7 @@ class AnimSineLocXParams(PropertyGroup):
         default=1.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_loc_x_ramp_settings,
     )
     frequency: FloatProperty(
         name="Frequency",
@@ -237,6 +258,7 @@ class AnimSineLocYParams(PropertyGroup):
             ("CURVE", "Curve Map", "Curve ramp multiplied by main Amplitude"),
         ],
         default="CURVE",
+        update=_on_loc_y_ramp_settings,
     )
     amp_root: FloatProperty(
         name="Amp Root",
@@ -244,6 +266,7 @@ class AnimSineLocYParams(PropertyGroup):
         default=0.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_loc_y_ramp_settings,
     )
     amp_tip: FloatProperty(
         name="Amp Tip",
@@ -251,6 +274,7 @@ class AnimSineLocYParams(PropertyGroup):
         default=1.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_loc_y_ramp_settings,
     )
     frequency: FloatProperty(
         name="Frequency",
@@ -290,6 +314,7 @@ class AnimSineLocZParams(PropertyGroup):
             ("CURVE", "Curve Map", "Curve ramp multiplied by main Amplitude"),
         ],
         default="CURVE",
+        update=_on_loc_z_ramp_settings,
     )
     amp_root: FloatProperty(
         name="Amp Root",
@@ -297,6 +322,7 @@ class AnimSineLocZParams(PropertyGroup):
         default=0.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_loc_z_ramp_settings,
     )
     amp_tip: FloatProperty(
         name="Amp Tip",
@@ -304,6 +330,7 @@ class AnimSineLocZParams(PropertyGroup):
         default=1.0,
         soft_min=-180.0,
         soft_max=180.0,
+        update=_on_loc_z_ramp_settings,
     )
     frequency: FloatProperty(
         name="Frequency",

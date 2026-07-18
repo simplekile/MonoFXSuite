@@ -13,6 +13,11 @@ from bpy.types import Context, PropertyGroup, UIList, UILayout
 
 from .anim_usd_cache_camera_writer import camera_usd_output_path
 from .anim_usd_cache_exporter import describe_camera_export_rows
+from .anim_usd_cache_paths import (
+    is_camera_collection_name,
+    is_namespace_geo_name,
+    is_publish_collection_name,
+)
 from .anim_usd_cache_paths_ui import scene_blend_path
 from .anim_usd_export_planner import plan_geo_export_jobs, resolve_export_output_dir
 
@@ -49,6 +54,48 @@ _KIND_ICONS = {
 _anim_usd_refresh_timer = None
 _anim_usd_refresh_scene_name: Optional[str] = None
 _anim_usd_refresh_pending = False
+_ANIM_USD_REFRESH_INTERVAL_S = 0.75
+
+
+def export_assets_refresh_pending() -> bool:
+    return bool(_anim_usd_refresh_pending)
+
+
+def _lightweight_scene_export_signature(context: Context) -> str:
+    """Collection-level scene fingerprint — no depsgraph, visibility, or parenting walks."""
+    geo_parts: list[str] = []
+    for pub_coll in bpy.data.collections:
+        if not is_publish_collection_name(pub_coll.name):
+            continue
+        mesh_ids: set[int] = set()
+        try:
+            child_collections = pub_coll.children_recursive
+        except Exception:
+            child_collections = [pub_coll]
+        for coll in child_collections:
+            if not is_namespace_geo_name(coll.name):
+                continue
+            try:
+                objects = coll.all_objects
+            except Exception:
+                objects = coll.objects
+            for obj in objects:
+                if obj.type == "MESH":
+                    mesh_ids.add(id(obj))
+        geo_parts.append(f"{pub_coll.name}:{len(mesh_ids)}")
+
+    cam_names: set[str] = set()
+    scene = context.scene
+    if scene is not None and scene.camera is not None:
+        cam_names.add(scene.camera.name)
+    for coll in bpy.data.collections:
+        if not is_camera_collection_name(coll.name):
+            continue
+        for obj in coll.objects:
+            if obj.type == "CAMERA":
+                cam_names.add(obj.name)
+    cam_part = ",".join(sorted(cam_names, key=str.lower))
+    return f"{'|'.join(sorted(geo_parts, key=str.lower))}#cams:{cam_part}"
 
 
 def _tag_anim_usd_panel_redraw(context: Optional[Context] = None) -> None:
@@ -105,27 +152,16 @@ def _camera_output_basename(context: Context, props, export_cam) -> str:
 
 def compute_export_assets_signature(context: Context, props) -> str:
     """Lightweight scene signature for export-target refresh (no depsgraph eval)."""
-    from .anim_usd_cache_exporter import (
-        collect_camera_collection_objects,
-        collect_publish_geo_groups,
-        pick_export_camera,
-    )
+    from .anim_usd_cache_paths_ui import resolve_anim_publish_version_number
 
-    groups = collect_publish_geo_groups(context)
-    job_part = "|".join(
-        f"{g.publish_name}:{len(g.mesh_names)}" for g in groups
-    )
-    cameras = collect_camera_collection_objects(context)
-    export_cam = pick_export_camera(cameras, context.scene, context)
-    cam_name = export_cam.name if export_cam is not None else ""
+    job_part = _lightweight_scene_export_signature(context)
     f0, f1 = _frame_range(context, props)
     merge = bool(getattr(props, "anim_usd_merge_by_link", False))
     skip_hidden = bool(getattr(props, "anim_usd_skip_view_hidden", False))
-    preset = str(getattr(props, "anim_usd_output_preset", "") or "")
-    version = int(getattr(props, "anim_usd_publish_version", 0) or 0)
-    filepath = str(getattr(props, "anim_usd_output_filepath", "") or "")
+    mode = str(getattr(props, "anim_usd_version_mode", "") or "NEXT")
+    version = resolve_anim_publish_version_number(props)
     return (
-        f"{job_part}#{cam_name}#{filepath}#v{version}#{preset}#"
+        f"{job_part}#v{version}#{mode}#"
         f"{f0}-{f1}#merge={int(merge)}#skiphidden={int(skip_hidden)}"
     )
 
@@ -158,6 +194,10 @@ def filter_enabled_geo_jobs(jobs, props) -> list:
 
 def enabled_export_target_count(props) -> int:
     return sum(1 for item in props.anim_usd_export_assets if item.enabled)
+
+
+def export_target_total_count(props) -> int:
+    return len(props.anim_usd_export_assets)
 
 
 def is_camera_export_enabled(props) -> bool:
@@ -207,7 +247,10 @@ def _refresh_export_assets_impl(context: Context, props, *, force: bool = False)
 
     f0, f1 = _frame_range(context, props)
     cam_rows, export_cam = describe_camera_export_rows(
-        context, frame_start=f0, frame_end=f1
+        context,
+        frame_start=f0,
+        frame_end=f1,
+        lightweight=True,
     )
     if export_cam is not None:
         motion_hint = ""
@@ -246,25 +289,30 @@ def schedule_export_assets_refresh(context: Context) -> None:
         props = getattr(scene, "monofx_pipeline_blender_props", None)
         if props is None:
             return None
+        if props.anim_usd_export_list_locked:
+            return None
         try:
             _refresh_export_assets_impl(bpy.context, props)
         except Exception as exc:
             logger = __import__("logging").getLogger("monofx.anim_usd_cache")
             logger.exception("export assets refresh failed: %s", exc)
-        _tag_anim_usd_panel_redraw(bpy.context)
+        if bpy.context.scene.name == (_anim_usd_refresh_scene_name or ""):
+            _tag_anim_usd_panel_redraw(bpy.context)
         return None
 
     if _anim_usd_refresh_timer is not None:
-        try:
-            bpy.app.timers.unregister(_anim_usd_refresh_timer)
-        except Exception:
-            pass
-    _anim_usd_refresh_timer = bpy.app.timers.register(_run, first_interval=0.15)
+        return
+    _anim_usd_refresh_timer = bpy.app.timers.register(
+        _run,
+        first_interval=_ANIM_USD_REFRESH_INTERVAL_S,
+    )
 
 
 def ensure_export_assets_refresh(context: Context, props) -> None:
     """Read-only in draw: schedule refresh when scene export targets changed."""
     if props.anim_usd_export_running:
+        return
+    if props.anim_usd_export_list_locked:
         return
     signature = compute_export_assets_signature(context, props)
     if signature == props.anim_usd_export_assets_signature:
@@ -443,6 +491,28 @@ class MONOFX_UL_anim_usd_export_assets(UIList):
             layout.label(text=item.display_name, icon=_KIND_ICONS.get(item.asset_kind, "FILE"))
 
 
+class MONOFX_OT_refresh_anim_usd_export_list(bpy.types.Operator):
+    """Refresh the Anim USD export target list from the current scene and options."""
+
+    bl_idname = "wm.mono_fx_refresh_anim_usd_export_list"
+    bl_label = "Refresh Export List"
+    bl_options = {"REGISTER", "UNDO"}
+
+    @classmethod
+    def description(cls, context, properties) -> str:
+        return cls.__doc__ or cls.bl_label
+
+    def execute(self, context: Context) -> set[str]:
+        props = context.scene.monofx_pipeline_blender_props
+        refresh_export_assets(context, props, force=True)
+        enabled = enabled_export_target_count(props)
+        total = export_target_total_count(props)
+        self.report({"INFO"}, f"Export list: {enabled}/{total} target(s) enabled.")
+        return {"FINISHED"}
+
+
 ANIM_USD_ASSET_PROPERTY_GROUP_CLASSES = (AnimUsdExportAssetItem,)
 
 ANIM_USD_ASSET_UI_LIST_CLASSES = (MONOFX_UL_anim_usd_export_assets,)
+
+ANIM_USD_ASSET_OPERATOR_CLASSES = (MONOFX_OT_refresh_anim_usd_export_list,)

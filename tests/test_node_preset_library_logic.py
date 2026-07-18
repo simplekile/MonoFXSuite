@@ -112,6 +112,56 @@ def test_merge_library_from_folder(library_root: Path, tmp_path: Path) -> None:
     assert get_preset("imp1", library_root) is not None
 
 
+def test_update_preset_rename_and_move_category(library_root: Path) -> None:
+    from tools.fx.node_preset_library.logic import update_preset
+
+    add_category("SOP Utils", library_root)
+    add_category("Archive", library_root)
+    rel_cpio, rel_thumb = preset_relative_paths("sop_utils", "edit1")
+    cpio_path = library_root / rel_cpio
+    cpio_path.parent.mkdir(parents=True, exist_ok=True)
+    cpio_path.write_text("data", encoding="utf-8")
+    thumb_path = library_root / rel_thumb
+    thumb_path.write_bytes(b"png")
+    add_preset(
+        "Old Name",
+        "sop_utils",
+        rel_cpio,
+        2,
+        thumbnail_relative=rel_thumb,
+        description="old",
+        library_root=library_root,
+        preset_id="edit1",
+    )
+
+    assert update_preset(
+        "edit1",
+        name="New Name",
+        category_id="archive",
+        description="updated",
+        library_root=library_root,
+    )
+    preset = get_preset("edit1", library_root)
+    assert preset is not None
+    assert preset["name"] == "New Name"
+    assert preset["description"] == "updated"
+    assert preset["category_id"] == "archive"
+    assert preset["file"] == f"categories/archive/preset_edit1{config.PRESET_FILE_EXT}"
+    assert (library_root / preset["file"]).is_file()
+    assert preset["thumbnail"] == f"categories/archive/preset_edit1_thumb{config.THUMB_EXT}"
+    assert (library_root / preset["thumbnail"]).is_file()
+
+
+def test_rename_category(library_root: Path) -> None:
+    from tools.fx.node_preset_library.logic import rename_category
+
+    add_category("Old Cat", library_root)
+    assert rename_category("old_cat", "New Cat", library_root)
+    cats = list_categories(library_root)
+    match = next(c for c in cats if c["id"] == "old_cat")
+    assert match["name"] == "New Cat"
+
+
 def test_new_preset_id_unique() -> None:
     ids = {new_preset_id() for _ in range(20)}
     assert len(ids) == 20

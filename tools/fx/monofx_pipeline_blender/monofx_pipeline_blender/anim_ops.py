@@ -487,8 +487,8 @@ class MONOFX_OT_anim_copy_world_transform(Operator):
     bl_idname = "wm.mono_fx_anim_copy_world_transform"
     bl_label = "Copy World Transform"
     bl_description = (
-        "Copy world transform from the active pose bone (Pose Mode) "
-        "or active object (Object Mode); constraints included"
+        "Copy visual world transform from the active pose bone (Pose Mode) "
+        "or active object (Object Mode) to the clipboard; constraints included"
     )
     bl_options = {"REGISTER"}
 
@@ -515,8 +515,8 @@ class MONOFX_OT_anim_paste_world_transform(Operator):
     bl_idname = "wm.mono_fx_anim_paste_world_transform"
     bl_label = "Paste World Transform"
     bl_description = (
-        "Paste copied world transform onto selected pose bones (Pose Mode) "
-        "or selected object(s) (Object Mode)"
+        "Paste the clipboard world transform onto selected pose bones (Pose Mode) "
+        "or selected object(s) (Object Mode); solves Child Of / constraint offset"
     )
     bl_options = {"REGISTER", "UNDO"}
 

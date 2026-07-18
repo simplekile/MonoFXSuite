@@ -58,23 +58,23 @@ def _draw_anim_selection_section(body: UILayout, _context: Context) -> None:
 def _draw_anim_transform_section(body: UILayout, context: Context) -> None:
     if anim_transform.has_world_transform_clipboard():
         source = anim_transform.clipboard_source_name()
-        body.label(text=f"Copied: {source}", icon="COPYDOWN")
+        body.label(text=f"Clipboard ← {source}", icon="COPYDOWN")
     else:
         row = body.row()
         row.enabled = False
-        row.label(text="No transform copied", icon="INFO")
+        row.label(text="Clipboard empty", icon="COPYDOWN")
 
     row = body.row(align=True)
     row.operator(
         "wm.mono_fx_anim_copy_world_transform",
-        text="Copy World Transform",
+        text="Copy",
         icon="COPYDOWN",
     )
     paste = row.row(align=True)
     paste.enabled = anim_transform.can_paste_world_transform(context)
     paste.operator(
         "wm.mono_fx_anim_paste_world_transform",
-        text="Paste World Transform",
+        text="Paste",
         icon="PASTEDOWN",
     )
 

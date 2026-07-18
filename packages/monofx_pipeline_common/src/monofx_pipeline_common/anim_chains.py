@@ -14,6 +14,7 @@ _CHAIN_PATTERNS = (
         re.IGNORECASE,
     ),
     re.compile(r"^(?P<base>c_\D.+?)(?P<idx>\d+)(?P<tail>\.[lr])$", re.IGNORECASE),
+    re.compile(r"^(?P<base>.+\.)(?P<idx>\d+)$"),
 )
 
 
@@ -25,12 +26,14 @@ def parse_control_chain_bone(name: str) -> Optional[Tuple[str, int, str]]:
         ``c_index1.l`` → ``("c_index", 1, ".l")``
         ``c_kilt_01_04.l`` → ``("c_kilt_01_", 4, ".l")``
         ``c_DressFront_00_dupli_002.x`` → ``("c_DressFront_", 0, "_dupli_002.x")``
+        ``CharmB.01`` → ``("CharmB.", 1, "")``
     """
     text = (name or "").strip()
     for pattern in _CHAIN_PATTERNS:
         match = pattern.match(text)
         if match:
-            return match.group("base"), int(match.group("idx")), match.group("tail")
+            tail = match.groupdict().get("tail", "")
+            return match.group("base"), int(match.group("idx")), tail or ""
     return None
 
 
@@ -38,18 +41,19 @@ def chain_members_from_bone(name: str, all_bone_names: Iterable[str]) -> List[st
     """
     Return sorted control bones in the same numbered series as *name*.
 
-    Only bones starting with ``c_`` are included. Non-control bones are ignored.
+    ``c_`` series ignore unrelated bones; other numbered series include all matches.
     """
     parsed = parse_control_chain_bone(name)
-    if parsed is None or not name.startswith("c_"):
-        return [name] if name in set(all_bone_names) else []
+    names_set = set(all_bone_names)
+    if parsed is None:
+        return [name] if name in names_set else []
 
     base, _idx, tail = parsed
-    names_set = set(all_bone_names)
+    control_only = base.startswith("c_")
     members: List[Tuple[int, str]] = []
 
     for bone_name in all_bone_names:
-        if not bone_name.startswith("c_"):
+        if control_only and not bone_name.startswith("c_"):
             continue
         other = parse_control_chain_bone(bone_name)
         if other is None:
@@ -87,6 +91,16 @@ def mirror_control_bone_name(name: str) -> Optional[str]:
     if mirror_tail is None or not name.endswith(tail):
         return None
     return name[: -len(tail)] + mirror_tail
+
+
+def multi_chain_seeds_from_selection(
+    names: Sequence[str],
+    parent_of: Mapping[str, Optional[str]],
+    children_of: Mapping[str, Sequence[str]],
+) -> List[str]:
+    """Return one root bone/object name per disjoint chain in *names*."""
+    partitions = partition_selection_chains(names, parent_of, children_of)
+    return [chain[0] for chain in partitions if chain]
 
 
 def parallel_chain_seeds(seed: str, all_bone_names: Iterable[str]) -> List[str]:
