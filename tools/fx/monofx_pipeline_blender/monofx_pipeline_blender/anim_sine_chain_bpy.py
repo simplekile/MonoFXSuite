@@ -15,6 +15,7 @@ from monofx_pipeline_common.anim_chains import (
     chain_members_from_hierarchy,
     chain_members_from_hierarchy_branch,
     multi_chain_seeds_from_selection,
+    parallel_chain_seeds,
     partition_selection_chains,
     sort_chain_selection,
 )
@@ -194,9 +195,11 @@ def _bone_chain_name_lists(
     seed: str,
     selected_names: Sequence[str],
     multi_chain: bool,
+    mirror_chain: bool,
 ) -> List[List[str]]:
     parent_of, children_of = _bone_hierarchy_maps(arm)
     mode = (chain_mode or "AUTO").upper()
+    all_names = [pb.name for pb in arm.pose.bones]
 
     if mode == "SELECTION":
         names = list(selected_names)
@@ -209,7 +212,7 @@ def _bone_chain_name_lists(
     seeds = (
         multi_chain_seeds_from_selection(selected_names, parent_of, children_of)
         if multi_chain
-        else [seed]
+        else parallel_chain_seeds(seed, all_names) if mirror_chain else [seed]
     )
     chain_lists: List[List[str]] = []
     seen: set[tuple[str, ...]] = set()
@@ -233,6 +236,7 @@ def _object_chain_name_lists(
     chain_mode: str,
     seed_obj: bpy.types.Object | None,
     multi_chain: bool,
+    mirror_chain: bool,
 ) -> List[List[str]]:
     mode = (chain_mode or "AUTO").upper()
 
@@ -261,6 +265,23 @@ def _object_chain_name_lists(
 
     if seed_obj is None:
         return []
+
+    if mode == "NAMING":
+        all_names = [obj.name for obj in bpy.data.objects]
+        members = chain_members_from_bone(seed_obj.name, all_names)
+        if not members:
+            return []
+        if mirror_chain:
+            mirror_seed = None
+            for name in parallel_chain_seeds(seed_obj.name, all_names):
+                if name != seed_obj.name:
+                    mirror_seed = name
+                    break
+            if mirror_seed is not None:
+                mirror_members = chain_members_from_bone(mirror_seed, all_names)
+                if mirror_members:
+                    return [members, mirror_members]
+        return [members]
 
     selected = [obj for obj in context.selected_objects if obj is not None]
     if multi_chain and len(selected) > 1:
@@ -308,6 +329,7 @@ def resolve_sine_chain_groups(
     props = context.scene.monofx_pipeline_blender_props
     chain_mode = str(props.anim_sine_bone_mode)
     multi_chain = bool(getattr(props, "anim_sine_multi_chain", True))
+    mirror_chain = bool(getattr(props, "anim_sine_mirror_chain", True))
 
     if context.mode == "POSE":
         arm = context.active_object
@@ -323,6 +345,7 @@ def resolve_sine_chain_groups(
             seed=selected[-1].name,
             selected_names=[pb.name for pb in selected],
             multi_chain=multi_chain,
+            mirror_chain=mirror_chain,
         )
         if not chain_lists:
             return [], "No bones in chain."
@@ -335,6 +358,7 @@ def resolve_sine_chain_groups(
             chain_mode=chain_mode,
             seed_obj=seed_obj,
             multi_chain=multi_chain,
+            mirror_chain=mirror_chain,
         )
         if not chain_lists:
             if chain_mode == "SELECTION":
@@ -442,6 +466,21 @@ def preview_sine_chain_rows(
                 has_driver = SINE_BASE_PROP in owner or SINE_RNA_PROP in owner
             rows.append((f"{member_index}: {target.label}", has_driver))
     return rows, ""
+
+
+def summarize_sine_chain_rows(
+    rows: Sequence[Tuple[str, bool]],
+    err: str,
+) -> str:
+    if err:
+        return err
+    if not rows:
+        return "No chain resolved"
+    members = [row for row in rows if not row[0].startswith("—")]
+    driven = sum(1 for _, has_driver in members if has_driver)
+    chains = sum(1 for label, _ in rows if label.startswith("— chain"))
+    chain_count = chains + 1 if chains else 1
+    return f"{len(members)} member(s), {driven} driven, {chain_count} chain(s)"
 
 
 def _ensure_rotation_euler_target(target: SineChainTarget, channel: str) -> None:
@@ -665,6 +704,24 @@ def targets_with_sine_drivers(targets: Sequence[SineChainTarget]) -> List[SineCh
         if SINE_BASE_PROP in owner or SINE_RNA_PROP in owner:
             result.append(target)
     return result
+
+
+def clear_all_sine_chain_drivers() -> int:
+    """Remove MonoFX sine drivers from every pose bone and object in the file."""
+    from .anim_sine_ramp_bpy import iter_sine_driver_owners
+
+    cleared = 0
+    for id_block, bone_name, owner in list(iter_sine_driver_owners()):
+        if SINE_BASE_PROP not in owner and SINE_RNA_PROP not in owner:
+            continue
+        base_data_path = f'pose.bones["{bone_name}"]' if bone_name else ""
+        target = SineChainTarget(
+            id_block=id_block,
+            label=bone_name or id_block.name,
+            base_data_path=base_data_path,
+        )
+        cleared += clear_sine_chain_drivers([target])
+    return cleared
 
 
 def _read_evaluated_channel_value(
