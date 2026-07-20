@@ -10,6 +10,7 @@ from bpy.types import Context, Panel, UILayout
 from . import anim_camera
 from . import anim_collections
 from . import anim_sine_chain_bpy
+from . import anim_sine_preview_bpy
 from . import anim_sine_ramp_bpy
 from . import anim_transform
 from . import preferences
@@ -174,26 +175,50 @@ def _draw_sine_axis_params(body: UILayout, props, *, channel: str, axis: str) ->
 
 def _draw_anim_chain_section(body: UILayout, context: Context, *, prefs) -> None:
     props = context.scene.monofx_pipeline_blender_props
-    rows, chain_err = anim_sine_chain_bpy.preview_sine_chain_rows(context)
-    chain_title = (
-        f"Chain Targets ({len(rows)})" if rows else "Chain Targets"
-    )
-
-    ui_style.draw_panel_tabs(body, props, "anim_sine_channel")
+    anim_sine_preview_bpy.schedule_preview_refresh()
+    rows, chain_err, summary = anim_sine_preview_bpy.get_preview_cache(context)
     channel = str(props.anim_sine_channel)
-    _tabs, tab_body = ui_style.draw_vertical_tabs(body, props, "anim_sine_axis")
     axis = str(props.anim_sine_axis).upper()
     if axis not in {"X", "Y", "Z"}:
         axis = "Z"
-    _draw_sine_axis_params(tab_body, props, channel=channel, axis=axis)
 
+    if context.mode not in {"POSE", "OBJECT"}:
+        ui_style.status_label(
+            body,
+            "Switch to Pose Mode or Object Mode",
+            ok=False,
+        )
+        return
+
+    ui_style.status_label(
+        body,
+        summary,
+        ok=bool(rows) and not chain_err,
+        icon="LINKED" if rows else "INFO",
+    )
+
+    row = body.row(align=True)
+    row.operator(
+        "wm.mono_fx_anim_select_chain",
+        text="Select Chain",
+        icon="RESTRICT_SELECT_OFF",
+    )
     body.prop(props, "anim_sine_bone_mode", text="Chain Mode")
-    body.prop(props, "anim_sine_multi_chain", text="Multi Chains")
+    row = body.row(align=True)
+    row.prop(props, "anim_sine_multi_chain", text="Multi Chains")
+    row.prop(props, "anim_sine_mirror_chain", text="Mirror")
     if props.anim_sine_multi_chain:
         hint = body.row()
         hint.enabled = False
         hint.label(
             text="Select one bone/object per chain; params apply to all chains",
+            icon="INFO",
+        )
+    elif props.anim_sine_mirror_chain:
+        hint = body.row()
+        hint.enabled = False
+        hint.label(
+            text="Mirror applies to paired .l / .r control series",
             icon="INFO",
         )
     if props.anim_sine_bone_mode == "SELECTION":
@@ -204,25 +229,11 @@ def _draw_anim_chain_section(body: UILayout, context: Context, *, prefs) -> None
         elif context.mode == "OBJECT":
             hint.label(text="Select objects for the chain", icon="INFO")
 
-    row = body.row(align=True)
-    row.operator(
-        "wm.mono_fx_anim_apply_sine_chain",
-        text="Apply Sine Chain",
-        icon="FORCE_CURVE",
+    chain_title = (
+        f"Chain Targets ({len([r for r in rows if not r[0].startswith('—')])})"
+        if rows
+        else "Chain Targets"
     )
-    row.operator(
-        "wm.mono_fx_anim_clear_sine_chain",
-        text="Clear Sine Chain",
-        icon="X",
-    )
-    row = body.row(align=True)
-    row.operator(
-        "wm.mono_fx_anim_bake_sine_chain",
-        text="Bake Sine Chain",
-        icon="REC",
-    )
-    row.prop(props, "anim_sine_bake_clear_drivers", text="Clear Drivers")
-
     list_body, list_open = ui_style.collapsible_section(
         body,
         "monofx_anim_chain_targets",
@@ -248,6 +259,54 @@ def _draw_anim_chain_section(body: UILayout, context: Context, *, prefs) -> None
                     text=label,
                     icon="DRIVER" if has_driver else "DOT",
                 )
+
+    body.separator()
+    ui_style.draw_panel_tabs(body, props, "anim_sine_channel")
+    _tabs, tab_body = ui_style.draw_vertical_tabs(body, props, "anim_sine_axis")
+    _draw_sine_axis_params(tab_body, props, channel=channel, axis=axis)
+    tab_body.prop(props, "anim_sine_cycle_frames", text="Cycle Frames")
+
+    bake_body, bake_open = ui_style.collapsible_section(
+        body,
+        "monofx_anim_chain_bake",
+        "Bake Range",
+        icon="TIME",
+        default_closed=True,
+        prefs=prefs,
+    )
+    if bake_open and bake_body is not None:
+        bake_body.prop(props, "anim_sine_bake_use_scene_range", text="Use Scene Range")
+        range_row = bake_body.row(align=True)
+        range_row.enabled = not bool(props.anim_sine_bake_use_scene_range)
+        range_row.prop(props, "anim_sine_bake_frame_start", text="Start")
+        range_row.prop(props, "anim_sine_bake_frame_end", text="End")
+        bake_body.prop(props, "anim_sine_bake_clear_drivers", text="Clear Drivers After Bake")
+
+    body.separator()
+    row = body.row(align=True)
+    row.scale_y = 1.25
+    row.operator(
+        "wm.mono_fx_anim_apply_sine_chain",
+        text="Apply Sine Chain",
+        icon="FORCE_CURVE",
+    )
+    row.operator(
+        "wm.mono_fx_anim_clear_sine_chain",
+        text="Clear",
+        icon="X",
+    )
+    row = body.row(align=True)
+    row.scale_y = 1.15
+    row.operator(
+        "wm.mono_fx_anim_bake_sine_chain",
+        text="Bake Sine Chain",
+        icon="REC",
+    )
+    row.operator(
+        "wm.mono_fx_anim_clear_all_sine_chain",
+        text="Clear All",
+        icon="TRASH",
+    )
 
 
 def _draw_camera_motion_guide(

@@ -67,11 +67,13 @@ def build_sine_driver_expression(
     *,
     ramp_mode: str = "CURVE",
     ramp_factor: float | None = None,
+    cycle_frames: int | None = None,
 ) -> str:
     """Scripted driver expression with baked chain index and amp ramp."""
+    cycle_expr = "cycle" if cycle_frames is None else f"{max(1, int(cycle_frames))}"
     wave = (
         f"sin(radians(-freq * {int(member_index)} + phase) "
-        f"+ frame / {DEFAULT_SINE_CYCLE_FRAMES} * 2 * pi * speed)"
+        f"+ frame / {cycle_expr} * 2 * pi * speed)"
     )
     if (ramp_mode or "CURVE").upper() == "ROOT_TIP":
         chain_t = chain_amp_t(member_index, member_count)
@@ -94,6 +96,7 @@ def scene_sine_wave_prop_paths(channel: str, axis: str) -> Dict[str, str]:
         "freq": f"{rna_prefix}.{group}.frequency",
         "speed": f"{rna_prefix}.{group}.speed",
         "phase": f"{rna_prefix}.{group}.phase",
+        "cycle": f"{rna_prefix}.anim_sine_cycle_frames",
     }
 
 

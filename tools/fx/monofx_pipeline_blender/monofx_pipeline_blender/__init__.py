@@ -1135,10 +1135,40 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         ),
         default=True,
     )
+    anim_sine_mirror_chain: BoolProperty(
+        name="Mirror Chain",
+        description=(
+            "When a single chain is resolved, also apply to the mirror-side "
+            "control series (e.g. c_kilt_04.l → c_kilt_04.r)"
+        ),
+        default=True,
+    )
+    anim_sine_cycle_frames: IntProperty(
+        name="Cycle Frames",
+        description="Frames per full sine oscillation cycle at speed = 1",
+        default=24,
+        min=1,
+        soft_max=240,
+    )
     anim_sine_bake_clear_drivers: BoolProperty(
         name="Clear Drivers After Bake",
         description="Remove sine drivers after baking keyframes",
         default=True,
+    )
+    anim_sine_bake_use_scene_range: BoolProperty(
+        name="Use Scene Range",
+        description="Bake over scene frame_start → frame_end",
+        default=True,
+    )
+    anim_sine_bake_frame_start: IntProperty(
+        name="Bake Start",
+        description="Custom bake start frame when scene range is disabled",
+        default=1,
+    )
+    anim_sine_bake_frame_end: IntProperty(
+        name="Bake End",
+        description="Custom bake end frame when scene range is disabled",
+        default=120,
     )
     anim_camera_active_rig: EnumProperty(
         name="Camera Rig",

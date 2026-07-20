@@ -4,6 +4,7 @@ Animation tool operators.
 
 from __future__ import annotations
 
+import re
 import bpy
 from bpy.types import Context, Operator
 
@@ -16,10 +17,10 @@ from . import anim_keys_bpy
 import random
 
 from . import anim_sine_chain_bpy
+from . import anim_sine_preview_bpy
 from . import anim_exact_key_bpy
 from . import anim_sine_ramp_bpy
 from monofx_pipeline_common.anim_sine_chain import resolve_sine_axis_settings
-from monofx_pipeline_common.anim_chains import chain_members_from_hierarchy
 from bpy.props import EnumProperty, StringProperty
 
 
@@ -148,56 +149,72 @@ class MONOFX_OT_anim_fix_shot_collections(Operator):
         return {"FINISHED"}
 
 
-def _bone_hierarchy_maps(arm: bpy.types.Object) -> tuple[dict[str, str | None], dict[str, list[str]]]:
-    parent_of: dict[str, str | None] = {}
-    children_of: dict[str, list[str]] = {}
-    for pb in arm.pose.bones:
-        parent_of[pb.name] = pb.parent.name if pb.parent else None
-        children_of.setdefault(pb.name, [])
-    for pb in arm.pose.bones:
-        if pb.parent is not None:
-            children_of.setdefault(pb.parent.name, []).append(pb.name)
-    return parent_of, children_of
-
-
 class MONOFX_OT_anim_select_chain(Operator):
     bl_idname = "wm.mono_fx_anim_select_chain"
     bl_label = "Select Chain"
-    bl_description = "Select all connected parent and child bones in the same hierarchy chain"
+    bl_description = (
+        "Select all members of the resolved sine chain in Pose or Object mode"
+    )
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
     def poll(cls, context: Context) -> bool:
-        obj = context.active_object
-        return (
-            obj is not None
-            and obj.type == "ARMATURE"
-            and context.mode == "POSE"
-            and bool(context.selected_pose_bones)
-        )
+        if context.mode == "POSE":
+            obj = context.active_object
+            return (
+                obj is not None
+                and obj.type == "ARMATURE"
+                and bool(context.selected_pose_bones)
+            )
+        if context.mode == "OBJECT":
+            return context.active_object is not None or bool(context.selected_objects)
+        return False
 
     def execute(self, context: Context) -> set[str]:
-        arm = context.active_object
-        selected = list(context.selected_pose_bones)
-        if not selected:
-            self.report({"WARNING"}, "No pose bones selected.")
+        targets, err = anim_sine_chain_bpy.resolve_sine_chain_targets(context)
+        if err:
+            self.report({"WARNING"}, err)
+            return {"CANCELLED"}
+        if not targets:
+            self.report({"WARNING"}, "No chain members to select.")
             return {"CANCELLED"}
 
-        seed = selected[-1].name
-        parent_of, children_of = _bone_hierarchy_maps(arm)
-        members = chain_members_from_hierarchy(seed, parent_of, children_of)
-        if not members:
-            self.report({"WARNING"}, f"No chain found for {seed}.")
-            return {"CANCELLED"}
-
-        anim_pose.deselect_all_pose_bones(arm)
-        anim_pose.select_pose_bones_by_name(arm, members)
-
-        if members:
-            active_pb = arm.pose.bones.get(members[0])
+        if context.mode == "POSE":
+            arm = context.active_object
+            bone_names = []
+            for target in targets:
+                if target.base_data_path:
+                    match = re.match(r'^pose\.bones\["(.+)"\]$', target.base_data_path)
+                    if match:
+                        bone_names.append(match.group(1))
+            if not bone_names:
+                self.report({"WARNING"}, "No pose bones in resolved chain.")
+                return {"CANCELLED"}
+            anim_pose.deselect_all_pose_bones(arm)
+            anim_pose.select_pose_bones_by_name(arm, bone_names)
+            active_pb = arm.pose.bones.get(bone_names[0])
             anim_pose.set_active_pose_bone(context, arm, active_pb)
+            self.report({"INFO"}, f"Selected chain: {len(bone_names)} bone(s).")
+            return {"FINISHED"}
 
-        self.report({"INFO"}, f"Selected chain: {len(members)} bone(s).")
+        bpy.ops.object.select_all(action="DESELECT")
+        object_names = [target.label for target in targets if not target.base_data_path]
+        selected_count = 0
+        active_obj = None
+        for name in object_names:
+            obj = bpy.data.objects.get(name)
+            if obj is None:
+                continue
+            obj.select_set(True)
+            if active_obj is None:
+                active_obj = obj
+            selected_count += 1
+        if active_obj is not None:
+            context.view_layer.objects.active = active_obj
+        if selected_count == 0:
+            self.report({"WARNING"}, "No objects in resolved chain.")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"Selected chain: {selected_count} object(s).")
         return {"FINISHED"}
 
 
@@ -251,6 +268,7 @@ class MONOFX_OT_anim_apply_sine_chain(Operator):
         for msg in warnings:
             self.report({"WARNING"}, msg)
         anim_sine_ramp_bpy.refresh_all_sine_ramp_drivers(context)
+        anim_sine_preview_bpy.schedule_preview_refresh()
         chain_count = len(groups)
         if chain_count > 1:
             self.report(
@@ -296,6 +314,23 @@ class MONOFX_OT_anim_clear_sine_chain(Operator):
             return {"CANCELLED"}
 
         cleared = anim_sine_chain_bpy.clear_sine_chain_drivers(to_clear)
+        anim_sine_preview_bpy.schedule_preview_refresh()
+        self.report({"INFO"}, f"Cleared sine chain from {cleared} target(s).")
+        return {"FINISHED"}
+
+
+class MONOFX_OT_anim_clear_all_sine_chain(Operator):
+    bl_idname = "wm.mono_fx_anim_clear_all_sine_chain"
+    bl_label = "Clear All Sine Chains"
+    bl_description = "Remove MonoFX sine drivers from every pose bone and object in the file"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context: Context) -> set[str]:
+        cleared = anim_sine_chain_bpy.clear_all_sine_chain_drivers()
+        anim_sine_preview_bpy.schedule_preview_refresh()
+        if cleared == 0:
+            self.report({"WARNING"}, "No MonoFX sine drivers found in this file.")
+            return {"CANCELLED"}
         self.report({"INFO"}, f"Cleared sine chain from {cleared} target(s).")
         return {"FINISHED"}
 
@@ -337,8 +372,18 @@ class MONOFX_OT_anim_bake_sine_chain(Operator):
             return {"CANCELLED"}
 
         scene = context.scene
-        frame_start = int(scene.frame_start)
-        frame_end = int(scene.frame_end)
+        props = _pipeline_props(context)
+        if bool(props.anim_sine_bake_use_scene_range):
+            frame_start = int(scene.frame_start)
+            frame_end = int(scene.frame_end)
+        else:
+            frame_start = int(props.anim_sine_bake_frame_start)
+            frame_end = int(props.anim_sine_bake_frame_end)
+        if frame_end < frame_start:
+            frame_start, frame_end = frame_end, frame_start
+        total_frames = max(1, frame_end - frame_start + 1)
+        wm = context.window_manager
+        wm.progress_begin(0, total_frames)
         try:
             key_count, baked_count = anim_sine_chain_bpy.bake_sine_chain_drivers(
                 context,
@@ -350,6 +395,8 @@ class MONOFX_OT_anim_bake_sine_chain(Operator):
         except Exception as exc:
             self.report({"ERROR"}, f"Sine chain bake failed: {exc}")
             return {"CANCELLED"}
+        finally:
+            wm.progress_end()
 
         if key_count == 0:
             self.report({"WARNING"}, "No keyframes were baked.")
@@ -360,6 +407,7 @@ class MONOFX_OT_anim_bake_sine_chain(Operator):
             f"Baked {key_count} keyframe(s) on {baked_count} target(s) "
             f"({frame_start}-{frame_end}).",
         )
+        anim_sine_preview_bpy.schedule_preview_refresh()
         return {"FINISHED"}
 
 
@@ -1038,6 +1086,7 @@ ANIM_OPERATOR_CLASSES = (
     MONOFX_OT_anim_select_chain,
     MONOFX_OT_anim_apply_sine_chain,
     MONOFX_OT_anim_clear_sine_chain,
+    MONOFX_OT_anim_clear_all_sine_chain,
     MONOFX_OT_anim_bake_sine_chain,
     MONOFX_OT_anim_refresh_sine_ramp,
     MONOFX_OT_anim_randomize_sine_phase,

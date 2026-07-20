@@ -138,3 +138,11 @@ def test_multi_chain_seeds_from_selection() -> None:
         children_of,
     )
     assert seeds == ["B1", "C1"]
+
+
+def test_parallel_chain_seeds() -> None:
+    bones = [f"c_kilt_01_{i:02d}.l" for i in range(1, 4)] + [
+        f"c_kilt_01_{i:02d}.r" for i in range(1, 4)
+    ]
+    seeds = _chains.parallel_chain_seeds("c_kilt_01_02.l", bones)
+    assert seeds == ["c_kilt_01_02.l", "c_kilt_01_02.r"]
