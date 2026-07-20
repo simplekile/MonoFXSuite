@@ -18,17 +18,28 @@ from pathlib import Path
 
 def _ensure_pipeline_common_on_path() -> None:
     addon_root = Path(__file__).resolve().parent
+    candidates: list[Path] = []
+    # Dev checkout: .../MonoFXSuite/tools/fx/monofx_pipeline_blender/monofx_pipeline_blender
+    for depth in (3, 4, 5):
+        if len(addon_root.parents) <= depth:
+            continue
+        repo_common = (
+            addon_root.parents[depth]
+            / "packages"
+            / "monofx_pipeline_common"
+            / "src"
+        )
+        if repo_common.is_dir():
+            candidates.append(repo_common)
+            break
     vendor = addon_root / "vendor"
     if vendor.is_dir():
-        v = str(vendor)
-        if v not in sys.path:
-            sys.path.insert(0, v)
+        candidates.append(vendor)
+    for candidate in candidates:
+        path = str(candidate)
+        if path not in sys.path:
+            sys.path.insert(0, path)
         return
-    repo_common = addon_root.parents[4] / "packages" / "monofx_pipeline_common" / "src"
-    if repo_common.is_dir():
-        v = str(repo_common)
-        if v not in sys.path:
-            sys.path.insert(0, v)
 
 
 _ensure_pipeline_common_on_path()
@@ -142,7 +153,7 @@ from . import addon_updater
 bl_info = {
     "name": "MonoFX Pipeline Blender",
     "author": "MonoFXSuite",
-    "version": (0, 9, 122),
+    "version": (0, 9, 132),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > MonoFX",
     "description": (
@@ -521,6 +532,15 @@ def _mono_fx_on_advanced_align_to_origin(self, _context: Context) -> None:
 def _mono_fx_on_advanced_align_to_cursor(self, _context: Context) -> None:
     if self.advanced_align_to_cursor:
         self.advanced_align_to_origin = False
+
+
+def _on_anim_sine_wave_mode_changed(_self, _context: Context) -> None:
+    anim_sine_ramp_bpy.schedule_sine_axis_driver_refresh("ROTATION", "X")
+    anim_sine_ramp_bpy.schedule_sine_axis_driver_refresh("ROTATION", "Y")
+    anim_sine_ramp_bpy.schedule_sine_axis_driver_refresh("ROTATION", "Z")
+    anim_sine_ramp_bpy.schedule_sine_axis_driver_refresh("LOCATION", "X")
+    anim_sine_ramp_bpy.schedule_sine_axis_driver_refresh("LOCATION", "Y")
+    anim_sine_ramp_bpy.schedule_sine_axis_driver_refresh("LOCATION", "Z")
 
 
 class MonoFXProperties(bpy.types.PropertyGroup):
@@ -1140,6 +1160,33 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         description="Remove sine drivers after baking keyframes",
         default=True,
     )
+    anim_sine_wave_mode: EnumProperty(
+        name="Wave Mode",
+        description="Sine wave or multi-harmonic noise-like motion",
+        items=[
+            ("SINE", "Sine", "Classic sine wave along the chain"),
+            ("NOISE", "Noise", "Smoother pseudo-noise using blended sine harmonics"),
+        ],
+        default="SINE",
+        update=_on_anim_sine_wave_mode_changed,
+    )
+    anim_sine_bake_use_scene_range: BoolProperty(
+        name="Use Scene Range",
+        description="Bake over the scene frame start/end instead of custom values",
+        default=True,
+    )
+    anim_sine_bake_frame_start: IntProperty(
+        name="Bake Start",
+        description="First frame when baking sine drivers",
+        default=1,
+        min=0,
+    )
+    anim_sine_bake_frame_end: IntProperty(
+        name="Bake End",
+        description="Last frame when baking sine drivers",
+        default=120,
+        min=1,
+    )
     anim_camera_active_rig: EnumProperty(
         name="Camera Rig",
         description="Active camera rig for Camera Tools controls",
@@ -1535,6 +1582,23 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         ),
         default=False,
         update=anim_usd_cache_ui._on_anim_usd_merge_by_link,
+    )
+    anim_usd_add_selected_mode: EnumProperty(
+        name="Add Selected",
+        description="How Add Selected places mesh objects into the export list",
+        items=(
+            (
+                "GROUP",
+                "Group as One",
+                "Put all selected meshes into a single export target",
+            ),
+            (
+                "SEPARATE",
+                "Separate Rows",
+                "Create one export target per selected mesh",
+            ),
+        ),
+        default="GROUP",
     )
     anim_usd_skip_view_hidden: BoolProperty(
         name="Skip Hidden / Excluded",

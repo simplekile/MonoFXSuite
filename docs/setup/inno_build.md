@@ -7,7 +7,7 @@ MonoFX Suite sẽ được đóng gói bằng **Inno Setup** (Windows installer)
 - **Công cụ:** [Inno Setup](https://jrsoftware.org/isinfo.php) (miễn phí).
 - **Output:** `MonoFXSuite_Setup.exe` (hoặc tên tương tự) — cài toolkit vào thư mục do user chọn.
 - **Nội dung cài:** apps, core, tools, **packages**, **toolbar**, docs. Sau khi cài, installer tự set biến môi trường user `HOUDINI_PACKAGE_DIR` = `{app}\packages` để Houdini load MonoFX package (và toolbar tab **MonoFX**). Mở lại Houdini để áp dụng.
-- **Folder riêng MonoFX (giống modeler):** Installer tạo `Documents\houdiniXX.X\monofx\` chứa `config\Icons\` và `toolbar\MonoFX.shelf`, rồi ghi `packages\monofx_shelf.json` (hpath = `$HOUDINI_USER_PREF_DIR/monofx`) để Houdini load shelf và icon từ folder này. Tab **MonoFX** có Scene Info, Split Geometry, Search & Replace, Auto Material.
+- **Folder riêng MonoFX (giống modeler):** Installer cài vào `Documents\houdiniXX.X\monofx\` (apps/core/tools/toolbar/config), ghi `packages\monofx.json` + `monofx_shelf.json`. Shelf/icon chỉ được copy sang **đúng version Houdini đã chọn lúc cài** (tránh hiện nút tool mới trên version chưa có code). Tab **MonoFX** gồm Scene Info, Split Geometry, Search & Replace, Auto Material, USD Batch Load, Node Preset Library, Restart Houdini.
 - **Phát hiện Houdini:** Installer đọc registry `HKLM\SOFTWARE\Side Effects Software\Houdini` (các subkey = phiên bản) và hiển thị trên trang **Finished** (chỉ thông tin; không cài theo từng version — mọi Houdini dùng chung `HOUDINI_PACKAGE_DIR`).
 
 ## Vị trí script và cách build

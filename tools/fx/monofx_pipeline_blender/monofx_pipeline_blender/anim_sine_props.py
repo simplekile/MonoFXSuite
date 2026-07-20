@@ -4,9 +4,7 @@ RNA property groups for per-axis sine chain settings.
 Each axis uses its own PropertyGroup subclass so Blender keeps separate RNA storage.
 """
 
-from __future__ import annotations
-
-from bpy.props import EnumProperty, FloatProperty
+from bpy.props import BoolProperty, EnumProperty, FloatProperty
 from bpy.types import PropertyGroup
 
 from . import anim_sine_ramp_bpy as _sine_ramp
@@ -20,6 +18,19 @@ _on_loc_z_ramp_settings = _sine_ramp.make_sine_ramp_settings_update("LOCATION", 
 
 
 class AnimSineRotXParams(PropertyGroup):
+    enabled: BoolProperty(
+        name="Enable",
+        description="Include this axis when applying sine chain drivers",
+        default=False,
+    )
+    chain_offset: FloatProperty(
+        name="Chain Offset",
+        description="Random phase offset range per chain (degrees); reroll on apply",
+        default=180.0,
+        min=0.0,
+        soft_max=360.0,
+        update=_on_rot_x_ramp_settings,
+    )
     amplitude: FloatProperty(
         name="Amplitude",
         description="Sine amplitude for rotation X (degrees)",
@@ -76,6 +87,19 @@ class AnimSineRotXParams(PropertyGroup):
 
 
 class AnimSineRotYParams(PropertyGroup):
+    enabled: BoolProperty(
+        name="Enable",
+        description="Include this axis when applying sine chain drivers",
+        default=False,
+    )
+    chain_offset: FloatProperty(
+        name="Chain Offset",
+        description="Random phase offset range per chain (degrees); reroll on apply",
+        default=180.0,
+        min=0.0,
+        soft_max=360.0,
+        update=_on_rot_y_ramp_settings,
+    )
     amplitude: FloatProperty(
         name="Amplitude",
         description="Sine amplitude for rotation Y (degrees)",
@@ -132,6 +156,19 @@ class AnimSineRotYParams(PropertyGroup):
 
 
 class AnimSineRotZParams(PropertyGroup):
+    enabled: BoolProperty(
+        name="Enable",
+        description="Include this axis when applying sine chain drivers",
+        default=True,
+    )
+    chain_offset: FloatProperty(
+        name="Chain Offset",
+        description="Random phase offset range per chain (degrees); reroll on apply",
+        default=180.0,
+        min=0.0,
+        soft_max=360.0,
+        update=_on_rot_z_ramp_settings,
+    )
     amplitude: FloatProperty(
         name="Amplitude",
         description="Sine amplitude for rotation Z (degrees)",
@@ -188,6 +225,19 @@ class AnimSineRotZParams(PropertyGroup):
 
 
 class AnimSineLocXParams(PropertyGroup):
+    enabled: BoolProperty(
+        name="Enable",
+        description="Include this axis when applying sine chain drivers",
+        default=False,
+    )
+    chain_offset: FloatProperty(
+        name="Chain Offset",
+        description="Random phase offset range per chain (degrees); reroll on apply",
+        default=180.0,
+        min=0.0,
+        soft_max=360.0,
+        update=_on_loc_x_ramp_settings,
+    )
     amplitude: FloatProperty(
         name="Amplitude",
         description="Sine amplitude for location X (BU)",
@@ -244,6 +294,19 @@ class AnimSineLocXParams(PropertyGroup):
 
 
 class AnimSineLocYParams(PropertyGroup):
+    enabled: BoolProperty(
+        name="Enable",
+        description="Include this axis when applying sine chain drivers",
+        default=False,
+    )
+    chain_offset: FloatProperty(
+        name="Chain Offset",
+        description="Random phase offset range per chain (degrees); reroll on apply",
+        default=180.0,
+        min=0.0,
+        soft_max=360.0,
+        update=_on_loc_y_ramp_settings,
+    )
     amplitude: FloatProperty(
         name="Amplitude",
         description="Sine amplitude for location Y (BU)",
@@ -300,6 +363,19 @@ class AnimSineLocYParams(PropertyGroup):
 
 
 class AnimSineLocZParams(PropertyGroup):
+    enabled: BoolProperty(
+        name="Enable",
+        description="Include this axis when applying sine chain drivers",
+        default=False,
+    )
+    chain_offset: FloatProperty(
+        name="Chain Offset",
+        description="Random phase offset range per chain (degrees); reroll on apply",
+        default=180.0,
+        min=0.0,
+        soft_max=360.0,
+        update=_on_loc_z_ramp_settings,
+    )
     amplitude: FloatProperty(
         name="Amplitude",
         description="Sine amplitude for location Z (BU)",

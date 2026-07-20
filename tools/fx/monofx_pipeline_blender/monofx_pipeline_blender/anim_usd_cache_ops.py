@@ -21,9 +21,6 @@ from .anim_usd_cache_exporter import (
     format_export_elapsed,
     resolve_geo_job_mesh_objects,
 )
-from .anim_usd_export_planner import plan_geo_export_jobs
-
-
 _ACTIVE_ANIM_USD_SESSION: UsdAnimCacheExportSession | UsdAnimCacheMultiExportSession | None = None
 
 
@@ -44,8 +41,7 @@ def summarize_anim_export_plan(
     """Build confirm-dialog summary. Set ``refresh=True`` only outside ``draw()``."""
     if refresh:
         asset_list.refresh_export_assets(context, props, force=True)
-    jobs, plan_err = plan_geo_export_jobs(context, props)
-    enabled_jobs = asset_list.filter_enabled_geo_jobs(jobs, props)
+    enabled_jobs, plan_err = asset_list.plan_enabled_geo_export_jobs(context, props)
     export_camera = asset_list.is_camera_export_enabled(props)
     if not enabled_jobs and not export_camera:
         return False, [], plan_err or "No export targets enabled.", []
@@ -239,10 +235,9 @@ class MONOFX_OT_export_anim_usd_cache(Operator):
         self._overwrite_paths = path_ui.existing_anim_export_paths(
             path_ui.plan_anim_export_output_paths(context, props)
         )
-        jobs, plan_err = plan_geo_export_jobs(context, props)
         asset_list.refresh_export_assets(context, props, force=True)
         asset_list.reset_export_statuses(props)
-        enabled_jobs = asset_list.filter_enabled_geo_jobs(jobs, props)
+        enabled_jobs, plan_err = asset_list.plan_enabled_geo_export_jobs(context, props)
         export_camera = asset_list.is_camera_export_enabled(props)
         if not enabled_jobs and not export_camera:
             self.report({"ERROR"}, plan_err or "No export targets enabled.")
@@ -264,6 +259,8 @@ class MONOFX_OT_export_anim_usd_cache(Operator):
 
         fps = float(scene.render.fps) / float(scene.render.fps_base or 1.0)
         root_prim = str(props.anim_usd_root_prim or "")
+        cam_path = asset_list.resolve_camera_output_filepath(context, props)
+        cam_filepath = str(cam_path) if cam_path is not None else None
 
         if not enabled_jobs:
             ok_path, filepath, path_err = path_ui.resolve_output_path(props)
@@ -282,6 +279,7 @@ class MONOFX_OT_export_anim_usd_cache(Operator):
                 export_camera=True,
                 write_publish_meta=True,
                 job_label="Camera",
+                camera_filepath=cam_filepath,
             )
         elif len(enabled_jobs) == 1:
             job = enabled_jobs[0]
@@ -302,6 +300,7 @@ class MONOFX_OT_export_anim_usd_cache(Operator):
                 export_camera=export_camera,
                 write_publish_meta=True,
                 job_label=job.publish_name,
+                camera_filepath=cam_filepath if export_camera else None,
             )
         else:
             self._session = UsdAnimCacheMultiExportSession(
@@ -313,6 +312,7 @@ class MONOFX_OT_export_anim_usd_cache(Operator):
                 root_prim_override=root_prim,
                 strict_topology=True,
                 export_camera=export_camera,
+                camera_filepath=cam_filepath if export_camera else None,
             )
 
         try:

@@ -5,6 +5,7 @@ Blender sine-chain drivers on pose bones or object hierarchies.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import random
 import re
 from typing import List, Sequence, Tuple
 
@@ -20,18 +21,28 @@ from monofx_pipeline_common.anim_chains import (
 )
 from monofx_pipeline_common.anim_sine_chain import (
     SINE_BASE_PROP,
+    SINE_CHAIN_PHASE_PROP,
     SINE_RAMP_PROP,
     SINE_RAMP_MODE_PROP,
     SINE_RNA_PROP,
+    SINE_SLOTS_PROP,
     build_sine_driver_expression,
     channel_data_path,
     decode_sine_rna,
     encode_sine_rna,
+    encode_sine_slots,
+    list_sine_axis_keys,
+    owner_has_sine_driver,
+    parse_sine_slots,
+    read_axis_float,
+    resolve_apply_sine_axes,
+    resolve_enabled_sine_axes,
     resolve_sine_axis_settings,
     scene_sine_curve_amp_prop_paths,
     scene_sine_root_tip_prop_paths,
     scene_sine_wave_prop_paths,
     sine_axis_key,
+    sine_owner_prop,
 )
 from . import anim_sine_ramp_bpy
 
@@ -356,18 +367,34 @@ def resolve_sine_chain_targets(context: bpy.types.Context) -> Tuple[List[SineCha
 
 
 def _driver_add_single(id_block: bpy.types.ID, prop_path: str, index: int | None = None):
-    try:
-        if index is None:
-            result = id_block.driver_add(prop_path)
-        else:
-            result = id_block.driver_add(prop_path, index)
-    except TypeError:
+    if index is None:
         result = id_block.driver_add(prop_path)
+    else:
+        result = id_block.driver_add(prop_path, index)
     if isinstance(result, list):
         if index is None:
             return result[0]
-        return result[index] if index < len(result) else result[0]
+        for fcurve in result:
+            if getattr(fcurve, "array_index", None) == index:
+                return fcurve
+        return result[min(index, len(result) - 1)]
     return result
+
+
+def _unlock_transform_channel(owner, prop_path: str, index: int) -> None:
+    """Clear transform locks so the driven channel can move."""
+    lock_attr = "lock_rotation" if prop_path == "rotation_euler" else None
+    if prop_path == "location":
+        lock_attr = "lock_location"
+    if lock_attr is None:
+        return
+    locks = getattr(owner, lock_attr, None)
+    if locks is None:
+        return
+    try:
+        locks[index] = False
+    except Exception:
+        pass
 
 
 def _pose_bone_driver_path(bone_name: str, prop_path: str) -> str:
@@ -439,26 +466,88 @@ def preview_sine_chain_rows(
             has_driver = False
             if target.id_block is not None:
                 owner = _custom_prop_owner(target.id_block, target.base_data_path)
-                has_driver = SINE_BASE_PROP in owner or SINE_RNA_PROP in owner
+                has_driver = owner_has_sine_driver(owner)
             rows.append((f"{member_index}: {target.label}", has_driver))
     return rows, ""
+
+
+def _base_custom_path(base_data_path: str, axis_key: str = "") -> str:
+    prop_name = sine_owner_prop(SINE_BASE_PROP, axis_key) if axis_key else SINE_BASE_PROP
+    if base_data_path:
+        return f'{base_data_path}["{prop_name}"]'
+    return f'["{prop_name}"]'
+
+
+def _register_sine_slot(owner, axis_key: str) -> None:
+    slots = set(parse_sine_slots(owner.get(SINE_SLOTS_PROP, "")))
+    # Migrate legacy single-slot registration into the slots list.
+    for legacy_key in list_sine_axis_keys(owner):
+        slots.add(legacy_key)
+    slots.add(axis_key)
+    owner[SINE_SLOTS_PROP] = encode_sine_slots(slots)
+
+
+def _unregister_sine_slot(owner, axis_key: str) -> None:
+    slots = set(parse_sine_slots(owner.get(SINE_SLOTS_PROP, "")))
+    slots.discard(axis_key)
+    if slots:
+        owner[SINE_SLOTS_PROP] = encode_sine_slots(slots)
+    elif SINE_SLOTS_PROP in owner:
+        try:
+            del owner[SINE_SLOTS_PROP]
+        except Exception:
+            pass
+
+
+def _clear_axis_owner_props(owner, axis_key: str) -> None:
+    for base in (
+        SINE_BASE_PROP,
+        SINE_RAMP_PROP,
+        SINE_RAMP_MODE_PROP,
+        SINE_RNA_PROP,
+        SINE_CHAIN_PHASE_PROP,
+    ):
+        key = sine_owner_prop(base, axis_key)
+        if key in owner:
+            try:
+                del owner[key]
+            except Exception:
+                pass
+    # Legacy single-slot keys (only when this axis owned them).
+    legacy_key = str(owner.get("monofx_sine_axis_key", "") or "")
+    if not axis_key or legacy_key == axis_key:
+        for key in (
+            SINE_BASE_PROP,
+            SINE_RAMP_PROP,
+            SINE_RAMP_MODE_PROP,
+            SINE_RNA_PROP,
+            SINE_CHAIN_PHASE_PROP,
+        ):
+            if key in owner:
+                try:
+                    del owner[key]
+                except Exception:
+                    pass
+    _unregister_sine_slot(owner, axis_key)
+    anim_sine_ramp_bpy.clear_sine_chain_metadata(owner, axis_key=axis_key)
 
 
 def _ensure_rotation_euler_target(target: SineChainTarget, channel: str) -> None:
     if (channel or "").upper() != "ROTATION":
         return
     owner = _custom_prop_owner(target.id_block, target.base_data_path)
-    if getattr(owner, "rotation_mode", None) not in _EULER_ROTATION_MODES:
+    # Always force a plain XYZ euler so array index 0/1/2 map to X/Y/Z.
+    if getattr(owner, "rotation_mode", None) != "XYZ":
         owner.rotation_mode = "XYZ"
 
 
 def _sync_root_tip_amplitude(axis_props) -> None:
     if str(axis_props.amp_ramp_mode) != "ROOT_TIP":
         return
-    amp = float(axis_props.amplitude)
+    amp = read_axis_float(axis_props, "amplitude", 0.0)
     if abs(amp) <= 1e-6:
         return
-    if abs(float(axis_props.amp_tip) - 1.0) < 1e-3:
+    if abs(read_axis_float(axis_props, "amp_tip", 1.0) - 1.0) < 1e-3:
         axis_props.amp_tip = amp
 
 
@@ -468,25 +557,67 @@ def apply_sine_chain_groups(
     *,
     channel: str,
     axis: str,
+    wave_mode: str = "SINE",
 ) -> Tuple[int, List[str]]:
     applied = 0
     warnings: List[str] = []
+    axis_props = resolve_sine_axis_settings(
+        context.scene.monofx_pipeline_blender_props,
+        channel,
+        axis,
+    )
+    chain_offset_max = read_axis_float(axis_props, "chain_offset", 180.0)
     for group in groups:
+        chain_phase = (
+            random.uniform(0.0, chain_offset_max) if chain_offset_max > 1e-6 else 0.0
+        )
         count, group_warnings = apply_sine_chain_drivers(
             context,
             group,
             channel=channel,
             axis=axis,
+            chain_phase=chain_phase,
+            wave_mode=wave_mode,
         )
         applied += count
         warnings.extend(group_warnings)
     return applied, warnings
 
 
-def _base_custom_path(base_data_path: str) -> str:
-    if base_data_path:
-        return f'{base_data_path}["{SINE_BASE_PROP}"]'
-    return f'["{SINE_BASE_PROP}"]'
+def apply_enabled_sine_axes(
+    context: bpy.types.Context,
+    groups: Sequence[Sequence[SineChainTarget]],
+    *,
+    channel: str,
+) -> Tuple[int, List[str], List[str]]:
+    """Apply drivers for every enabled axis on the given channel."""
+    props = context.scene.monofx_pipeline_blender_props
+    active = str(getattr(props, "anim_sine_axis", "Z") or "Z").upper()
+    axes = resolve_apply_sine_axes(props, channel, active)
+    if not axes:
+        return 0, [], axes
+
+    # Keep the tab the user is editing marked enabled so Clear/Apply stay consistent.
+    if active in {"X", "Y", "Z"}:
+        try:
+            resolve_sine_axis_settings(props, channel, active).enabled = True
+        except Exception:
+            pass
+
+    wave_mode = str(getattr(props, "anim_sine_wave_mode", "SINE"))
+    applied = 0
+    warnings: List[str] = []
+    for axis in axes:
+        count, axis_warnings = apply_sine_chain_groups(
+            context,
+            groups,
+            channel=channel,
+            axis=axis,
+            wave_mode=wave_mode,
+        )
+        applied += count
+        warnings.extend(axis_warnings)
+    return applied, warnings, axes
 
 
 def _wire_sine_driver(
@@ -503,13 +634,14 @@ def _wire_sine_driver(
     while driver.variables:
         driver.variables.remove(driver.variables[0])
 
+    axis_key = sine_axis_key(channel, axis)
     base_var = driver.variables.new()
     base_var.name = "base"
     base_var.type = "SINGLE_PROP"
     base_target = base_var.targets[0]
     base_target.id_type = "OBJECT"
     base_target.id = id_block
-    base_target.data_path = _base_custom_path(base_data_path)
+    base_target.data_path = _base_custom_path(base_data_path, axis_key)
 
     if (ramp_mode or "CURVE").upper() == "ROOT_TIP":
         amp_paths = scene_sine_root_tip_prop_paths(channel, axis)
@@ -541,6 +673,8 @@ def apply_sine_chain_drivers(
     *,
     channel: str,
     axis: str,
+    chain_phase: float = 0.0,
+    wave_mode: str = "SINE",
 ) -> Tuple[int, List[str]]:
     scene = context.scene
     prop_path, index = channel_data_path(channel, axis)
@@ -560,6 +694,7 @@ def apply_sine_chain_drivers(
             continue
         _ensure_rotation_euler_target(target, channel)
         owner = _custom_prop_owner(target.id_block, target.base_data_path)
+        _unlock_transform_channel(owner, prop_path, index)
         try:
             current = _read_channel_value(
                 target.id_block,
@@ -571,17 +706,19 @@ def apply_sine_chain_drivers(
             warnings.append(f"Could not read channel for {target.label}.")
             continue
 
-        _remove_existing_sine_driver(target)
-        owner[SINE_BASE_PROP] = current
-        owner[SINE_RNA_PROP] = encode_sine_rna(prop_path, index)
+        _remove_existing_sine_driver(target, axis_key=axis_key)
+        owner[sine_owner_prop(SINE_BASE_PROP, axis_key)] = current
+        owner[sine_owner_prop(SINE_RNA_PROP, axis_key)] = encode_sine_rna(prop_path, index)
         ramp_factor = anim_sine_ramp_bpy.ramp_factor_for_member(
             channel,
             axis,
             member_index,
             member_count,
         )
-        owner[SINE_RAMP_PROP] = ramp_factor
-        owner[SINE_RAMP_MODE_PROP] = ramp_mode
+        owner[sine_owner_prop(SINE_RAMP_PROP, axis_key)] = ramp_factor
+        owner[sine_owner_prop(SINE_RAMP_MODE_PROP, axis_key)] = ramp_mode
+        owner[sine_owner_prop(SINE_CHAIN_PHASE_PROP, axis_key)] = float(chain_phase)
+        _register_sine_slot(owner, axis_key)
         anim_sine_ramp_bpy.store_sine_chain_metadata(
             owner,
             axis_key=axis_key,
@@ -607,6 +744,9 @@ def apply_sine_chain_drivers(
             member_count,
             ramp_mode=ramp_mode,
             ramp_factor=ramp_factor if ramp_mode == "CURVE" else None,
+            chain_phase=chain_phase,
+            wave_mode=wave_mode,
+            channel=channel,
         )
         _wire_sine_driver(
             driver,
@@ -622,38 +762,100 @@ def apply_sine_chain_drivers(
     return applied, warnings
 
 
-def _remove_existing_sine_driver(target: SineChainTarget) -> None:
+def _remove_existing_sine_driver(
+    target: SineChainTarget,
+    *,
+    axis_key: str | None = None,
+) -> None:
     owner = _custom_prop_owner(target.id_block, target.base_data_path)
-    encoded = owner.get(SINE_RNA_PROP)
-    if encoded:
-        decoded = decode_sine_rna(str(encoded))
-        if decoded is not None:
-            prop_path, index = decoded
-            _remove_channel_driver(target, prop_path, index)
-    anim_sine_ramp_bpy.clear_sine_chain_metadata(owner)
+    keys = [axis_key] if axis_key else list_sine_axis_keys(owner)
+    if not keys and (SINE_RNA_PROP in owner or SINE_BASE_PROP in owner):
+        keys = [""]
+
+    for key in keys:
+        rna_name = sine_owner_prop(SINE_RNA_PROP, key) if key else SINE_RNA_PROP
+        encoded = owner.get(rna_name)
+        if encoded is None and key:
+            # Legacy single-slot only when it belongs to this exact axis.
+            if str(owner.get("monofx_sine_axis_key", "") or "") == key:
+                encoded = owner.get(SINE_RNA_PROP)
+                rna_name = SINE_RNA_PROP
+        if encoded:
+            decoded = decode_sine_rna(str(encoded))
+            if decoded is not None:
+                prop_path, index = decoded
+                _remove_channel_driver(target, prop_path, index)
+        if key:
+            _clear_axis_owner_props(owner, key)
+        else:
+            for prop in (
+                SINE_BASE_PROP,
+                SINE_RAMP_PROP,
+                SINE_RAMP_MODE_PROP,
+                SINE_RNA_PROP,
+                SINE_CHAIN_PHASE_PROP,
+            ):
+                if prop in owner:
+                    try:
+                        del owner[prop]
+                    except Exception:
+                        pass
+            anim_sine_ramp_bpy.clear_sine_chain_metadata(owner)
 
 
 def clear_sine_chain_drivers(targets: Sequence[SineChainTarget]) -> int:
     cleared = 0
     for target in targets:
         owner = _custom_prop_owner(target.id_block, target.base_data_path)
-        if SINE_BASE_PROP not in owner and SINE_RNA_PROP not in owner:
+        axis_keys = list_sine_axis_keys(owner)
+        if not axis_keys and not owner_has_sine_driver(owner):
             continue
 
-        encoded = owner.get(SINE_RNA_PROP)
-        if encoded:
-            decoded = decode_sine_rna(str(encoded))
-            if decoded is not None:
-                prop_path, index = decoded
-                _remove_channel_driver(target, prop_path, index)
+        if not axis_keys:
+            axis_keys = [""]
 
-        for key in (SINE_BASE_PROP, SINE_RAMP_PROP, SINE_RAMP_MODE_PROP, SINE_RNA_PROP):
-            if key in owner:
-                try:
-                    del owner[key]
-                except Exception:
-                    pass
-        anim_sine_ramp_bpy.clear_sine_chain_metadata(owner)
+        for axis_key in axis_keys:
+            rna_name = sine_owner_prop(SINE_RNA_PROP, axis_key) if axis_key else SINE_RNA_PROP
+            base_name = sine_owner_prop(SINE_BASE_PROP, axis_key) if axis_key else SINE_BASE_PROP
+            encoded = owner.get(rna_name)
+            base_value = owner.get(base_name)
+            if encoded is None and axis_key:
+                if str(owner.get("monofx_sine_axis_key", "") or "") == axis_key:
+                    encoded = owner.get(SINE_RNA_PROP)
+                    base_value = owner.get(SINE_BASE_PROP, base_value)
+            if encoded:
+                decoded = decode_sine_rna(str(encoded))
+                if decoded is not None:
+                    prop_path, index = decoded
+                    _remove_channel_driver(target, prop_path, index)
+                    if base_value is not None:
+                        try:
+                            _write_channel_value(
+                                target.id_block,
+                                prop_path,
+                                index,
+                                float(base_value),
+                                base_data_path=target.base_data_path,
+                            )
+                        except Exception:
+                            pass
+            if axis_key:
+                _clear_axis_owner_props(owner, axis_key)
+            else:
+                for prop in (
+                    SINE_BASE_PROP,
+                    SINE_RAMP_PROP,
+                    SINE_RAMP_MODE_PROP,
+                    SINE_RNA_PROP,
+                    SINE_CHAIN_PHASE_PROP,
+                    SINE_SLOTS_PROP,
+                ):
+                    if prop in owner:
+                        try:
+                            del owner[prop]
+                        except Exception:
+                            pass
+                anim_sine_ramp_bpy.clear_sine_chain_metadata(owner)
         cleared += 1
     return cleared
 
@@ -662,7 +864,7 @@ def targets_with_sine_drivers(targets: Sequence[SineChainTarget]) -> List[SineCh
     result: List[SineChainTarget] = []
     for target in targets:
         owner = _custom_prop_owner(target.id_block, target.base_data_path)
-        if SINE_BASE_PROP in owner or SINE_RNA_PROP in owner:
+        if owner_has_sine_driver(owner):
             result.append(target)
     return result
 
@@ -736,18 +938,29 @@ def bake_sine_chain_drivers(
         frame_start, frame_end = frame_end, frame_start
 
     bake_items: List[tuple[SineChainTarget, str, int]] = []
+    seen: set[tuple[int, str, str, int]] = set()
     for target in targets:
         if target.id_block is None:
             continue
         owner = _custom_prop_owner(target.id_block, target.base_data_path)
-        encoded = owner.get(SINE_RNA_PROP)
-        if not encoded:
-            continue
-        decoded = decode_sine_rna(str(encoded))
-        if decoded is None:
-            continue
-        prop_path, index = decoded
-        bake_items.append((target, prop_path, index))
+        axis_keys = list_sine_axis_keys(owner) or [""]
+        for axis_key in axis_keys:
+            rna_name = sine_owner_prop(SINE_RNA_PROP, axis_key) if axis_key else SINE_RNA_PROP
+            encoded = owner.get(rna_name)
+            if encoded is None and axis_key:
+                if str(owner.get("monofx_sine_axis_key", "") or "") == axis_key:
+                    encoded = owner.get(SINE_RNA_PROP)
+            if not encoded:
+                continue
+            decoded = decode_sine_rna(str(encoded))
+            if decoded is None:
+                continue
+            prop_path, index = decoded
+            key = _bake_target_key(target, prop_path, index)
+            if key in seen:
+                continue
+            seen.add(key)
+            bake_items.append((target, prop_path, index))
 
     if not bake_items:
         return 0, 0

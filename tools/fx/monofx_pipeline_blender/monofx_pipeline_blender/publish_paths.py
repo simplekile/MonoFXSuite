@@ -383,6 +383,14 @@ def next_blend_save_path(
 
 
 _SHOT_RE = re.compile(r"^(sh\d{3,}[a-z0-9]*)$", re.IGNORECASE)
+# Task folder: 01_anim (shots), 06_anim (assets), etc. — Maya parity.
+_ANIM_TASK_RE = re.compile(r"^\d{2}_anim$", re.IGNORECASE)
+
+ANIM_PUBLISH_PATH_HINT = (
+    "Save .blend under …/<NN_anim>/… "
+    "(e.g. 02_shots/<shot>/01_anim/… or 01_assets/…/06_anim/…) "
+    "to resolve publish path."
+)
 
 
 def detect_shot_from_scene_path(scene_path: Path) -> Optional[str]:
@@ -394,34 +402,34 @@ def detect_shot_from_scene_path(scene_path: Path) -> Optional[str]:
     return None
 
 
+def find_anim_task_index(parts: list[str]) -> Optional[int]:
+    """Index of the first ``NN_anim`` path segment, or ``None``."""
+    for i, seg in enumerate(parts):
+        if _ANIM_TASK_RE.match(seg):
+            return i
+    return None
+
+
 def resolve_anim_publish_root_from_scene(scene_path: Path) -> Optional[Path]:
     """
-    ``.../02_shots/<shot>/01_anim/publish`` inferred from a saved shot .blend path.
+    ``.../<NN_anim>/publish`` inferred from a saved .blend path (Maya parity).
 
-    Example: ``.../sh002/01_anim/blender/work/foo.blend`` → ``.../sh002/01_anim/publish``.
+    Examples:
+      ``.../02_shots/sh002/01_anim/blender/work/foo.blend``
+        → ``.../sh002/01_anim/publish``
+      ``.../01_assets/_characters/char_X/06_anim/blender/work/foo.blend``
+        → ``.../char_X/06_anim/publish``
     """
     parts = list(scene_path.parts)
-    low = [p.casefold() for p in parts]
-    try:
-        i_shots = low.index("02_shots")
-    except ValueError:
+    i_anim = find_anim_task_index(parts)
+    if i_anim is None:
         return None
-    if i_shots + 2 >= len(parts):
-        return None
-    shot_name = parts[i_shots + 1]
-    if not _SHOT_RE.match(shot_name):
-        return None
-    try:
-        i_anim = low.index("01_anim", i_shots + 1)
-    except ValueError:
-        return None
-    shot_root = Path(*parts[: i_shots + 2])
-    return shot_root / "01_anim" / "publish"
+    return Path(*parts[: i_anim + 1]) / "publish"
 
 
 def default_anim_geo_usd_basename(scene_path: Path) -> str:
     """
-    Basename without extension for shot anim geo cache (``geo_char_Zephys``).
+    Basename without extension for anim geo cache (``geo_char_Zephys``).
 
     Parses the .blend stem, strips version / task suffixes, ensures ``geo_`` prefix.
     """
@@ -435,19 +443,25 @@ def default_anim_geo_usd_basename(scene_path: Path) -> str:
 
 
 def relative_anim_publish_display(scene_path: Path, usd_path: Path) -> str:
-    """Short path from shot folder, e.g. ``01_anim/publish/v001/geo_char_A.usd``."""
+    """Short path from the anim task parent, e.g. ``06_anim/publish/v001/geo_char_A.usd``."""
     try:
         parts = list(scene_path.parts)
-        low = [p.casefold() for p in parts]
-        i_shots = low.index("02_shots")
-        if i_shots + 2 < len(parts):
-            anchor = Path(*parts[: i_shots + 3])
+        i_anim = find_anim_task_index(parts)
+        if i_anim is not None and i_anim > 0:
+            anchor = Path(*parts[:i_anim])
             rel = Path(usd_path).resolve().relative_to(anchor.resolve())
+            return rel.as_posix()
+        if i_anim is not None:
+            rel = Path(usd_path).resolve().relative_to(
+                (Path(*parts[: i_anim + 1])).resolve()
+            )
             return rel.as_posix()
     except (ValueError, OSError):
         pass
     p = Path(usd_path)
-    return f"01_anim/publish/{p.parent.name}/{p.name}"
+    i_anim = find_anim_task_index(list(scene_path.parts))
+    task = scene_path.parts[i_anim] if i_anim is not None else "01_anim"
+    return f"{task}/publish/{p.parent.name}/{p.name}"
 
 
 def relative_publish_display(scene_path: Path, usd_path: Path) -> str:

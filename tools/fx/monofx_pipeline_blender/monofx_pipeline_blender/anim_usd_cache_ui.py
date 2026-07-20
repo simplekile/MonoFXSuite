@@ -70,6 +70,7 @@ def draw_anim_usd_publish_settings(layout: UILayout, props) -> None:
     layout.label(text="Export Options", icon="PREFERENCES")
     layout.prop(props, "anim_usd_root_prim", text="Root Prim")
     layout.prop(props, "anim_usd_merge_by_link", text="Merge Same Link")
+    layout.prop(props, "anim_usd_add_selected_mode", text="Add Selected")
     layout.prop(props, "anim_usd_skip_view_hidden", text="Skip Hidden / Excluded")
 
 

@@ -89,16 +89,24 @@ def _is_suite_root(p):
     return bool(p) and os.path.isdir(p) and os.path.isdir(os.path.join(p, "tools"))
 
 def _find_suite_root():
+    import glob
     p = os.environ.get("MONOFX_SUITE")
     if _is_suite_root(p):
         return p
 
+    # Installer: packages/monofx.json next to monofx/ (Documents/houdiniXX.X/...)
     pkg_dir_raw = os.environ.get("HOUDINI_PACKAGE_DIR") or ""
     for pkg_dir in [x.strip() for x in pkg_dir_raw.split(";") if x.strip()]:
         if os.path.isfile(os.path.join(pkg_dir, "monofx.json")) or os.path.isfile(os.path.join(pkg_dir, "monofx_standalone.json")):
-            root = os.path.normpath(os.path.join(pkg_dir, ".."))
-            if _is_suite_root(root):
-                return root
+            parent = os.path.normpath(os.path.join(pkg_dir, ".."))
+            for root in (parent, os.path.join(parent, "monofx")):
+                if _is_suite_root(root):
+                    return root
+
+    user_docs = os.path.expanduser("~/Documents")
+    for monofx in sorted(glob.glob(os.path.join(user_docs, "houdini*", "monofx")), reverse=True):
+        if _is_suite_root(monofx):
+            return monofx
 
     for candidate in [os.path.expandvars(r"%ProgramFiles%\MonoFXSuite"), os.path.expandvars(r"%ProgramFiles(x86)%\MonoFXSuite")]:
         if _is_suite_root(candidate):
@@ -139,16 +147,24 @@ def _is_suite_root(p):
     return bool(p) and os.path.isdir(p) and os.path.isdir(os.path.join(p, "tools"))
 
 def _find_suite_root():
+    import glob
     p = os.environ.get("MONOFX_SUITE")
     if _is_suite_root(p):
         return p
 
+    # Installer: packages/monofx.json next to monofx/ (Documents/houdiniXX.X/...)
     pkg_dir_raw = os.environ.get("HOUDINI_PACKAGE_DIR") or ""
     for pkg_dir in [x.strip() for x in pkg_dir_raw.split(";") if x.strip()]:
         if os.path.isfile(os.path.join(pkg_dir, "monofx.json")) or os.path.isfile(os.path.join(pkg_dir, "monofx_standalone.json")):
-            root = os.path.normpath(os.path.join(pkg_dir, ".."))
-            if _is_suite_root(root):
-                return root
+            parent = os.path.normpath(os.path.join(pkg_dir, ".."))
+            for root in (parent, os.path.join(parent, "monofx")):
+                if _is_suite_root(root):
+                    return root
+
+    user_docs = os.path.expanduser("~/Documents")
+    for monofx in sorted(glob.glob(os.path.join(user_docs, "houdini*", "monofx")), reverse=True):
+        if _is_suite_root(monofx):
+            return monofx
 
     for candidate in [os.path.expandvars(r"%ProgramFiles%\MonoFXSuite"), os.path.expandvars(r"%ProgramFiles(x86)%\MonoFXSuite")]:
         if _is_suite_root(candidate):
@@ -189,16 +205,24 @@ def _is_suite_root(p):
     return bool(p) and os.path.isdir(p) and os.path.isdir(os.path.join(p, "tools"))
 
 def _find_suite_root():
+    import glob
     p = os.environ.get("MONOFX_SUITE")
     if _is_suite_root(p):
         return p
 
+    # Installer: packages/monofx.json next to monofx/ (Documents/houdiniXX.X/...)
     pkg_dir_raw = os.environ.get("HOUDINI_PACKAGE_DIR") or ""
     for pkg_dir in [x.strip() for x in pkg_dir_raw.split(";") if x.strip()]:
         if os.path.isfile(os.path.join(pkg_dir, "monofx.json")) or os.path.isfile(os.path.join(pkg_dir, "monofx_standalone.json")):
-            root = os.path.normpath(os.path.join(pkg_dir, ".."))
-            if _is_suite_root(root):
-                return root
+            parent = os.path.normpath(os.path.join(pkg_dir, ".."))
+            for root in (parent, os.path.join(parent, "monofx")):
+                if _is_suite_root(root):
+                    return root
+
+    user_docs = os.path.expanduser("~/Documents")
+    for monofx in sorted(glob.glob(os.path.join(user_docs, "houdini*", "monofx")), reverse=True):
+        if _is_suite_root(monofx):
+            return monofx
 
     for candidate in [os.path.expandvars(r"%ProgramFiles%\MonoFXSuite"), os.path.expandvars(r"%ProgramFiles(x86)%\MonoFXSuite")]:
         if _is_suite_root(candidate):
@@ -239,16 +263,24 @@ def _is_suite_root(p):
     return bool(p) and os.path.isdir(p) and os.path.isdir(os.path.join(p, "tools"))
 
 def _find_suite_root():
+    import glob
     p = os.environ.get("MONOFX_SUITE")
     if _is_suite_root(p):
         return p
 
+    # Installer: packages/monofx.json next to monofx/ (Documents/houdiniXX.X/...)
     pkg_dir_raw = os.environ.get("HOUDINI_PACKAGE_DIR") or ""
     for pkg_dir in [x.strip() for x in pkg_dir_raw.split(";") if x.strip()]:
         if os.path.isfile(os.path.join(pkg_dir, "monofx.json")) or os.path.isfile(os.path.join(pkg_dir, "monofx_standalone.json")):
-            root = os.path.normpath(os.path.join(pkg_dir, ".."))
-            if _is_suite_root(root):
-                return root
+            parent = os.path.normpath(os.path.join(pkg_dir, ".."))
+            for root in (parent, os.path.join(parent, "monofx")):
+                if _is_suite_root(root):
+                    return root
+
+    user_docs = os.path.expanduser("~/Documents")
+    for monofx in sorted(glob.glob(os.path.join(user_docs, "houdini*", "monofx")), reverse=True):
+        if _is_suite_root(monofx):
+            return monofx
 
     for candidate in [os.path.expandvars(r"%ProgramFiles%\MonoFXSuite"), os.path.expandvars(r"%ProgramFiles(x86)%\MonoFXSuite")]:
         if _is_suite_root(candidate):
@@ -289,16 +321,24 @@ def _is_suite_root(p):
     return bool(p) and os.path.isdir(p) and os.path.isdir(os.path.join(p, "tools"))
 
 def _find_suite_root():
+    import glob
     p = os.environ.get("MONOFX_SUITE")
     if _is_suite_root(p):
         return p
 
+    # Installer: packages/monofx.json next to monofx/ (Documents/houdiniXX.X/...)
     pkg_dir_raw = os.environ.get("HOUDINI_PACKAGE_DIR") or ""
     for pkg_dir in [x.strip() for x in pkg_dir_raw.split(";") if x.strip()]:
         if os.path.isfile(os.path.join(pkg_dir, "monofx.json")) or os.path.isfile(os.path.join(pkg_dir, "monofx_standalone.json")):
-            root = os.path.normpath(os.path.join(pkg_dir, ".."))
-            if _is_suite_root(root):
-                return root
+            parent = os.path.normpath(os.path.join(pkg_dir, ".."))
+            for root in (parent, os.path.join(parent, "monofx")):
+                if _is_suite_root(root):
+                    return root
+
+    user_docs = os.path.expanduser("~/Documents")
+    for monofx in sorted(glob.glob(os.path.join(user_docs, "houdini*", "monofx")), reverse=True):
+        if _is_suite_root(monofx):
+            return monofx
 
     for candidate in [os.path.expandvars(r"%ProgramFiles%\MonoFXSuite"), os.path.expandvars(r"%ProgramFiles(x86)%\MonoFXSuite")]:
         if _is_suite_root(candidate):
@@ -339,16 +379,24 @@ def _is_suite_root(p):
     return bool(p) and os.path.isdir(p) and os.path.isdir(os.path.join(p, "tools"))
 
 def _find_suite_root():
+    import glob
     p = os.environ.get("MONOFX_SUITE")
     if _is_suite_root(p):
         return p
 
+    # Installer: packages/monofx.json next to monofx/ (Documents/houdiniXX.X/...)
     pkg_dir_raw = os.environ.get("HOUDINI_PACKAGE_DIR") or ""
     for pkg_dir in [x.strip() for x in pkg_dir_raw.split(";") if x.strip()]:
         if os.path.isfile(os.path.join(pkg_dir, "monofx.json")) or os.path.isfile(os.path.join(pkg_dir, "monofx_standalone.json")):
-            root = os.path.normpath(os.path.join(pkg_dir, ".."))
-            if _is_suite_root(root):
-                return root
+            parent = os.path.normpath(os.path.join(pkg_dir, ".."))
+            for root in (parent, os.path.join(parent, "monofx")):
+                if _is_suite_root(root):
+                    return root
+
+    user_docs = os.path.expanduser("~/Documents")
+    for monofx in sorted(glob.glob(os.path.join(user_docs, "houdini*", "monofx")), reverse=True):
+        if _is_suite_root(monofx):
+            return monofx
 
     for candidate in [os.path.expandvars(r"%ProgramFiles%\MonoFXSuite"), os.path.expandvars(r"%ProgramFiles(x86)%\MonoFXSuite")]:
         if _is_suite_root(candidate):

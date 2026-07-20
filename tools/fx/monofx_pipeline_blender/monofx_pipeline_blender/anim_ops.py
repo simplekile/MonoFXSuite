@@ -18,7 +18,7 @@ import random
 from . import anim_sine_chain_bpy
 from . import anim_exact_key_bpy
 from . import anim_sine_ramp_bpy
-from monofx_pipeline_common.anim_sine_chain import resolve_sine_axis_settings
+from monofx_pipeline_common.anim_sine_chain import resolve_apply_sine_axes, resolve_sine_axis_settings
 from monofx_pipeline_common.anim_chains import chain_members_from_hierarchy
 from bpy.props import EnumProperty, StringProperty
 
@@ -206,7 +206,7 @@ class MONOFX_OT_anim_apply_sine_chain(Operator):
     bl_label = "Apply Sine Chain"
     bl_description = (
         "Add procedural sine drivers along the selected bone or object chain "
-        "for the active Rotation/Location and X/Y/Z tab"
+        "for every enabled axis on the active Rotation/Location channel"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -228,17 +228,22 @@ class MONOFX_OT_anim_apply_sine_chain(Operator):
 
     def execute(self, context: Context) -> set[str]:
         props = _pipeline_props(context)
+        channel = str(props.anim_sine_channel)
+        apply_axes = resolve_apply_sine_axes(props, channel, str(props.anim_sine_axis))
+        if not apply_axes:
+            self.report({"WARNING"}, "Enable at least one axis to apply sine chain.")
+            return {"CANCELLED"}
+
         try:
             groups, err = anim_sine_chain_bpy.resolve_sine_chain_groups(context)
             if err:
                 self.report({"WARNING"}, err)
                 return {"CANCELLED"}
 
-            applied, warnings = anim_sine_chain_bpy.apply_sine_chain_groups(
+            applied, warnings, axes = anim_sine_chain_bpy.apply_enabled_sine_axes(
                 context,
                 groups,
-                channel=str(props.anim_sine_channel),
-                axis=str(props.anim_sine_axis),
+                channel=channel,
             )
         except Exception as exc:
             self.report({"ERROR"}, f"Sine chain failed: {exc}")
@@ -252,13 +257,18 @@ class MONOFX_OT_anim_apply_sine_chain(Operator):
             self.report({"WARNING"}, msg)
         anim_sine_ramp_bpy.refresh_all_sine_ramp_drivers(context)
         chain_count = len(groups)
+        axis_text = "/".join(axes)
         if chain_count > 1:
             self.report(
                 {"INFO"},
-                f"Applied sine chain to {applied} target(s) across {chain_count} chains.",
+                f"Applied sine chain ({axis_text}) to {applied} target(s) "
+                f"across {chain_count} chains.",
             )
         else:
-            self.report({"INFO"}, f"Applied sine chain to {applied} target(s).")
+            self.report(
+                {"INFO"},
+                f"Applied sine chain ({axis_text}) to {applied} target(s).",
+            )
         return {"FINISHED"}
 
 
@@ -304,7 +314,7 @@ class MONOFX_OT_anim_bake_sine_chain(Operator):
     bl_idname = "wm.mono_fx_anim_bake_sine_chain"
     bl_label = "Bake Sine Chain"
     bl_description = (
-        "Bake resolved sine drivers to keyframes over the scene frame range"
+        "Bake resolved sine drivers to keyframes over the bake frame range"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -337,8 +347,24 @@ class MONOFX_OT_anim_bake_sine_chain(Operator):
             return {"CANCELLED"}
 
         scene = context.scene
-        frame_start = int(scene.frame_start)
-        frame_end = int(scene.frame_end)
+        if bool(props.anim_sine_bake_use_scene_range):
+            frame_start = int(scene.frame_start)
+            frame_end = int(scene.frame_end)
+        else:
+            frame_start = int(props.anim_sine_bake_frame_start)
+            frame_end = int(props.anim_sine_bake_frame_end)
+        if frame_end < frame_start:
+            self.report({"WARNING"}, "Bake end frame must be >= start frame.")
+            return {"CANCELLED"}
+
+        total_keys = (frame_end - frame_start + 1) * len(to_bake)
+        if total_keys > 100000:
+            self.report(
+                {"ERROR"},
+                f"Too many keys ({total_keys:,}). Reduce frame range or chain size.",
+            )
+            return {"CANCELLED"}
+
         try:
             key_count, baked_count = anim_sine_chain_bpy.bake_sine_chain_drivers(
                 context,
@@ -397,15 +423,55 @@ class MONOFX_OT_anim_randomize_sine_phase(Operator):
     bl_description = "Randomize the global phase offset for the active channel/axis tab"
     bl_options = {"REGISTER", "UNDO"}
 
+    channel: StringProperty(default="")
+    axis: StringProperty(default="")
+
     def execute(self, context: Context) -> set[str]:
         props = _pipeline_props(context)
-        settings = resolve_sine_axis_settings(
-            props,
-            str(props.anim_sine_channel),
-            str(props.anim_sine_axis),
-        )
+        channel = self.channel or str(props.anim_sine_channel)
+        axis = self.axis or str(props.anim_sine_axis)
+        settings = resolve_sine_axis_settings(props, channel, axis)
         settings.phase = random.uniform(0.0, 360.0)
         self.report({"INFO"}, f"Phase set to {settings.phase:.1f}°.")
+        return {"FINISHED"}
+
+
+class MONOFX_OT_anim_reset_sine_chain(Operator):
+    bl_idname = "wm.mono_fx_anim_reset_sine_chain"
+    bl_label = "Reset Sine Chain"
+    bl_description = "Restore sine chain parameters and ramp curves to defaults"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context: Context) -> set[str]:
+        props = _pipeline_props(context)
+        props.anim_sine_wave_mode = "SINE"
+        props.anim_sine_bake_use_scene_range = True
+
+        defaults = {
+            ("ROTATION", "X"): {"enabled": False, "amplitude": 0.0},
+            ("ROTATION", "Y"): {"enabled": False, "amplitude": 0.0},
+            ("ROTATION", "Z"): {"enabled": True, "amplitude": 15.0},
+            ("LOCATION", "X"): {"enabled": False, "amplitude": 0.0},
+            ("LOCATION", "Y"): {"enabled": False, "amplitude": 0.0},
+            ("LOCATION", "Z"): {"enabled": False, "amplitude": 0.0},
+        }
+        for (channel, axis), values in defaults.items():
+            settings = resolve_sine_axis_settings(props, channel, axis)
+            settings.enabled = values["enabled"]
+            settings.amplitude = values["amplitude"]
+            settings.amp_ramp_mode = "CURVE"
+            settings.amp_root = 0.0
+            settings.amp_tip = 1.0
+            settings.frequency = 25.0
+            settings.speed = 1.0
+            settings.phase = 0.0
+            settings.chain_offset = 180.0
+            mapping = anim_sine_ramp_bpy.get_amp_ramp_mapping(channel, axis, create=True)
+            if mapping is not None:
+                anim_sine_ramp_bpy.ensure_amp_ramp_curve(mapping)
+
+        anim_sine_ramp_bpy.refresh_all_sine_ramp_drivers(context)
+        self.report({"INFO"}, "Sine chain parameters reset to defaults.")
         return {"FINISHED"}
 
 
@@ -1041,6 +1107,7 @@ ANIM_OPERATOR_CLASSES = (
     MONOFX_OT_anim_bake_sine_chain,
     MONOFX_OT_anim_refresh_sine_ramp,
     MONOFX_OT_anim_randomize_sine_phase,
+    MONOFX_OT_anim_reset_sine_chain,
     MONOFX_OT_anim_select_keyed_objects,
     MONOFX_OT_anim_copy_world_transform,
     MONOFX_OT_anim_paste_world_transform,
