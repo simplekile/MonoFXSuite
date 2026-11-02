@@ -215,6 +215,9 @@ _COLORSPACE_TO_TOKEN: dict[str, str] = {
     "aces - acescg": "ACEScg",
     "aces acescg": "ACEScg",
     "lin_ap1": "acescg",
+    # Monos Painter publishes write "Linear" for float colour maps without OCIO (linear sRGB primaries).
+    "linear": "lin_rec709",
+    "scene_linear": "lin_rec709",
     "linear rec.709": "lin_rec709",
     "lin rec709": "lin_rec709",
     "linear displayp3": "lin_displayp3",
@@ -242,6 +245,18 @@ def _resolve_filecolorspace_token(colorspace: str | None) -> str | None:
     if key in tokens_lower:
         return tokens_lower[key]
     return None
+
+
+def colorspace_token_for_slot(slot: str, colorspace: str | None) -> str:
+    """
+    filecolorspace token for a texture: the colour space its file name says (Monos writes the
+    space Painter really exported: sRGB, Linear, ACEScg, Raw), else the slot's default.
+    """
+    token = _resolve_filecolorspace_token(colorspace)
+    slot_def = SLOT_DEF_MAP.get(slot)
+    if not token and slot_def:
+        token = _resolve_filecolorspace_token(slot_def.default_colorspace)
+    return token or "Raw"
 
 
 def _set_filecolorspace_parm(node: Any, token: str) -> bool:
@@ -318,12 +333,7 @@ def create_mtlx_image(
             menu_val = _SIGNATURE_MENU_MAP.get(sig, sig)
             sig_parm.set(menu_val)
 
-        token = _resolve_filecolorspace_token(colorspace)
-        if not token and slot_def:
-            token = _resolve_filecolorspace_token(slot_def.default_colorspace)
-        if not token:
-            token = "Raw"
-        _set_filecolorspace_parm(node, token)
+        _set_filecolorspace_parm(node, colorspace_token_for_slot(slot, colorspace))
 
         return node
     except Exception:
