@@ -49,6 +49,13 @@ SLOT_DEFS: tuple[SlotDef, ...] = (
     SlotDef("ao",              ("AO", "AmbientOcclusion"),        ("ao", "occlusion", "ambientocclusion"),                            "RAW",   "float"),
     SlotDef("specular",        ("Specular",),                     ("specular", "spec", "refl"),                                       "RAW",   "float"),
     SlotDef("translucency",    ("Translucency",),                 ("translucency", "transmission", "trans"),                         "RAW",   "float"),
+    # Subsurface: Painter's OpenPBR names (SubsurfaceWeight...) and the short SSS forms.
+    SlotDef("subsurface",        ("SubsurfaceWeight", "Subsurface", "SSSWeight", "SSS", "SssWeight", "Sss"),
+                                 ("subsurfaceweight", "subsurface", "sssweight", "sss"),                                             "RAW",   "float"),
+    SlotDef("subsurface_color",  ("SubsurfaceColor", "SSSColor", "SssColor"),
+                                 ("subsurfacecolor", "ssscolor"),                                                                    "sRGB",  "color3"),
+    SlotDef("subsurface_radius", ("SubsurfaceRadius", "SSSRadius", "SssRadius"),
+                                 ("subsurfaceradius", "sssradius"),                                                                  "RAW",   "color3"),
 )
 
 PIPELINE_NAME_TO_SLOT: dict[str, str] = {}
@@ -72,4 +79,7 @@ SURFACE_INPUT_MAP: dict[str, str] = {
     "emission_color": "emission_color",
     "specular":       "specular",
     "translucency":   "transmission",
+    "subsurface":        "subsurface",
+    "subsurface_color":  "subsurface_color",
+    "subsurface_radius": "subsurface_radius",
 }
