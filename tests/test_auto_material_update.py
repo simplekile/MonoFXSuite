@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 
 from apps.houdini import solaris_adapter as sa
-from tools.fx.auto_material.logic import SlotInfo, auto_parse
+from tools.fx.auto_material.logic import SlotInfo, auto_parse, scan_and_group
 
 # ---------------------------------------------------------------------------
 # Fake hou nodes: only what solaris_adapter calls
@@ -25,6 +25,11 @@ SURFACE_DEFAULTS: dict[str, tuple] = {
     "subsurface": (0.0,),
     "subsurface_color": (1.0, 1.0, 1.0),
     "subsurface_radius": (1.0, 1.0, 1.0),
+    "coat": (0.0,),
+    "coat_color": (1.0, 1.0, 1.0),
+    "coat_roughness": (0.1,),
+    "coat_anisotropy": (0.0,),
+    "coat_normal": (0.0, 0.0, 0.0),
 }
 
 
@@ -376,3 +381,109 @@ def test_merge_assign_keeps_entries_and_adds_new() -> None:
     assert node.parm("matspecpath1").eval() == "/materials/M_char_Body_custom"
     assert node.parm("primpattern2").eval() == "/world/geo/Eye_grp"
     assert node.parm("matspecpath2").eval() == "/materials/M_char_Eye"
+
+
+# ---------------------------------------------------------------------------
+# Coat (Painter OpenPBR channels)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("filename", "slot"),
+    [
+        ("armor_CoatWeight_Raw.1001.png", "coat"),
+        ("armor_CoatOpacity_Raw.1001.png", "coat"),
+        ("armor_Clearcoat_Raw.1001.png", "coat"),
+        ("armor_CoatColor_sRGB.1001.png", "coat_color"),
+        ("armor_CoatRoughness_Raw.1001.png", "coat_roughness"),
+        ("armor_CoatRoughnessAnisotropy_Raw.1001.png", "coat_anisotropy"),
+        ("armor_CoatNormal_Raw.1001.png", "coat_normal"),
+        ("armor_Normal_Raw.1001.png", "normal"),
+        ("armor_clearcoat.png", "coat"),
+        ("armor_coatnormal_4k.png", "coat_normal"),
+    ],
+)
+def test_coat_names(filename: str, slot: str) -> None:
+    r = auto_parse(filename)
+    assert r is not None
+    assert r.slot == slot
+    if r.parse_mode == "pipeline":
+        assert r.prefix == "armor"
+
+
+def test_coat_tokens() -> None:
+    assert sa.colorspace_token_for_slot("coat_color", None) == "srgb_texture"
+    assert sa.colorspace_token_for_slot("coat_color", "ACEScg") == "ACEScg"
+    for slot in ("coat", "coat_roughness", "coat_anisotropy", "coat_normal"):
+        assert sa.colorspace_token_for_slot(slot, None) == "Raw"
+
+
+def _normal_map_feeding(surface: FakeNode, input_name: str) -> FakeNode:
+    nrm = surface.connected(input_name)
+    assert nrm is not None and nrm.type().name() == "mtlxnormalmap"
+    return nrm
+
+
+def test_first_build_wires_coat(stage: FakeNode) -> None:
+    res = sa.build_material(stage, "M_char_Body", _slots("v001", [
+        "BaseColor_sRGB", "Normal_Raw", "CoatWeight_Raw", "CoatColor_sRGB", "CoatRoughness_Raw", "CoatNormal_Raw",
+    ]))
+    assert res is not None and res.notes == []
+    b = _builder(stage)
+    surface = _surface(b)
+    for slot in ("coat", "coat_color", "coat_roughness"):
+        assert surface.connected(sa.SURFACE_INPUT_MAP[slot]) is _image(b, slot)
+    assert _image(b, "coat_color").parm("filecolorspace").eval() == "srgb_texture"
+    assert _image(b, "coat_normal").parm("signature").eval() == "vector3"
+
+    base_nrm = _normal_map_feeding(surface, "normal")
+    coat_nrm = _normal_map_feeding(surface, "coat_normal")
+    assert base_nrm is not coat_nrm
+    assert coat_nrm.name() == "mtlxnormalmap_coat_normal"
+    assert coat_nrm.connected("in") is _image(b, "coat_normal")
+    assert base_nrm.connected("in") is _image(b, "normal")
+
+
+def test_coat_maps_without_weight_are_reported(stage: FakeNode) -> None:
+    res = sa.build_material(stage, "M_char_Body", _slots("v001", ["BaseColor_sRGB", "CoatRoughness_Raw"]))
+    assert any(n.startswith("coat: no CoatWeight map") for n in res.notes)
+
+
+def test_update_adds_coat_and_keeps_edits(stage: FakeNode) -> None:
+    sa.build_material(stage, "M_char_Body", _slots("v001", ["BaseColor_sRGB", "Normal_Raw"]))
+    b = _builder(stage)
+    surface = _surface(b)
+    surface.parm("coat_roughness").set(0.05)  # set by hand
+    own = b.createNode("mtlxconstant", "my_coat_color")
+    surface.setNamedInput("coat_color", own, "out")
+
+    res = sa.build_material(stage, "M_char_Body", _slots("v002", [
+        "BaseColor_sRGB", "Normal_Raw", "CoatWeight_Raw", "CoatColor_sRGB", "CoatRoughness_Raw", "CoatNormal_Raw",
+    ]))
+    assert res.updated
+    assert surface.connected("coat") is _image(b, "coat")
+    assert surface.connected("coat_color") is own
+    assert "coat_color: new map, image node added, not wired (coat_color is already connected)" in res.notes
+    assert surface.connected("coat_roughness") is _image(b, "coat_roughness")
+    assert "coat_roughness: the map replaces the value (0.05)" in res.notes
+    coat_nrm = _normal_map_feeding(surface, "coat_normal")
+    assert coat_nrm.connected("in") is _image(b, "coat_normal")
+    assert "coat_normal: new map, wired to coat_normal" in res.notes
+    assert "v002" in _image(b, "normal").parm("file").eval()
+
+
+def test_aces_exr_publish_builds_acescg_images(stage: FakeNode, tmp_path) -> None:
+    tex = tmp_path / "publish" / "v001" / "textures"
+    tex.mkdir(parents=True)
+    for name in ("BaseColor_ACEScg.1001.exr", "EmissionColor_ACEScg.1001.exr", "Metallic_Raw.1001.png",
+                 "Displacement_Raw.1001.exr", "CoatColor_sRGB.1001.png"):
+        (tex / f"M_char_Body_{name}").write_bytes(b"")
+    groups, unmatched = scan_and_group(str(tmp_path / "publish"))
+    assert unmatched == []
+    sa.build_material(stage, "M_char_Body", groups["M_char_Body"].slots)
+    b = _builder(stage)
+    assert _image(b, "base_color").parm("filecolorspace").eval() == "ACEScg"
+    assert _image(b, "base_color").parm("file").eval().endswith("M_char_Body_BaseColor_ACEScg.%(UDIM)d.exr")
+    assert _image(b, "emission_color").parm("filecolorspace").eval() == "ACEScg"
+    assert _image(b, "metallic").parm("filecolorspace").eval() == "Raw"
+    assert _image(b, "displacement").parm("filecolorspace").eval() == "Raw"
+    assert _image(b, "coat_color").parm("filecolorspace").eval() == "srgb_texture"

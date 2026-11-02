@@ -10,6 +10,10 @@
 - Subsurface slots accept Painter's OpenPBR names and SSS forms (`SubsurfaceWeight`/`Subsurface`/`SSS`,
   `SubsurfaceColor`/`SSSColor`, `SubsurfaceRadius`/`SSSRadius`). Map names in Monos Settings ›
   Texturing must use one of the names in `config.SLOT_DEFS`, or the tool does not load the map.
+- Coat slots use Painter's OpenPBR channel names: `CoatWeight` (also `CoatOpacity`, `Clearcoat`),
+  `CoatColor`, `CoatRoughness`, `CoatRoughnessAnisotropy`, `CoatNormal`, wired to mtlxstandard_surface
+  `coat*` inputs. Coat IOR and darkening are Painter shader settings, not channels: no map, no slot.
+  `config.NORMAL_MAP_SLOTS` (Normal, CoatNormal) go through their own mtlxnormalmap node.
 - Create on a material that already exists updates it instead of making a second one. Image nodes
   carry user data (`monofx_slot`, `monofx_file`, `monofx_colorspace`) recording what the tool set; an
   update changes a file or colour space only while it still equals that record, so edits by hand stay.

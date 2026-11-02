@@ -16,6 +16,7 @@ except ImportError:
     hou = None  # type: ignore[assignment]
 
 from tools.fx.auto_material.config import (
+    NORMAL_MAP_SLOTS,
     PUBLISH_TEXTURE_RELATIVE_PATH,
     SLOT_DEF_MAP,
     SURFACE_INPUT_MAP,
@@ -465,19 +466,29 @@ def _set_value_note(node: Any, input_name: str) -> str | None:
     return None
 
 
-def _subsurface_note(surface: Any, slots: dict) -> str | None:
-    """A subsurface colour/radius map without a weight map shows nothing while subsurface is 0."""
-    if "subsurface" in slots or not ({"subsurface_color", "subsurface_radius"} & set(slots)):
-        return None
-    try:
-        if surface is None or not _input_is_free(surface, "subsurface"):
-            return None
-        parm = surface.parm("subsurface")
-        if parm is not None and parm.eval() > 0:
-            return None
-    except Exception:
-        return None
-    return "subsurface: no SubsurfaceWeight map and subsurface is 0, so SSS does not show; set it on the surface"
+# Lobes whose maps show nothing while the lobe's weight is 0: weight slot -> (weight map name, label, other slots).
+_LOBE_WEIGHTS: dict[str, tuple[str, str, frozenset[str]]] = {
+    "subsurface": ("SubsurfaceWeight", "SSS", frozenset({"subsurface_color", "subsurface_radius"})),
+    "coat": ("CoatWeight", "the coat", frozenset({"coat_color", "coat_roughness", "coat_anisotropy", "coat_normal"})),
+}
+
+
+def _weight_notes(surface: Any, slots: dict) -> list[str]:
+    """A lobe's colour/roughness/... maps without its weight map show nothing while the weight is 0."""
+    notes: list[str] = []
+    for weight, (map_name, label, others) in _LOBE_WEIGHTS.items():
+        if weight in slots or not (others & set(slots)):
+            continue
+        try:
+            if surface is None or not _input_is_free(surface, weight):
+                continue
+            parm = surface.parm(weight)
+            if parm is not None and parm.eval() > 0:
+                continue
+        except Exception:
+            continue
+        notes.append(f"{weight}: no {map_name} map and {weight} is 0, so {label} does not show; set it on the surface")
+    return notes
 
 
 def update_material(builder: Any, slots: dict, notes: list[str]) -> None:
@@ -515,7 +526,7 @@ def update_material(builder: Any, slots: dict, notes: list[str]) -> None:
             notes.append(f"{slot_name}: new map, image node added, not wired ({input_name} is already connected)")
         else:
             value_note = _set_value_note(surface, input_name)
-            nrm = create_mtlx_normal_map(builder) if slot_name == "normal" else None
+            nrm = create_mtlx_normal_map(builder, slot_name) if slot_name in NORMAL_MAP_SLOTS else None
             connect_slot(surface, img, slot_name, normal_map_node=nrm)
             notes.append(f"{slot_name}: new map, wired to {input_name}")
             if value_note:
@@ -524,16 +535,15 @@ def update_material(builder: Any, slots: dict, notes: list[str]) -> None:
     for slot_name in sorted(set(existing) - set(slots)):
         notes.append(f"{slot_name}: not in this publish, node kept")
 
-    sss = _subsurface_note(surface, slots)
-    if sss:
-        notes.append(sss)
+    notes += _weight_notes(surface, slots)
 
 
-def create_mtlx_normal_map(builder: Any) -> Any:
+def create_mtlx_normal_map(builder: Any, slot: str = "normal") -> Any:
     if builder is None:
         return None
     try:
-        node = builder.createNode("mtlxnormalmap", node_name="mtlxnormalmap")
+        name = "mtlxnormalmap" if slot == "normal" else f"mtlxnormalmap_{slot}"
+        node = builder.createNode("mtlxnormalmap", node_name=name)
         node.moveToGoodPosition()
         return node
     except Exception:
@@ -554,7 +564,7 @@ def connect_slot(
         if input_name is None:
             return False
 
-        if slot == "normal" and normal_map_node is not None:
+        if slot in NORMAL_MAP_SLOTS and normal_map_node is not None:
             normal_map_node.setNamedInput("in", image_node, "out")
             surface_node.setNamedInput(input_name, normal_map_node, "out")
         else:
@@ -1012,8 +1022,8 @@ def build_material(
         if img is None:
             continue
 
-        if slot_name == "normal":
-            nrm = create_mtlx_normal_map(builder)
+        if slot_name in NORMAL_MAP_SLOTS:
+            nrm = create_mtlx_normal_map(builder, slot_name)
             connect_slot(surface, img, slot_name, normal_map_node=nrm)
         elif slot_name in SURFACE_INPUT_MAP:
             connect_slot(surface, img, slot_name)
@@ -1021,8 +1031,6 @@ def build_material(
     _ensure_surface_connected_to_output(builder, surface)
     layout_nodes(builder)
 
-    sss = _subsurface_note(surface, slots)
-    if sss:
-        notes.append(sss)
+    notes += _weight_notes(surface, slots)
 
     return BuildResult(f"/materials/{builder.name()}", builder.name(), False, notes)
