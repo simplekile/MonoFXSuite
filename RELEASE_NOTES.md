@@ -1,14 +1,10 @@
-## [0.1.21] - 2026-07-21
+## [0.1.22] - 2026-11-02
 
-### Installer / Houdini
-- Copy shelf/icons only into **selected** Houdini versions that received a full install (avoid orphan shelf buttons).
-- Point `monofx.json` `hpath` / `MONOFX_SUITE` at `$HOUDINI_USER_PREF_DIR/monofx`.
-- Shelf `_find_suite_root` resolves installer `Documents/houdini*/monofx` layouts more reliably.
-
-### Blender
-- Multi-axis **sine chain** drivers (per-axis slots, wave modes, chain phase).
-- Anim USD Cache: custom mesh export list (add/remove selected), richer asset list UI.
-- Resolve anim publish under any `NN_anim` task folder (shot or asset). Bump add-on to **0.9.132**.
+### Houdini
+- **Auto Material**: read the colour space from Monos Painter texture names (`{set}_{name}_{colorspace}.{UDIM}.{ext}`: sRGB, Linear, ACEScg, Raw); `Linear` maps to `lin_rec709`, so float BaseColor maps in ACEScg or Linear no longer load as sRGB. `vNNN/publish.json` `cleaned.maps` fills the space for names without one.
+- **Auto Material**: scan only the highest `vNNN/textures` folder of a Monos publish.
+- **Auto Material**: Subsurface slots (weight, colour, radius) accept `SubsurfaceWeight`/`Subsurface`/`SSS` names and wire to `mtlxstandard_surface`; a colour or radius map without a weight is reported.
+- **Auto Material**: Create on an existing material updates it and keeps edits made by hand (files and colour spaces changed by the user stay; new maps go only into free inputs; nothing is deleted, re-wired or moved). Auto assign adds to `assign_material_auto` instead of creating another node.
 
 ### Shared / tests
-- Extend `anim_sine_chain` multi-axis helpers and USD cache path tests.
+- Add Auto Material publish and update tests.
