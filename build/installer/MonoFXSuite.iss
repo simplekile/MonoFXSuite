@@ -44,6 +44,7 @@ Source: "..\..\tools\*"; DestDir: "{app}\tools"; Flags: ignoreversion recursesub
 ; and copy it to each selected Houdini version in ssPostInstall.
 Source: "..\..\packages\monofx.json"; DestDir: "{tmp}"; DestName: "monofx.json"; Flags: ignoreversion deleteafterinstall
 Source: "..\..\toolbar\*"; DestDir: "{app}\toolbar"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\scripts\*"; DestDir: "{app}\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\config\*"; DestDir: "{app}\config"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 ; MonoStudio version detection (optional): if MonoStudio is installed, drop VERSION into its tools folder.
