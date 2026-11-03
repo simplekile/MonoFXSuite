@@ -93,3 +93,15 @@
   and read on every drop: on/off, LOP layer mode (ask / reference / sublayer), Auto Material for
   textures in LOP, base-colour materials for other images, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
   drop handler and tests read prefs without Qt.
+
+## Release scripts (`bump_version.ps1`, `publish_release.ps1`, `build/build.ps1`)
+
+- They run in Windows PowerShell 5.1, which reads a file without a BOM as ANSI (cp1252). So the
+  scripts read and write VERSION, `docs/changelog.md` and `RELEASE_NOTES.md` with
+  `[System.IO.File]` and UTF-8 (no BOM), never bare `Get-Content` / `Set-Content`: reading the
+  changelog as ANSI and writing it back as UTF-8 doubled every non-ASCII character on each bump
+  (the file reached 41 MB and lost the end of v0.1.0).
+- A `.ps1` with non-ASCII text (Vietnamese messages) must be saved as UTF-8 *with* BOM. Without it,
+  "ồ" (bytes E1 BB 93) is read as `á»“`, and PowerShell treats `“` as a quote: in
+  `publish_release.ps1` that swallowed the lines that read `RELEASE_NOTES.md`, so releases
+  v0.1.3–v0.1.22 had an empty body.

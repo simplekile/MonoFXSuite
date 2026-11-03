@@ -1,4 +1,4 @@
-# MonoFX Pipeline Blender — build install ZIP (one command)
+﻿# MonoFX Pipeline Blender — build install ZIP (one command)
 # From repo root:  .\tools\fx\monofx_pipeline_blender\build.ps1
 # From this dir:   .\build.ps1
 # Bump patch:      .\build.ps1 -Bump patch

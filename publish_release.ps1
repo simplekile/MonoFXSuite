@@ -1,11 +1,14 @@
-# MonoFX Suite — publish GitHub Release
+﻿# MonoFX Suite — publish GitHub Release
 # Chạy từ repo root. Cần: VERSION đã đúng, đã build installer, đã tag và push tag.
 # Prerequisite: GitHub CLI (gh), đã gh auth login
+# File này phải lưu UTF-8 *có BOM*: không có BOM, Windows PowerShell 5.1 đọc nó là cp1252, chữ "ồ"
+# (byte 0x93 = “) thành dấu nháy, nuốt cả đoạn đọc RELEASE_NOTES.md => release body rỗng (v0.1.3–v0.1.22).
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
 $VersionFile = Join-Path $ProjectRoot "VERSION"
 $ChangelogPath = Join-Path $ProjectRoot "docs\changelog.md"
+$Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $ExePath = Join-Path $ProjectRoot "build\output\MonoFXSuite_Setup.exe"
 $OutputDir = Join-Path $ProjectRoot "build\output"
 
@@ -22,7 +25,7 @@ if (-not (Test-Path $VersionFile)) {
     exit 1
 }
 
-$Version = (Get-Content $VersionFile -Raw).Trim()
+$Version = [System.IO.File]::ReadAllText($VersionFile, $Utf8NoBom).Trim()
 $Tag = "v$Version"
 
 # Kiểm tra tag đã tồn tại và đã push
@@ -38,13 +41,13 @@ if (-not $tagExists) {
 $ReleaseNotesPath = Join-Path $ProjectRoot "RELEASE_NOTES.md"
 $Notes = "Release $Tag`n`n"
 if (Test-Path $ReleaseNotesPath) {
-    $notesContent = (Get-Content $ReleaseNotesPath -Raw).Trim()
+    $notesContent = [System.IO.File]::ReadAllText($ReleaseNotesPath, $Utf8NoBom).Trim()
     if ($notesContent) {
         $Notes = $notesContent + "`n"
     }
 }
 if ($Notes -eq "Release $Tag`n`n" -and (Test-Path $ChangelogPath)) {
-    $content = Get-Content $ChangelogPath -Raw
+    $content = [System.IO.File]::ReadAllText($ChangelogPath, $Utf8NoBom)
     $verEscaped = [regex]::Escape($Version)
     $pattern = "(?s)## \[$verEscaped\][^\r\n]*(.*?)(?=\r?\n## |\z)"
     $m = [regex]::Match($content, $pattern)
@@ -53,10 +56,10 @@ if ($Notes -eq "Release $Tag`n`n" -and (Test-Path $ChangelogPath)) {
     }
 }
 
-$NotesPath = [System.IO.Path]::GetTempFileName() + ".md"
+$NotesPath = Join-Path ([System.IO.Path]::GetTempPath()) "monofx_release_notes_$Tag.md"
 try {
     # UTF-8 no BOM so GitHub displays the body correctly
-    [System.IO.File]::WriteAllText($NotesPath, $Notes, [System.Text.UTF8Encoding]::new($false))
+    [System.IO.File]::WriteAllText($NotesPath, $Notes, $Utf8NoBom)
 
     if (-not (Test-Path $ExePath)) {
         Write-Error "Installer not found. Run .\build\build.ps1 first."

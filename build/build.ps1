@@ -1,4 +1,4 @@
-# MonoFX Suite — build installer
+﻿# MonoFX Suite — build installer
 # Chạy từ thư mục project root: .\build\build.ps1
 # Hoặc từ build: .\build.ps1
 
