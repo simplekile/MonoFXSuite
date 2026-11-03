@@ -80,8 +80,10 @@ def run() -> None:
 
         ui.show_loading("Creating materials...")
         cancelled = False
+        created: list[str] = []
+        updated: list[str] = []
+        notes: list[str] = []
         try:
-            created: list[str] = []
             mat_lib_node = None
             total = len(prefixes)
             for idx, prefix in enumerate(prefixes, 1):
@@ -92,34 +94,42 @@ def run() -> None:
                 group = ui._groups_data.get(prefix)
                 if group is None:
                     continue
-                mat_path = sa.build_material(
+                result = sa.build_material(
                     stage=stage,
                     material_name=prefix,
                     slots=group.slots,
                     selected_node=selected,
                 )
-                if mat_path:
-                    created.append(mat_path)
-                    if mat_lib_node is None:
-                        mat_lib_node = stage.node("materiallibrary1")
+                if result is None:
+                    continue
+                (updated if result.updated else created).append(result.node_name)
+                notes += [f"{result.node_name}: {n}" for n in result.notes]
+                if mat_lib_node is None:
+                    mat_lib_node = stage.node("materiallibrary1")
 
+            # Place only the new builders; the ones already there keep their position.
             if mat_lib_node and created:
-                sa.layout_material_library(mat_lib_node)
+                sa.layout_material_library(mat_lib_node, new_names=created)
         finally:
+            done = ", ".join(
+                s for s in (
+                    f"created {len(created)}" if created else "",
+                    f"updated {len(updated)}" if updated else "",
+                ) if s
+            )
             if cancelled:
-                n = len(created)
-                msg = f"Cancelled — {n} material(s) created before cancel" if n else "Cancelled"
+                msg = f"Cancelled: {done} before cancel" if done else "Cancelled"
                 ui.show_done(msg, "Click to continue")
                 ui.set_message(msg, error=True)
-            elif created:
-                ui.show_done(
-                    f"Created {len(created)} material(s)",
-                    "Click to continue",
-                )
-                ui.set_message(f"{len(created)} material(s) created.", error=False)
+            elif done:
+                msg = f"Materials {done}."
+                ui.show_done(msg, "Click to continue")
+                ui.set_message(msg, error=False)
             else:
                 ui.hide_loading()
                 ui.set_message("Failed to create materials.", error=True)
+        if notes:
+            QMessageBox.information(ui, config.WINDOW_TITLE, "\n".join(notes))
 
     ui.on_create_clicked(on_create)
 
@@ -144,7 +154,6 @@ def run() -> None:
             if created > 0:
                 ui.show_done(msg, "Click to continue")
                 ui.set_message(msg, error=False)
-                sa.layout_nodes(stage)
             else:
                 stage_usd = sa.get_stage_from_lop_node(selected)
                 materials = sa.get_material_names_under_scope(stage_usd) if stage_usd else {}
@@ -164,7 +173,6 @@ def run() -> None:
                                 done_msg = f"Đã tạo {n} Assign Material LOP (prim pattern: /world/geo/*). Gán tay sau."
                                 ui.show_done(done_msg, "Click to continue")
                                 ui.set_message(done_msg, error=False)
-                                sa.layout_nodes(stage)
                             else:
                                 ui.hide_loading()
                                 ui.set_message(msg, error=True)

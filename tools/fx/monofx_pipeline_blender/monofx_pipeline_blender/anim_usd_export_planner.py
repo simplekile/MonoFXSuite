@@ -31,6 +31,8 @@ class GeoExportJob:
     filepath: str
     mesh_names: tuple[str, ...]
     source_publish_names: tuple[str, ...] = ()
+    # When set, matches ``AnimUsdExportAssetItem.asset_id`` (CUSTOM rows).
+    list_asset_id: str = ""
 
     @property
     def mesh_count(self) -> int:
@@ -170,6 +172,8 @@ def resolve_export_output_dir(props) -> tuple[bool, Path, str]:
 def plan_geo_export_jobs(
     context: bpy.types.Context,
     props,
+    *,
+    allow_selection_fallback: bool = True,
 ) -> tuple[list[GeoExportJob], str]:
     ok_dir, out_dir, err = resolve_export_output_dir(props)
     if not ok_dir:
@@ -202,13 +206,19 @@ def plan_geo_export_jobs(
         jobs = [job for job in jobs if job.mesh_count > 0]
         return jobs, ""
 
+    if not allow_selection_fallback:
+        return [], (
+            "No publish geo targets. Use Add Selected, or link a *_publish* "
+            "rig with a <namespace>::Geo collection."
+        )
+
     from .anim_usd_cache_exporter import collect_export_mesh_objects
 
     meshes = collect_export_mesh_objects(context)
     if not meshes:
         return [], (
             "No mesh objects to export. Link a *_publish* rig with a "
-            "<namespace>::Geo collection, or select mesh object(s)."
+            "<namespace>::Geo collection, or Add Selected mesh object(s)."
         )
 
     from . import anim_usd_cache_paths_ui as path_ui
@@ -240,3 +250,41 @@ def geo_output_filenames_for_ui(
 ) -> list[tuple[str, str]]:
     jobs, _ = plan_geo_export_jobs(context, props)
     return [(job.publish_name, Path(job.filepath).name) for job in jobs]
+
+
+def plan_custom_mesh_geo_job(
+    *,
+    display_name: str,
+    mesh_names: tuple[str, ...],
+    list_asset_id: str,
+    out_dir: Path,
+    used_basenames: set[str],
+    output_filename: str = "",
+) -> Optional[GeoExportJob]:
+    """Build a GEO job for manually added mesh object(s)."""
+    names = tuple(sorted({n for n in mesh_names if n}, key=str.lower))
+    if not names:
+        return None
+    from monofx_pipeline_common.anim_geo_naming import (
+        alloc_unique_basename,
+        sanitize_filename_component,
+    )
+
+    override = (output_filename or "").strip()
+    if override:
+        stem = Path(override).stem if Path(override).suffix else override
+        stem = sanitize_filename_component(stem) or "geo_unnamed"
+        basename = alloc_unique_basename(stem, used_basenames)
+    else:
+        basename = resolve_geo_usd_basename(
+            publish_name=display_name or names[0],
+            used=used_basenames,
+        )
+    filepath = ensure_usd_extension(str(out_dir / f"{basename}.usd"))
+    return GeoExportJob(
+        publish_name=display_name or names[0],
+        output_basename=basename,
+        filepath=filepath,
+        mesh_names=names,
+        list_asset_id=list_asset_id,
+    )

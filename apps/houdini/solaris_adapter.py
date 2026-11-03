@@ -215,6 +215,9 @@ _COLORSPACE_TO_TOKEN: dict[str, str] = {
     "aces - acescg": "ACEScg",
     "aces acescg": "ACEScg",
     "lin_ap1": "acescg",
+    # Monos Painter publishes write "Linear" for float colour maps without OCIO (linear sRGB primaries).
+    "linear": "lin_rec709",
+    "scene_linear": "lin_rec709",
     "linear rec.709": "lin_rec709",
     "lin rec709": "lin_rec709",
     "linear displayp3": "lin_displayp3",
@@ -242,6 +245,18 @@ def _resolve_filecolorspace_token(colorspace: str | None) -> str | None:
     if key in tokens_lower:
         return tokens_lower[key]
     return None
+
+
+def colorspace_token_for_slot(slot: str, colorspace: str | None) -> str:
+    """
+    filecolorspace token for a texture: the colour space its file name says (Monos writes the
+    space Painter really exported: sRGB, Linear, ACEScg, Raw), else the slot's default.
+    """
+    token = _resolve_filecolorspace_token(colorspace)
+    slot_def = SLOT_DEF_MAP.get(slot)
+    if not token and slot_def:
+        token = _resolve_filecolorspace_token(slot_def.default_colorspace)
+    return token or "Raw"
 
 
 def _set_filecolorspace_parm(node: Any, token: str) -> bool:
@@ -318,16 +333,200 @@ def create_mtlx_image(
             menu_val = _SIGNATURE_MENU_MAP.get(sig, sig)
             sig_parm.set(menu_val)
 
-        token = _resolve_filecolorspace_token(colorspace)
-        if not token and slot_def:
-            token = _resolve_filecolorspace_token(slot_def.default_colorspace)
-        if not token:
-            token = "Raw"
+        token = colorspace_token_for_slot(slot, colorspace)
         _set_filecolorspace_parm(node, token)
+        _tag_image(node, slot, filepath, _get_filecolorspace(node) or token)
 
         return node
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Update: image nodes remember what the tool set (user data), so a later run
+# changes only what the user has not changed by hand.
+# ---------------------------------------------------------------------------
+
+SLOT_TAG = "monofx_slot"
+FILE_TAG = "monofx_file"
+COLORSPACE_TAG = "monofx_colorspace"
+
+_COLORSPACE_PARM_NAMES = ("filecolorspace", "fileColorSpace", "colorspace", "file_colorspace", "color_space")
+
+
+def _get_filecolorspace(node: Any) -> str | None:
+    for name in _COLORSPACE_PARM_NAMES:
+        parm = node.parm(name)
+        if parm is not None:
+            try:
+                return parm.evalAsString()
+            except Exception:
+                return None
+    return None
+
+
+def _user_data(node: Any, key: str) -> str | None:
+    try:
+        return node.userData(key)
+    except Exception:
+        return None
+
+
+def _tag_image(node: Any, slot: str, filepath: str, token: str | None) -> None:
+    try:
+        node.setUserData(SLOT_TAG, slot)
+        node.setUserData(FILE_TAG, filepath)
+        if token:
+            node.setUserData(COLORSPACE_TAG, token)
+    except Exception:
+        pass
+
+
+def find_image_node(builder: Any, slot: str) -> Any:
+    """The tool's image node for *slot*: tagged by user data, else (older builds) named tex_<slot>."""
+    legacy = None
+    for child in builder.children():
+        if _user_data(child, SLOT_TAG) == slot:
+            return child
+        if legacy is None and child.name() == f"tex_{slot}" and child.type().name() == "mtlximage":
+            legacy = child
+    return legacy
+
+
+def _image_slots(builder: Any) -> dict[str, Any]:
+    """slot -> image node for every image node the tool made in *builder*."""
+    out: dict[str, Any] = {}
+    for child in builder.children():
+        slot = _user_data(child, SLOT_TAG)
+        if not slot and child.name().startswith("tex_") and child.type().name() == "mtlximage":
+            slot = child.name()[4:]
+        if slot in SLOT_DEF_MAP and slot not in out:
+            out[slot] = child
+    return out
+
+
+def update_mtlx_image(node: Any, slot: str, filepath: str, colorspace: str | None, notes: list[str]) -> None:
+    """
+    Point an existing image node at the new publish. The file and colour space change only
+    while they are still what the tool set last time; a value the user changed is kept.
+    """
+    file_parm = node.parm("file")
+    current_file = file_parm.unexpandedString() if file_parm is not None else ""
+    recorded_file = _user_data(node, FILE_TAG)
+    if file_parm is not None and (recorded_file is None or current_file == recorded_file):
+        if current_file != filepath:
+            file_parm.set(filepath)
+        new_file = filepath
+    else:
+        new_file = recorded_file or filepath
+        notes.append(f"{slot}: kept the file set by hand ({current_file})")
+
+    token = colorspace_token_for_slot(slot, colorspace)
+    current_cs = _get_filecolorspace(node)
+    recorded_cs = _user_data(node, COLORSPACE_TAG)
+    if recorded_cs is None:
+        # Built before the tool tagged its nodes: the space it would have set for the old file.
+        from tools.fx.auto_material.logic import try_pipeline_parse
+
+        old = try_pipeline_parse(current_file) if current_file else None
+        recorded_cs = colorspace_token_for_slot(slot, old.colorspace if old else None)
+    if current_cs is None or current_cs in (recorded_cs, token):
+        if current_cs != token:
+            _set_filecolorspace_parm(node, token)
+        new_cs = token
+    else:
+        new_cs = recorded_cs
+        notes.append(f"{slot}: kept the colour space set by hand ({current_cs})")
+
+    _tag_image(node, slot, new_file, new_cs)
+
+
+def _find_surface(builder: Any) -> Any:
+    for child in builder.children():
+        if child.type().name() == "mtlxstandard_surface":
+            return child
+    return None
+
+
+def _input_is_free(node: Any, input_name: str) -> bool:
+    idx = node.inputIndex(input_name)
+    return idx >= 0 and node.input(idx) is None
+
+
+def _set_value_note(node: Any, input_name: str) -> str | None:
+    """'base_color: the map replaces the value (0.3, ...)' when the input's parm was set by hand."""
+    try:
+        pt = node.parmTuple(input_name)
+        if pt is not None and not pt.isAtDefault():
+            values = ", ".join(f"{v:g}" if isinstance(v, float) else str(v) for v in pt.eval())
+            return f"{input_name}: the map replaces the value ({values})"
+    except Exception:
+        pass
+    return None
+
+
+def _subsurface_note(surface: Any, slots: dict) -> str | None:
+    """A subsurface colour/radius map without a weight map shows nothing while subsurface is 0."""
+    if "subsurface" in slots or not ({"subsurface_color", "subsurface_radius"} & set(slots)):
+        return None
+    try:
+        if surface is None or not _input_is_free(surface, "subsurface"):
+            return None
+        parm = surface.parm("subsurface")
+        if parm is not None and parm.eval() > 0:
+            return None
+    except Exception:
+        return None
+    return "subsurface: no SubsurfaceWeight map and subsurface is 0, so SSS does not show; set it on the surface"
+
+
+def update_material(builder: Any, slots: dict, notes: list[str]) -> None:
+    """
+    Update a material built earlier, keeping the user's edits: image nodes get the new files,
+    new maps get an image node wired only into a free surface input, and nothing is deleted
+    or re-wired.
+    """
+    surface = _find_surface(builder)
+    existing = _image_slots(builder)
+
+    for slot_name, slot_info in slots.items():
+        img = find_image_node(builder, slot_name)
+        if img is not None:
+            update_mtlx_image(img, slot_name, slot_info.filepath, slot_info.colorspace, notes)
+            continue
+
+        img = create_mtlx_image(
+            builder,
+            slot=slot_name,
+            filepath=slot_info.filepath,
+            colorspace=slot_info.colorspace,
+            udim=slot_info.udim,
+        )
+        if img is None:
+            notes.append(f"{slot_name}: could not create the image node")
+            continue
+
+        input_name = SURFACE_INPUT_MAP.get(slot_name)
+        if input_name is None:
+            notes.append(f"{slot_name}: new map, image node added (no surface input to wire)")
+        elif surface is None:
+            notes.append(f"{slot_name}: new map, image node added, not wired (no mtlxstandard_surface)")
+        elif not _input_is_free(surface, input_name):
+            notes.append(f"{slot_name}: new map, image node added, not wired ({input_name} is already connected)")
+        else:
+            value_note = _set_value_note(surface, input_name)
+            nrm = create_mtlx_normal_map(builder) if slot_name == "normal" else None
+            connect_slot(surface, img, slot_name, normal_map_node=nrm)
+            notes.append(f"{slot_name}: new map, wired to {input_name}")
+            if value_note:
+                notes.append(value_note)
+
+    for slot_name in sorted(set(existing) - set(slots)):
+        notes.append(f"{slot_name}: not in this publish, node kept")
+
+    sss = _subsurface_note(surface, slots)
+    if sss:
+        notes.append(sss)
 
 
 def create_mtlx_normal_map(builder: Any) -> Any:
@@ -424,6 +623,65 @@ def create_assign_material(
         return None
 
 
+def _assign_count_parm(node: Any) -> Any:
+    # Multiparm count (Houdini uses "Number of Materials"); the name varies across versions.
+    return (
+        node.parm("nummaterials")
+        or node.parm("num_materials")
+        or node.parm("num_mats")
+        or node.parm("numassignments")
+    )
+
+
+def _set_assign_count(node: Any, count: int) -> None:
+    count_parm = _assign_count_parm(node)
+    if count_parm is not None:
+        count_parm.set(count)
+
+
+def _set_assign_entry(node: Any, i: int, prim_pattern: str, material_path: str) -> None:
+    pp = node.parm(f"primpattern{i}")
+    mp = node.parm(f"matspecpath{i}")
+    if pp is not None:
+        pp.set(prim_pattern)
+    if mp is not None:
+        mp.set(material_path)
+
+    # Force explicit path mode when such a parm exists on this build
+    # (parm names vary slightly across versions).
+    for candidate in (f"specifymat{i}", f"specifymaterial{i}", f"specifymatusing{i}"):
+        p = node.parm(candidate)
+        if p is not None:
+            try:
+                p.set(0)
+            except Exception:
+                pass
+            break
+
+
+def merge_assign_material(node: Any, assignments: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    """
+    Add to an existing Assign Material LOP the (prim_pattern, material_path) pairs whose prim
+    pattern it does not list yet. Entries already there, edited by hand or not, are kept.
+    Returns the pairs added.
+    """
+    count_parm = _assign_count_parm(node)
+    if count_parm is None:
+        return []
+    count = int(count_parm.eval())
+    listed = set()
+    for i in range(1, count + 1):
+        pp = node.parm(f"primpattern{i}")
+        if pp is not None:
+            listed.add(pp.unexpandedString().strip())
+    added = [(prim, mat) for prim, mat in assignments if prim not in listed]
+    if added:
+        count_parm.set(count + len(added))
+        for i, (prim, mat) in enumerate(added, count + 1):
+            _set_assign_entry(node, i, prim, mat)
+    return added
+
+
 def create_assign_material_bulk(
     parent: Any,
     assignments: list[tuple[str, str]],
@@ -449,35 +707,9 @@ def create_assign_material_bulk(
         else:
             node.moveToGoodPosition()
 
-        # Set multiparm count (Houdini uses "Number of Materials")
-        count_parm = (
-            node.parm("nummaterials")
-            or node.parm("num_materials")
-            or node.parm("num_mats")
-            or node.parm("numassignments")
-        )
-        if count_parm is not None:
-            count_parm.set(len(assignments))
-
-        # Fill each entry
+        _set_assign_count(node, len(assignments))
         for i, (prim_pattern, material_path) in enumerate(assignments, 1):
-            pp = node.parm(f"primpattern{i}")
-            mp = node.parm(f"matspecpath{i}")
-            if pp is not None:
-                pp.set(prim_pattern)
-            if mp is not None:
-                mp.set(material_path)
-
-            # Force explicit path mode when such a parm exists on this build
-            # (parm names vary slightly across versions).
-            for candidate in (f"specifymat{i}", f"specifymaterial{i}", f"specifymatusing{i}"):
-                p = node.parm(candidate)
-                if p is not None:
-                    try:
-                        p.set(0)
-                    except Exception:
-                        pass
-                    break
+            _set_assign_entry(node, i, prim_pattern, material_path)
 
         return node
     except Exception:
@@ -590,6 +822,16 @@ def run_auto_assign(
         if material_path:
             matched.append((prim_path, material_path))
 
+    # A run before made assign_material_auto: add the new prims to it instead of a second node.
+    existing = stage_node.node("assign_material_auto")
+    if matched and existing is not None and existing.type().name() == "assignmaterial":
+        added = merge_assign_material(existing, matched)
+        kept = len(matched) - len(added)
+        return len(matched), (
+            f"Updated {existing.name()}: added {len(added)} assignment(s), "
+            f"kept {kept} already there."
+        )
+
     # Prefer one Assign Material node with multiple entries
     if matched:
         bulk = create_assign_material_bulk(
@@ -681,10 +923,11 @@ def layout_nodes(parent: Any) -> None:
         pass
 
 
-def layout_material_library(mat_lib: Any) -> None:
+def layout_material_library(mat_lib: Any, new_names: list[str] | None = None) -> None:
     """
-    Sort and arrange Karma Material Builder subnets inside the Material Library
-    by name (alphabetically), then set positions in a vertical stack.
+    Arrange Karma Material Builder subnets inside the Material Library in a vertical stack,
+    sorted by name. With *new_names*, only those builders are placed, below the ones already
+    there, so builders the user has placed stay where they are.
     """
     if mat_lib is None:
         return
@@ -692,8 +935,17 @@ def layout_material_library(mat_lib: Any) -> None:
         children = list(mat_lib.children())
         if not children:
             return
-        children.sort(key=lambda n: n.name().lower())
         dx, dy = 0.0, -1.8
+        if new_names is not None:
+            new = sorted((n for n in children if n.name() in new_names), key=lambda n: n.name().lower())
+            old = [n for n in children if n.name() not in new_names]
+            if old:
+                lowest = min(old, key=lambda n: n.position()[1]).position()
+                for i, node in enumerate(new, 1):
+                    node.setPosition((lowest[0] + dx * i, lowest[1] + dy * i))
+                return
+            children = new
+        children.sort(key=lambda n: n.name().lower())
         base = children[0].position()
         for i, node in enumerate(children):
             node.setPosition((base[0] + dx * i, base[1] + dy * i))
@@ -705,24 +957,41 @@ def layout_material_library(mat_lib: Any) -> None:
 # High-level: build full material from slot dict
 # ---------------------------------------------------------------------------
 
+class BuildResult:
+    __slots__ = ("path", "node_name", "updated", "notes")
+
+    def __init__(self, path: str, node_name: str, updated: bool, notes: list[str]) -> None:
+        self.path = path
+        self.node_name = node_name
+        self.updated = updated
+        self.notes = notes
+
+
 def build_material(
     stage: Any,
     material_name: str,
     slots: dict,
     mat_lib_name: str = "materiallibrary1",
     selected_node: Any = None,
-) -> str | None:
+) -> BuildResult | None:
     """
-    Create a complete Karma material from a slots dict.
+    Create a complete Karma material from a slots dict, or update the one built earlier
+    under the same name (see update_material: the user's edits are kept).
     slots: { slot_name: SlotInfo } from logic.py.
     selected_node: if provided, Material Library is created after this node.
-    Returns material USD path (e.g. /materials/costume) or None on failure.
+    Returns the material USD path (e.g. /materials/costume) and what was done, or None on failure.
     """
     mat_lib = get_or_create_material_library(
         stage, name=mat_lib_name, connect_after=selected_node,
     )
     if mat_lib is None:
         return None
+
+    notes: list[str] = []
+    existing = mat_lib.node(material_name)
+    if existing is not None:
+        update_material(existing, slots, notes)
+        return BuildResult(f"/materials/{existing.name()}", existing.name(), True, notes)
 
     builder = create_karma_material_builder(mat_lib, material_name)
     if builder is None:
@@ -752,4 +1021,8 @@ def build_material(
     _ensure_surface_connected_to_output(builder, surface)
     layout_nodes(builder)
 
-    return f"/materials/{material_name}"
+    sss = _subsurface_note(surface, slots)
+    if sss:
+        notes.append(sss)
+
+    return BuildResult(f"/materials/{builder.name()}", builder.name(), False, notes)

@@ -61,7 +61,7 @@ def compute_auto_anim_usd_path(version_number: int) -> tuple[bool, str, str]:
         return (
             False,
             "",
-            "Save .blend under 02_shots/<shot>/01_anim/... to resolve publish path.",
+            publish_paths.ANIM_PUBLISH_PATH_HINT,
         )
     return (
         True,
@@ -71,13 +71,13 @@ def compute_auto_anim_usd_path(version_number: int) -> tuple[bool, str, str]:
 
 
 def list_anim_publish_versions() -> tuple[list[int], str]:
-    """Version numbers with existing folders under ``01_anim/publish``."""
+    """Version numbers with existing folders under ``<NN_anim>/publish``."""
     scene_path = scene_blend_path()
     if scene_path is None:
         return [], "Save the .blend file first."
     publish_root = anim_publish_root_for_scene(scene_path)
     if publish_root is None:
-        return [], "Save .blend under 02_shots/<shot>/01_anim/..."
+        return [], publish_paths.ANIM_PUBLISH_PATH_HINT
     return publish_paths.list_version_numbers(publish_root), ""
 
 
@@ -190,14 +190,22 @@ def describe_anim_publish_target(props) -> tuple[bool, str, str, str]:
             False,
             "",
             "",
-            "Save .blend under 02_shots/<shot>/01_anim/...",
+            publish_paths.ANIM_PUBLISH_PATH_HINT,
         )
-    shot = publish_paths.detect_shot_from_scene_path(scene_path) or "?"
+    shot = publish_paths.detect_shot_from_scene_path(scene_path)
+    parts = list(scene_path.parts)
+    i_anim = publish_paths.find_anim_task_index(parts)
+    if shot:
+        context_label = shot
+    elif i_anim is not None and i_anim > 0:
+        context_label = parts[i_anim - 1]
+    else:
+        context_label = "?"
     version = resolve_anim_publish_version_number(props)
     vname = publish_paths.version_folder_from_number(version)
     usd_path = Path(build_anim_usd_path(publish_root, scene_path, version))
     mode = str(getattr(props, "anim_usd_version_mode", "NEXT") or "NEXT").casefold()
-    summary = f"Will export {vname} · {shot} · {mode}"
+    summary = f"Will export {vname} · {context_label} · {mode}"
     rel = publish_paths.relative_anim_publish_display(scene_path, usd_path)
     return True, summary, rel, ""
 
@@ -235,31 +243,18 @@ def sync_auto_anim_output(props) -> None:
 def plan_anim_export_output_paths(context, props) -> list[Path]:
     """Absolute paths that enabled anim USD export targets will write."""
     from . import anim_usd_cache_asset_list as asset_list
-    from .anim_usd_cache_camera_writer import camera_usd_output_path
-    from .anim_usd_cache_exporter import (
-        collect_camera_collection_objects,
-        pick_export_camera,
-    )
-    from .anim_usd_export_planner import plan_geo_export_jobs, resolve_export_output_dir
+    from .anim_usd_export_planner import resolve_export_output_dir
 
     paths: list[Path] = []
-    jobs, _ = plan_geo_export_jobs(context, props)
-    for job in asset_list.filter_enabled_geo_jobs(jobs, props):
+    jobs, _ = asset_list.plan_enabled_geo_export_jobs(context, props)
+    for job in jobs:
         paths.append(Path(job.filepath))
 
     ok_dir, out_dir, _ = resolve_export_output_dir(props)
     if ok_dir:
-        if asset_list.is_camera_export_enabled(props):
-            cameras = collect_camera_collection_objects(context)
-            export_cam = pick_export_camera(cameras, context.scene, context)
-            if export_cam is not None:
-                paths.append(
-                    camera_usd_output_path(
-                        out_dir,
-                        export_cam.name,
-                        scene_path=scene_blend_path(),
-                    )
-                )
+        cam_path = asset_list.resolve_camera_output_filepath(context, props)
+        if cam_path is not None:
+            paths.append(cam_path)
         if paths:
             paths.append(out_dir / "publish_meta.json")
 

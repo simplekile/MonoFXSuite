@@ -5,6 +5,7 @@ Scan folder for texture files, parse naming conventions, group into material set
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -45,6 +46,56 @@ class MaterialGroup:
 # ---------------------------------------------------------------------------
 # Scan
 # ---------------------------------------------------------------------------
+
+_VERSION_DIR_RE = re.compile(r"^v(\d+)$", re.IGNORECASE)
+
+
+def latest_publish_version(folder: str) -> Path | None:
+    """Highest vNNN child of a Monos publish folder, None when *folder* has no such child."""
+    root = Path(folder)
+    if not root.is_dir():
+        return None
+    versions = [
+        (int(m.group(1)), p)
+        for p in root.iterdir()
+        if p.is_dir() and (m := _VERSION_DIR_RE.match(p.name))
+    ]
+    return max(versions)[1] if versions else None
+
+
+def resolve_scan_folder(folder: str) -> str:
+    """
+    Folder to scan: a Monos publish folder (children v001, v002...) gives only its latest
+    version's textures/, so older publishes are not picked up. Any other folder is as given.
+    """
+    latest = latest_publish_version(folder)
+    if latest is None:
+        return folder
+    textures = latest / "textures"
+    return str(textures if textures.is_dir() else latest)
+
+
+def read_publish_spaces(version_dir: str | Path) -> dict[str, str]:
+    """
+    Slot -> colour space word from a Monos vNNN/publish.json (cleaned.maps: [{name, space}...]).
+    Used only for files whose name has no colour space; maps exported in several spaces are left out.
+    """
+    try:
+        data = json.loads((Path(version_dir) / "publish.json").read_text(encoding="utf-8"))
+        maps = data.get("cleaned", {}).get("maps", [])
+    except (OSError, ValueError, AttributeError):
+        return {}
+    out: dict[str, str] = {}
+    for m in maps if isinstance(maps, list) else []:
+        if not isinstance(m, dict):
+            continue
+        name = str(m.get("name") or "")
+        space = str(m.get("space") or "").strip()
+        slot = PIPELINE_NAME_TO_SLOT.get(name) or GENERIC_ALIAS_TO_SLOT.get(name.lower())
+        if slot and space and "," not in space:
+            out[slot] = space
+    return out
+
 
 def scan_images(folder: str, recursive: bool = True) -> list[str]:
     root = Path(folder)
@@ -234,13 +285,18 @@ def scan_and_group(
     Full pipeline: scan → parse → group.
     Returns (groups, unmatched_files).
     """
+    folder = resolve_scan_folder(folder)
     files = scan_images(folder, recursive=recursive)
     parsed: list[ParseResult] = []
     unmatched: list[str] = []
+    # publish.json sits in vNNN/, next to textures/
+    spaces = read_publish_spaces(folder) or read_publish_spaces(Path(folder).parent)
 
     for f in files:
         result = auto_parse(f)
         if result is not None:
+            if result.colorspace is None:
+                result.colorspace = spaces.get(result.slot)
             parsed.append(result)
         else:
             unmatched.append(f)

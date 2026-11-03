@@ -9,13 +9,12 @@ from bpy.types import Context, Panel, UILayout
 
 from . import anim_camera
 from . import anim_collections
-from . import anim_sine_chain_bpy
 from . import anim_sine_preview_bpy
 from . import anim_sine_ramp_bpy
 from . import anim_transform
 from . import preferences
 from . import ui_style
-from monofx_pipeline_common.anim_sine_chain import resolve_sine_axis_settings
+from monofx_pipeline_common.anim_sine_chain import resolve_apply_sine_axes, resolve_sine_axis_settings
 
 
 def _draw_anim_shot_section(body: UILayout, _context: Context) -> None:
@@ -151,36 +150,77 @@ class MONOFX_PT_sine_amp_ramp(Panel):
         draw_sine_amp_ramp_popover(self.layout, context, channel=channel, axis=axis)
 
 
+def _axis_has_rna_property(axis_props, prop_name: str) -> bool:
+    rna_props = getattr(getattr(axis_props, "bl_rna", None), "properties", None)
+    return rna_props is not None and prop_name in rna_props
+
+
+
 def _draw_sine_axis_params(body: UILayout, props, *, channel: str, axis: str) -> None:
     axis_props = resolve_sine_axis_settings(props, channel, axis)
-    body.label(text=f"{channel.title()} {axis}", icon="NONE")
-    row = body.row(align=True)
-    row.prop(axis_props, "amplitude")
-    anim_sine_ramp_bpy.schedule_amp_ramp_node_ensure(channel, axis)
-    row.popover(
-        panel="MONOFX_PT_sine_amp_ramp",
-        text="",
-        icon="PREFERENCES",
-    )
-    body.prop(axis_props, "speed")
-    body.prop(axis_props, "frequency")
-    row = body.row(align=True)
-    row.prop(axis_props, "phase")
-    row.operator(
+    if _axis_has_rna_property(axis_props, "enabled"):
+        row = body.row(align=True)
+        ui_style.prop_checkbox(row, axis_props, "enabled", text=f"Enable {axis}")
+
+    params = body.column(align=True)
+    params.use_property_split = True
+    params.prop(axis_props, "amplitude")
+    params.prop(axis_props, "speed")
+    params.prop(axis_props, "frequency")
+    row = params.row(align=True)
+    row.use_property_split = False
+    split = row.split(factor=0.82, align=True)
+    split.prop(axis_props, "phase")
+    op = split.operator(
         "wm.mono_fx_anim_randomize_sine_phase",
         text="",
         icon="FILE_REFRESH",
     )
+    op.channel = channel
+    op.axis = axis
+    if _axis_has_rna_property(axis_props, "chain_offset"):
+        params.prop(axis_props, "chain_offset")
+
+    ramp_row = body.row(align=True)
+    anim_sine_ramp_bpy.schedule_amp_ramp_node_ensure(channel, axis)
+    ramp_row.popover(
+        panel="MONOFX_PT_sine_amp_ramp",
+        text="Amplitude Ramp",
+        icon="GRAPH",
+    )
+    refresh = ramp_row.operator(
+        "wm.mono_fx_anim_refresh_sine_ramp",
+        text="",
+        icon="FILE_REFRESH",
+    )
+    refresh.channel = channel
+    refresh.axis = axis
+
+
+def _draw_sine_amp_ramp_inline(body: UILayout, context: Context, *, channel: str, axis: str) -> None:
+    axis_props = resolve_sine_axis_settings(
+        context.scene.monofx_pipeline_blender_props,
+        channel,
+        axis,
+    )
+    ramp_body, ramp_open = ui_style.collapsible_section(
+        body,
+        f"monofx_anim_sine_ramp_{channel.lower()}_{axis.lower()}",
+        "Amplitude Ramp",
+        icon="GRAPH",
+        default_closed=False,
+    )
+    if not ramp_open or ramp_body is None:
+        return
+    draw_sine_amp_ramp_popover(ramp_body, context, channel=channel, axis=axis)
 
 
 def _draw_anim_chain_section(body: UILayout, context: Context, *, prefs) -> None:
     props = context.scene.monofx_pipeline_blender_props
+    scene = context.scene
+    # Chain preview comes from a cache refreshed on a timer, so draw() stays light.
     anim_sine_preview_bpy.schedule_preview_refresh()
     rows, chain_err, summary = anim_sine_preview_bpy.get_preview_cache(context)
-    channel = str(props.anim_sine_channel)
-    axis = str(props.anim_sine_axis).upper()
-    if axis not in {"X", "Y", "Z"}:
-        axis = "Z"
 
     if context.mode not in {"POSE", "OBJECT"}:
         ui_style.status_label(
@@ -190,6 +230,8 @@ def _draw_anim_chain_section(body: UILayout, context: Context, *, prefs) -> None
         )
         return
 
+    header = body.row(align=True)
+    header.label(text="Chain Animator", icon="FORCE_CURVE")
     ui_style.status_label(
         body,
         summary,
@@ -197,37 +239,79 @@ def _draw_anim_chain_section(body: UILayout, context: Context, *, prefs) -> None
         icon="LINKED" if rows else "INFO",
     )
 
-    row = body.row(align=True)
-    row.operator(
+    action_row = body.row(align=True)
+    action_row.operator(
         "wm.mono_fx_anim_select_chain",
         text="Select Chain",
         icon="RESTRICT_SELECT_OFF",
     )
-    body.prop(props, "anim_sine_bone_mode", text="Chain Mode")
-    row = body.row(align=True)
-    row.prop(props, "anim_sine_multi_chain", text="Multi Chains")
-    row.prop(props, "anim_sine_mirror_chain", text="Mirror")
-    if props.anim_sine_multi_chain:
+    action_row.operator(
+        "wm.mono_fx_anim_reset_sine_chain",
+        text="Reset",
+        icon="LOOP_BACK",
+    )
+
+    # Wave: mode, channel tabs, per-axis params, cycle, amplitude ramp
+    wave_row = body.row(align=True)
+    wave_row.prop(props, "anim_sine_wave_mode", expand=True)
+    ui_style.draw_panel_tabs(body, props, "anim_sine_channel")
+    channel = str(props.anim_sine_channel)
+    _tabs, tab_body = ui_style.draw_vertical_tabs(body, props, "anim_sine_axis", factor=0.18)
+    axis = str(props.anim_sine_axis).upper()
+    if axis not in {"X", "Y", "Z"}:
+        axis = "Z"
+    _draw_sine_axis_params(tab_body, props, channel=channel, axis=axis)
+    tab_body.prop(props, "anim_sine_cycle_frames", text="Cycle Frames")
+    _draw_sine_amp_ramp_inline(body, context, channel=channel, axis=axis)
+
+    enabled_axes = resolve_apply_sine_axes(props, channel, str(props.anim_sine_axis))
+    if enabled_axes:
         hint = body.row()
         hint.enabled = False
         hint.label(
-            text="Select one bone/object per chain; params apply to all chains",
+            text=f"Apply uses: {', '.join(enabled_axes)}",
             icon="INFO",
         )
-    elif props.anim_sine_mirror_chain:
+    else:
         hint = body.row()
-        hint.enabled = False
-        hint.label(
-            text="Mirror applies to paired .l / .r control series",
-            icon="INFO",
-        )
-    if props.anim_sine_bone_mode == "SELECTION":
-        hint = body.row()
-        hint.enabled = False
-        if context.mode == "POSE":
-            hint.label(text="Select pose bones for the chain", icon="INFO")
-        elif context.mode == "OBJECT":
-            hint.label(text="Select objects for the chain", icon="INFO")
+        hint.alert = True
+        hint.label(text="Enable at least one axis", icon="ERROR")
+
+    # Chain resolution: mode, multi chains, mirror L/R
+    settings_body, settings_open = ui_style.collapsible_section(
+        body,
+        "monofx_anim_sine_chain_settings",
+        "Chain Resolution",
+        icon="OUTLINER",
+        default_closed=True,
+        prefs=prefs,
+    )
+    if settings_open and settings_body is not None:
+        settings_body.prop(props, "anim_sine_bone_mode", text="Chain Mode")
+        row = settings_body.row(align=True)
+        row.prop(props, "anim_sine_multi_chain", text="Multi Chains")
+        row.prop(props, "anim_sine_mirror_chain", text="Mirror")
+        if props.anim_sine_multi_chain:
+            hint = settings_body.row()
+            hint.enabled = False
+            hint.label(
+                text="Select one bone/object per chain; params apply to all chains",
+                icon="INFO",
+            )
+        elif props.anim_sine_mirror_chain:
+            hint = settings_body.row()
+            hint.enabled = False
+            hint.label(
+                text="Mirror applies to paired .l / .r control series",
+                icon="INFO",
+            )
+        if props.anim_sine_bone_mode == "SELECTION":
+            hint = settings_body.row()
+            hint.enabled = False
+            if context.mode == "POSE":
+                hint.label(text="Select pose bones for the chain", icon="INFO")
+            elif context.mode == "OBJECT":
+                hint.label(text="Select objects for the chain", icon="INFO")
 
     chain_title = (
         f"Chain Targets ({len([r for r in rows if not r[0].startswith('—')])})"
@@ -260,34 +344,43 @@ def _draw_anim_chain_section(body: UILayout, context: Context, *, prefs) -> None
                     icon="DRIVER" if has_driver else "DOT",
                 )
 
-    body.separator()
-    ui_style.draw_panel_tabs(body, props, "anim_sine_channel")
-    _tabs, tab_body = ui_style.draw_vertical_tabs(body, props, "anim_sine_axis")
-    _draw_sine_axis_params(tab_body, props, channel=channel, axis=axis)
-    tab_body.prop(props, "anim_sine_cycle_frames", text="Cycle Frames")
-
     bake_body, bake_open = ui_style.collapsible_section(
         body,
-        "monofx_anim_chain_bake",
-        "Bake Range",
+        "monofx_anim_sine_bake_range",
+        "Bake Frame Range",
         icon="TIME",
         default_closed=True,
         prefs=prefs,
     )
     if bake_open and bake_body is not None:
-        bake_body.prop(props, "anim_sine_bake_use_scene_range", text="Use Scene Range")
-        range_row = bake_body.row(align=True)
+        bake_col = bake_body.column(align=True)
+        ui_style.prop_checkbox(
+            bake_col,
+            props,
+            "anim_sine_bake_use_scene_range",
+            text="Use Scene Range",
+        )
+        range_row = bake_col.row(align=True)
         range_row.enabled = not bool(props.anim_sine_bake_use_scene_range)
         range_row.prop(props, "anim_sine_bake_frame_start", text="Start")
         range_row.prop(props, "anim_sine_bake_frame_end", text="End")
-        bake_body.prop(props, "anim_sine_bake_clear_drivers", text="Clear Drivers After Bake")
+        if props.anim_sine_bake_use_scene_range and scene is not None:
+            hint = bake_col.row()
+            hint.enabled = False
+            hint.label(
+                text=f"Scene: {int(scene.frame_start)} – {int(scene.frame_end)}",
+                icon="INFO",
+            )
+        bake_col.prop(props, "anim_sine_bake_clear_drivers", text="Clear Drivers After Bake")
 
     body.separator()
     row = body.row(align=True)
     row.scale_y = 1.25
-    row.operator(
+    apply_row = row.row(align=True)
+    apply_row.enabled = bool(enabled_axes)
+    apply_row.operator(
         "wm.mono_fx_anim_apply_sine_chain",
-        text="Apply Sine Chain",
+        text="Apply Drivers",
         icon="FORCE_CURVE",
     )
     row.operator(
@@ -299,13 +392,20 @@ def _draw_anim_chain_section(body: UILayout, context: Context, *, prefs) -> None
     row.scale_y = 1.15
     row.operator(
         "wm.mono_fx_anim_bake_sine_chain",
-        text="Bake Sine Chain",
+        text="Bake Motion",
         icon="REC",
     )
     row.operator(
         "wm.mono_fx_anim_clear_all_sine_chain",
         text="Clear All",
         icon="TRASH",
+    )
+
+    preview_hint = body.row()
+    preview_hint.enabled = False
+    preview_hint.label(
+        text="Drivers update live while scrubbing the timeline",
+        icon="PLAY",
     )
 
 

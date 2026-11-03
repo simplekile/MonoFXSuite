@@ -444,52 +444,25 @@ begin
   SaveStringToFile(PkgPath, PkgContent, False);
 end;
 
-procedure CopyToolbarToUserHoudini;
+{ Shelf/icons only for prefs dirs that received a full monofx install.
+  Do NOT push a new MonoFX.shelf into other houdiniXX.X folders — that shows
+  new buttons (e.g. Node Preset Library) while PYTHONPATH still points at an
+  old/empty monofx tree. }
+procedure CopyShelfForInstalledPref(const HoudiniUserDir, AppDir: string);
 var
-  Names: TArrayOfString;
-  i: Integer;
-  UserDocs, AppDir, AppToolbar, MonofxDir, DestToolbar, DestFile, HoudiniUserDir: string;
-  FindRec: TFindRec;
+  AppToolbar, MonofxDir, DestToolbar, DestFile: string;
 begin
-  UserDocs := ExpandConstant('{userdocs}');
-  AppDir := ExpandConstant('{app}');
   AppToolbar := AppDir + '\toolbar';
   if not FileExists(AppToolbar + '\MonoFX.shelf') then
     Exit;
-  if RegGetSubkeyNames(HKEY_LOCAL_MACHINE, HoudiniRegBase, Names) then
-    for i := 0 to GetArrayLength(Names) - 1 do
-    begin
-      HoudiniUserDir := UserDocs + '\houdini' + Names[i];
-      MonofxDir := HoudiniUserDir + '\monofx';
-      DestToolbar := MonofxDir + '\toolbar';
-      ForceDirectories(DestToolbar);
-      DestFile := DestToolbar + '\MonoFX.shelf';
-      CopyFile(AppToolbar + '\MonoFX.shelf', DestFile, False);
-      CopyToolbarIcons(AppToolbar, DestToolbar);
-      CopyConfigIconsToUser(AppDir, MonofxDir);
-      WriteMonofxShelfPackage(HoudiniUserDir);
-    end;
-  if FindFirst(UserDocs + '\houdini*', FindRec) then
-  begin
-    try
-      repeat
-        if (FindRec.Attributes and 16) <> 0 then
-        begin
-          HoudiniUserDir := UserDocs + '\' + FindRec.Name;
-          MonofxDir := HoudiniUserDir + '\monofx';
-          DestToolbar := MonofxDir + '\toolbar';
-          ForceDirectories(DestToolbar);
-          DestFile := DestToolbar + '\MonoFX.shelf';
-          CopyFile(AppToolbar + '\MonoFX.shelf', DestFile, False);
-          CopyToolbarIcons(AppToolbar, DestToolbar);
-          CopyConfigIconsToUser(AppDir, MonofxDir);
-          WriteMonofxShelfPackage(HoudiniUserDir);
-        end;
-      until not FindNext(FindRec);
-    finally
-      FindClose(FindRec);
-    end;
-  end;
+  MonofxDir := HoudiniUserDir + '\monofx';
+  DestToolbar := MonofxDir + '\toolbar';
+  ForceDirectories(DestToolbar);
+  DestFile := DestToolbar + '\MonoFX.shelf';
+  CopyFile(AppToolbar + '\MonoFX.shelf', DestFile, False);
+  CopyToolbarIcons(AppToolbar, DestToolbar);
+  CopyConfigIconsToUser(AppDir, MonofxDir);
+  WriteMonofxShelfPackage(HoudiniUserDir);
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -531,9 +504,11 @@ begin
         pkgDst := targetPackages + '\monofx.json';
         CopyFile(pkgSrc, pkgDst, False);
       end;
+
+      { Shelf only after full code tree is in place for this version }
+      CopyShelfForInstalledPref(targetPref, srcMonofx);
     end;
 
     DetectedHoudiniVersions := DetectHoudiniVersions;
-    CopyToolbarToUserHoudini;
   end;
 end;

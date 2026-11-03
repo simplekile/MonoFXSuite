@@ -117,6 +117,27 @@ def test_resolve_anim_publish_root():
     assert root.parts[-3:] == ("sh002", "01_anim", "publish")
 
 
+def test_resolve_anim_publish_root_asset_06_anim():
+    blend = Path(
+        r"D:\Dropbox\job\250425_gim_vp04\01_assets\_characters\char_TachiProp"
+        r"\06_anim\blender\work\char_TachiProp_anim_v005_spline.blend"
+    )
+    root = _pp.resolve_anim_publish_root_from_scene(blend)
+    assert root is not None
+    assert root.parts[-3:] == ("char_TachiProp", "06_anim", "publish")
+
+
+def test_relative_anim_publish_display_asset():
+    blend = Path(
+        r"D:\proj\01_assets\_characters\char_TachiProp\06_anim\blender\work\a.blend"
+    )
+    usd = Path(
+        r"D:\proj\01_assets\_characters\char_TachiProp\06_anim\publish\v001\geo_x.usd"
+    )
+    rel = _pp.relative_anim_publish_display(blend, usd)
+    assert rel == "06_anim/publish/v001/geo_x.usd"
+
+
 def test_default_anim_geo_basename():
     blend = Path(
         r"D:\proj\02_shots\sh002\01_anim\blender\work\char_Zephys_anim_v001.blend"

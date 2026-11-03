@@ -1,10 +1,10 @@
 {
     "enable": true,
-    "hpath": "$MONOFX_SUITE",
+    "hpath": "$HOUDINI_USER_PREF_DIR/monofx",
     "env": [
         {
             "var": "MONOFX_SUITE",
-            "value": "$HOUDINI_PACKAGE_PATH/../monofx"
+            "value": "$HOUDINI_USER_PREF_DIR/monofx"
         },
         {
             "var": "PYTHONPATH",

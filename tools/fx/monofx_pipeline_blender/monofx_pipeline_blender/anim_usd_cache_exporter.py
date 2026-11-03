@@ -1186,6 +1186,7 @@ class UsdAnimCacheExportSession:
         export_camera: bool = True,
         write_publish_meta: bool = True,
         job_label: str = "",
+        camera_filepath: Optional[str] = None,
     ) -> None:
         self.context = context
         self.filepath = str(filepath)
@@ -1198,6 +1199,9 @@ class UsdAnimCacheExportSession:
         self.export_camera = bool(export_camera)
         self.write_publish_meta = bool(write_publish_meta)
         self.job_label = (job_label or "").strip()
+        self._camera_filepath_override = (
+            Path(camera_filepath) if camera_filepath else None
+        )
 
         self.result = UsdAnimCacheExportResult(ok=False)
         self.status_label = ""
@@ -1485,11 +1489,14 @@ class UsdAnimCacheExportSession:
             if self._camera_obj is not None:
                 from .anim_usd_cache_paths_ui import scene_blend_path
 
-                self._cam_out_path = camera_usd_output_path(
-                    out_path.parent,
-                    self._camera_obj.name,
-                    scene_path=scene_blend_path(),
-                )
+                if self._camera_filepath_override is not None:
+                    self._cam_out_path = self._camera_filepath_override
+                else:
+                    self._cam_out_path = camera_usd_output_path(
+                        out_path.parent,
+                        self._camera_obj.name,
+                        scene_path=scene_blend_path(),
+                    )
                 logger.info(
                     "Camera will export via wm.usd_export → %s",
                     self._cam_out_path,
@@ -1674,6 +1681,7 @@ class UsdAnimCacheMultiExportSession:
         root_prim_override: str = "",
         strict_topology: bool = True,
         export_camera: bool = True,
+        camera_filepath: Optional[str] = None,
     ) -> None:
         self.context = context
         self.jobs = list(jobs)
@@ -1683,6 +1691,9 @@ class UsdAnimCacheMultiExportSession:
         self.root_prim_override = (root_prim_override or "").strip()
         self.strict_topology = bool(strict_topology)
         self._export_camera = bool(export_camera)
+        self._camera_filepath_override = (
+            Path(camera_filepath) if camera_filepath else None
+        )
 
         self.result = UsdAnimCacheExportResult(ok=False)
         self.status_label = ""
@@ -1730,6 +1741,11 @@ class UsdAnimCacheMultiExportSession:
             export_camera=self._is_last_job() and self._export_camera,
             write_publish_meta=False,
             job_label=job.publish_name,
+            camera_filepath=(
+                str(self._camera_filepath_override)
+                if self._is_last_job() and self._camera_filepath_override is not None
+                else None
+            ),
         )
         err = self._session.begin()
         if err:

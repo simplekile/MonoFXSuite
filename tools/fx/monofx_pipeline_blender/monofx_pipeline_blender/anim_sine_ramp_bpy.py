@@ -15,6 +15,7 @@ from bpy.app.handlers import persistent
 from monofx_pipeline_common.anim_sine_chain import (
     SINE_AXIS_KEY_PROP,
     SINE_BASE_PROP,
+    SINE_CHAIN_PHASE_PROP,
     SINE_MEMBER_COUNT_PROP,
     SINE_MEMBER_INDEX_PROP,
     SINE_RAMP_MODE_PROP,
@@ -23,8 +24,12 @@ from monofx_pipeline_common.anim_sine_chain import (
     build_sine_driver_expression,
     chain_amp_t,
     decode_sine_rna,
+    list_sine_axis_keys,
+    owner_has_sine_driver,
+    read_axis_float,
     resolve_sine_axis_settings,
     sine_axis_key,
+    sine_owner_prop,
 )
 
 RAMP_NODE_TREE_NAME = ".MonoFX_SineRamp"
@@ -141,8 +146,8 @@ def make_sine_ramp_settings_update(channel: str, axis: str):
 
     def _update(self, _context) -> None:
         if getattr(self, "amp_ramp_mode", None) == "ROOT_TIP":
-            amp = float(getattr(self, "amplitude", 0.0))
-            if abs(amp) > 1e-6 and abs(float(getattr(self, "amp_tip", 1.0)) - 1.0) < 1e-3:
+            amp = read_axis_float(self, "amplitude", 0.0)
+            if abs(amp) > 1e-6 and abs(read_axis_float(self, "amp_tip", 1.0) - 1.0) < 1e-3:
                 self.amp_tip = amp
         schedule_sine_axis_driver_refresh(channel, axis)
 
@@ -302,6 +307,8 @@ def _apply_ramp_to_driver(
     member_count: int,
     ramp_mode: str,
     ramp_factor: float,
+    chain_phase: float = 0.0,
+    wave_mode: str = "SINE",
 ) -> None:
     from .anim_sine_chain_bpy import _wire_sine_driver
 
@@ -310,6 +317,9 @@ def _apply_ramp_to_driver(
         member_count,
         ramp_mode=ramp_mode,
         ramp_factor=ramp_factor if ramp_mode == "CURVE" else None,
+        chain_phase=chain_phase,
+        wave_mode=wave_mode,
+        channel=channel,
     )
     _wire_sine_driver(
         driver,
@@ -329,17 +339,39 @@ def store_sine_chain_metadata(
     member_index: int,
     member_count: int,
 ) -> None:
+    # Per-axis metadata (multi-axis safe).
+    owner[sine_owner_prop(SINE_AXIS_KEY_PROP, axis_key)] = axis_key
+    owner[sine_owner_prop(SINE_MEMBER_INDEX_PROP, axis_key)] = int(member_index)
+    owner[sine_owner_prop(SINE_MEMBER_COUNT_PROP, axis_key)] = int(member_count)
+    # Keep legacy single-slot mirrors for older refresh paths / migration.
     owner[SINE_AXIS_KEY_PROP] = axis_key
     owner[SINE_MEMBER_INDEX_PROP] = int(member_index)
     owner[SINE_MEMBER_COUNT_PROP] = int(member_count)
 
 
-def clear_sine_chain_metadata(owner) -> None:
-    for key in (
-        SINE_AXIS_KEY_PROP,
-        SINE_MEMBER_INDEX_PROP,
-        SINE_MEMBER_COUNT_PROP,
-    ):
+def clear_sine_chain_metadata(owner, *, axis_key: str | None = None) -> None:
+    keys = [axis_key] if axis_key else list_sine_axis_keys(owner)
+    if axis_key:
+        for base in (SINE_AXIS_KEY_PROP, SINE_MEMBER_INDEX_PROP, SINE_MEMBER_COUNT_PROP):
+            prop = sine_owner_prop(base, axis_key)
+            if prop in owner:
+                try:
+                    del owner[prop]
+                except Exception:
+                    pass
+        # Clear legacy mirrors only if they still point at this axis.
+        if str(owner.get(SINE_AXIS_KEY_PROP, "") or "") == axis_key:
+            for key in (SINE_AXIS_KEY_PROP, SINE_MEMBER_INDEX_PROP, SINE_MEMBER_COUNT_PROP):
+                if key in owner:
+                    try:
+                        del owner[key]
+                    except Exception:
+                        pass
+        return
+
+    for key in keys:
+        clear_sine_chain_metadata(owner, axis_key=key)
+    for key in (SINE_AXIS_KEY_PROP, SINE_MEMBER_INDEX_PROP, SINE_MEMBER_COUNT_PROP):
         if key in owner:
             try:
                 del owner[key]
@@ -366,9 +398,9 @@ def iter_sine_driver_owners() -> Iterator[Tuple[bpy.types.ID, str, object]]:
         if obj.type == "ARMATURE":
             for pose_bone in obj.pose.bones:
                 owner = pose_bone
-                if SINE_RNA_PROP in owner or SINE_BASE_PROP in owner:
+                if owner_has_sine_driver(owner):
                     yield obj, pose_bone.name, owner
-        if SINE_RNA_PROP in obj or SINE_BASE_PROP in obj:
+        if owner_has_sine_driver(obj):
             yield obj, "", obj
 
 
@@ -387,25 +419,49 @@ def refresh_sine_ramp_drivers(
     ramp_mode = str(axis_props.amp_ramp_mode)
     if ramp_mode == "CURVE" and get_amp_ramp_mapping(channel, axis, create=False) is None:
         return 0
+    wave_mode = str(
+        getattr(context.scene.monofx_pipeline_blender_props, "anim_sine_wave_mode", "SINE")
+    )
     updated = 0
 
     for id_block, bone_name, owner in iter_sine_driver_owners():
-        if SINE_RNA_PROP not in owner:
+        axis_keys = list_sine_axis_keys(owner)
+        if target_key not in axis_keys and str(owner.get(SINE_AXIS_KEY_PROP, "")) != target_key:
             continue
 
-        decoded = decode_sine_rna(str(owner[SINE_RNA_PROP]))
+        rna_name = sine_owner_prop(SINE_RNA_PROP, target_key)
+        encoded = owner.get(rna_name)
+        if encoded is None and str(owner.get(SINE_AXIS_KEY_PROP, "")) == target_key:
+            encoded = owner.get(SINE_RNA_PROP)
+        if not encoded:
+            continue
+
+        decoded = decode_sine_rna(str(encoded))
         if decoded is None:
             continue
         prop_path, channel_index = decoded
-        owner_key = _owner_axis_key(owner, prop_path, channel_index)
-        if owner_key != target_key:
-            continue
 
-        member_index = int(owner.get(SINE_MEMBER_INDEX_PROP, 0))
-        member_count = int(owner.get(SINE_MEMBER_COUNT_PROP, 1))
+        member_index = int(
+            owner.get(
+                sine_owner_prop(SINE_MEMBER_INDEX_PROP, target_key),
+                owner.get(SINE_MEMBER_INDEX_PROP, 0),
+            )
+        )
+        member_count = int(
+            owner.get(
+                sine_owner_prop(SINE_MEMBER_COUNT_PROP, target_key),
+                owner.get(SINE_MEMBER_COUNT_PROP, 1),
+            )
+        )
         ramp_factor = ramp_factor_for_member(channel, axis, member_index, member_count)
-        owner[SINE_RAMP_PROP] = ramp_factor
-        owner[SINE_RAMP_MODE_PROP] = ramp_mode
+        owner[sine_owner_prop(SINE_RAMP_PROP, target_key)] = ramp_factor
+        owner[sine_owner_prop(SINE_RAMP_MODE_PROP, target_key)] = ramp_mode
+        chain_phase = float(
+            owner.get(
+                sine_owner_prop(SINE_CHAIN_PHASE_PROP, target_key),
+                owner.get(SINE_CHAIN_PHASE_PROP, 0.0),
+            )
+        )
 
         if bone_name:
             driver_path = f'pose.bones["{bone_name}"].{prop_path}'
@@ -429,6 +485,8 @@ def refresh_sine_ramp_drivers(
             member_count=member_count,
             ramp_mode=ramp_mode,
             ramp_factor=ramp_factor,
+            chain_phase=chain_phase,
+            wave_mode=wave_mode,
         )
         id_block.update_tag(refresh={"DATA"})
         updated += 1
