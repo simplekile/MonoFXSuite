@@ -23,7 +23,7 @@
 | **Scan** | Scan tất cả image files trong folder + subfolders (recursive). |
 | **Auto-detect** | Thử pipeline pattern trước → fail thì fallback generic keyword scan. |
 | **Group by prefix** | Mỗi prefix = 1 material candidate. UI preview trước khi tạo. |
-| **UDIM** | Detect `.XXXX.ext` → gom thành 1 entry, path dùng `%(UDIM)d` token. |
+| **UDIM** | Detect `.XXXX.ext` → gom thành 1 entry, path dùng `<UDIM>` token (MaterialX / USD). |
 | **Color space** | Pipeline pattern: đọc từ filename. Generic: gán theo slot (base_color → sRGB, roughness/normal → RAW). |
 | **Tạo LOP** | Material Library LOP → Karma Material Builder → MtlX Standard Surface + MtlX Image + MtlX Normal Map. |
 | **Assign (optional)** | Assign Material LOP trỏ prim pattern. |
@@ -208,7 +208,7 @@ MtlX Image (displacement, sig=float) ──→ (Collect → displacement output)
 - Data textures (roughness, metallic, opacity, displacement): signature `float`, force linear.
 - Color textures (base_color, emission): signature `color3`, auto/sRGB.
 - Pipeline files: set colorspace từ filename (vd `ACES - ACEScg`, `Utility - Raw`).
-- UDIM: path dùng `%(UDIM)d` token trong parm `file`.
+- UDIM: path dùng `<UDIM>` token trong parm `file` (Houdini ghi nguyên `%(UDIM)d` vào USD, nơi khác không đọc được).
 
 ## 8. Workflow
 

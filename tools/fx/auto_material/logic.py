@@ -15,6 +15,8 @@ from tools.fx.auto_material.config import (
     IMAGE_EXTENSIONS,
     PIPELINE_NAME_TO_SLOT,
     RESOLUTION_TOKENS,
+    SUBSTANCE_COLORSPACE_WORDS,
+    SUBSTANCE_INPUT_TO_SLOT,
     UDIM_REGEX,
 )
 
@@ -125,12 +127,12 @@ def _strip_udim(stem: str) -> tuple[str, bool]:
 
 
 def _make_udim_path(filepath: str) -> str:
-    """Replace the UDIM tile number with %(UDIM)d token."""
+    """Replace the UDIM tile number with the <UDIM> token (MaterialX / USD; Houdini's %(UDIM)d is not)."""
     p = Path(filepath)
     stem = p.stem
     m = re.search(r"\.(\d{4})$", stem)
     if m and int(m.group(1)) >= 1001:
-        new_stem = stem[: m.start()] + ".%(UDIM)d"
+        new_stem = stem[: m.start()] + ".<UDIM>"
         return str(p.with_name(new_stem + p.suffix))
     return filepath
 
@@ -303,3 +305,382 @@ def scan_and_group(
 
     groups = group_by_prefix(parsed)
     return groups, unmatched
+
+
+# ---------------------------------------------------------------------------
+# Substance Painter USD export
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SubstanceMaterial:
+    """One Material prim of a Painter USD export, as the Houdini adapter read it."""
+    name: str
+    usd_path: str
+    textures: dict[str, str]          # Painter asset input -> absolute texture path
+    layers: list[str] = field(default_factory=list)  # layers that author the prim
+
+
+@dataclass
+class SubstanceSource:
+    usd_path: str
+    node_base: str
+    geo_layers: list[str]
+    assignments: dict[str, list[str]]  # material name -> bound prim paths
+
+
+_PAINTER_UDIM_RE = re.compile(r"\.(<UDIM>|\d{4})(?=\.[^.]+$)")
+_VERSION_TOKEN_RE = re.compile(r"_v\d+(?=_|$)", re.IGNORECASE)
+
+
+def _substance_texture_slot(filepath: str) -> SlotInfo:
+    """
+    Painter writes <UDIM> for a set on several tiles and the first tile (.1001) for a set on one;
+    both become .<UDIM>. The colour space is the last name token when it is one
+    Painter writes (ACEScg, Raw, sRGB, Linear); Painter's colorSpace metadata is always "raw".
+    """
+    name = Path(filepath).name
+    folder = filepath[: len(filepath) - len(name)]
+    m = _PAINTER_UDIM_RE.search(name)
+    udim = bool(m) and (m.group(1) == "<UDIM>" or int(m.group(1)) >= 1001)
+    if udim:
+        stem = name[: m.start()]
+        path = folder + stem + ".<UDIM>" + name[m.end():]
+    else:
+        stem = Path(name).stem
+        path = filepath
+
+    last = stem.rsplit("_", 1)[-1]
+    colorspace = last if last.lower() in SUBSTANCE_COLORSPACE_WORDS else None
+    return SlotInfo(filepath=path, colorspace=colorspace, udim=udim)
+
+
+USD_EXTENSIONS: frozenset[str] = frozenset({".usd", ".usda", ".usdc"})
+_FILE_VERSION_RE = re.compile(r"_v(\d+)(?=[_.]|$)", re.IGNORECASE)
+
+
+def is_usd_path(path: str) -> bool:
+    return Path(path).suffix.lower() in USD_EXTENSIONS and Path(path).is_file()
+
+
+def find_painter_usd(folder: str) -> str | None:
+    """
+    Painter USD export in a publish folder: in its highest vNNN child (or the folder itself), the
+    .usd* file with the highest _vNNN in its name. Painter's sublayer (*.material.usda) is skipped.
+    None when there is no USD, so the folder is scanned for textures as before.
+    """
+    root = latest_publish_version(folder) or Path(folder)
+    if not root.is_dir():
+        return None
+    exports = [
+        p for p in root.iterdir()
+        if p.is_file() and p.suffix.lower() in USD_EXTENSIONS and ".material." not in p.name.lower()
+    ]
+    if not exports:
+        return None
+
+    def version(p: Path) -> int:
+        m = _FILE_VERSION_RE.search(p.stem)
+        return int(m.group(1)) if m else -1
+
+    return str(max(exports, key=lambda p: (version(p), p.name)))
+
+
+def substance_node_base(usd_path: str) -> str:
+    """LOP node name base from the export file, without its version, so v009 updates v008's nodes."""
+    stem = Path(usd_path).name.split(".", 1)[0]
+    stem = _VERSION_TOKEN_RE.sub("", stem)
+    return re.sub(r"[^A-Za-z0-9_]", "_", stem) or "substance"
+
+
+def substance_groups(
+    materials: list[SubstanceMaterial],
+) -> dict[str, MaterialGroup]:
+    """Painter materials -> material groups, one slot per known texture input."""
+    groups: dict[str, MaterialGroup] = {}
+    for mat in materials:
+        group = MaterialGroup(prefix=mat.name, parse_mode="substance")
+        for usd_input, filepath in mat.textures.items():
+            slot = SUBSTANCE_INPUT_TO_SLOT.get(usd_input)
+            if slot and slot not in group.slots:
+                group.slots[slot] = _substance_texture_slot(filepath)
+        if group.slots:
+            groups[mat.name] = group
+    return dict(sorted(groups.items()))
+
+
+def substance_geo_layers(
+    usd_path: str,
+    sublayers: list[str],
+    materials: list[SubstanceMaterial],
+) -> list[str]:
+    """
+    The export's sublayers that author none of Painter's materials: the geometry Painter was given
+    (e.g. the UV publish), which may hold materials of its own. None of them -> the export itself.
+    """
+    def norm(p: str) -> str:
+        return str(Path(p)).replace("\\", "/").lower()
+
+    # Only Painter's materials (they carry texture inputs) mark a layer as not geometry.
+    material_layers = {norm(layer) for mat in materials if mat.textures for layer in mat.layers}
+    geo = [layer for layer in sublayers if norm(layer) not in material_layers]
+    return geo or [usd_path]
+
+
+def substance_source(
+    usd_path: str,
+    sublayers: list[str],
+    materials: list[SubstanceMaterial],
+    bindings: dict[str, list[str]],
+) -> tuple[dict[str, MaterialGroup], SubstanceSource]:
+    """
+    Everything Create needs from a Painter export. bindings: Material prim path -> prims bound to
+    it (material:binding). Materials without a known texture input are left out (the geometry
+    file's own materials have none).
+    """
+    groups = substance_groups(materials)
+    by_path = {mat.usd_path: mat.name for mat in materials if mat.name in groups}
+    assignments: dict[str, list[str]] = {}
+    for mat_path, prims in bindings.items():
+        name = by_path.get(mat_path)
+        if name:
+            assignments.setdefault(name, []).extend(prims)
+    source = SubstanceSource(
+        usd_path=usd_path,
+        node_base=substance_node_base(usd_path),
+        geo_layers=substance_geo_layers(usd_path, sublayers, materials),
+        assignments={k: sorted(set(v)) for k, v in sorted(assignments.items())},
+    )
+    return groups, source
+
+
+def substance_assign_entries(
+    source: SubstanceSource,
+    material_paths: dict[str, str],
+) -> list[tuple[str, str]]:
+    """(prim pattern, material path) per material built, prims space-separated as Houdini takes them."""
+    return [
+        (" ".join(prims), material_paths[name])
+        for name, prims in source.assignments.items()
+        if name in material_paths and prims
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Painter export versions: the Version manager
+# ---------------------------------------------------------------------------
+# Each Painter export (…_v008_full.usd) carries every texture set of the asset, with its textures in
+# its own folder (…_v008_full_textures). The scene remembers, on the asset's Material Library, which
+# export each material was built from and whether it is pinned there (see dump_record / parse_record).
+
+_PATH_VERSION_RE = re.compile(r"_v(\d+)(?=[_./\\]|$)", re.IGNORECASE)
+
+# Material status in the Version manager, in the order the chips show them.
+STATUS_OK = "ok"            # scene already at the chosen version
+STATUS_UPDATE = "update"    # Create moves it to the chosen version
+STATUS_NEW = "new"          # not in the scene yet
+STATUS_PINNED = "pinned"    # held at a version by hand
+STATUS_MISSING = "missing"  # not in the export the geometry comes from
+
+
+@dataclass
+class PainterExport:
+    version: str   # "v008", from the file name
+    usd_path: str
+
+
+@dataclass
+class MaterialRecord:
+    version: str             # "" when it was left out before ever being built
+    pinned: bool = False
+    left_out: bool = False   # unticked in the Version manager: stays off next time
+
+
+@dataclass
+class MaterialPlan:
+    """One material of an asset in the Version manager: what exists, what the scene has, what to build."""
+    name: str
+    versions: list[str]          # exports that have this material, oldest first
+    scene: str | None = None     # version built in the scene, None when not built yet
+    chosen: str = ""
+    pinned: bool = False
+    scene_pinned: bool = False
+    enabled: bool = True
+    scene_left_out: bool = False
+
+
+def version_number(version: str) -> int:
+    m = re.search(r"(\d+)", version or "")
+    return int(m.group(1)) if m else -1
+
+
+def version_from_path(path: str) -> str | None:
+    """Export version in a path (folder or file name): the last _vNNN, e.g. …_v008_full_textures -> v008."""
+    matches = _PATH_VERSION_RE.findall(path.replace("%(UDIM)d", "").replace("<UDIM>", ""))
+    return f"v{matches[-1]}" if matches else None
+
+
+def asset_from_path(path: str) -> tuple[str, str] | None:
+    """(group, asset) from …/01_assets/<group>/<asset>/…, the Monos project layout; None elsewhere."""
+    parts = Path(path.replace("\\", "/")).parts
+    for i, name in enumerate(parts):
+        if name.casefold() == "01_assets" and i + 2 < len(parts):
+            return parts[i + 1], parts[i + 2]
+    return None
+
+
+def asset_kind(group: str | None) -> str:
+    """character / environment / prop from the asset group folder (_characters, _environments, _props)."""
+    g = (group or "").lower()
+    if "char" in g:
+        return "character"
+    if "env" in g or "set" in g:
+        return "environment"
+    return "prop"
+
+
+def painter_publish_root(usd_path: str) -> Path:
+    """The publish folder an export sits in: above its vNNN folder when there is one."""
+    parent = Path(usd_path).parent
+    return parent.parent if _VERSION_DIR_RE.match(parent.name) else parent
+
+
+def list_painter_exports(usd_path: str) -> list[PainterExport]:
+    """
+    Every export of the same family as *usd_path* (same name without its _vNNN), in the publish
+    folder and its vNNN children, oldest first. *usd_path* itself is always in the list.
+    """
+    family = substance_node_base(usd_path)
+    root = painter_publish_root(usd_path)
+    folders = [root] + sorted(
+        (p for p in root.iterdir() if p.is_dir() and _VERSION_DIR_RE.match(p.name)),
+        key=lambda p: version_number(p.name),
+    ) if root.is_dir() else []
+    found: dict[str, str] = {}
+    for folder in folders:
+        for p in folder.iterdir():
+            if (
+                p.is_file()
+                and p.suffix.lower() in USD_EXTENSIONS
+                and ".material." not in p.name.lower()
+                and substance_node_base(str(p)) == family
+            ):
+                version = version_from_path(p.name)
+                if version:
+                    found[version] = str(p).replace("\\", "/")  # a later publish folder wins
+    own = version_from_path(Path(usd_path).name) or "v000"
+    found.setdefault(own, str(usd_path).replace("\\", "/"))
+    return [PainterExport(v, found[v]) for v in sorted(found, key=version_number)]
+
+
+def plan_materials(
+    exports: dict[str, dict[str, MaterialGroup]],
+    scene: dict[str, MaterialRecord],
+) -> list[MaterialPlan]:
+    """
+    One plan per material found in any export (version -> material groups). The chosen version is
+    the latest export that has the material, unless the scene pins it to one that still exists.
+    The latest export's materials come first, by name; older-only materials after them.
+    """
+    order = sorted(exports, key=version_number)
+    latest = order[-1] if order else ""
+    names = sorted(exports.get(latest, {})) + sorted(
+        {n for v in order for n in exports[v]} - set(exports.get(latest, {}))
+    )
+    plans: list[MaterialPlan] = []
+    for name in names:
+        versions = [v for v in order if name in exports[v]]
+        record = scene.get(name)
+        plan = MaterialPlan(name=name, versions=versions, chosen=versions[-1])
+        if record is not None:
+            plan.scene = record.version or None
+            if record.pinned and record.version in versions:
+                plan.pinned = plan.scene_pinned = True
+                plan.chosen = record.version
+            if record.left_out:
+                plan.enabled = False
+                plan.scene_left_out = True
+        plans.append(plan)
+    return plans
+
+
+def material_status(plan: MaterialPlan, geometry_materials: set[str] | frozenset[str]) -> str:
+    """Chip of a material: see the STATUS_* constants. geometry_materials: the geometry export's."""
+    if plan.name not in geometry_materials:
+        return STATUS_MISSING
+    if plan.pinned:
+        return STATUS_PINNED
+    if plan.scene is None:
+        return STATUS_NEW
+    return STATUS_OK if plan.scene == plan.chosen else STATUS_UPDATE
+
+
+def plan_changes(plan: MaterialPlan) -> bool:
+    """Whether Create has something to do: build, switch version, or save a pin or a tick."""
+    if (not plan.enabled) != plan.scene_left_out:
+        return True
+    return plan.enabled and (
+        plan.scene is None or plan.scene != plan.chosen or plan.pinned != plan.scene_pinned
+    )
+
+
+def to_latest(plans: list[MaterialPlan]) -> None:
+    """All to latest: every unpinned material to the newest export that has it."""
+    for plan in plans:
+        if not plan.pinned:
+            plan.chosen = plan.versions[-1]
+
+
+def plan_summary(plans: list[MaterialPlan]) -> dict[str, int]:
+    """
+    Counts for the footer: new, update (incl. pin changes), unchanged, left out, and choices to save
+    (a tick changed with nothing to build).
+    """
+    out = {"new": 0, "update": 0, "unchanged": 0, "left_out": 0, "save": 0}
+    for plan in plans:
+        if not plan.enabled:
+            out["left_out"] += 1
+            out["save"] += plan_changes(plan)
+        elif plan.scene is None:
+            out["new"] += 1
+        elif plan_changes(plan):
+            out["update"] += 1
+        else:
+            out["unchanged"] += 1
+    return out
+
+
+RECORD_KEY = "monofx_substance"
+
+
+def dump_record(
+    asset: tuple[str, str] | None,
+    export: PainterExport,
+    materials: dict[str, MaterialRecord],
+) -> str:
+    """What the scene remembers on the asset's Material Library (JSON in its user data)."""
+    group, name = asset or ("", "")
+    return json.dumps({
+        "asset": name,
+        "group": group,
+        "export": export.usd_path,
+        "version": export.version,
+        "materials": {
+            k: {"version": r.version, "pinned": r.pinned, **({"left_out": True} if r.left_out else {})}
+            for k, r in sorted(materials.items())
+        },
+    }, indent=1)
+
+
+def parse_record(text: str | None) -> tuple[dict, dict[str, MaterialRecord]]:
+    """(asset/export fields, material records) from dump_record's JSON; empty when missing or broken."""
+    try:
+        data = json.loads(text or "")
+        mats = data.get("materials", {})
+        records = {
+            str(k): MaterialRecord(str(v.get("version", "")), bool(v.get("pinned", False)),
+                                   bool(v.get("left_out", False)))
+            for k, v in mats.items() if isinstance(v, dict)
+        }
+        return {k: data.get(k) for k in ("asset", "group", "export", "version")}, records
+    except (ValueError, AttributeError, TypeError):
+        return {}, {}

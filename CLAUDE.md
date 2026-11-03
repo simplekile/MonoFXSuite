@@ -20,3 +20,46 @@
   A new map gets an image node wired only into a free surface input; nothing is deleted or re-wired,
   and existing builders and LOP nodes are not moved. Auto assign adds to `assign_material_auto`
   instead of making another node, keeping the entries already there.
+- Create runs inside `solaris_adapter.manual_update()` (Houdini updates set to Manual, then put
+  back): while the Material Library cooks on changes, every node created in it re-translates all its
+  materials, so 16 materials took ~110 s instead of ~1 s.
+- The window has two pages. **Start**: three source cards (Latest publish from `$HIP`, Texture folder,
+  Painter USD), Recent paths, drag and drop, and **In this scene**: one row per asset built from a
+  Painter export, with its version chip and a tick to update several at once. **Version manager**: one
+  source's materials (checkbox, name, version chip) and the maps of the selected one; Change goes back.
+  Latest publish takes the publish's Painter export when its latest `vNNN` holds one
+  (`find_painter_usd`: highest `_vNNN` in the file name, `*.material.usda` skipped), else its textures.
+- Version manager for Painter exports: every export of the same family (`list_painter_exports`: same
+  name without `_vNNN`, in the publish folder and its `vNNN` children) is read; each material can be
+  built from any export that has it. Default: the newest, unless the scene pins it. Chip colours:
+  emerald up to date, blue will update, violet new, amber pinned, red not in the export the geometry
+  comes from (the geometry always comes from the newest export). A pin keeps a material out of
+  All to latest and later updates. Create rebuilds only materials that are new or change version.
+- SSS and emission maps without their weight map (SubsurfaceColor/Radius, EmissionColor) set
+  `subsurface` / `emission` to 1 while that input is free and 0 (`_AUTO_WEIGHTS`); coat is only reported.
+- Results and notes of Create go to the line under the window, never a modal dialog: a modal box
+  blocks Houdini (and the MCP bridge) until someone closes it.
+- Fonts are set in pixels (`_font`, `font-size: …px`): Houdini scales point sizes with its UI scale,
+  which overflowed the painted chips. Base 13px, names 14px, chips 12px.
+- What the scene has is a JSON record on the asset's Material Library (user data `monofx_substance`:
+  asset, export, and per material its version, pin and `left_out`: an unticked material stays off). A library made before the record existed is
+  read from the `_vNNN` in the texture folders the tool set (`_infer_record`), so no data is needed
+  beyond the nodes. Coming back to the window checks for a newer export and shows a banner
+  ("… was just published · Open version manager"); nothing changes until Update.
+- A Painter USD export is read with pxr (in the adapter; `logic.py` gets plain
+  `SubstanceMaterial` data and stays testable without pxr). The export only sublayers
+  `*.material.usda` (Material prims under `/Geo/material` + `over`s carrying `material:binding`) and
+  the geometry it was painted on (e.g. the UV publish, which may hold its own materials, e.g.
+  `/_materials`). Painter materials = Material prims with an input in `config.SUBSTANCE_INPUT_TO_SLOT`;
+  the geometry = the sublayers that author none of them.
+  Create then makes `{base}_geo` (Sublayer of the geometry) -> `{base}_materials` (Material Library,
+  materials at `/materials/<Painter name>`, not over Painter's `/Geo/material`) -> `{base}_assign`
+  (one entry per material, prims from Painter's bindings). `{base}` is the export name without `_vNNN`,
+  so a newer export updates the same three nodes the usual way.
+- Painter writes `<UDIM>` for a texture set on several tiles and the first tile (`.1001`) for a set on
+  one; both become `.<UDIM>`. Its `colorSpace` metadata is always `raw`, so the colour space comes
+  from the name's last token (ACEScg, Raw, sRGB, Linear), like the folder scan.
+- UDIM paths use `<UDIM>` (MaterialX / USD), for the folder scan too. Houdini writes a parm's
+  `%(UDIM)d` verbatim into the stage, which other USD readers do not resolve. Materials built before
+  with `%(UDIM)d` move to `<UDIM>` on the next Create / Update, even with no version change
+  (`_uses_houdini_udim`); paths changed by hand stay. Reading versions and the UI accept both tokens.
