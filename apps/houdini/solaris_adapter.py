@@ -7,8 +7,9 @@ Core and logic must never import hou.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 try:
     import hou
@@ -25,6 +26,24 @@ from tools.fx.auto_material.config import (
 
 def is_available() -> bool:
     return hou is not None
+
+
+@contextmanager
+def manual_update() -> Iterator[None]:
+    """
+    Houdini updates set to Manual for the block, then put back. While a Material Library cooks
+    on changes, each node created in it re-translates every material in the library, so building
+    16 materials took ~110 s instead of ~1 s (Houdini 22.0).
+    """
+    if hou is None:
+        yield
+        return
+    old = hou.updateModeSetting()
+    hou.setUpdateMode(hou.updateMode.Manual)
+    try:
+        yield
+    finally:
+        hou.setUpdateMode(old)
 
 
 # ---------------------------------------------------------------------------
@@ -1034,3 +1053,118 @@ def build_material(
     notes += _weight_notes(surface, slots)
 
     return BuildResult(f"/materials/{builder.name()}", builder.name(), False, notes)
+
+
+# ---------------------------------------------------------------------------
+# Substance Painter USD export: read it, load its geometry, bind its materials
+# ---------------------------------------------------------------------------
+
+def _texture_abs_path(attr: Any) -> str | None:
+    """Absolute path of a Painter asset input. A <UDIM> path does not resolve, so it is anchored
+    to the folder of the layer that authors it."""
+    import os
+
+    value = attr.Get()
+    if not value:
+        return None
+    authored = getattr(value, "authoredPath", None) or value.path
+    if not authored:
+        return None
+    path = value.resolvedPath
+    if not path:
+        path = authored
+        if not os.path.isabs(authored):
+            layer = attr.GetPropertyStack()[0].layer
+            path = os.path.join(os.path.dirname(layer.realPath), authored)
+    return os.path.normpath(path).replace("\\", "/")
+
+
+def read_substance_usd(usd_path: str) -> tuple[list[str], list[Any], dict[str, list[str]]]:
+    """
+    Read a Painter USD export with pxr (opened on its own, not on a LOP stage).
+    Returns (sublayers, materials, bindings): the root layer's sublayers as absolute paths,
+    a logic.SubstanceMaterial per Material prim, and Material prim path -> prims bound to it.
+    """
+    import os
+
+    from pxr import Usd, UsdShade
+
+    from tools.fx.auto_material.config import SUBSTANCE_INPUT_TO_SLOT
+    from tools.fx.auto_material.logic import SubstanceMaterial
+
+    stage = Usd.Stage.Open(usd_path)
+    if stage is None:
+        raise RuntimeError(f"Cannot open USD: {usd_path}")
+
+    root = stage.GetRootLayer()
+    sublayers = [
+        os.path.normpath(root.ComputeAbsolutePath(p)).replace("\\", "/") for p in root.subLayerPaths
+    ]
+
+    materials: list[SubstanceMaterial] = []
+    bindings: dict[str, list[str]] = {}
+    for prim in stage.Traverse():
+        if prim.IsA(UsdShade.Material):
+            mat = UsdShade.Material(prim)
+            textures: dict[str, str] = {}
+            for usd_input in SUBSTANCE_INPUT_TO_SLOT:
+                inp = mat.GetInput(usd_input)
+                path = _texture_abs_path(inp.GetAttr()) if inp else None
+                if path:
+                    textures[usd_input] = path
+            layers = [s.layer.realPath for s in prim.GetPrimStack() if s.layer.realPath]
+            materials.append(SubstanceMaterial(prim.GetName(), str(prim.GetPath()), textures, layers))
+            continue
+        rel = UsdShade.MaterialBindingAPI(prim).GetDirectBindingRel()
+        if rel:
+            for target in rel.GetTargets():
+                bindings.setdefault(str(target), []).append(str(prim.GetPath()))
+    return sublayers, materials, bindings
+
+
+def get_or_create_substance_sublayer(stage_node: Any, name: str, layers: list[str]) -> Any:
+    """Sublayer LOP loading the export's geometry. A run before made it: its files are set again
+    (a newer export may point at a newer geometry publish); the node is not moved."""
+    if stage_node is None or not layers:
+        return None
+    try:
+        node = stage_node.node(name)
+        if node is None or node.type().name() != "sublayer":
+            node = stage_node.createNode("sublayer", node_name=name)
+            node.moveToGoodPosition()
+        if len(layers) == 1:
+            from apps.houdini.lop_usd_helpers import configure_single_file_sublayer
+
+            configure_single_file_sublayer(node, layers[0])
+        else:
+            node.parm("num_files").set(len(layers))
+            for i, layer in enumerate(layers, 1):
+                node.parm(f"filepath{i}").set(layer)
+        return node
+    except Exception:
+        return None
+
+
+def assign_substance_materials(
+    stage_node: Any,
+    mat_lib: Any,
+    name: str,
+    assignments: list[tuple[str, str]],
+) -> tuple[Any, int]:
+    """
+    One Assign Material LOP after the Material Library with Painter's bindings. A run before made
+    it: only prim patterns it does not list yet are added (see merge_assign_material).
+    Returns (node, entries added).
+    """
+    if stage_node is None or not assignments:
+        return None, 0
+    existing = stage_node.node(name)
+    if existing is not None and existing.type().name() == "assignmaterial":
+        return existing, len(merge_assign_material(existing, assignments))
+    node = create_assign_material_bulk(
+        stage_node, assignments=assignments, connect_after=mat_lib, node_name=name,
+    )
+    if node is None:
+        return None, 0
+    node.setDisplayFlag(True)
+    return node, len(assignments)

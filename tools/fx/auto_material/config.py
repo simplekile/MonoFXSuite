@@ -103,3 +103,34 @@ SURFACE_INPUT_MAP: dict[str, str] = {
     "coat_anisotropy":   "coat_anisotropy",
     "coat_normal":       "coat_normal",
 }
+
+# ---------------------------------------------------------------------------
+# Substance Painter USD export
+# ---------------------------------------------------------------------------
+
+# Asset inputs Painter writes on each Material prim -> slot.
+SUBSTANCE_INPUT_TO_SLOT: dict[str, str] = {
+    "baseColorTexture":                "base_color",
+    "specularRoughnessTexture":        "roughness",
+    "metalnessTexture":                "metallic",
+    "compositedNormalGLTexture":       "normal",
+    "opacityTexture":                  "opacity",
+    "emissionColorTexture":            "emission_color",
+    "specularWeightTexture":           "specular",
+    "transmissionWeightTexture":       "translucency",
+    "subsurfaceWeightTexture":         "subsurface",
+    "subsurfaceColorTexture":          "subsurface_color",
+    "subsurfaceRadiusScaleTexture":    "subsurface_radius",
+    "coatWeightTexture":               "coat",
+    "coatColorTexture":                "coat_color",
+    "coatRoughnessTexture":            "coat_roughness",
+    "coatRoughnessAnisotropyTexture":  "coat_anisotropy",
+    "coatNormalTexture":               "coat_normal",
+}
+
+# Colour space words Painter puts at the end of a texture name ({set}_{map}_{space}.{UDIM}.{ext}).
+SUBSTANCE_COLORSPACE_WORDS: frozenset[str] = frozenset({"srgb", "linear", "acescg", "raw"})
+
+SUBSTANCE_GEO_NODE_SUFFIX = "_geo"
+SUBSTANCE_MATLIB_NODE_SUFFIX = "_materials"
+SUBSTANCE_ASSIGN_NODE_SUFFIX = "_assign"

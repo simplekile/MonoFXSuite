@@ -15,6 +15,8 @@ from tools.fx.auto_material.config import (
     IMAGE_EXTENSIONS,
     PIPELINE_NAME_TO_SLOT,
     RESOLUTION_TOKENS,
+    SUBSTANCE_COLORSPACE_WORDS,
+    SUBSTANCE_INPUT_TO_SLOT,
     UDIM_REGEX,
 )
 
@@ -303,3 +305,130 @@ def scan_and_group(
 
     groups = group_by_prefix(parsed)
     return groups, unmatched
+
+
+# ---------------------------------------------------------------------------
+# Substance Painter USD export
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SubstanceMaterial:
+    """One Material prim of a Painter USD export, as the Houdini adapter read it."""
+    name: str
+    usd_path: str
+    textures: dict[str, str]          # Painter asset input -> absolute texture path
+    layers: list[str] = field(default_factory=list)  # layers that author the prim
+
+
+@dataclass
+class SubstanceSource:
+    usd_path: str
+    node_base: str
+    geo_layers: list[str]
+    assignments: dict[str, list[str]]  # material name -> bound prim paths
+
+
+_PAINTER_UDIM_RE = re.compile(r"\.(<UDIM>|\d{4})(?=\.[^.]+$)")
+_VERSION_TOKEN_RE = re.compile(r"_v\d+(?=_|$)", re.IGNORECASE)
+
+
+def _substance_texture_slot(filepath: str) -> SlotInfo:
+    """
+    Painter writes <UDIM> for a set on several tiles and the first tile (.1001) for a set on one;
+    both become the tool's .%(UDIM)d form. The colour space is the last name token when it is one
+    Painter writes (ACEScg, Raw, sRGB, Linear); Painter's colorSpace metadata is always "raw".
+    """
+    name = Path(filepath).name
+    folder = filepath[: len(filepath) - len(name)]
+    m = _PAINTER_UDIM_RE.search(name)
+    udim = bool(m) and (m.group(1) == "<UDIM>" or int(m.group(1)) >= 1001)
+    if udim:
+        stem = name[: m.start()]
+        path = folder + stem + ".%(UDIM)d" + name[m.end():]
+    else:
+        stem = Path(name).stem
+        path = filepath
+
+    last = stem.rsplit("_", 1)[-1]
+    colorspace = last if last.lower() in SUBSTANCE_COLORSPACE_WORDS else None
+    return SlotInfo(filepath=path, colorspace=colorspace, udim=udim)
+
+
+def substance_node_base(usd_path: str) -> str:
+    """LOP node name base from the export file, without its version, so v009 updates v008's nodes."""
+    stem = Path(usd_path).name.split(".", 1)[0]
+    stem = _VERSION_TOKEN_RE.sub("", stem)
+    return re.sub(r"[^A-Za-z0-9_]", "_", stem) or "substance"
+
+
+def substance_groups(
+    materials: list[SubstanceMaterial],
+) -> dict[str, MaterialGroup]:
+    """Painter materials -> material groups, one slot per known texture input."""
+    groups: dict[str, MaterialGroup] = {}
+    for mat in materials:
+        group = MaterialGroup(prefix=mat.name, parse_mode="substance")
+        for usd_input, filepath in mat.textures.items():
+            slot = SUBSTANCE_INPUT_TO_SLOT.get(usd_input)
+            if slot and slot not in group.slots:
+                group.slots[slot] = _substance_texture_slot(filepath)
+        if group.slots:
+            groups[mat.name] = group
+    return dict(sorted(groups.items()))
+
+
+def substance_geo_layers(
+    usd_path: str,
+    sublayers: list[str],
+    materials: list[SubstanceMaterial],
+) -> list[str]:
+    """
+    The export's sublayers that author none of Painter's materials: the geometry Painter was given
+    (e.g. the UV publish), which may hold materials of its own. None of them -> the export itself.
+    """
+    def norm(p: str) -> str:
+        return str(Path(p)).replace("\\", "/").lower()
+
+    # Only Painter's materials (they carry texture inputs) mark a layer as not geometry.
+    material_layers = {norm(layer) for mat in materials if mat.textures for layer in mat.layers}
+    geo = [layer for layer in sublayers if norm(layer) not in material_layers]
+    return geo or [usd_path]
+
+
+def substance_source(
+    usd_path: str,
+    sublayers: list[str],
+    materials: list[SubstanceMaterial],
+    bindings: dict[str, list[str]],
+) -> tuple[dict[str, MaterialGroup], SubstanceSource]:
+    """
+    Everything Create needs from a Painter export. bindings: Material prim path -> prims bound to
+    it (material:binding). Materials without a known texture input are left out (the geometry
+    file's own materials have none).
+    """
+    groups = substance_groups(materials)
+    by_path = {mat.usd_path: mat.name for mat in materials if mat.name in groups}
+    assignments: dict[str, list[str]] = {}
+    for mat_path, prims in bindings.items():
+        name = by_path.get(mat_path)
+        if name:
+            assignments.setdefault(name, []).extend(prims)
+    source = SubstanceSource(
+        usd_path=usd_path,
+        node_base=substance_node_base(usd_path),
+        geo_layers=substance_geo_layers(usd_path, sublayers, materials),
+        assignments={k: sorted(set(v)) for k, v in sorted(assignments.items())},
+    )
+    return groups, source
+
+
+def substance_assign_entries(
+    source: SubstanceSource,
+    material_paths: dict[str, str],
+) -> list[tuple[str, str]]:
+    """(prim pattern, material path) per material built, prims space-separated as Houdini takes them."""
+    return [
+        (" ".join(prims), material_paths[name])
+        for name, prims in source.assignments.items()
+        if name in material_paths and prims
+    ]

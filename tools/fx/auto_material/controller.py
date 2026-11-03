@@ -7,7 +7,7 @@ from __future__ import annotations
 from PySide6.QtWidgets import QMessageBox
 
 from tools.fx.auto_material import config
-from tools.fx.auto_material.logic import scan_and_group
+from tools.fx.auto_material.logic import scan_and_group, substance_assign_entries, substance_source
 from tools.fx.auto_material.ui import AutoMaterialUI
 
 
@@ -22,12 +22,16 @@ def run() -> None:
     ui = AutoMaterialUI()
     ui.setWindowTitle(config.WINDOW_TITLE)
 
+    # The Painter export loaded last; Scan clears it, so Create builds from the folder again.
+    state: dict = {"substance": None}
+
     # --- Scan ---
     def on_scan() -> None:
         folder = ui.get_folder()
         if not folder:
             ui.set_message("Select a texture folder first.", error=True)
             return
+        state["substance"] = None
         ui.set_message("")
         ui.show_loading("Scanning textures...")
         try:
@@ -60,6 +64,34 @@ def run() -> None:
 
     ui.on_publish_clicked(on_publish)
 
+    # --- Substance Painter USD export ---
+    def on_substance() -> None:
+        usd_path = ui.ask_substance_usd()
+        if not usd_path:
+            return
+        ui.set_message("")
+        ui.show_loading("Reading Substance USD...")
+        try:
+            sublayers, materials, bindings = sa.read_substance_usd(usd_path)
+            groups, source = substance_source(usd_path, sublayers, materials, bindings)
+        except Exception as e:
+            ui.set_message(f"Cannot read Substance USD: {e}", error=True)
+            return
+        finally:
+            ui.hide_loading()
+        if not groups:
+            ui.set_message("No Painter material with textures in this USD.", error=True)
+            return
+        state["substance"] = source
+        ui.set_materials(groups, [])
+        ui.set_message(
+            f"Substance USD: {len(groups)} material(s), geometry {', '.join(source.geo_layers)}. "
+            "Create makes the Sublayer, the materials and the Assign Material.",
+            error=False,
+        )
+
+    ui.on_substance_clicked(on_substance)
+
     # --- Create ---
     def on_create() -> None:
         if not sa.is_lop_context_available():
@@ -78,38 +110,65 @@ def run() -> None:
             ui.set_message("No materials to create.", error=True)
             return
 
+        # Painter export: Sublayer (its geometry) -> Material Library -> Assign Material, named
+        # after the export without its version so a newer export updates the same nodes.
+        source = state["substance"]
+        mat_lib_name = "materiallibrary1"
+        if source is not None:
+            selected = sa.get_or_create_substance_sublayer(
+                stage, source.node_base + config.SUBSTANCE_GEO_NODE_SUFFIX, source.geo_layers,
+            )
+            if selected is None:
+                ui.set_message("Cannot create the Sublayer for the Substance geometry.", error=True)
+                return
+            mat_lib_name = source.node_base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
+
         ui.show_loading("Creating materials...")
         cancelled = False
         created: list[str] = []
         updated: list[str] = []
         notes: list[str] = []
+        material_paths: dict[str, str] = {}
         try:
-            mat_lib_node = None
-            total = len(prefixes)
-            for idx, prefix in enumerate(prefixes, 1):
-                if ui.is_cancelled():
-                    cancelled = True
-                    break
-                ui.show_loading(f"Creating material {idx}/{total}:  {prefix}")
-                group = ui._groups_data.get(prefix)
-                if group is None:
-                    continue
-                result = sa.build_material(
-                    stage=stage,
-                    material_name=prefix,
-                    slots=group.slots,
-                    selected_node=selected,
-                )
-                if result is None:
-                    continue
-                (updated if result.updated else created).append(result.node_name)
-                notes += [f"{result.node_name}: {n}" for n in result.notes]
-                if mat_lib_node is None:
-                    mat_lib_node = stage.node("materiallibrary1")
+            with sa.manual_update():
+                mat_lib_node = None
+                total = len(prefixes)
+                for idx, prefix in enumerate(prefixes, 1):
+                    if ui.is_cancelled():
+                        cancelled = True
+                        break
+                    ui.show_loading(f"Creating material {idx}/{total}:  {prefix}")
+                    group = ui._groups_data.get(prefix)
+                    if group is None:
+                        continue
+                    result = sa.build_material(
+                        stage=stage,
+                        material_name=prefix,
+                        slots=group.slots,
+                        mat_lib_name=mat_lib_name,
+                        selected_node=selected,
+                    )
+                    if result is None:
+                        continue
+                    (updated if result.updated else created).append(result.node_name)
+                    notes += [f"{result.node_name}: {n}" for n in result.notes]
+                    material_paths[prefix] = result.path
+                    if mat_lib_node is None:
+                        mat_lib_node = stage.node(mat_lib_name)
 
-            # Place only the new builders; the ones already there keep their position.
-            if mat_lib_node and created:
-                sa.layout_material_library(mat_lib_node, new_names=created)
+                # Place only the new builders; the ones already there keep their position.
+                if mat_lib_node and created:
+                    sa.layout_material_library(mat_lib_node, new_names=created)
+
+                if source is not None and mat_lib_node is not None:
+                    assign, added = sa.assign_substance_materials(
+                        stage,
+                        mat_lib_node,
+                        source.node_base + config.SUBSTANCE_ASSIGN_NODE_SUFFIX,
+                        substance_assign_entries(source, material_paths),
+                    )
+                    if assign is not None:
+                        notes.append(f"{assign.name()}: {added} binding(s) added from the Substance USD.")
         finally:
             done = ", ".join(
                 s for s in (

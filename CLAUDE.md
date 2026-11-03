@@ -20,3 +20,19 @@
   A new map gets an image node wired only into a free surface input; nothing is deleted or re-wired,
   and existing builders and LOP nodes are not moved. Auto assign adds to `assign_material_auto`
   instead of making another node, keeping the entries already there.
+- Create runs inside `solaris_adapter.manual_update()` (Houdini updates set to Manual, then put
+  back): while the Material Library cooks on changes, every node created in it re-translates all its
+  materials, so 16 materials took ~110 s instead of ~1 s.
+- **Substance USD** button reads a Painter USD export with pxr (in the adapter; `logic.py` gets plain
+  `SubstanceMaterial` data and stays testable without pxr). The export only sublayers
+  `*.material.usda` (Material prims under `/Geo/material` + `over`s carrying `material:binding`) and
+  the geometry it was painted on (e.g. the UV publish, which may hold its own materials, e.g.
+  `/_materials`). Painter materials = Material prims with an input in `config.SUBSTANCE_INPUT_TO_SLOT`;
+  the geometry = the sublayers that author none of them.
+  Create then makes `{base}_geo` (Sublayer of the geometry) -> `{base}_materials` (Material Library,
+  materials at `/materials/<Painter name>`, not over Painter's `/Geo/material`) -> `{base}_assign`
+  (one entry per material, prims from Painter's bindings). `{base}` is the export name without `_vNNN`,
+  so a newer export updates the same three nodes the usual way.
+- Painter writes `<UDIM>` for a texture set on several tiles and the first tile (`.1001`) for a set on
+  one; both become `.%(UDIM)d`. Its `colorSpace` metadata is always `raw`, so the colour space comes
+  from the name's last token (ACEScg, Raw, sRGB, Linear), like the folder scan.

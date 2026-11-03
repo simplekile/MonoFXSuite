@@ -448,6 +448,14 @@ class AutoMaterialUI(QWidget):
         self._publish_btn.setStyleSheet(STYLE_BTN)
         folder_row.addWidget(self._publish_btn)
 
+        self._substance_btn = QPushButton("Substance USD")
+        self._substance_btn.setToolTip(
+            "Load a Substance Painter USD export: Create makes a Sublayer with its geometry, "
+            "the Karma materials and an Assign Material from its bindings."
+        )
+        self._substance_btn.setStyleSheet(STYLE_BTN)
+        folder_row.addWidget(self._substance_btn)
+
         self._scan_btn = QPushButton("Scan")
         self._scan_btn.setStyleSheet(STYLE_BTN_PRIMARY)
         folder_row.addWidget(self._scan_btn)
@@ -684,6 +692,15 @@ class AutoMaterialUI(QWidget):
 
     def on_publish_clicked(self, callback: Callable[[], None]) -> None:
         self._publish_btn.clicked.connect(callback)
+
+    def on_substance_clicked(self, callback: Callable[[], None]) -> None:
+        self._substance_btn.clicked.connect(callback)
+
+    def ask_substance_usd(self) -> str:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Substance Painter USD export", self.get_folder(), "USD (*.usd *.usda *.usdc)",
+        )
+        return path
 
     def on_create_clicked(self, callback: Callable[[], None]) -> None:
         self._create_btn.clicked.connect(callback)
