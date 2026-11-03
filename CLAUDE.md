@@ -63,3 +63,33 @@
   `%(UDIM)d` verbatim into the stage, which other USD readers do not resolve. Materials built before
   with `%(UDIM)d` move to `<UDIM>` on the next Create / Update, even with no version change
   (`_uses_houdini_udim`); paths changed by hand stay. Reading versions and the UI accept both tokens.
+
+## Drag & drop from the file browser (Houdini, `scripts/externaldragdrop.py` + `apps/houdini/drag_drop.py`)
+
+- Houdini calls `dropAccept(file_list)` in `scripts/externaldragdrop.py` from any `HOUDINI_PATH`
+  folder; the suite root is the package `hpath`, and the installer copies `scripts/` there.
+  Returning False hands the drop back to Houdini, which opens ANY file as a scene ("Save changes
+  ... before clearing all contents?"), so only a drop of Houdini's own files (.hip, .hda/.otl) or
+  a drop with the setting off is handed back. Every other drop, even one that makes nothing or
+  raises, is kept and gets a status-bar warning.
+- What gets made depends on the Network Editor under the cursor: OBJ (geo node + SOP, FBX import),
+  SOP (File / Alembic / USD Import), LOP (a menu at the cursor picks Reference LOPs or one Sublayer
+  LOP; Escape makes nothing; textures or a folder build Auto Material into the selected Material
+  Library, else materiallibrary1),
+  VOP (inside a Material Library: Auto Material into that library, by
+  `solaris_adapter.build_material`; inside a material builder: MaterialX Image), COP (File).
+  Not over a Network Editor → Houdini's default.
+- Frame sequences collapse to `$F<pad>`. Textures go through Auto Material's own functions
+  (`group_by_prefix`, `scan_and_group`, `_make_udim_path`, `build_material` inside `manual_update()`),
+  so UDIMs become `<UDIM>` and Monos colour space words set filecolorspace exactly as in its window;
+  a fix there applies to drops too. Images whose name gives no slot
+  (renders, photos) make a material each with the image as base colour (8-bit sRGB, float Linear;
+  setting `other_images_base_color`). A drop is one undo step. From 3 nodes / materials a drop
+  shows Houdini's progress bar (`hou.InterruptableOperation`); cancelling keeps what was made.
+- New nodes are placed with `moveToGoodPosition(move_inputs=False, move_outputs=False,
+  move_unconnected=False)` (`solaris_adapter._place_new`): Houdini's default moves every other node
+  in the network, which looks like the view jumping.
+- Settings: shelf tool **Drag & Drop** (`tools/fx/drag_drop/`), saved in `~/.monofx/drag_drop_prefs.json`
+  and read on every drop: on/off, LOP layer mode (ask / reference / sublayer), Auto Material for
+  textures in LOP, base-colour materials for other images, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
+  drop handler and tests read prefs without Qt.

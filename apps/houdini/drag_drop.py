@@ -1,0 +1,487 @@
+"""
+Drag & drop of files from the OS file browser into Houdini.
+
+Called by scripts/externaldragdrop.py (Houdini's hook for external drops). What a drop creates
+depends on the Network Editor under the cursor:
+
+- OBJ:  geo/abc/usd -> a geo node with a File / Alembic / USD Import SOP inside; .fbx -> FBX import.
+- SOP:  geo/fbx -> File SOP, .abc -> Alembic SOP, .usd -> USD Import SOP.
+- LOP:  geo/abc/usd -> a menu at the cursor picks Reference LOPs or one Sublayer LOP;
+        textures or a texture folder -> Auto Material, into the selected Material Library
+        (else materiallibrary1); other images -> a material each, image as base colour.
+- VOP: textures or a texture folder inside a Material Library -> Auto Material in that library;
+        textures inside a material builder -> MaterialX Image with colour space set.
+- COP:  images -> File COP.
+
+Only a drop made entirely of Houdini's own files (.hip, .hda/.otl) is left to Houdini, and so is
+every drop while the Drag & Drop setting is off (shelf tool, tools/fx/drag_drop). Any other drop
+is kept here even when nothing can be made for it, with a warning in the status bar: Houdini
+opens any other file as a scene, asking to clear the current one. The functions above
+handle_drop() do not need hou.
+"""
+
+from __future__ import annotations
+
+import re
+from collections import OrderedDict
+from pathlib import Path
+from typing import Any
+
+try:
+    import hou
+except ImportError:
+    hou = None  # type: ignore[assignment]
+
+from tools.fx.auto_material.config import IMAGE_EXTENSIONS
+from tools.fx.auto_material.logic import (
+    MaterialGroup,
+    SlotInfo,
+    _make_udim_path,
+    auto_parse,
+    group_by_prefix,
+    read_publish_spaces,
+    scan_and_group,
+)
+from tools.fx.drag_drop import prefs as drop_prefs
+from tools.fx.drag_drop.prefs import LAYER_ASK, LAYER_REFERENCE, LAYER_SUBLAYER
+
+KIND_GEO = "geo"
+KIND_ABC = "abc"
+KIND_FBX = "fbx"
+KIND_USD = "usd"
+KIND_IMAGE = "image"
+KIND_FOLDER = "folder"
+
+# Longest first so ".bgeo.sc" wins over ".sc"
+_GEO_EXTS = (".bgeo.sc", ".bgeo.gz", ".bgeo.lzma", ".bgeo", ".geo", ".obj", ".ply", ".stl", ".vdb", ".bhclassic")
+_USD_EXTS = (".usd", ".usda", ".usdc", ".usdz")
+_IMAGE_EXTS = tuple(sorted(IMAGE_EXTENSIONS))
+# 8-bit formats are almost always sRGB colour when the name says nothing
+_SRGB_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tga", ".bmp"})
+
+# Dropped alone, these keep Houdini's own handling (open / merge a scene, install an asset)
+_HOUDINI_EXTS = frozenset({".hip", ".hipnc", ".hiplc", ".hda", ".hdanc", ".hdalc", ".otl", ".otlnc", ".otllc"})
+
+_SEQ_RE = re.compile(r"^(?P<base>.*?)(?P<sep>[._])(?P<num>\d{3,})$")
+_NAME_BAD_RE = re.compile(r"[^A-Za-z0-9_]+")
+
+NODE_SPACING = 1.2
+# A drop that makes this many nodes / materials or more shows Houdini's progress bar
+PROGRESS_MIN = 3
+
+
+class _Cancelled(Exception):
+    """The user closed the drop menu without picking."""
+
+
+def split_ext(path: str) -> tuple[str, str]:
+    """(stem, ext) with multi-part extensions kept whole: a.bgeo.sc -> ("a", ".bgeo.sc")."""
+    name = Path(path).name
+    lower = name.lower()
+    for ext in _GEO_EXTS:
+        if lower.endswith(ext):
+            return name[: -len(ext)], name[-len(ext):]
+    p = Path(name)
+    return p.stem, p.suffix
+
+
+def classify(path: str) -> str | None:
+    """Kind of a dropped path, None when the drop handler should leave it to Houdini."""
+    if Path(path).is_dir():
+        return KIND_FOLDER
+    ext = split_ext(path)[1].lower()
+    if ext in _GEO_EXTS:
+        return KIND_GEO
+    if ext == ".abc":
+        return KIND_ABC
+    if ext == ".fbx":
+        return KIND_FBX
+    if ext in _USD_EXTS:
+        return KIND_USD
+    if ext in IMAGE_EXTENSIONS:
+        return KIND_IMAGE
+    return None
+
+
+def is_houdini_file(path: str) -> bool:
+    """A scene or asset file Houdini opens / installs itself when it is dropped."""
+    return Path(path).suffix.lower() in _HOUDINI_EXTS
+
+
+def node_name_for(path: str) -> str:
+    """Valid Houdini node name from a file name, frame / UDIM numbers and tokens removed."""
+    stem = split_ext(path)[0]
+    stem = re.sub(r"[._]?(\$F\d*|%\(UDIM\)d|<UDIM>)$", "", stem)
+    m = _SEQ_RE.match(stem)
+    if m:
+        stem = m.group("base")
+    name = _NAME_BAD_RE.sub("_", stem).strip("_") or "file"
+    return f"_{name}" if name[0].isdigit() else name
+
+
+def collapse_sequences(paths: list[str]) -> list[str]:
+    """
+    Files that differ only in a trailing number (name.1001.bgeo.sc, name.1002.bgeo.sc) become one
+    path with $F<padding>. A single numbered file is kept as is. Order of first appearance is kept.
+    """
+    groups: "OrderedDict[tuple, list[str]]" = OrderedDict()
+    for p in paths:
+        stem, ext = split_ext(p)
+        m = _SEQ_RE.match(stem)
+        key = (str(Path(p).parent), m.group("base"), m.group("sep"), len(m.group("num")), ext.lower()) if m else (p,)
+        groups.setdefault(key, []).append(p)
+    out: list[str] = []
+    for key, members in groups.items():
+        if len(key) == 1 or len(members) < 2:
+            out.extend(members)
+            continue
+        parent, base, sep, pad, _ = key
+        ext = split_ext(members[0])[1]
+        out.append((Path(parent) / f"{base}{sep}$F{pad}{ext}").as_posix())
+    return out
+
+
+def group_images(paths: list[str]) -> tuple[dict[str, MaterialGroup], list[str]]:
+    """
+    Dropped texture files -> material groups as Auto Material makes them (UDIM tiles become one
+    slot), plus the files whose name gives no slot. A publish.json beside them fills colour spaces.
+    """
+    parsed, unmatched = [], []
+    spaces_by_dir: dict[str, dict[str, str]] = {}
+    for f in paths:
+        r = auto_parse(f)
+        if r is None:
+            unmatched.append(f)
+            continue
+        if r.colorspace is None:
+            d = str(Path(f).parent)
+            if d not in spaces_by_dir:
+                spaces_by_dir[d] = read_publish_spaces(d) or read_publish_spaces(Path(d).parent)
+            r.colorspace = spaces_by_dir[d].get(r.slot)
+        parsed.append(r)
+    return group_by_prefix(parsed), unmatched
+
+
+def collapse_udims(paths: list[str]) -> list[str]:
+    """
+    UDIM tiles (name.1001.exr, name.1002.exr...) become one path with <UDIM>, by Auto Material's
+    own rule (logic._make_udim_path), so a drop writes the same token as the Auto Material window.
+    """
+    out: "OrderedDict[str, None]" = OrderedDict()
+    for p in paths:
+        out[Path(_make_udim_path(p)).as_posix()] = None
+    return list(out)
+
+
+def base_color_groups(paths: list[str], taken: dict | None = None) -> dict[str, MaterialGroup]:
+    """
+    Images whose name gives Auto Material no slot (renders, photos, references) -> one material
+    each, named after the file, with the image as base colour: 8-bit formats in sRGB, float ones
+    Linear. UDIM tiles become one image. Names already in *taken* are skipped.
+    """
+    groups: dict[str, MaterialGroup] = {}
+    for path in collapse_udims(paths):
+        name = node_name_for(path)
+        if name in groups or (taken and name in taken):
+            continue
+        ext = split_ext(path)[1].lower()
+        groups[name] = MaterialGroup(
+            prefix=name,
+            slots={"base_color": SlotInfo(
+                filepath=path,
+                colorspace="sRGB" if ext in _SRGB_EXTS else "Linear",
+                udim="<UDIM>" in path,
+            )},
+            parse_mode="base_color",
+        )
+    return groups
+
+
+# ---------------------------------------------------------------------------
+# Houdini side
+# ---------------------------------------------------------------------------
+
+def handle_drop(file_list: list[str]) -> bool:
+    """Entry point for externaldragdrop.dropAccept. True when the drop was handled here."""
+    if hou is None or not file_list:
+        return False
+    opts = drop_prefs.load_prefs()
+    if not opts["enabled"] or all(is_houdini_file(f) for f in file_list):
+        return False
+    # From here the drop is never handed back: Houdini would open these files as a scene
+    names = ", ".join(Path(f).name for f in file_list[:3]) + (" ..." if len(file_list) > 3 else "")
+    pane = _network_editor_under_cursor()
+    if pane is None:
+        return _warn(f"drop files on a Network Editor ({names})")
+    parent = pane.pwd()
+    files = [Path(f).as_posix() for f in file_list if classify(f) is not None]
+    if not files:
+        return _warn(f"no file type MonoFX can load: {names}")
+
+    category = parent.childTypeCategory().name()
+    handler = _HANDLERS.get(category)
+    if handler is None:
+        return _warn(f"nothing to make in a {category} network for {names}")
+
+    # Selection inside the group too, so one Ctrl+Z takes the whole drop back
+    try:
+        with hou.undos.group("MonoFX: drop files"):
+            created = handler(parent, files, pane.cursorPosition(), opts)
+            for i, node in enumerate(created):
+                node.setSelected(True, clear_all_selected=(i == 0))
+    except _Cancelled:
+        return True  # the user closed the menu: the drop is done, not handed to Houdini
+    if not created:
+        return _warn(f"nothing made in {parent.path()} for {names}"
+                     + (" (texture names Auto Material cannot read?)" if category in ("Lop", "Vop") and _has_images(files) else ""))
+    return True
+
+
+def _has_images(files: list[str]) -> bool:
+    return any(classify(f) in (KIND_IMAGE, KIND_FOLDER) for f in files)
+
+
+def _warn(message: str) -> bool:
+    """Status-bar warning for a drop that made nothing. True: the drop is still handled here."""
+    try:
+        hou.ui.setStatusMessage(f"MonoFX drag & drop: {message}", severity=hou.severityType.Warning)
+    except Exception:
+        print(f"MonoFX drag & drop: {message}")
+    return True
+
+
+def _progress(items: list, label: str) -> Any:
+    """
+    Yield *items* behind Houdini's progress bar (from PROGRESS_MIN items). Cancelling stops the
+    loop: what was made so far stays, and the drop is still one undo step.
+    """
+    items = list(items)
+    if len(items) < PROGRESS_MIN:
+        yield from items
+        return
+    try:
+        with hou.InterruptableOperation("MonoFX drag & drop", long_operation_name=label,
+                                        open_interrupt_dialog=True) as op:
+            for i, item in enumerate(items):
+                op.updateLongProgress(i / len(items), f"{label} {i + 1}/{len(items)}")
+                yield item
+    except hou.OperationInterrupted:
+        _warn(f"cancelled: {label.lower()}")
+
+
+def _network_editor_under_cursor() -> Any:
+    try:
+        pane = hou.ui.paneTabUnderCursor()
+    except Exception:
+        return None
+    if pane is None or pane.type() != hou.paneTabType.NetworkEditor:
+        return None
+    return pane
+
+
+def _create(parent: Any, type_name: str, path: str, pos: Any, index: int) -> Any:
+    node = parent.createNode(type_name, node_name=node_name_for(path), force_valid_node_name=True)
+    node.setPosition(hou.Vector2(pos[0] + index * NODE_SPACING * 2, pos[1]))
+    return node
+
+
+def _set_first(node: Any, parm_names: tuple[str, ...], value: str) -> None:
+    for name in parm_names:
+        parm = node.parm(name)
+        if parm is not None:
+            parm.set(value)
+            return
+
+
+def _sequences(files: list[str], opts: dict) -> list[str]:
+    return collapse_sequences(files) if opts["collapse_sequences"] else list(files)
+
+
+def _sop_for(parent: Any, kind: str, path: str, pos: Any, index: int) -> Any:
+    if kind == KIND_ABC:
+        node = _create(parent, "alembic", path, pos, index)
+        node.parm("fileName").set(path)
+    elif kind == KIND_USD:
+        node = _create(parent, "usdimport", path, pos, index)
+        node.parm("filepath1").set(path)
+    else:
+        node = _create(parent, "file", path, pos, index)
+        node.parm("file").set(path)
+    return node
+
+
+def _drop_obj(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
+    created = []
+    for path in _progress(_sequences(files, opts), "Loading files"):
+        kind = classify(path.replace("$F", "0"))
+        index = len(created)
+        if kind == KIND_FBX:
+            node = hou.hipFile.importFBX(path)[0]
+            if node is not None:
+                node.setPosition(hou.Vector2(pos[0] + index * NODE_SPACING * 2, pos[1]))
+                created.append(node)
+        elif kind in (KIND_GEO, KIND_ABC, KIND_USD):
+            geo = _create(parent, "geo", path, pos, index)
+            sop = _sop_for(geo, kind, path, (0, 0), 0)
+            sop.setDisplayFlag(True)
+            sop.setRenderFlag(True)
+            created.append(geo)
+    return created
+
+
+def _drop_sop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
+    created = []
+    for path in _progress(_sequences(files, opts), "Loading files"):
+        kind = classify(path.replace("$F", "0"))
+        if kind in (KIND_GEO, KIND_FBX, KIND_ABC, KIND_USD):
+            created.append(_sop_for(parent, kind, path, pos, len(created)))
+    return created
+
+
+def _ask_layer_mode() -> str:
+    """Reference or Sublayer, from a menu at the cursor. Raises _Cancelled on Escape / click outside."""
+    from PySide6.QtGui import QCursor
+    from PySide6.QtWidgets import QMenu
+
+    menu = QMenu(hou.qt.mainWindow())
+    ref = menu.addAction("Reference")
+    sub = menu.addAction("Sublayer")
+    menu.setActiveAction(ref)
+    picked = menu.exec(QCursor.pos())
+    if picked is None:
+        raise _Cancelled()
+    return LAYER_SUBLAYER if picked is sub else LAYER_REFERENCE
+
+
+def _drop_lop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
+    created = []
+    others = _sequences([f for f in files if classify(f) != KIND_IMAGE], opts)
+    layers = [p for p in others if classify(p.replace("$F", "0")) in (KIND_GEO, KIND_ABC, KIND_USD)]
+    if layers:
+        # Asked before anything is made, so Escape leaves the scene as it was
+        mode = opts["lop_layer_mode"]
+        created += _layer_nodes(parent, layers, _ask_layer_mode() if mode == LAYER_ASK else mode, pos)
+    if opts["lop_textures_material"]:
+        lib = _build_materials(parent, _material_groups(files, others, opts), mat_lib_name=_target_library_name(parent))
+        created += [lib[0].parent()] if lib else []
+    return created
+
+
+def _target_library_name(stage: Any) -> str:
+    """The selected Material Library in *stage* (the last one selected), else materiallibrary1."""
+    libs = [n for n in hou.selectedNodes() if n.parent() == stage and n.type().name() == "materiallibrary"]
+    return libs[-1].name() if libs else "materiallibrary1"
+
+
+def _material_groups(files: list[str], others: list[str], opts: dict) -> dict[str, MaterialGroup]:
+    """
+    Material groups from dropped texture folders (scanned as Auto Material does) and texture files;
+    with the setting on, other images become base-colour materials.
+    """
+    groups: dict[str, MaterialGroup] = {}
+    for path in others:
+        if classify(path) == KIND_FOLDER:
+            groups.update(scan_and_group(path, recursive=True)[0])
+    parsed, unmatched = group_images([f for f in files if classify(f) == KIND_IMAGE])
+    groups.update(parsed)
+    if opts["other_images_base_color"]:
+        groups.update(base_color_groups(unmatched, taken=groups))
+    return groups
+
+
+def _layer_nodes(parent: Any, layers: list[str], mode: str, pos: Any) -> list[Any]:
+    """One Reference LOP per file, or one Sublayer LOP holding all of them in drop order."""
+    if mode == LAYER_REFERENCE:
+        created = []
+        for path in _progress(layers, "Referencing files"):
+            node = _create(parent, "reference", path, pos, len(created))
+            node.parm("filepath1").set(path)
+            created.append(node)
+        return created
+    node = _create(parent, "sublayer", layers[0] if len(layers) == 1 else "sublayer", pos, 0)
+    node.parm("num_files").set(len(layers))
+    for i, path in enumerate(layers, 1):
+        node.parm(f"filepath{i}").set(path)
+    return [node]
+
+
+def _build_materials(stage: Any, groups: dict[str, MaterialGroup], mat_lib_name: str = "materiallibrary1") -> list[Any]:
+    """
+    Auto Material (solaris_adapter.build_material) for each group, in the Material Library
+    *mat_lib_name* of *stage*; made after the selected LOP node when it does not exist yet.
+    Returns the material builders made or updated.
+    """
+    if not groups:
+        return []
+    import apps.houdini.solaris_adapter as sa
+
+    selected = next((n for n in hou.selectedNodes() if n.parent() == stage), None)
+    builders: list[Any] = []
+    created_names: list[str] = []
+    # As the Auto Material window does: with updates on, each new node re-translates the library
+    with sa.manual_update():
+        for prefix, group in _progress(list(groups.items()), "Building materials"):
+            result = sa.build_material(
+                stage=stage, material_name=prefix, slots=group.slots,
+                mat_lib_name=mat_lib_name, selected_node=selected,
+            )
+            if result is None:
+                continue
+            builder = stage.node(f"{mat_lib_name}/{result.node_name}")
+            if builder is not None:
+                builders.append(builder)
+            if not result.updated:
+                created_names.append(result.node_name)
+            if result.notes:
+                print("MonoFX drop:", "; ".join(f"{result.node_name}: {n}" for n in result.notes))
+        mat_lib = stage.node(mat_lib_name)
+        if mat_lib is not None and created_names:
+            sa.layout_material_library(mat_lib, new_names=created_names)
+    return builders
+
+
+def _drop_vop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
+    if parent.type().name() == "materiallibrary":
+        # Inside a Material Library: whole materials, as dropped outside it in LOP
+        if not opts["lop_textures_material"]:
+            return []
+        groups = _material_groups(files, [f for f in files if classify(f) == KIND_FOLDER], opts)
+        return _build_materials(parent.parent(), groups, mat_lib_name=parent.name())
+    if "mtlximage" not in parent.childTypeCategory().nodeTypes():
+        return []
+    import apps.houdini.solaris_adapter as sa
+
+    created = []
+    images = [f for f in files if classify(f) == KIND_IMAGE]
+    groups, unmatched = group_images(images)
+    entries = [(s, info.filepath, info.colorspace) for g in groups.values() for s, info in g.slots.items()]
+    for path in collapse_udims(unmatched):
+        ext = split_ext(path)[1].lower()
+        entries.append(("", path, "sRGB" if ext in _SRGB_EXTS else None))
+    for slot, path, colorspace in _progress(entries, "Adding images"):
+        node = sa.create_mtlx_image(parent, slot=slot, filepath=path, colorspace=colorspace)
+        if node is None:
+            continue
+        node.setName(node_name_for(path), unique_name=True)
+        node.setPosition(hou.Vector2(pos[0], pos[1] - len(created) * NODE_SPACING))
+        created.append(node)
+    return created
+
+
+def _drop_cop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
+    created = []
+    for path in _progress(_sequences([f for f in files if classify(f) == KIND_IMAGE], opts), "Loading images"):
+        node = _create(parent, "file", path, pos, len(created))
+        _set_first(node, ("filename", "filename1", "file"), path)
+        created.append(node)
+    return created
+
+
+_HANDLERS = {
+    "Object": _drop_obj,
+    "Sop": _drop_sop,
+    "Lop": _drop_lop,
+    "Vop": _drop_vop,
+    "Cop": _drop_cop,
+    "Cop2": _drop_cop,
+}

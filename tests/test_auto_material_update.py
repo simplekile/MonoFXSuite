@@ -184,7 +184,7 @@ class FakeNode:
     def outputs(self) -> list[FakeNode]:
         return list(self._outputs)
 
-    def moveToGoodPosition(self) -> None:
+    def moveToGoodPosition(self, **kwargs) -> None:
         pass
 
     def position(self) -> tuple[float, float]:
