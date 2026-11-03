@@ -12,7 +12,8 @@ depends on the Network Editor under the cursor:
 - COP:  images -> File COP.
 
 Anything else (no Network Editor under the cursor, .hip files, unknown types) is left to
-Houdini's own drop handling. The functions above handle_drop() do not need hou.
+Houdini's own drop handling, and so is every drop while the Drag & Drop setting is off
+(shelf tool, tools/fx/drag_drop). The functions above handle_drop() do not need hou.
 """
 
 from __future__ import annotations
@@ -35,6 +36,8 @@ from tools.fx.auto_material.logic import (
     read_publish_spaces,
     scan_and_group,
 )
+from tools.fx.drag_drop import prefs as drop_prefs
+from tools.fx.drag_drop.prefs import LAYER_ASK, LAYER_REFERENCE, LAYER_SUBLAYER
 
 KIND_GEO = "geo"
 KIND_ABC = "abc"
@@ -54,9 +57,6 @@ _SEQ_RE = re.compile(r"^(?P<base>.*?)(?P<sep>[._])(?P<num>\d{3,})$")
 _NAME_BAD_RE = re.compile(r"[^A-Za-z0-9_]+")
 
 NODE_SPACING = 1.2
-
-LAYER_REFERENCE = "reference"
-LAYER_SUBLAYER = "sublayer"
 
 
 class _Cancelled(Exception):
@@ -166,6 +166,9 @@ def handle_drop(file_list: list[str]) -> bool:
     """Entry point for externaldragdrop.dropAccept. True when the drop was handled here."""
     if hou is None or not file_list:
         return False
+    opts = drop_prefs.load_prefs()
+    if not opts["enabled"]:
+        return False
     pane = _network_editor_under_cursor()
     if pane is None:
         return False
@@ -182,7 +185,7 @@ def handle_drop(file_list: list[str]) -> bool:
     # Selection inside the group too, so one Ctrl+Z takes the whole drop back
     try:
         with hou.undos.group("MonoFX: drop files"):
-            created = handler(parent, files, pane.cursorPosition())
+            created = handler(parent, files, pane.cursorPosition(), opts)
             for i, node in enumerate(created):
                 node.setSelected(True, clear_all_selected=(i == 0))
     except _Cancelled:
@@ -214,6 +217,10 @@ def _set_first(node: Any, parm_names: tuple[str, ...], value: str) -> None:
             return
 
 
+def _sequences(files: list[str], opts: dict) -> list[str]:
+    return collapse_sequences(files) if opts["collapse_sequences"] else list(files)
+
+
 def _sop_for(parent: Any, kind: str, path: str, pos: Any, index: int) -> Any:
     if kind == KIND_ABC:
         node = _create(parent, "alembic", path, pos, index)
@@ -227,9 +234,9 @@ def _sop_for(parent: Any, kind: str, path: str, pos: Any, index: int) -> Any:
     return node
 
 
-def _drop_obj(parent: Any, files: list[str], pos: Any) -> list[Any]:
+def _drop_obj(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
     created = []
-    for path in collapse_sequences(files):
+    for path in _sequences(files, opts):
         kind = classify(path.replace("$F", "0"))
         index = len(created)
         if kind == KIND_FBX:
@@ -246,9 +253,9 @@ def _drop_obj(parent: Any, files: list[str], pos: Any) -> list[Any]:
     return created
 
 
-def _drop_sop(parent: Any, files: list[str], pos: Any) -> list[Any]:
+def _drop_sop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
     created = []
-    for path in collapse_sequences(files):
+    for path in _sequences(files, opts):
         kind = classify(path.replace("$F", "0"))
         if kind in (KIND_GEO, KIND_FBX, KIND_ABC, KIND_USD):
             created.append(_sop_for(parent, kind, path, pos, len(created)))
@@ -270,13 +277,16 @@ def _ask_layer_mode() -> str:
     return LAYER_SUBLAYER if picked is sub else LAYER_REFERENCE
 
 
-def _drop_lop(parent: Any, files: list[str], pos: Any) -> list[Any]:
+def _drop_lop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
     created = []
-    others = collapse_sequences([f for f in files if classify(f) != KIND_IMAGE])
+    others = _sequences([f for f in files if classify(f) != KIND_IMAGE], opts)
     layers = [p for p in others if classify(p.replace("$F", "0")) in (KIND_GEO, KIND_ABC, KIND_USD)]
     if layers:
         # Asked before anything is made, so Escape leaves the scene as it was
-        created += _layer_nodes(parent, layers, _ask_layer_mode(), pos)
+        mode = opts["lop_layer_mode"]
+        created += _layer_nodes(parent, layers, _ask_layer_mode() if mode == LAYER_ASK else mode, pos)
+    if not opts["lop_textures_material"]:
+        return created
     for path in others:
         if classify(path) == KIND_FOLDER:
             created += _build_materials(parent, scan_and_group(path, recursive=True)[0])
@@ -325,7 +335,7 @@ def _build_materials(stage: Any, groups: dict[str, MaterialGroup]) -> list[Any]:
     return [mat_lib] if mat_lib is not None else []
 
 
-def _drop_vop(parent: Any, files: list[str], pos: Any) -> list[Any]:
+def _drop_vop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
     if "mtlximage" not in parent.childTypeCategory().nodeTypes():
         return []
     import apps.houdini.solaris_adapter as sa
@@ -347,9 +357,9 @@ def _drop_vop(parent: Any, files: list[str], pos: Any) -> list[Any]:
     return created
 
 
-def _drop_cop(parent: Any, files: list[str], pos: Any) -> list[Any]:
+def _drop_cop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
     created = []
-    for path in collapse_sequences([f for f in files if classify(f) == KIND_IMAGE]):
+    for path in _sequences([f for f in files if classify(f) == KIND_IMAGE], opts):
         node = _create(parent, "file", path, pos, len(created))
         _set_first(node, ("filename", "filename1", "file"), path)
         created.append(node)

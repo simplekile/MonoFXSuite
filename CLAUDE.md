@@ -31,3 +31,7 @@
 - New nodes are placed with `moveToGoodPosition(move_inputs=False, move_outputs=False,
   move_unconnected=False)` (`solaris_adapter._place_new`): Houdini's default moves every other node
   in the network, which looks like the view jumping.
+- Settings: shelf tool **Drag & Drop** (`tools/fx/drag_drop/`), saved in `~/.monofx/drag_drop_prefs.json`
+  and read on every drop: on/off, LOP layer mode (ask / reference / sublayer), Auto Material for
+  textures in LOP, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
+  drop handler and tests read prefs without Qt.
