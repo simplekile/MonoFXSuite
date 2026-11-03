@@ -28,7 +28,8 @@
   Returning False hands the drop back to Houdini, so `.hip` and unknown files open as usual.
 - What gets made depends on the Network Editor under the cursor: OBJ (geo node + SOP, FBX import),
   SOP (File / Alembic / USD Import), LOP (a menu at the cursor picks Reference LOPs or one Sublayer
-  LOP; Escape makes nothing; textures or a folder build Auto Material),
+  LOP; Escape makes nothing; textures or a folder build Auto Material into the selected Material
+  Library, else materiallibrary1),
   VOP (inside a Material Library: Auto Material into that library, by
   `solaris_adapter.build_material`; inside a material builder: MaterialX Image), COP (File).
   Not over a Network Editor → Houdini's default.

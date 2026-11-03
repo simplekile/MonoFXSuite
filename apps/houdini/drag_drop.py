@@ -7,7 +7,8 @@ depends on the Network Editor under the cursor:
 - OBJ:  geo/abc/usd -> a geo node with a File / Alembic / USD Import SOP inside; .fbx -> FBX import.
 - SOP:  geo/fbx -> File SOP, .abc -> Alembic SOP, .usd -> USD Import SOP.
 - LOP:  geo/abc/usd -> a menu at the cursor picks Reference LOPs or one Sublayer LOP;
-        textures or a texture folder -> Auto Material.
+        textures or a texture folder -> Auto Material, into the selected Material Library
+        (else materiallibrary1).
 - VOP: textures or a texture folder inside a Material Library -> Auto Material in that library;
         textures inside a material builder -> MaterialX Image with colour space set.
 - COP:  images -> File COP.
@@ -287,9 +288,15 @@ def _drop_lop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
         mode = opts["lop_layer_mode"]
         created += _layer_nodes(parent, layers, _ask_layer_mode() if mode == LAYER_ASK else mode, pos)
     if opts["lop_textures_material"]:
-        lib = _build_materials(parent, _material_groups(files, others))
+        lib = _build_materials(parent, _material_groups(files, others), mat_lib_name=_target_library_name(parent))
         created += [lib[0].parent()] if lib else []
     return created
+
+
+def _target_library_name(stage: Any) -> str:
+    """The selected Material Library in *stage* (the last one selected), else materiallibrary1."""
+    libs = [n for n in hou.selectedNodes() if n.parent() == stage and n.type().name() == "materiallibrary"]
+    return libs[-1].name() if libs else "materiallibrary1"
 
 
 def _material_groups(files: list[str], others: list[str]) -> dict[str, MaterialGroup]:
