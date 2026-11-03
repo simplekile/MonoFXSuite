@@ -396,12 +396,9 @@ def run() -> None:
     go_start()
 
     # --- Show ---
+    # A window owned by Houdini's main window stays above Houdini only, not above other apps.
     parent_win = sa.get_main_qt_window()
     from PySide6.QtCore import Qt
     if parent_win:
-        flags = ui.windowFlags() | Qt.WindowType.Window | Qt.WindowType.WindowStaysOnTopHint
-        ui.setWindowFlags(flags)
-        ui.setParent(parent_win, flags)
-    else:
-        ui.setWindowFlags(ui.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        ui.setParent(parent_win, ui.windowFlags() | Qt.WindowType.Window)
     ui.show()
