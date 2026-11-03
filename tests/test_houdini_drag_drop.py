@@ -64,3 +64,20 @@ def test_group_images_monos_names() -> None:
     assert slots["base_color"].colorspace == "sRGB"
     assert "%(UDIM)d" in slots["base_color"].filepath
     assert unmatched == ["C:/t/random_photo.jpg"]
+
+
+def test_base_color_groups_for_unreadable_names() -> None:
+    files = [
+        "C:/r/char_Ata_lookdev_v002.0009.exr",
+        "C:/r/photo.jpg",
+        "C:/r/tile.1001.exr",
+        "C:/r/tile.1002.exr",
+        "C:/r/wood.png",
+    ]
+    groups = dd.base_color_groups(files, taken={"wood": object()})
+    assert list(groups) == ["char_Ata_lookdev_v002", "photo", "tile"]
+    render = groups["char_Ata_lookdev_v002"].slots["base_color"]
+    assert render.colorspace == "Linear" and not render.udim
+    assert groups["photo"].slots["base_color"].colorspace == "sRGB"
+    tile = groups["tile"].slots["base_color"]
+    assert tile.udim and tile.filepath.endswith("tile.%(UDIM)d.exr")

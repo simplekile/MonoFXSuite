@@ -24,6 +24,8 @@ DEFAULTS: dict[str, Any] = {
     "lop_layer_mode": LAYER_ASK,
     # Textures or a texture folder dropped in LOP build Auto Material
     "lop_textures_material": True,
+    # Images whose name Auto Material cannot read make a material each, image as base colour
+    "other_images_base_color": True,
     # name.0001.ext, name.0002.ext... -> one node with $F4
     "collapse_sequences": True,
 }
@@ -41,7 +43,7 @@ def normalize(raw: Any) -> dict[str, Any]:
     """Known keys only, wrong types or values replaced by the default."""
     data = raw if isinstance(raw, dict) else {}
     out = dict(DEFAULTS)
-    for key in ("enabled", "lop_textures_material", "collapse_sequences"):
+    for key in ("enabled", "lop_textures_material", "other_images_base_color", "collapse_sequences"):
         if isinstance(data.get(key), bool):
             out[key] = data[key]
     if data.get("lop_layer_mode") in LAYER_MODES:

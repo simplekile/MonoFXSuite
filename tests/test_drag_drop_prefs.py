@@ -23,7 +23,8 @@ def test_defaults_when_no_file(prefs_file: Path) -> None:
 
 def test_save_and_load_round_trip(prefs_file: Path) -> None:
     data = {"enabled": False, "lop_layer_mode": prefs.LAYER_SUBLAYER,
-            "lop_textures_material": False, "collapse_sequences": False}
+            "lop_textures_material": False, "other_images_base_color": False,
+            "collapse_sequences": False}
     prefs.save_prefs(data)
     assert prefs.load_prefs() == data
 

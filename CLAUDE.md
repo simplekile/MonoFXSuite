@@ -37,11 +37,14 @@
   `solaris_adapter.build_material`; inside a material builder: MaterialX Image), COP (File).
   Not over a Network Editor → Houdini's default.
 - Frame sequences collapse to `$F<pad>`; textures use Auto Material's parsing, so UDIMs become
-  `%(UDIM)d` and Monos colour space words set filecolorspace. A drop is one undo step.
+  `%(UDIM)d` and Monos colour space words set filecolorspace. Images whose name gives no slot
+  (renders, photos) make a material each with the image as base colour (8-bit sRGB, float Linear;
+  setting `other_images_base_color`). A drop is one undo step. From 3 nodes / materials a drop
+  shows Houdini's progress bar (`hou.InterruptableOperation`); cancelling keeps what was made.
 - New nodes are placed with `moveToGoodPosition(move_inputs=False, move_outputs=False,
   move_unconnected=False)` (`solaris_adapter._place_new`): Houdini's default moves every other node
   in the network, which looks like the view jumping.
 - Settings: shelf tool **Drag & Drop** (`tools/fx/drag_drop/`), saved in `~/.monofx/drag_drop_prefs.json`
   and read on every drop: on/off, LOP layer mode (ask / reference / sublayer), Auto Material for
-  textures in LOP, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
+  textures in LOP, base-colour materials for other images, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
   drop handler and tests read prefs without Qt.

@@ -60,6 +60,7 @@ class DragDropSettingsUI(QWidget):
         for value, label in config.LAYER_MODE_LABELS:
             self._layer_mode.addItem(label, value)
         self._textures = QCheckBox("Textures / texture folder in LOP build Auto Material")
+        self._other_images = QCheckBox("Other images make a material each (image as base colour)")
         self._sequences = QCheckBox("Collapse frame sequences to $F")
 
         hint = QLabel("Off: Houdini handles every drop itself. Changes apply to the next drop.")
@@ -90,16 +91,19 @@ class DragDropSettingsUI(QWidget):
         layout.addWidget(hint)
         layout.addLayout(layer_row)
         layout.addWidget(self._textures)
+        layout.addWidget(self._other_images)
         layout.addWidget(self._sequences)
         layout.addStretch(1)
         layout.addLayout(buttons)
 
         self._enabled.toggled.connect(self._update_enabled)
+        self._textures.toggled.connect(self._update_enabled)
 
     def set_prefs(self, data: dict[str, Any]) -> None:
         self._enabled.setChecked(bool(data["enabled"]))
         self._layer_mode.setCurrentIndex(max(0, self._layer_mode.findData(data["lop_layer_mode"])))
         self._textures.setChecked(bool(data["lop_textures_material"]))
+        self._other_images.setChecked(bool(data["other_images_base_color"]))
         self._sequences.setChecked(bool(data["collapse_sequences"]))
         self._update_enabled()
 
@@ -108,6 +112,7 @@ class DragDropSettingsUI(QWidget):
             "enabled": self._enabled.isChecked(),
             "lop_layer_mode": self._layer_mode.currentData(),
             "lop_textures_material": self._textures.isChecked(),
+            "other_images_base_color": self._other_images.isChecked(),
             "collapse_sequences": self._sequences.isChecked(),
         }
 
@@ -121,3 +126,4 @@ class DragDropSettingsUI(QWidget):
         on = self._enabled.isChecked()
         for w in (self._layer_mode, self._textures, self._sequences):
             w.setEnabled(on)
+        self._other_images.setEnabled(on and self._textures.isChecked())

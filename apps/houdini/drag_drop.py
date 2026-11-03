@@ -8,7 +8,7 @@ depends on the Network Editor under the cursor:
 - SOP:  geo/fbx -> File SOP, .abc -> Alembic SOP, .usd -> USD Import SOP.
 - LOP:  geo/abc/usd -> a menu at the cursor picks Reference LOPs or one Sublayer LOP;
         textures or a texture folder -> Auto Material, into the selected Material Library
-        (else materiallibrary1).
+        (else materiallibrary1); other images -> a material each, image as base colour.
 - VOP: textures or a texture folder inside a Material Library -> Auto Material in that library;
         textures inside a material builder -> MaterialX Image with colour space set.
 - COP:  images -> File COP.
@@ -35,6 +35,7 @@ except ImportError:
 from tools.fx.auto_material.config import IMAGE_EXTENSIONS
 from tools.fx.auto_material.logic import (
     MaterialGroup,
+    SlotInfo,
     auto_parse,
     group_by_prefix,
     read_publish_spaces,
@@ -64,6 +65,8 @@ _SEQ_RE = re.compile(r"^(?P<base>.*?)(?P<sep>[._])(?P<num>\d{3,})$")
 _NAME_BAD_RE = re.compile(r"[^A-Za-z0-9_]+")
 
 NODE_SPACING = 1.2
+# A drop that makes this many nodes / materials or more shows Houdini's progress bar
+PROGRESS_MIN = 3
 
 
 class _Cancelled(Exception):
@@ -170,6 +173,30 @@ def collapse_udims(paths: list[str]) -> list[str]:
     return list(out)
 
 
+def base_color_groups(paths: list[str], taken: dict | None = None) -> dict[str, MaterialGroup]:
+    """
+    Images whose name gives Auto Material no slot (renders, photos, references) -> one material
+    each, named after the file, with the image as base colour: 8-bit formats in sRGB, float ones
+    Linear. UDIM tiles become one image. Names already in *taken* are skipped.
+    """
+    groups: dict[str, MaterialGroup] = {}
+    for path in collapse_udims(paths):
+        name = node_name_for(path)
+        if name in groups or (taken and name in taken):
+            continue
+        ext = split_ext(path)[1].lower()
+        groups[name] = MaterialGroup(
+            prefix=name,
+            slots={"base_color": SlotInfo(
+                filepath=path,
+                colorspace="sRGB" if ext in _SRGB_EXTS else "Linear",
+                udim="%(UDIM)d" in path,
+            )},
+            parse_mode="base_color",
+        )
+    return groups
+
+
 # ---------------------------------------------------------------------------
 # Houdini side
 # ---------------------------------------------------------------------------
@@ -223,6 +250,25 @@ def _warn(message: str) -> bool:
     return True
 
 
+def _progress(items: list, label: str) -> Any:
+    """
+    Yield *items* behind Houdini's progress bar (from PROGRESS_MIN items). Cancelling stops the
+    loop: what was made so far stays, and the drop is still one undo step.
+    """
+    items = list(items)
+    if len(items) < PROGRESS_MIN:
+        yield from items
+        return
+    try:
+        with hou.InterruptableOperation("MonoFX drag & drop", long_operation_name=label,
+                                        open_interrupt_dialog=True) as op:
+            for i, item in enumerate(items):
+                op.updateLongProgress(i / len(items), f"{label} {i + 1}/{len(items)}")
+                yield item
+    except hou.OperationInterrupted:
+        _warn(f"cancelled: {label.lower()}")
+
+
 def _network_editor_under_cursor() -> Any:
     try:
         pane = hou.ui.paneTabUnderCursor()
@@ -266,7 +312,7 @@ def _sop_for(parent: Any, kind: str, path: str, pos: Any, index: int) -> Any:
 
 def _drop_obj(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
     created = []
-    for path in _sequences(files, opts):
+    for path in _progress(_sequences(files, opts), "Loading files"):
         kind = classify(path.replace("$F", "0"))
         index = len(created)
         if kind == KIND_FBX:
@@ -285,7 +331,7 @@ def _drop_obj(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
 
 def _drop_sop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
     created = []
-    for path in _sequences(files, opts):
+    for path in _progress(_sequences(files, opts), "Loading files"):
         kind = classify(path.replace("$F", "0"))
         if kind in (KIND_GEO, KIND_FBX, KIND_ABC, KIND_USD):
             created.append(_sop_for(parent, kind, path, pos, len(created)))
@@ -316,7 +362,7 @@ def _drop_lop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
         mode = opts["lop_layer_mode"]
         created += _layer_nodes(parent, layers, _ask_layer_mode() if mode == LAYER_ASK else mode, pos)
     if opts["lop_textures_material"]:
-        lib = _build_materials(parent, _material_groups(files, others), mat_lib_name=_target_library_name(parent))
+        lib = _build_materials(parent, _material_groups(files, others, opts), mat_lib_name=_target_library_name(parent))
         created += [lib[0].parent()] if lib else []
     return created
 
@@ -327,13 +373,19 @@ def _target_library_name(stage: Any) -> str:
     return libs[-1].name() if libs else "materiallibrary1"
 
 
-def _material_groups(files: list[str], others: list[str]) -> dict[str, MaterialGroup]:
-    """Material groups from dropped texture folders (scanned as Auto Material does) and texture files."""
+def _material_groups(files: list[str], others: list[str], opts: dict) -> dict[str, MaterialGroup]:
+    """
+    Material groups from dropped texture folders (scanned as Auto Material does) and texture files;
+    with the setting on, other images become base-colour materials.
+    """
     groups: dict[str, MaterialGroup] = {}
     for path in others:
         if classify(path) == KIND_FOLDER:
             groups.update(scan_and_group(path, recursive=True)[0])
-    groups.update(group_images([f for f in files if classify(f) == KIND_IMAGE])[0])
+    parsed, unmatched = group_images([f for f in files if classify(f) == KIND_IMAGE])
+    groups.update(parsed)
+    if opts["other_images_base_color"]:
+        groups.update(base_color_groups(unmatched, taken=groups))
     return groups
 
 
@@ -341,7 +393,7 @@ def _layer_nodes(parent: Any, layers: list[str], mode: str, pos: Any) -> list[An
     """One Reference LOP per file, or one Sublayer LOP holding all of them in drop order."""
     if mode == LAYER_REFERENCE:
         created = []
-        for path in layers:
+        for path in _progress(layers, "Referencing files"):
             node = _create(parent, "reference", path, pos, len(created))
             node.parm("filepath1").set(path)
             created.append(node)
@@ -366,7 +418,7 @@ def _build_materials(stage: Any, groups: dict[str, MaterialGroup], mat_lib_name:
     selected = next((n for n in hou.selectedNodes() if n.parent() == stage), None)
     builders: list[Any] = []
     created_names: list[str] = []
-    for prefix, group in groups.items():
+    for prefix, group in _progress(list(groups.items()), "Building materials"):
         result = sa.build_material(
             stage=stage, material_name=prefix, slots=group.slots,
             mat_lib_name=mat_lib_name, selected_node=selected,
@@ -391,7 +443,7 @@ def _drop_vop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
         # Inside a Material Library: whole materials, as dropped outside it in LOP
         if not opts["lop_textures_material"]:
             return []
-        groups = _material_groups(files, [f for f in files if classify(f) == KIND_FOLDER])
+        groups = _material_groups(files, [f for f in files if classify(f) == KIND_FOLDER], opts)
         return _build_materials(parent.parent(), groups, mat_lib_name=parent.name())
     if "mtlximage" not in parent.childTypeCategory().nodeTypes():
         return []
@@ -404,7 +456,7 @@ def _drop_vop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
     for path in collapse_udims(unmatched):
         ext = split_ext(path)[1].lower()
         entries.append(("", path, "sRGB" if ext in _SRGB_EXTS else None))
-    for slot, path, colorspace in entries:
+    for slot, path, colorspace in _progress(entries, "Adding images"):
         node = sa.create_mtlx_image(parent, slot=slot, filepath=path, colorspace=colorspace)
         if node is None:
             continue
@@ -416,7 +468,7 @@ def _drop_vop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
 
 def _drop_cop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
     created = []
-    for path in _sequences([f for f in files if classify(f) == KIND_IMAGE], opts):
+    for path in _progress(_sequences([f for f in files if classify(f) == KIND_IMAGE], opts), "Loading images"):
         node = _create(parent, "file", path, pos, len(created))
         _set_first(node, ("filename", "filename1", "file"), path)
         created.append(node)
