@@ -490,8 +490,9 @@ class PainterExport:
 
 @dataclass
 class MaterialRecord:
-    version: str
+    version: str             # "" when it was left out before ever being built
     pinned: bool = False
+    left_out: bool = False   # unticked in the Version manager: stays off next time
 
 
 @dataclass
@@ -504,6 +505,7 @@ class MaterialPlan:
     pinned: bool = False
     scene_pinned: bool = False
     enabled: bool = True
+    scene_left_out: bool = False
 
 
 def version_number(version: str) -> int:
@@ -590,10 +592,13 @@ def plan_materials(
         record = scene.get(name)
         plan = MaterialPlan(name=name, versions=versions, chosen=versions[-1])
         if record is not None:
-            plan.scene = record.version
+            plan.scene = record.version or None
             if record.pinned and record.version in versions:
                 plan.pinned = plan.scene_pinned = True
                 plan.chosen = record.version
+            if record.left_out:
+                plan.enabled = False
+                plan.scene_left_out = True
         plans.append(plan)
     return plans
 
@@ -610,7 +615,9 @@ def material_status(plan: MaterialPlan, geometry_materials: set[str] | frozenset
 
 
 def plan_changes(plan: MaterialPlan) -> bool:
-    """Whether Create has something to do for this material: build, switch version or save a pin."""
+    """Whether Create has something to do: build, switch version, or save a pin or a tick."""
+    if (not plan.enabled) != plan.scene_left_out:
+        return True
     return plan.enabled and (
         plan.scene is None or plan.scene != plan.chosen or plan.pinned != plan.scene_pinned
     )
@@ -624,11 +631,15 @@ def to_latest(plans: list[MaterialPlan]) -> None:
 
 
 def plan_summary(plans: list[MaterialPlan]) -> dict[str, int]:
-    """Counts for the footer: new, update (incl. pin changes), unchanged, left out."""
-    out = {"new": 0, "update": 0, "unchanged": 0, "left_out": 0}
+    """
+    Counts for the footer: new, update (incl. pin changes), unchanged, left out, and choices to save
+    (a tick changed with nothing to build).
+    """
+    out = {"new": 0, "update": 0, "unchanged": 0, "left_out": 0, "save": 0}
     for plan in plans:
         if not plan.enabled:
             out["left_out"] += 1
+            out["save"] += plan_changes(plan)
         elif plan.scene is None:
             out["new"] += 1
         elif plan_changes(plan):
@@ -653,7 +664,10 @@ def dump_record(
         "group": group,
         "export": export.usd_path,
         "version": export.version,
-        "materials": {k: {"version": r.version, "pinned": r.pinned} for k, r in sorted(materials.items())},
+        "materials": {
+            k: {"version": r.version, "pinned": r.pinned, **({"left_out": True} if r.left_out else {})}
+            for k, r in sorted(materials.items())
+        },
     }, indent=1)
 
 
@@ -663,7 +677,8 @@ def parse_record(text: str | None) -> tuple[dict, dict[str, MaterialRecord]]:
         data = json.loads(text or "")
         mats = data.get("materials", {})
         records = {
-            str(k): MaterialRecord(str(v.get("version", "")), bool(v.get("pinned", False)))
+            str(k): MaterialRecord(str(v.get("version", "")), bool(v.get("pinned", False)),
+                                   bool(v.get("left_out", False)))
             for k, v in mats.items() if isinstance(v, dict)
         }
         return {k: data.get(k) for k in ("asset", "group", "export", "version")}, records

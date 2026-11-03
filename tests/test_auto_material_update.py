@@ -280,9 +280,10 @@ def test_first_build_wires_sss_and_tags_images(stage: FakeNode) -> None:
     assert _image(b, "base_color").parm("filecolorspace").eval() == "ACEScg"
 
 
-def test_sss_color_without_weight_is_reported(stage: FakeNode) -> None:
+def test_sss_color_without_weight_sets_weight_to_one(stage: FakeNode) -> None:
     res = sa.build_material(stage, "M_char_Body", _slots("v001", ["BaseColor_sRGB", "SubsurfaceColor_sRGB"]))
-    assert any(n.startswith("subsurface: no SubsurfaceWeight") for n in res.notes)
+    assert _surface(_builder(stage)).parm("subsurface").eval() == 1.0
+    assert any(n.startswith("subsurface: set to 1") for n in res.notes)
 
 
 def test_update_keeps_user_edits_and_adds_new_map(stage: FakeNode) -> None:

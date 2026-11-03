@@ -35,8 +35,14 @@
   emerald up to date, blue will update, violet new, amber pinned, red not in the export the geometry
   comes from (the geometry always comes from the newest export). A pin keeps a material out of
   All to latest and later updates. Create rebuilds only materials that are new or change version.
+- SSS and emission maps without their weight map (SubsurfaceColor/Radius, EmissionColor) set
+  `subsurface` / `emission` to 1 while that input is free and 0 (`_AUTO_WEIGHTS`); coat is only reported.
+- Results and notes of Create go to the line under the window, never a modal dialog: a modal box
+  blocks Houdini (and the MCP bridge) until someone closes it.
+- Fonts are set in pixels (`_font`, `font-size: …px`): Houdini scales point sizes with its UI scale,
+  which overflowed the painted chips. Base 13px, names 14px, chips 12px.
 - What the scene has is a JSON record on the asset's Material Library (user data `monofx_substance`:
-  asset, export, and per material its version and pin). A library made before the record existed is
+  asset, export, and per material its version, pin and `left_out`: an unticked material stays off). A library made before the record existed is
   read from the `_vNNN` in the texture folders the tool set (`_infer_record`), so no data is needed
   beyond the nodes. Coming back to the window checks for a newer export and shows a banner
   ("… was just published · Open version manager"); nothing changes until Update.

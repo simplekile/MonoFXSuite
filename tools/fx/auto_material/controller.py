@@ -250,8 +250,10 @@ def run() -> None:
         else:
             ui.hide_loading()
             ui.set_message("Saved." if not notes else "Nothing was built.", error=False)
+        # Notes go under the window, not in a dialog: a modal box blocks Houdini until it is closed.
         if notes:
-            QMessageBox.information(ui, config.WINDOW_TITLE, "\n".join(notes))
+            shown = notes[:4] + ([f"… and {len(notes) - 4} more"] if len(notes) > 4 else [])
+            ui.set_message(ui.message() + "\n" + "\n".join(shown), error=cancelled, tooltip="\n".join(notes))
 
     def create_folder(stage) -> None:
         selected = sa.get_selected_lop_node()
@@ -287,8 +289,9 @@ def run() -> None:
         ctx = state["usd"]
         ui.show_loading("Building materials...")
         result = sa.apply_painter_plan(stage, ctx["data"], ui.plans(), ctx["records"], ui.is_cancelled)
-        done(result.created, result.updated, result.notes, ui.is_cancelled())
-        open_usd(ctx["path"])  # chips now show the scene as it is
+        cancelled = ui.is_cancelled()
+        open_usd(ctx["path"])  # chips now show the scene as it is; then the result under it
+        done(result.created, result.updated, result.notes, cancelled)
 
     def on_create() -> None:
         stage = stage_or_message()

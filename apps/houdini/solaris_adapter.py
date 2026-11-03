@@ -492,10 +492,32 @@ _LOBE_WEIGHTS: dict[str, tuple[str, str, frozenset[str]]] = {
 }
 
 
+# Lobes whose weight is set to 1 when their maps come without a weight map (a 0 weight hides them).
+_AUTO_WEIGHTS: dict[str, frozenset[str]] = {
+    "subsurface": frozenset({"subsurface_color", "subsurface_radius"}),
+    "emission": frozenset({"emission_color"}),
+}
+
+
 def _weight_notes(surface: Any, slots: dict) -> list[str]:
-    """A lobe's colour/roughness/... maps without its weight map show nothing while the weight is 0."""
+    """
+    SSS and emission maps without a weight map: their weight is set to 1, while it is free and 0.
+    Other lobes (coat) are reported instead: their maps show nothing while the weight is 0.
+    """
     notes: list[str] = []
+    for weight, others in _AUTO_WEIGHTS.items():
+        if weight in slots or not (others & set(slots)):
+            continue
+        try:
+            parm = surface.parm(weight) if surface is not None and _input_is_free(surface, weight) else None
+            if parm is not None and parm.eval() == 0:
+                parm.set(1.0)
+                notes.append(f"{weight}: set to 1, its maps came without a weight map")
+        except Exception:
+            continue
     for weight, (map_name, label, others) in _LOBE_WEIGHTS.items():
+        if weight in _AUTO_WEIGHTS:
+            continue
         if weight in slots or not (others & set(slots)):
             continue
         try:
@@ -1325,6 +1347,9 @@ def apply_painter_plan(
     with manual_update():
         for plan in plans:
             if not plan.enabled:
+                # Remembered as left out; what the scene already has of it stays as it is.
+                old = records.get(plan.name)
+                records[plan.name] = MaterialRecord(old.version if old else "", old.pinned if old else False, True)
                 continue
             if cancelled is not None and cancelled():
                 break

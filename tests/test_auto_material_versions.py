@@ -101,7 +101,23 @@ def test_summary_counts():
     exports = _exports(v008=["A", "B"], v009=["A", "B", "C", "D"])
     plans = {p.name: p for p in plan_materials(exports, {"A": MaterialRecord("v008"), "B": MaterialRecord("v009")})}
     plans["D"].enabled = False
-    assert plan_summary(list(plans.values())) == {"new": 1, "update": 1, "unchanged": 1, "left_out": 1}
+    assert plan_summary(list(plans.values())) == {"new": 1, "update": 1, "unchanged": 1, "left_out": 1, "save": 1}
+
+
+def test_left_out_is_remembered_and_untick_alone_is_saved():
+    exports = _exports(v008=["Body", "Hair"])
+    text = dump_record(None, PainterExport("v008", "D:/p/x_v008.usd"), {
+        "Body": MaterialRecord("v008"), "Hair": MaterialRecord("", left_out=True),
+    })
+    _meta, records = parse_record(text)
+    assert records["Hair"] == MaterialRecord("", False, True)
+    plans = {p.name: p for p in plan_materials(exports, records)}
+    assert not plans["Hair"].enabled and plans["Hair"].scene is None
+    assert not plan_changes(plans["Hair"])          # still left out: nothing to do
+    plans["Hair"].enabled = True
+    assert plan_changes(plans["Hair"])              # ticked back on: built as new
+    plans["Body"].enabled = False
+    assert plan_changes(plans["Body"]) and plan_summary(list(plans.values()))["save"] == 1
 
 
 def test_record_round_trip_and_broken_text():
