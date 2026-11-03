@@ -463,3 +463,209 @@ def substance_assign_entries(
         for name, prims in source.assignments.items()
         if name in material_paths and prims
     ]
+
+
+# ---------------------------------------------------------------------------
+# Painter export versions: the Version manager
+# ---------------------------------------------------------------------------
+# Each Painter export (…_v008_full.usd) carries every texture set of the asset, with its textures in
+# its own folder (…_v008_full_textures). The scene remembers, on the asset's Material Library, which
+# export each material was built from and whether it is pinned there (see dump_record / parse_record).
+
+_PATH_VERSION_RE = re.compile(r"_v(\d+)(?=[_./\\]|$)", re.IGNORECASE)
+
+# Material status in the Version manager, in the order the chips show them.
+STATUS_OK = "ok"            # scene already at the chosen version
+STATUS_UPDATE = "update"    # Create moves it to the chosen version
+STATUS_NEW = "new"          # not in the scene yet
+STATUS_PINNED = "pinned"    # held at a version by hand
+STATUS_MISSING = "missing"  # not in the export the geometry comes from
+
+
+@dataclass
+class PainterExport:
+    version: str   # "v008", from the file name
+    usd_path: str
+
+
+@dataclass
+class MaterialRecord:
+    version: str
+    pinned: bool = False
+
+
+@dataclass
+class MaterialPlan:
+    """One material of an asset in the Version manager: what exists, what the scene has, what to build."""
+    name: str
+    versions: list[str]          # exports that have this material, oldest first
+    scene: str | None = None     # version built in the scene, None when not built yet
+    chosen: str = ""
+    pinned: bool = False
+    scene_pinned: bool = False
+    enabled: bool = True
+
+
+def version_number(version: str) -> int:
+    m = re.search(r"(\d+)", version or "")
+    return int(m.group(1)) if m else -1
+
+
+def version_from_path(path: str) -> str | None:
+    """Export version in a path (folder or file name): the last _vNNN, e.g. …_v008_full_textures -> v008."""
+    matches = _PATH_VERSION_RE.findall(path.replace("%(UDIM)d", "").replace("<UDIM>", ""))
+    return f"v{matches[-1]}" if matches else None
+
+
+def asset_from_path(path: str) -> tuple[str, str] | None:
+    """(group, asset) from …/01_assets/<group>/<asset>/…, the Monos project layout; None elsewhere."""
+    parts = Path(path.replace("\\", "/")).parts
+    for i, name in enumerate(parts):
+        if name.casefold() == "01_assets" and i + 2 < len(parts):
+            return parts[i + 1], parts[i + 2]
+    return None
+
+
+def asset_kind(group: str | None) -> str:
+    """character / environment / prop from the asset group folder (_characters, _environments, _props)."""
+    g = (group or "").lower()
+    if "char" in g:
+        return "character"
+    if "env" in g or "set" in g:
+        return "environment"
+    return "prop"
+
+
+def painter_publish_root(usd_path: str) -> Path:
+    """The publish folder an export sits in: above its vNNN folder when there is one."""
+    parent = Path(usd_path).parent
+    return parent.parent if _VERSION_DIR_RE.match(parent.name) else parent
+
+
+def list_painter_exports(usd_path: str) -> list[PainterExport]:
+    """
+    Every export of the same family as *usd_path* (same name without its _vNNN), in the publish
+    folder and its vNNN children, oldest first. *usd_path* itself is always in the list.
+    """
+    family = substance_node_base(usd_path)
+    root = painter_publish_root(usd_path)
+    folders = [root] + sorted(
+        (p for p in root.iterdir() if p.is_dir() and _VERSION_DIR_RE.match(p.name)),
+        key=lambda p: version_number(p.name),
+    ) if root.is_dir() else []
+    found: dict[str, str] = {}
+    for folder in folders:
+        for p in folder.iterdir():
+            if (
+                p.is_file()
+                and p.suffix.lower() in USD_EXTENSIONS
+                and ".material." not in p.name.lower()
+                and substance_node_base(str(p)) == family
+            ):
+                version = version_from_path(p.name)
+                if version:
+                    found[version] = str(p).replace("\\", "/")  # a later publish folder wins
+    own = version_from_path(Path(usd_path).name) or "v000"
+    found.setdefault(own, str(usd_path).replace("\\", "/"))
+    return [PainterExport(v, found[v]) for v in sorted(found, key=version_number)]
+
+
+def plan_materials(
+    exports: dict[str, dict[str, MaterialGroup]],
+    scene: dict[str, MaterialRecord],
+) -> list[MaterialPlan]:
+    """
+    One plan per material found in any export (version -> material groups). The chosen version is
+    the latest export that has the material, unless the scene pins it to one that still exists.
+    The latest export's materials come first, by name; older-only materials after them.
+    """
+    order = sorted(exports, key=version_number)
+    latest = order[-1] if order else ""
+    names = sorted(exports.get(latest, {})) + sorted(
+        {n for v in order for n in exports[v]} - set(exports.get(latest, {}))
+    )
+    plans: list[MaterialPlan] = []
+    for name in names:
+        versions = [v for v in order if name in exports[v]]
+        record = scene.get(name)
+        plan = MaterialPlan(name=name, versions=versions, chosen=versions[-1])
+        if record is not None:
+            plan.scene = record.version
+            if record.pinned and record.version in versions:
+                plan.pinned = plan.scene_pinned = True
+                plan.chosen = record.version
+        plans.append(plan)
+    return plans
+
+
+def material_status(plan: MaterialPlan, geometry_materials: set[str] | frozenset[str]) -> str:
+    """Chip of a material: see the STATUS_* constants. geometry_materials: the geometry export's."""
+    if plan.name not in geometry_materials:
+        return STATUS_MISSING
+    if plan.pinned:
+        return STATUS_PINNED
+    if plan.scene is None:
+        return STATUS_NEW
+    return STATUS_OK if plan.scene == plan.chosen else STATUS_UPDATE
+
+
+def plan_changes(plan: MaterialPlan) -> bool:
+    """Whether Create has something to do for this material: build, switch version or save a pin."""
+    return plan.enabled and (
+        plan.scene is None or plan.scene != plan.chosen or plan.pinned != plan.scene_pinned
+    )
+
+
+def to_latest(plans: list[MaterialPlan]) -> None:
+    """All to latest: every unpinned material to the newest export that has it."""
+    for plan in plans:
+        if not plan.pinned:
+            plan.chosen = plan.versions[-1]
+
+
+def plan_summary(plans: list[MaterialPlan]) -> dict[str, int]:
+    """Counts for the footer: new, update (incl. pin changes), unchanged, left out."""
+    out = {"new": 0, "update": 0, "unchanged": 0, "left_out": 0}
+    for plan in plans:
+        if not plan.enabled:
+            out["left_out"] += 1
+        elif plan.scene is None:
+            out["new"] += 1
+        elif plan_changes(plan):
+            out["update"] += 1
+        else:
+            out["unchanged"] += 1
+    return out
+
+
+RECORD_KEY = "monofx_substance"
+
+
+def dump_record(
+    asset: tuple[str, str] | None,
+    export: PainterExport,
+    materials: dict[str, MaterialRecord],
+) -> str:
+    """What the scene remembers on the asset's Material Library (JSON in its user data)."""
+    group, name = asset or ("", "")
+    return json.dumps({
+        "asset": name,
+        "group": group,
+        "export": export.usd_path,
+        "version": export.version,
+        "materials": {k: {"version": r.version, "pinned": r.pinned} for k, r in sorted(materials.items())},
+    }, indent=1)
+
+
+def parse_record(text: str | None) -> tuple[dict, dict[str, MaterialRecord]]:
+    """(asset/export fields, material records) from dump_record's JSON; empty when missing or broken."""
+    try:
+        data = json.loads(text or "")
+        mats = data.get("materials", {})
+        records = {
+            str(k): MaterialRecord(str(v.get("version", "")), bool(v.get("pinned", False)))
+            for k, v in mats.items() if isinstance(v, dict)
+        }
+        return {k: data.get(k) for k in ("asset", "group", "export", "version")}, records
+    except (ValueError, AttributeError, TypeError):
+        return {}, {}

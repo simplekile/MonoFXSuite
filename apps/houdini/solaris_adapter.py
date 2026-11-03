@@ -1168,3 +1168,202 @@ def assign_substance_materials(
         return None, 0
     node.setDisplayFlag(True)
     return node, len(assignments)
+
+
+# ---------------------------------------------------------------------------
+# Version manager: Painter exports per version, and what the scene remembers per asset
+# ---------------------------------------------------------------------------
+
+class ExportData:
+    """One Painter export read from disk: its material groups and what Create needs from it."""
+    __slots__ = ("export", "groups", "source")
+
+    def __init__(self, export: Any, groups: dict, source: Any) -> None:
+        self.export = export
+        self.groups = groups
+        self.source = source
+
+
+def read_painter_exports(exports: list) -> dict[str, ExportData]:
+    """version -> ExportData for each logic.PainterExport (each read with pxr, ~0.5 s)."""
+    from tools.fx.auto_material.logic import substance_source
+
+    out: dict[str, ExportData] = {}
+    for export in exports:
+        sublayers, materials, bindings = read_substance_usd(export.usd_path)
+        groups, source = substance_source(export.usd_path, sublayers, materials, bindings)
+        out[export.version] = ExportData(export, groups, source)
+    return out
+
+
+def _infer_record(mat_lib: Any) -> str | None:
+    """
+    Record for a library built before the tool kept one: each material's version is the _vNNN in
+    the folder of the textures the tool set, and the export is the .usd next to that folder.
+    """
+    from tools.fx.auto_material.logic import (
+        MaterialRecord,
+        PainterExport,
+        asset_from_path,
+        dump_record,
+        version_from_path,
+        version_number,
+    )
+
+    materials: dict[str, Any] = {}
+    export_path = ""
+    for builder in mat_lib.children():
+        files = [f for f in (_user_data(img, FILE_TAG) for img in _image_slots(builder).values()) if f]
+        version = next((v for v in (version_from_path(f) for f in files) if v), None)
+        if not version:
+            continue
+        materials[builder.name()] = MaterialRecord(version)
+        folder = Path(files[0]).parent
+        candidate = folder.with_name(folder.name.removesuffix("_textures") + ".usd")
+        newer = version_number(version_from_path(candidate.name) or "") >= version_number(
+            version_from_path(export_path) or "")
+        if candidate.is_file() and newer:
+            export_path = str(candidate).replace("\\", "/")
+    if not materials or not export_path:
+        return None
+    export = PainterExport(version_from_path(export_path) or "", export_path)
+    return dump_record(asset_from_path(export_path), export, materials)
+
+
+def substance_libraries(stage_node: Any) -> list[tuple[Any, str]]:
+    """(Material Library, record JSON) for every library Create made from a Painter export."""
+    from tools.fx.auto_material.logic import RECORD_KEY
+
+    out: list[tuple[Any, str]] = []
+    if stage_node is None:
+        return out
+    for node in stage_node.children():
+        try:
+            if node.type().name() != "materiallibrary":
+                continue
+        except Exception:
+            continue
+        record = _user_data(node, RECORD_KEY)
+        if not record and node.name().endswith("_materials"):
+            record = _infer_record(node)
+        if record:
+            out.append((node, record))
+    return out
+
+
+def write_record(mat_lib: Any, record: str) -> None:
+    from tools.fx.auto_material.logic import RECORD_KEY
+
+    try:
+        mat_lib.setUserData(RECORD_KEY, record)
+    except Exception:
+        pass
+
+
+def branch_library(selected: Any, libraries: list[Any]) -> Any:
+    """The library among *libraries* in the selected node's branch (it or an upstream node), if any."""
+    if selected is None:
+        return None
+    wanted = {lib.path() for lib in libraries}
+    seen: set[str] = set()
+    todo = [selected]
+    while todo and len(seen) < 500:
+        node = todo.pop()
+        if node is None or node.path() in seen:
+            continue
+        seen.add(node.path())
+        if node.path() in wanted:
+            return node
+        todo.extend(i for i in node.inputs() if i is not None)
+    return None
+
+
+class ApplyResult:
+    __slots__ = ("created", "updated", "notes")
+
+    def __init__(self) -> None:
+        self.created: list[str] = []
+        self.updated: list[str] = []
+        self.notes: list[str] = []
+
+
+def apply_painter_plan(
+    stage_node: Any,
+    data: dict[str, ExportData],
+    plans: list,
+    previous: dict,
+    cancelled: Any = None,
+) -> ApplyResult:
+    """
+    Build the Version manager's plan into the scene. The newest export gives the geometry and the
+    node names: {base}_geo (Sublayer) -> {base}_materials (Material Library) -> {base}_assign.
+    A material is (re)built only when it is new or its version changes; a pin change alone only
+    goes into the record. *previous*: the scene's MaterialRecords, kept for materials left out.
+    cancelled: optional callable, checked between materials.
+    """
+    from tools.fx.auto_material import config
+    from tools.fx.auto_material.logic import (
+        MaterialRecord,
+        asset_from_path,
+        dump_record,
+        version_number,
+    )
+
+    result = ApplyResult()
+    latest = data[max(data, key=version_number)]
+    base = latest.source.node_base
+    sublayer = get_or_create_substance_sublayer(
+        stage_node, base + config.SUBSTANCE_GEO_NODE_SUFFIX, latest.source.geo_layers,
+    )
+    if sublayer is None:
+        result.notes.append("Cannot create the Sublayer for the Substance geometry.")
+        return result
+    mat_lib_name = base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
+
+    records = dict(previous)
+    paths: dict[str, str] = {}
+    with manual_update():
+        for plan in plans:
+            if not plan.enabled:
+                continue
+            if cancelled is not None and cancelled():
+                break
+            if plan.scene is None or plan.scene != plan.chosen:
+                group = data[plan.chosen].groups.get(plan.name)
+                if group is None:
+                    continue
+                built = build_material(
+                    stage=stage_node, material_name=plan.name, slots=group.slots,
+                    mat_lib_name=mat_lib_name, selected_node=sublayer,
+                )
+                if built is None:
+                    continue
+                (result.updated if built.updated else result.created).append(built.node_name)
+                result.notes += [f"{built.node_name}: {n}" for n in built.notes]
+                paths[plan.name] = built.path
+            else:
+                paths[plan.name] = f"/materials/{plan.name}"
+            records[plan.name] = MaterialRecord(plan.chosen, plan.pinned)
+
+        mat_lib = stage_node.node(mat_lib_name)
+        if mat_lib is None:
+            return result
+        if result.created:
+            layout_material_library(mat_lib, new_names=result.created)
+
+        # Prims per material: the geometry export's bindings, else the chosen export's.
+        entries = []
+        for plan in plans:
+            if plan.name not in paths:
+                continue
+            prims = latest.source.assignments.get(plan.name) or data[plan.chosen].source.assignments.get(plan.name)
+            if prims:
+                entries.append((" ".join(prims), paths[plan.name]))
+        assign, added = assign_substance_materials(
+            stage_node, mat_lib, base + config.SUBSTANCE_ASSIGN_NODE_SUFFIX, entries,
+        )
+        if assign is not None and added:
+            result.notes.append(f"{assign.name()}: {added} binding(s) added.")
+
+    write_record(mat_lib, dump_record(asset_from_path(latest.export.usd_path), latest.export, records))
+    return result
