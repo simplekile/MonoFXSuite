@@ -8,7 +8,8 @@ depends on the Network Editor under the cursor:
 - SOP:  geo/fbx -> File SOP, .abc -> Alembic SOP, .usd -> USD Import SOP.
 - LOP:  geo/abc/usd -> a menu at the cursor picks Reference LOPs or one Sublayer LOP;
         textures or a texture folder -> Auto Material.
-- VOP (material library / builder): textures -> MaterialX Image with colour space set.
+- VOP: textures or a texture folder inside a Material Library -> Auto Material in that library;
+        textures inside a material builder -> MaterialX Image with colour space set.
 - COP:  images -> File COP.
 
 Anything else (no Network Editor under the cursor, .hip files, unknown types) is left to
@@ -285,15 +286,20 @@ def _drop_lop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
         # Asked before anything is made, so Escape leaves the scene as it was
         mode = opts["lop_layer_mode"]
         created += _layer_nodes(parent, layers, _ask_layer_mode() if mode == LAYER_ASK else mode, pos)
-    if not opts["lop_textures_material"]:
-        return created
+    if opts["lop_textures_material"]:
+        lib = _build_materials(parent, _material_groups(files, others))
+        created += [lib[0].parent()] if lib else []
+    return created
+
+
+def _material_groups(files: list[str], others: list[str]) -> dict[str, MaterialGroup]:
+    """Material groups from dropped texture folders (scanned as Auto Material does) and texture files."""
+    groups: dict[str, MaterialGroup] = {}
     for path in others:
         if classify(path) == KIND_FOLDER:
-            created += _build_materials(parent, scan_and_group(path, recursive=True)[0])
-    images = [f for f in files if classify(f) == KIND_IMAGE]
-    if images:
-        created += _build_materials(parent, group_images(images)[0])
-    return created
+            groups.update(scan_and_group(path, recursive=True)[0])
+    groups.update(group_images([f for f in files if classify(f) == KIND_IMAGE])[0])
+    return groups
 
 
 def _layer_nodes(parent: Any, layers: list[str], mode: str, pos: Any) -> list[Any]:
@@ -312,30 +318,46 @@ def _layer_nodes(parent: Any, layers: list[str], mode: str, pos: Any) -> list[An
     return [node]
 
 
-def _build_materials(stage: Any, groups: dict[str, MaterialGroup]) -> list[Any]:
-    """Auto Material for each group, in the Material Library after the selected LOP node."""
+def _build_materials(stage: Any, groups: dict[str, MaterialGroup], mat_lib_name: str = "materiallibrary1") -> list[Any]:
+    """
+    Auto Material (solaris_adapter.build_material) for each group, in the Material Library
+    *mat_lib_name* of *stage*; made after the selected LOP node when it does not exist yet.
+    Returns the material builders made or updated.
+    """
     if not groups:
         return []
     import apps.houdini.solaris_adapter as sa
 
     selected = next((n for n in hou.selectedNodes() if n.parent() == stage), None)
+    builders: list[Any] = []
     created_names: list[str] = []
-    mat_lib = None
     for prefix, group in groups.items():
-        result = sa.build_material(stage=stage, material_name=prefix, slots=group.slots, selected_node=selected)
+        result = sa.build_material(
+            stage=stage, material_name=prefix, slots=group.slots,
+            mat_lib_name=mat_lib_name, selected_node=selected,
+        )
         if result is None:
             continue
-        mat_lib = stage.node("materiallibrary1")
+        builder = stage.node(f"{mat_lib_name}/{result.node_name}")
+        if builder is not None:
+            builders.append(builder)
         if not result.updated:
             created_names.append(result.node_name)
         if result.notes:
             print("MonoFX drop:", "; ".join(f"{result.node_name}: {n}" for n in result.notes))
+    mat_lib = stage.node(mat_lib_name)
     if mat_lib is not None and created_names:
         sa.layout_material_library(mat_lib, new_names=created_names)
-    return [mat_lib] if mat_lib is not None else []
+    return builders
 
 
 def _drop_vop(parent: Any, files: list[str], pos: Any, opts: dict) -> list[Any]:
+    if parent.type().name() == "materiallibrary":
+        # Inside a Material Library: whole materials, as dropped outside it in LOP
+        if not opts["lop_textures_material"]:
+            return []
+        groups = _material_groups(files, [f for f in files if classify(f) == KIND_FOLDER])
+        return _build_materials(parent.parent(), groups, mat_lib_name=parent.name())
     if "mtlximage" not in parent.childTypeCategory().nodeTypes():
         return []
     import apps.houdini.solaris_adapter as sa

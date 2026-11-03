@@ -29,7 +29,9 @@
 - What gets made depends on the Network Editor under the cursor: OBJ (geo node + SOP, FBX import),
   SOP (File / Alembic / USD Import), LOP (a menu at the cursor picks Reference LOPs or one Sublayer
   LOP; Escape makes nothing; textures or a folder build Auto Material),
-  VOP (MaterialX Image), COP (File). Not over a Network Editor → Houdini's default.
+  VOP (inside a Material Library: Auto Material into that library, by
+  `solaris_adapter.build_material`; inside a material builder: MaterialX Image), COP (File).
+  Not over a Network Editor → Houdini's default.
 - Frame sequences collapse to `$F<pad>`; textures use Auto Material's parsing, so UDIMs become
   `%(UDIM)d` and Monos colour space words set filecolorspace. A drop is one undo step.
 - New nodes are placed with `moveToGoodPosition(move_inputs=False, move_outputs=False,
