@@ -23,10 +23,24 @@
 - Create runs inside `solaris_adapter.manual_update()` (Houdini updates set to Manual, then put
   back): while the Material Library cooks on changes, every node created in it re-translates all its
   materials, so 16 materials took ~110 s instead of ~1 s.
-- The path box takes a texture folder or a USD file (Scan picks by what it is). **From USD** picks a
-  USD file; **Publish** loads the publish's Painter export when its latest `vNNN` holds one
-  (`find_painter_usd`: highest `_vNNN` in the file name, `*.material.usda` skipped), else fills the
-  folder as before. A Painter USD export is read with pxr (in the adapter; `logic.py` gets plain
+- The window has two pages. **Start**: three source cards (Latest publish from `$HIP`, Texture folder,
+  Painter USD), Recent paths, drag and drop, and **In this scene**: one row per asset built from a
+  Painter export, with its version chip and a tick to update several at once. **Version manager**: one
+  source's materials (checkbox, name, version chip) and the maps of the selected one; Change goes back.
+  Latest publish takes the publish's Painter export when its latest `vNNN` holds one
+  (`find_painter_usd`: highest `_vNNN` in the file name, `*.material.usda` skipped), else its textures.
+- Version manager for Painter exports: every export of the same family (`list_painter_exports`: same
+  name without `_vNNN`, in the publish folder and its `vNNN` children) is read; each material can be
+  built from any export that has it. Default: the newest, unless the scene pins it. Chip colours:
+  emerald up to date, blue will update, violet new, amber pinned, red not in the export the geometry
+  comes from (the geometry always comes from the newest export). A pin keeps a material out of
+  All to latest and later updates. Create rebuilds only materials that are new or change version.
+- What the scene has is a JSON record on the asset's Material Library (user data `monofx_substance`:
+  asset, export, and per material its version and pin). A library made before the record existed is
+  read from the `_vNNN` in the texture folders the tool set (`_infer_record`), so no data is needed
+  beyond the nodes. Coming back to the window checks for a newer export and shows a banner
+  ("… was just published · Open version manager"); nothing changes until Update.
+- A Painter USD export is read with pxr (in the adapter; `logic.py` gets plain
   `SubstanceMaterial` data and stays testable without pxr). The export only sublayers
   `*.material.usda` (Material prims under `/Geo/material` + `over`s carrying `material:binding`) and
   the geometry it was painted on (e.g. the UV publish, which may hold its own materials, e.g.
