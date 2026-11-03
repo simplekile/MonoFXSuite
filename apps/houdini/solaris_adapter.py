@@ -1300,6 +1300,11 @@ def branch_library(selected: Any, libraries: list[Any]) -> Any:
     return None
 
 
+def _uses_houdini_udim(builder: Any) -> bool:
+    """Whether the tool set a file with Houdini's %(UDIM)d on any image of *builder* (before <UDIM>)."""
+    return any("%(UDIM)d" in (_user_data(img, FILE_TAG) or "") for img in _image_slots(builder).values())
+
+
 class ApplyResult:
     __slots__ = ("created", "updated", "notes")
 
@@ -1368,6 +1373,13 @@ def apply_painter_plan(
                 paths[plan.name] = built.path
             else:
                 paths[plan.name] = f"/materials/{plan.name}"
+                # Same version, but built when the tool still wrote Houdini's %(UDIM)d: move it to
+                # <UDIM> (update_material keeps paths changed by hand). Not counted as an update.
+                lib = stage_node.node(mat_lib_name)
+                builder = lib.node(plan.name) if lib is not None else None
+                group = data[plan.chosen].groups.get(plan.name)
+                if builder is not None and group is not None and _uses_houdini_udim(builder):
+                    update_material(builder, group.slots, [])
             records[plan.name] = MaterialRecord(plan.chosen, plan.pinned)
 
         mat_lib = stage_node.node(mat_lib_name)

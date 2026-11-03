@@ -206,7 +206,7 @@ def _slots(version: str, names: list[str]) -> dict[str, SlotInfo]:
     for n in names:
         r = auto_parse(f"/publish/{version}/textures/M_char_Body_{n}.1001.png")
         assert r is not None, n
-        out[r.slot] = SlotInfo(filepath=f"/publish/{version}/textures/M_char_Body_{n}.%(UDIM)d.png",
+        out[r.slot] = SlotInfo(filepath=f"/publish/{version}/textures/M_char_Body_{n}.<UDIM>.png",
                                colorspace=r.colorspace, udim=True)
     return out
 
@@ -226,6 +226,26 @@ def _surface(builder: FakeNode) -> FakeNode:
 
 def _image(builder: FakeNode, slot: str) -> FakeNode:
     return sa.find_image_node(builder, slot)
+
+
+def test_scan_writes_the_usd_udim_token(tmp_path) -> None:
+    tex = tmp_path / "textures"
+    tex.mkdir()
+    for tile in (1001, 1002):
+        (tex / f"M_char_Body_BaseColor_sRGB.{tile}.exr").write_bytes(b"")
+    groups, _ = scan_and_group(str(tex))
+    path = groups["M_char_Body"].slots["base_color"].filepath
+    assert path.endswith("M_char_Body_BaseColor_sRGB.<UDIM>.exr") and "%(UDIM)d" not in path
+
+
+def test_update_moves_old_houdini_udim_token_to_usd_token(stage: FakeNode) -> None:
+    # A material built before the switch: the tool set and recorded Houdini's %(UDIM)d.
+    old = {k: SlotInfo(v.filepath.replace("<UDIM>", "%(UDIM)d"), v.colorspace, True)
+           for k, v in _slots("v001", ["BaseColor_sRGB"]).items()}
+    sa.build_material(stage, "M_char_Body", old)
+    assert _image(_builder(stage), "base_color").parm("file").eval().endswith(".%(UDIM)d.png")
+    sa.build_material(stage, "M_char_Body", _slots("v001", ["BaseColor_sRGB"]))
+    assert _image(_builder(stage), "base_color").parm("file").eval().endswith("M_char_Body_BaseColor_sRGB.<UDIM>.png")
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +503,7 @@ def test_aces_exr_publish_builds_acescg_images(stage: FakeNode, tmp_path) -> Non
     sa.build_material(stage, "M_char_Body", groups["M_char_Body"].slots)
     b = _builder(stage)
     assert _image(b, "base_color").parm("filecolorspace").eval() == "ACEScg"
-    assert _image(b, "base_color").parm("file").eval().endswith("M_char_Body_BaseColor_ACEScg.%(UDIM)d.exr")
+    assert _image(b, "base_color").parm("file").eval().endswith("M_char_Body_BaseColor_ACEScg.<UDIM>.exr")
     assert _image(b, "emission_color").parm("filecolorspace").eval() == "ACEScg"
     assert _image(b, "metallic").parm("filecolorspace").eval() == "Raw"
     assert _image(b, "displacement").parm("filecolorspace").eval() == "Raw"

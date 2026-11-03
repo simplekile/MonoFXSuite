@@ -57,5 +57,9 @@
   (one entry per material, prims from Painter's bindings). `{base}` is the export name without `_vNNN`,
   so a newer export updates the same three nodes the usual way.
 - Painter writes `<UDIM>` for a texture set on several tiles and the first tile (`.1001`) for a set on
-  one; both become `.%(UDIM)d`. Its `colorSpace` metadata is always `raw`, so the colour space comes
+  one; both become `.<UDIM>`. Its `colorSpace` metadata is always `raw`, so the colour space comes
   from the name's last token (ACEScg, Raw, sRGB, Linear), like the folder scan.
+- UDIM paths use `<UDIM>` (MaterialX / USD), for the folder scan too. Houdini writes a parm's
+  `%(UDIM)d` verbatim into the stage, which other USD readers do not resolve. Materials built before
+  with `%(UDIM)d` move to `<UDIM>` on the next Create / Update, even with no version change
+  (`_uses_houdini_udim`); paths changed by hand stay. Reading versions and the UI accept both tokens.

@@ -127,12 +127,12 @@ def _strip_udim(stem: str) -> tuple[str, bool]:
 
 
 def _make_udim_path(filepath: str) -> str:
-    """Replace the UDIM tile number with %(UDIM)d token."""
+    """Replace the UDIM tile number with the <UDIM> token (MaterialX / USD; Houdini's %(UDIM)d is not)."""
     p = Path(filepath)
     stem = p.stem
     m = re.search(r"\.(\d{4})$", stem)
     if m and int(m.group(1)) >= 1001:
-        new_stem = stem[: m.start()] + ".%(UDIM)d"
+        new_stem = stem[: m.start()] + ".<UDIM>"
         return str(p.with_name(new_stem + p.suffix))
     return filepath
 
@@ -335,7 +335,7 @@ _VERSION_TOKEN_RE = re.compile(r"_v\d+(?=_|$)", re.IGNORECASE)
 def _substance_texture_slot(filepath: str) -> SlotInfo:
     """
     Painter writes <UDIM> for a set on several tiles and the first tile (.1001) for a set on one;
-    both become the tool's .%(UDIM)d form. The colour space is the last name token when it is one
+    both become .<UDIM>. The colour space is the last name token when it is one
     Painter writes (ACEScg, Raw, sRGB, Linear); Painter's colorSpace metadata is always "raw".
     """
     name = Path(filepath).name
@@ -344,7 +344,7 @@ def _substance_texture_slot(filepath: str) -> SlotInfo:
     udim = bool(m) and (m.group(1) == "<UDIM>" or int(m.group(1)) >= 1001)
     if udim:
         stem = name[: m.start()]
-        path = folder + stem + ".%(UDIM)d" + name[m.end():]
+        path = folder + stem + ".<UDIM>" + name[m.end():]
     else:
         stem = Path(name).stem
         path = filepath

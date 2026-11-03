@@ -50,14 +50,14 @@ def _geo_own_material() -> SubstanceMaterial:
 
 def test_texture_udim_tag_from_painter_becomes_tool_token():
     slot = _substance_texture_slot(f"{TEX}/M_char_HairDriver_Color_ACEScg.<UDIM>.exr")
-    assert slot.filepath == f"{TEX}/M_char_HairDriver_Color_ACEScg.%(UDIM)d.exr"
+    assert slot.filepath == f"{TEX}/M_char_HairDriver_Color_ACEScg.<UDIM>.exr"
     assert slot.udim
     assert slot.colorspace == "ACEScg"
 
 
 def test_texture_single_tile_becomes_udim_token():
     slot = _substance_texture_slot(f"{TEX}/M_char_Body_Normal_Raw.1007.exr")
-    assert slot.filepath == f"{TEX}/M_char_Body_Normal_Raw.%(UDIM)d.exr"
+    assert slot.filepath == f"{TEX}/M_char_Body_Normal_Raw.<UDIM>.exr"
     assert slot.udim
     assert slot.colorspace == "Raw"
 
