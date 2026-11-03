@@ -56,7 +56,22 @@ SLOT_DEFS: tuple[SlotDef, ...] = (
                                  ("subsurfacecolor", "ssscolor"),                                                                    "sRGB",  "color3"),
     SlotDef("subsurface_radius", ("SubsurfaceRadius", "SSSRadius", "SssRadius"),
                                  ("subsurfaceradius", "sssradius"),                                                                  "RAW",   "color3"),
+    # Coat: Painter's OpenPBR channels (CoatOpacity is the older shaders' coat weight). Coat IOR and
+    # darkening are shader settings in Painter, not channels, so no map comes for them.
+    SlotDef("coat",              ("CoatWeight", "Coat", "CoatOpacity", "Clearcoat", "ClearCoat"),
+                                 ("coatweight", "coat", "clearcoat"),                                                                "RAW",   "float"),
+    SlotDef("coat_color",        ("CoatColor",),
+                                 ("coatcolor",),                                                                                     "sRGB",  "color3"),
+    SlotDef("coat_roughness",    ("CoatRoughness",),
+                                 ("coatroughness", "coatrough"),                                                                     "RAW",   "float"),
+    SlotDef("coat_anisotropy",   ("CoatRoughnessAnisotropy", "CoatAnisotropy"),
+                                 ("coatroughnessanisotropy", "coatanisotropy"),                                                      "RAW",   "float"),
+    SlotDef("coat_normal",       ("CoatNormal",),
+                                 ("coatnormal",),                                                                                    "RAW",   "vector3"),
 )
+
+# Slots whose image goes through a normal map node before the surface input.
+NORMAL_MAP_SLOTS: frozenset[str] = frozenset({"normal", "coat_normal"})
 
 PIPELINE_NAME_TO_SLOT: dict[str, str] = {}
 for _sd in SLOT_DEFS:
@@ -82,4 +97,9 @@ SURFACE_INPUT_MAP: dict[str, str] = {
     "subsurface":        "subsurface",
     "subsurface_color":  "subsurface_color",
     "subsurface_radius": "subsurface_radius",
+    "coat":              "coat",
+    "coat_color":        "coat_color",
+    "coat_roughness":    "coat_roughness",
+    "coat_anisotropy":   "coat_anisotropy",
+    "coat_normal":       "coat_normal",
 }
