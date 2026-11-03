@@ -23,7 +23,11 @@
   folder; the suite root is the package `hpath`, and the installer copies `scripts/` there.
   Returning False hands the drop back to Houdini, so `.hip` and unknown files open as usual.
 - What gets made depends on the Network Editor under the cursor: OBJ (geo node + SOP, FBX import),
-  SOP (File / Alembic / USD Import), LOP (Reference; textures or a folder build Auto Material),
+  SOP (File / Alembic / USD Import), LOP (a menu at the cursor picks Reference LOPs or one Sublayer
+  LOP; Escape makes nothing; textures or a folder build Auto Material),
   VOP (MaterialX Image), COP (File). Not over a Network Editor → Houdini's default.
 - Frame sequences collapse to `$F<pad>`; textures use Auto Material's parsing, so UDIMs become
   `%(UDIM)d` and Monos colour space words set filecolorspace. A drop is one undo step.
+- New nodes are placed with `moveToGoodPosition(move_inputs=False, move_outputs=False,
+  move_unconnected=False)` (`solaris_adapter._place_new`): Houdini's default moves every other node
+  in the network, which looks like the view jumping.

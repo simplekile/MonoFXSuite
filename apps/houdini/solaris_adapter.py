@@ -26,6 +26,11 @@ def is_available() -> bool:
     return hou is not None
 
 
+def _place_new(node: Any) -> None:
+    """Find a free spot for a new node without moving the nodes already there (Houdini's default does)."""
+    node.moveToGoodPosition(move_inputs=False, move_outputs=False, move_unconnected=False)
+
+
 # ---------------------------------------------------------------------------
 # HIP / Publish path
 # ---------------------------------------------------------------------------
@@ -122,7 +127,7 @@ def get_or_create_material_library(
             pos = connect_after.position()
             node.setPosition((pos[0], pos[1] - 1.5))
         else:
-            node.moveToGoodPosition()
+            _place_new(node)
         return node
     except Exception:
         return None
@@ -154,7 +159,7 @@ def create_karma_material_builder(mat_lib: Any, name: str) -> Any:
 
     try:
         builder = mat_lib.createNode("subnet", node_name=name)
-        builder.moveToGoodPosition()
+        _place_new(builder)
         return builder
     except Exception:
         return None
@@ -173,7 +178,7 @@ def get_or_create_mtlx_standard_surface(builder: Any) -> Any:
             if child.type().name() == "mtlxstandard_surface":
                 return child
         node = builder.createNode("mtlxstandard_surface", node_name="mtlxstandard_surface")
-        node.moveToGoodPosition()
+        _place_new(node)
         return node
     except Exception:
         return None
@@ -322,7 +327,7 @@ def create_mtlx_image(
         sig = slot_def.signature if slot_def else "color3"
 
         node = builder.createNode("mtlximage", node_name=f"tex_{slot}")
-        node.moveToGoodPosition()
+        _place_new(node)
 
         file_parm = node.parm("file")
         if file_parm:
@@ -534,7 +539,7 @@ def create_mtlx_normal_map(builder: Any) -> Any:
         return None
     try:
         node = builder.createNode("mtlxnormalmap", node_name="mtlxnormalmap")
-        node.moveToGoodPosition()
+        _place_new(node)
         return node
     except Exception:
         return None
@@ -585,7 +590,7 @@ def _ensure_surface_connected_to_output(builder: Any, surface_node: Any) -> None
 
         collect = builder.createNode("collect", node_name="collect")
         collect.setNextInput(surface_node)
-        collect.moveToGoodPosition()
+        _place_new(collect)
 
         for child in builder.children():
             if child.type().name() == "suboutput":
@@ -617,7 +622,7 @@ def create_assign_material(
             pos = connect_after.position()
             node.setPosition((pos[0], pos[1] - 1.5))
         else:
-            node.moveToGoodPosition()
+            _place_new(node)
         return node
     except Exception:
         return None
@@ -705,7 +710,7 @@ def create_assign_material_bulk(
             pos = connect_after.position()
             node.setPosition((pos[0], pos[1] - 1.5))
         else:
-            node.moveToGoodPosition()
+            _place_new(node)
 
         _set_assign_count(node, len(assignments))
         for i, (prim_pattern, material_path) in enumerate(assignments, 1):

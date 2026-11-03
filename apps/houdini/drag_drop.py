@@ -6,7 +6,8 @@ depends on the Network Editor under the cursor:
 
 - OBJ:  geo/abc/usd -> a geo node with a File / Alembic / USD Import SOP inside; .fbx -> FBX import.
 - SOP:  geo/fbx -> File SOP, .abc -> Alembic SOP, .usd -> USD Import SOP.
-- LOP:  geo/abc/usd -> Reference LOP; textures or a texture folder -> Auto Material.
+- LOP:  geo/abc/usd -> a menu at the cursor picks Reference LOPs or one Sublayer LOP;
+        textures or a texture folder -> Auto Material.
 - VOP (material library / builder): textures -> MaterialX Image with colour space set.
 - COP:  images -> File COP.
 
@@ -53,6 +54,13 @@ _SEQ_RE = re.compile(r"^(?P<base>.*?)(?P<sep>[._])(?P<num>\d{3,})$")
 _NAME_BAD_RE = re.compile(r"[^A-Za-z0-9_]+")
 
 NODE_SPACING = 1.2
+
+LAYER_REFERENCE = "reference"
+LAYER_SUBLAYER = "sublayer"
+
+
+class _Cancelled(Exception):
+    """The user closed the drop menu without picking."""
 
 
 def split_ext(path: str) -> tuple[str, str]:
@@ -172,10 +180,13 @@ def handle_drop(file_list: list[str]) -> bool:
         return False
 
     # Selection inside the group too, so one Ctrl+Z takes the whole drop back
-    with hou.undos.group("MonoFX: drop files"):
-        created = handler(parent, files, pane.cursorPosition())
-        for i, node in enumerate(created):
-            node.setSelected(True, clear_all_selected=(i == 0))
+    try:
+        with hou.undos.group("MonoFX: drop files"):
+            created = handler(parent, files, pane.cursorPosition())
+            for i, node in enumerate(created):
+                node.setSelected(True, clear_all_selected=(i == 0))
+    except _Cancelled:
+        return True  # the user closed the menu: the drop is done, not handed to Houdini
     return bool(created)
 
 
@@ -244,21 +255,51 @@ def _drop_sop(parent: Any, files: list[str], pos: Any) -> list[Any]:
     return created
 
 
+def _ask_layer_mode() -> str:
+    """Reference or Sublayer, from a menu at the cursor. Raises _Cancelled on Escape / click outside."""
+    from PySide6.QtGui import QCursor
+    from PySide6.QtWidgets import QMenu
+
+    menu = QMenu(hou.qt.mainWindow())
+    ref = menu.addAction("Reference")
+    sub = menu.addAction("Sublayer")
+    menu.setActiveAction(ref)
+    picked = menu.exec(QCursor.pos())
+    if picked is None:
+        raise _Cancelled()
+    return LAYER_SUBLAYER if picked is sub else LAYER_REFERENCE
+
+
 def _drop_lop(parent: Any, files: list[str], pos: Any) -> list[Any]:
     created = []
-    for path in collapse_sequences([f for f in files if classify(f) != KIND_IMAGE]):
-        kind = classify(path.replace("$F", "0"))
-        if kind in (KIND_GEO, KIND_ABC, KIND_USD):
-            node = _create(parent, "reference", path, pos, len(created))
-            node.parm("filepath1").set(path)
-            created.append(node)
-        elif kind == KIND_FOLDER:
-            groups, _ = scan_and_group(path, recursive=True)
-            created += _build_materials(parent, groups)
+    others = collapse_sequences([f for f in files if classify(f) != KIND_IMAGE])
+    layers = [p for p in others if classify(p.replace("$F", "0")) in (KIND_GEO, KIND_ABC, KIND_USD)]
+    if layers:
+        # Asked before anything is made, so Escape leaves the scene as it was
+        created += _layer_nodes(parent, layers, _ask_layer_mode(), pos)
+    for path in others:
+        if classify(path) == KIND_FOLDER:
+            created += _build_materials(parent, scan_and_group(path, recursive=True)[0])
     images = [f for f in files if classify(f) == KIND_IMAGE]
     if images:
         created += _build_materials(parent, group_images(images)[0])
     return created
+
+
+def _layer_nodes(parent: Any, layers: list[str], mode: str, pos: Any) -> list[Any]:
+    """One Reference LOP per file, or one Sublayer LOP holding all of them in drop order."""
+    if mode == LAYER_REFERENCE:
+        created = []
+        for path in layers:
+            node = _create(parent, "reference", path, pos, len(created))
+            node.parm("filepath1").set(path)
+            created.append(node)
+        return created
+    node = _create(parent, "sublayer", layers[0] if len(layers) == 1 else "sublayer", pos, 0)
+    node.parm("num_files").set(len(layers))
+    for i, path in enumerate(layers, 1):
+        node.parm(f"filepath{i}").set(path)
+    return [node]
 
 
 def _build_materials(stage: Any, groups: dict[str, MaterialGroup]) -> list[Any]:
