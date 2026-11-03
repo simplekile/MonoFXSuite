@@ -25,7 +25,10 @@
 
 - Houdini calls `dropAccept(file_list)` in `scripts/externaldragdrop.py` from any `HOUDINI_PATH`
   folder; the suite root is the package `hpath`, and the installer copies `scripts/` there.
-  Returning False hands the drop back to Houdini, so `.hip` and unknown files open as usual.
+  Returning False hands the drop back to Houdini, which opens ANY file as a scene ("Save changes
+  ... before clearing all contents?"), so only a drop of Houdini's own files (.hip, .hda/.otl) or
+  a drop with the setting off is handed back. Every other drop, even one that makes nothing or
+  raises, is kept and gets a status-bar warning.
 - What gets made depends on the Network Editor under the cursor: OBJ (geo node + SOP, FBX import),
   SOP (File / Alembic / USD Import), LOP (a menu at the cursor picks Reference LOPs or one Sublayer
   LOP; Escape makes nothing; textures or a folder build Auto Material into the selected Material

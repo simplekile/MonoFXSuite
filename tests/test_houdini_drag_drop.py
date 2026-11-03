@@ -19,6 +19,13 @@ def test_classify_by_extension(tmp_path: Path) -> None:
     assert dd.classify("C:/a/notes.txt") is None
 
 
+def test_is_houdini_file() -> None:
+    assert dd.is_houdini_file("C:/a/shot.hipnc")
+    assert dd.is_houdini_file("C:/a/tool.HDA")
+    assert not dd.is_houdini_file("C:/a/render.0009.exr")
+    assert not dd.is_houdini_file("C:/a/notes.txt")
+
+
 def test_split_ext_keeps_multi_part() -> None:
     assert dd.split_ext("C:/a/rock.1001.bgeo.sc") == ("rock.1001", ".bgeo.sc")
     assert dd.split_ext("C:/a/rock.obj") == ("rock", ".obj")

@@ -13,9 +13,11 @@ depends on the Network Editor under the cursor:
         textures inside a material builder -> MaterialX Image with colour space set.
 - COP:  images -> File COP.
 
-Anything else (no Network Editor under the cursor, .hip files, unknown types) is left to
-Houdini's own drop handling, and so is every drop while the Drag & Drop setting is off
-(shelf tool, tools/fx/drag_drop). The functions above handle_drop() do not need hou.
+Only a drop made entirely of Houdini's own files (.hip, .hda/.otl) is left to Houdini, and so is
+every drop while the Drag & Drop setting is off (shelf tool, tools/fx/drag_drop). Any other drop
+is kept here even when nothing can be made for it, with a warning in the status bar: Houdini
+opens any other file as a scene, asking to clear the current one. The functions above
+handle_drop() do not need hou.
 """
 
 from __future__ import annotations
@@ -55,6 +57,9 @@ _IMAGE_EXTS = tuple(sorted(IMAGE_EXTENSIONS))
 # 8-bit formats are almost always sRGB colour when the name says nothing
 _SRGB_EXTS = frozenset({".png", ".jpg", ".jpeg", ".tga", ".bmp"})
 
+# Dropped alone, these keep Houdini's own handling (open / merge a scene, install an asset)
+_HOUDINI_EXTS = frozenset({".hip", ".hipnc", ".hiplc", ".hda", ".hdanc", ".hdalc", ".otl", ".otlnc", ".otllc"})
+
 _SEQ_RE = re.compile(r"^(?P<base>.*?)(?P<sep>[._])(?P<num>\d{3,})$")
 _NAME_BAD_RE = re.compile(r"[^A-Za-z0-9_]+")
 
@@ -92,6 +97,11 @@ def classify(path: str) -> str | None:
     if ext in IMAGE_EXTENSIONS:
         return KIND_IMAGE
     return None
+
+
+def is_houdini_file(path: str) -> bool:
+    """A scene or asset file Houdini opens / installs itself when it is dropped."""
+    return Path(path).suffix.lower() in _HOUDINI_EXTS
 
 
 def node_name_for(path: str) -> str:
@@ -169,20 +179,22 @@ def handle_drop(file_list: list[str]) -> bool:
     if hou is None or not file_list:
         return False
     opts = drop_prefs.load_prefs()
-    if not opts["enabled"]:
+    if not opts["enabled"] or all(is_houdini_file(f) for f in file_list):
         return False
+    # From here the drop is never handed back: Houdini would open these files as a scene
+    names = ", ".join(Path(f).name for f in file_list[:3]) + (" ..." if len(file_list) > 3 else "")
     pane = _network_editor_under_cursor()
     if pane is None:
-        return False
+        return _warn(f"drop files on a Network Editor ({names})")
     parent = pane.pwd()
     files = [Path(f).as_posix() for f in file_list if classify(f) is not None]
     if not files:
-        return False
+        return _warn(f"no file type MonoFX can load: {names}")
 
     category = parent.childTypeCategory().name()
     handler = _HANDLERS.get(category)
     if handler is None:
-        return False
+        return _warn(f"nothing to make in a {category} network for {names}")
 
     # Selection inside the group too, so one Ctrl+Z takes the whole drop back
     try:
@@ -192,7 +204,23 @@ def handle_drop(file_list: list[str]) -> bool:
                 node.setSelected(True, clear_all_selected=(i == 0))
     except _Cancelled:
         return True  # the user closed the menu: the drop is done, not handed to Houdini
-    return bool(created)
+    if not created:
+        return _warn(f"nothing made in {parent.path()} for {names}"
+                     + (" (texture names Auto Material cannot read?)" if category in ("Lop", "Vop") and _has_images(files) else ""))
+    return True
+
+
+def _has_images(files: list[str]) -> bool:
+    return any(classify(f) in (KIND_IMAGE, KIND_FOLDER) for f in files)
+
+
+def _warn(message: str) -> bool:
+    """Status-bar warning for a drop that made nothing. True: the drop is still handled here."""
+    try:
+        hou.ui.setStatusMessage(f"MonoFX drag & drop: {message}", severity=hou.severityType.Warning)
+    except Exception:
+        print(f"MonoFX drag & drop: {message}")
+    return True
 
 
 def _network_editor_under_cursor() -> Any:
