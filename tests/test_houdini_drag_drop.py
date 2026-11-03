@@ -47,7 +47,7 @@ def test_collapse_sequences() -> None:
 
 def test_collapse_udims() -> None:
     files = ["C:/t/tile.1001.exr", "C:/t/tile.1002.exr", "C:/t/photo.jpg"]
-    assert [Path(p).name for p in dd.collapse_udims(files)] == ["tile.%(UDIM)d.exr", "photo.jpg"]
+    assert [Path(p).name for p in dd.collapse_udims(files)] == ["tile.<UDIM>.exr", "photo.jpg"]
 
 
 def test_group_images_monos_names() -> None:
@@ -62,7 +62,7 @@ def test_group_images_monos_names() -> None:
     slots = groups["wood"].slots
     assert set(slots) == {"base_color", "roughness"}
     assert slots["base_color"].colorspace == "sRGB"
-    assert "%(UDIM)d" in slots["base_color"].filepath
+    assert "<UDIM>" in slots["base_color"].filepath
     assert unmatched == ["C:/t/random_photo.jpg"]
 
 
@@ -80,4 +80,4 @@ def test_base_color_groups_for_unreadable_names() -> None:
     assert render.colorspace == "Linear" and not render.udim
     assert groups["photo"].slots["base_color"].colorspace == "sRGB"
     tile = groups["tile"].slots["base_color"]
-    assert tile.udim and tile.filepath.endswith("tile.%(UDIM)d.exr")
+    assert tile.udim and tile.filepath.endswith("tile.<UDIM>.exr")

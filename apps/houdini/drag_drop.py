@@ -36,6 +36,7 @@ from tools.fx.auto_material.config import IMAGE_EXTENSIONS
 from tools.fx.auto_material.logic import (
     MaterialGroup,
     SlotInfo,
+    _make_udim_path,
     auto_parse,
     group_by_prefix,
     read_publish_spaces,
@@ -162,14 +163,13 @@ def group_images(paths: list[str]) -> tuple[dict[str, MaterialGroup], list[str]]
 
 
 def collapse_udims(paths: list[str]) -> list[str]:
-    """UDIM tiles (name.1001.exr ... name.1999.exr) become one path with %(UDIM)d."""
+    """
+    UDIM tiles (name.1001.exr, name.1002.exr...) become one path with <UDIM>, by Auto Material's
+    own rule (logic._make_udim_path), so a drop writes the same token as the Auto Material window.
+    """
     out: "OrderedDict[str, None]" = OrderedDict()
     for p in paths:
-        stem, ext = split_ext(p)
-        m = re.match(r"^(.*)\.(\d{4})$", stem)
-        if m and 1001 <= int(m.group(2)) <= 1999:
-            p = Path(p).with_name(f"{m.group(1)}.%(UDIM)d{ext}").as_posix()
-        out[p] = None
+        out[Path(_make_udim_path(p)).as_posix()] = None
     return list(out)
 
 
@@ -190,7 +190,7 @@ def base_color_groups(paths: list[str], taken: dict | None = None) -> dict[str, 
             slots={"base_color": SlotInfo(
                 filepath=path,
                 colorspace="sRGB" if ext in _SRGB_EXTS else "Linear",
-                udim="%(UDIM)d" in path,
+                udim="<UDIM>" in path,
             )},
             parse_mode="base_color",
         )
@@ -418,23 +418,25 @@ def _build_materials(stage: Any, groups: dict[str, MaterialGroup], mat_lib_name:
     selected = next((n for n in hou.selectedNodes() if n.parent() == stage), None)
     builders: list[Any] = []
     created_names: list[str] = []
-    for prefix, group in _progress(list(groups.items()), "Building materials"):
-        result = sa.build_material(
-            stage=stage, material_name=prefix, slots=group.slots,
-            mat_lib_name=mat_lib_name, selected_node=selected,
-        )
-        if result is None:
-            continue
-        builder = stage.node(f"{mat_lib_name}/{result.node_name}")
-        if builder is not None:
-            builders.append(builder)
-        if not result.updated:
-            created_names.append(result.node_name)
-        if result.notes:
-            print("MonoFX drop:", "; ".join(f"{result.node_name}: {n}" for n in result.notes))
-    mat_lib = stage.node(mat_lib_name)
-    if mat_lib is not None and created_names:
-        sa.layout_material_library(mat_lib, new_names=created_names)
+    # As the Auto Material window does: with updates on, each new node re-translates the library
+    with sa.manual_update():
+        for prefix, group in _progress(list(groups.items()), "Building materials"):
+            result = sa.build_material(
+                stage=stage, material_name=prefix, slots=group.slots,
+                mat_lib_name=mat_lib_name, selected_node=selected,
+            )
+            if result is None:
+                continue
+            builder = stage.node(f"{mat_lib_name}/{result.node_name}")
+            if builder is not None:
+                builders.append(builder)
+            if not result.updated:
+                created_names.append(result.node_name)
+            if result.notes:
+                print("MonoFX drop:", "; ".join(f"{result.node_name}: {n}" for n in result.notes))
+        mat_lib = stage.node(mat_lib_name)
+        if mat_lib is not None and created_names:
+            sa.layout_material_library(mat_lib, new_names=created_names)
     return builders
 
 
