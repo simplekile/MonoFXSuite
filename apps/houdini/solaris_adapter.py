@@ -7,8 +7,9 @@ Core and logic must never import hou.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 try:
     import hou
@@ -30,6 +31,24 @@ def is_available() -> bool:
 def _place_new(node: Any) -> None:
     """Find a free spot for a new node without moving the nodes already there (Houdini's default does)."""
     node.moveToGoodPosition(move_inputs=False, move_outputs=False, move_unconnected=False)
+
+
+@contextmanager
+def manual_update() -> Iterator[None]:
+    """
+    Houdini updates set to Manual for the block, then put back. While a Material Library cooks
+    on changes, each node created in it re-translates every material in the library, so building
+    16 materials took ~110 s instead of ~1 s (Houdini 22.0).
+    """
+    if hou is None:
+        yield
+        return
+    old = hou.updateModeSetting()
+    hou.setUpdateMode(hou.updateMode.Manual)
+    try:
+        yield
+    finally:
+        hou.setUpdateMode(old)
 
 
 # ---------------------------------------------------------------------------
@@ -478,10 +497,32 @@ _LOBE_WEIGHTS: dict[str, tuple[str, str, frozenset[str]]] = {
 }
 
 
+# Lobes whose weight is set to 1 when their maps come without a weight map (a 0 weight hides them).
+_AUTO_WEIGHTS: dict[str, frozenset[str]] = {
+    "subsurface": frozenset({"subsurface_color", "subsurface_radius"}),
+    "emission": frozenset({"emission_color"}),
+}
+
+
 def _weight_notes(surface: Any, slots: dict) -> list[str]:
-    """A lobe's colour/roughness/... maps without its weight map show nothing while the weight is 0."""
+    """
+    SSS and emission maps without a weight map: their weight is set to 1, while it is free and 0.
+    Other lobes (coat) are reported instead: their maps show nothing while the weight is 0.
+    """
     notes: list[str] = []
+    for weight, others in _AUTO_WEIGHTS.items():
+        if weight in slots or not (others & set(slots)):
+            continue
+        try:
+            parm = surface.parm(weight) if surface is not None and _input_is_free(surface, weight) else None
+            if parm is not None and parm.eval() == 0:
+                parm.set(1.0)
+                notes.append(f"{weight}: set to 1, its maps came without a weight map")
+        except Exception:
+            continue
     for weight, (map_name, label, others) in _LOBE_WEIGHTS.items():
+        if weight in _AUTO_WEIGHTS:
+            continue
         if weight in slots or not (others & set(slots)):
             continue
         try:
@@ -1039,3 +1080,332 @@ def build_material(
     notes += _weight_notes(surface, slots)
 
     return BuildResult(f"/materials/{builder.name()}", builder.name(), False, notes)
+
+
+# ---------------------------------------------------------------------------
+# Substance Painter USD export: read it, load its geometry, bind its materials
+# ---------------------------------------------------------------------------
+
+def _texture_abs_path(attr: Any) -> str | None:
+    """Absolute path of a Painter asset input. A <UDIM> path does not resolve, so it is anchored
+    to the folder of the layer that authors it."""
+    import os
+
+    value = attr.Get()
+    if not value:
+        return None
+    authored = getattr(value, "authoredPath", None) or value.path
+    if not authored:
+        return None
+    path = value.resolvedPath
+    if not path:
+        path = authored
+        if not os.path.isabs(authored):
+            layer = attr.GetPropertyStack()[0].layer
+            path = os.path.join(os.path.dirname(layer.realPath), authored)
+    return os.path.normpath(path).replace("\\", "/")
+
+
+def read_substance_usd(usd_path: str) -> tuple[list[str], list[Any], dict[str, list[str]]]:
+    """
+    Read a Painter USD export with pxr (opened on its own, not on a LOP stage).
+    Returns (sublayers, materials, bindings): the root layer's sublayers as absolute paths,
+    a logic.SubstanceMaterial per Material prim, and Material prim path -> prims bound to it.
+    """
+    import os
+
+    from pxr import Usd, UsdShade
+
+    from tools.fx.auto_material.config import SUBSTANCE_INPUT_TO_SLOT
+    from tools.fx.auto_material.logic import SubstanceMaterial
+
+    stage = Usd.Stage.Open(usd_path)
+    if stage is None:
+        raise RuntimeError(f"Cannot open USD: {usd_path}")
+
+    root = stage.GetRootLayer()
+    sublayers = [
+        os.path.normpath(root.ComputeAbsolutePath(p)).replace("\\", "/") for p in root.subLayerPaths
+    ]
+
+    materials: list[SubstanceMaterial] = []
+    bindings: dict[str, list[str]] = {}
+    for prim in stage.Traverse():
+        if prim.IsA(UsdShade.Material):
+            mat = UsdShade.Material(prim)
+            textures: dict[str, str] = {}
+            for usd_input in SUBSTANCE_INPUT_TO_SLOT:
+                inp = mat.GetInput(usd_input)
+                path = _texture_abs_path(inp.GetAttr()) if inp else None
+                if path:
+                    textures[usd_input] = path
+            layers = [s.layer.realPath for s in prim.GetPrimStack() if s.layer.realPath]
+            materials.append(SubstanceMaterial(prim.GetName(), str(prim.GetPath()), textures, layers))
+            continue
+        rel = UsdShade.MaterialBindingAPI(prim).GetDirectBindingRel()
+        if rel:
+            for target in rel.GetTargets():
+                bindings.setdefault(str(target), []).append(str(prim.GetPath()))
+    return sublayers, materials, bindings
+
+
+def get_or_create_substance_sublayer(stage_node: Any, name: str, layers: list[str]) -> Any:
+    """Sublayer LOP loading the export's geometry. A run before made it: its files are set again
+    (a newer export may point at a newer geometry publish); the node is not moved."""
+    if stage_node is None or not layers:
+        return None
+    try:
+        node = stage_node.node(name)
+        if node is None or node.type().name() != "sublayer":
+            node = stage_node.createNode("sublayer", node_name=name)
+            _place_new(node)
+        if len(layers) == 1:
+            from apps.houdini.lop_usd_helpers import configure_single_file_sublayer
+
+            configure_single_file_sublayer(node, layers[0])
+        else:
+            node.parm("num_files").set(len(layers))
+            for i, layer in enumerate(layers, 1):
+                node.parm(f"filepath{i}").set(layer)
+        return node
+    except Exception:
+        return None
+
+
+def assign_substance_materials(
+    stage_node: Any,
+    mat_lib: Any,
+    name: str,
+    assignments: list[tuple[str, str]],
+) -> tuple[Any, int]:
+    """
+    One Assign Material LOP after the Material Library with Painter's bindings. A run before made
+    it: only prim patterns it does not list yet are added (see merge_assign_material).
+    Returns (node, entries added).
+    """
+    if stage_node is None or not assignments:
+        return None, 0
+    existing = stage_node.node(name)
+    if existing is not None and existing.type().name() == "assignmaterial":
+        return existing, len(merge_assign_material(existing, assignments))
+    node = create_assign_material_bulk(
+        stage_node, assignments=assignments, connect_after=mat_lib, node_name=name,
+    )
+    if node is None:
+        return None, 0
+    node.setDisplayFlag(True)
+    return node, len(assignments)
+
+
+# ---------------------------------------------------------------------------
+# Version manager: Painter exports per version, and what the scene remembers per asset
+# ---------------------------------------------------------------------------
+
+class ExportData:
+    """One Painter export read from disk: its material groups and what Create needs from it."""
+    __slots__ = ("export", "groups", "source")
+
+    def __init__(self, export: Any, groups: dict, source: Any) -> None:
+        self.export = export
+        self.groups = groups
+        self.source = source
+
+
+def read_painter_exports(exports: list) -> dict[str, ExportData]:
+    """version -> ExportData for each logic.PainterExport (each read with pxr, ~0.5 s)."""
+    from tools.fx.auto_material.logic import substance_source
+
+    out: dict[str, ExportData] = {}
+    for export in exports:
+        sublayers, materials, bindings = read_substance_usd(export.usd_path)
+        groups, source = substance_source(export.usd_path, sublayers, materials, bindings)
+        out[export.version] = ExportData(export, groups, source)
+    return out
+
+
+def _infer_record(mat_lib: Any) -> str | None:
+    """
+    Record for a library built before the tool kept one: each material's version is the _vNNN in
+    the folder of the textures the tool set, and the export is the .usd next to that folder.
+    """
+    from tools.fx.auto_material.logic import (
+        MaterialRecord,
+        PainterExport,
+        asset_from_path,
+        dump_record,
+        version_from_path,
+        version_number,
+    )
+
+    materials: dict[str, Any] = {}
+    export_path = ""
+    for builder in mat_lib.children():
+        files = [f for f in (_user_data(img, FILE_TAG) for img in _image_slots(builder).values()) if f]
+        version = next((v for v in (version_from_path(f) for f in files) if v), None)
+        if not version:
+            continue
+        materials[builder.name()] = MaterialRecord(version)
+        folder = Path(files[0]).parent
+        candidate = folder.with_name(folder.name.removesuffix("_textures") + ".usd")
+        newer = version_number(version_from_path(candidate.name) or "") >= version_number(
+            version_from_path(export_path) or "")
+        if candidate.is_file() and newer:
+            export_path = str(candidate).replace("\\", "/")
+    if not materials or not export_path:
+        return None
+    export = PainterExport(version_from_path(export_path) or "", export_path)
+    return dump_record(asset_from_path(export_path), export, materials)
+
+
+def substance_libraries(stage_node: Any) -> list[tuple[Any, str]]:
+    """(Material Library, record JSON) for every library Create made from a Painter export."""
+    from tools.fx.auto_material.logic import RECORD_KEY
+
+    out: list[tuple[Any, str]] = []
+    if stage_node is None:
+        return out
+    for node in stage_node.children():
+        try:
+            if node.type().name() != "materiallibrary":
+                continue
+        except Exception:
+            continue
+        record = _user_data(node, RECORD_KEY)
+        if not record and node.name().endswith("_materials"):
+            record = _infer_record(node)
+        if record:
+            out.append((node, record))
+    return out
+
+
+def write_record(mat_lib: Any, record: str) -> None:
+    from tools.fx.auto_material.logic import RECORD_KEY
+
+    try:
+        mat_lib.setUserData(RECORD_KEY, record)
+    except Exception:
+        pass
+
+
+def branch_library(selected: Any, libraries: list[Any]) -> Any:
+    """The library among *libraries* in the selected node's branch (it or an upstream node), if any."""
+    if selected is None:
+        return None
+    wanted = {lib.path() for lib in libraries}
+    seen: set[str] = set()
+    todo = [selected]
+    while todo and len(seen) < 500:
+        node = todo.pop()
+        if node is None or node.path() in seen:
+            continue
+        seen.add(node.path())
+        if node.path() in wanted:
+            return node
+        todo.extend(i for i in node.inputs() if i is not None)
+    return None
+
+
+def _uses_houdini_udim(builder: Any) -> bool:
+    """Whether the tool set a file with Houdini's %(UDIM)d on any image of *builder* (before <UDIM>)."""
+    return any("%(UDIM)d" in (_user_data(img, FILE_TAG) or "") for img in _image_slots(builder).values())
+
+
+class ApplyResult:
+    __slots__ = ("created", "updated", "notes")
+
+    def __init__(self) -> None:
+        self.created: list[str] = []
+        self.updated: list[str] = []
+        self.notes: list[str] = []
+
+
+def apply_painter_plan(
+    stage_node: Any,
+    data: dict[str, ExportData],
+    plans: list,
+    previous: dict,
+    cancelled: Any = None,
+) -> ApplyResult:
+    """
+    Build the Version manager's plan into the scene. The newest export gives the geometry and the
+    node names: {base}_geo (Sublayer) -> {base}_materials (Material Library) -> {base}_assign.
+    A material is (re)built only when it is new or its version changes; a pin change alone only
+    goes into the record. *previous*: the scene's MaterialRecords, kept for materials left out.
+    cancelled: optional callable, checked between materials.
+    """
+    from tools.fx.auto_material import config
+    from tools.fx.auto_material.logic import (
+        MaterialRecord,
+        asset_from_path,
+        dump_record,
+        version_number,
+    )
+
+    result = ApplyResult()
+    latest = data[max(data, key=version_number)]
+    base = latest.source.node_base
+    sublayer = get_or_create_substance_sublayer(
+        stage_node, base + config.SUBSTANCE_GEO_NODE_SUFFIX, latest.source.geo_layers,
+    )
+    if sublayer is None:
+        result.notes.append("Cannot create the Sublayer for the Substance geometry.")
+        return result
+    mat_lib_name = base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
+
+    records = dict(previous)
+    paths: dict[str, str] = {}
+    with manual_update():
+        for plan in plans:
+            if not plan.enabled:
+                # Remembered as left out; what the scene already has of it stays as it is.
+                old = records.get(plan.name)
+                records[plan.name] = MaterialRecord(old.version if old else "", old.pinned if old else False, True)
+                continue
+            if cancelled is not None and cancelled():
+                break
+            if plan.scene is None or plan.scene != plan.chosen:
+                group = data[plan.chosen].groups.get(plan.name)
+                if group is None:
+                    continue
+                built = build_material(
+                    stage=stage_node, material_name=plan.name, slots=group.slots,
+                    mat_lib_name=mat_lib_name, selected_node=sublayer,
+                )
+                if built is None:
+                    continue
+                (result.updated if built.updated else result.created).append(built.node_name)
+                result.notes += [f"{built.node_name}: {n}" for n in built.notes]
+                paths[plan.name] = built.path
+            else:
+                paths[plan.name] = f"/materials/{plan.name}"
+                # Same version, but built when the tool still wrote Houdini's %(UDIM)d: move it to
+                # <UDIM> (update_material keeps paths changed by hand). Not counted as an update.
+                lib = stage_node.node(mat_lib_name)
+                builder = lib.node(plan.name) if lib is not None else None
+                group = data[plan.chosen].groups.get(plan.name)
+                if builder is not None and group is not None and _uses_houdini_udim(builder):
+                    update_material(builder, group.slots, [])
+            records[plan.name] = MaterialRecord(plan.chosen, plan.pinned)
+
+        mat_lib = stage_node.node(mat_lib_name)
+        if mat_lib is None:
+            return result
+        if result.created:
+            layout_material_library(mat_lib, new_names=result.created)
+
+        # Prims per material: the geometry export's bindings, else the chosen export's.
+        entries = []
+        for plan in plans:
+            if plan.name not in paths:
+                continue
+            prims = latest.source.assignments.get(plan.name) or data[plan.chosen].source.assignments.get(plan.name)
+            if prims:
+                entries.append((" ".join(prims), paths[plan.name]))
+        assign, added = assign_substance_materials(
+            stage_node, mat_lib, base + config.SUBSTANCE_ASSIGN_NODE_SUFFIX, entries,
+        )
+        if assign is not None and added:
+            result.notes.append(f"{assign.name()}: {added} binding(s) added.")
+
+    write_record(mat_lib, dump_record(asset_from_path(latest.export.usd_path), latest.export, records))
+    return result
