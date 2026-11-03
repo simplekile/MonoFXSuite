@@ -354,6 +354,37 @@ def _substance_texture_slot(filepath: str) -> SlotInfo:
     return SlotInfo(filepath=path, colorspace=colorspace, udim=udim)
 
 
+USD_EXTENSIONS: frozenset[str] = frozenset({".usd", ".usda", ".usdc"})
+_FILE_VERSION_RE = re.compile(r"_v(\d+)(?=[_.]|$)", re.IGNORECASE)
+
+
+def is_usd_path(path: str) -> bool:
+    return Path(path).suffix.lower() in USD_EXTENSIONS and Path(path).is_file()
+
+
+def find_painter_usd(folder: str) -> str | None:
+    """
+    Painter USD export in a publish folder: in its highest vNNN child (or the folder itself), the
+    .usd* file with the highest _vNNN in its name. Painter's sublayer (*.material.usda) is skipped.
+    None when there is no USD, so the folder is scanned for textures as before.
+    """
+    root = latest_publish_version(folder) or Path(folder)
+    if not root.is_dir():
+        return None
+    exports = [
+        p for p in root.iterdir()
+        if p.is_file() and p.suffix.lower() in USD_EXTENSIONS and ".material." not in p.name.lower()
+    ]
+    if not exports:
+        return None
+
+    def version(p: Path) -> int:
+        m = _FILE_VERSION_RE.search(p.stem)
+        return int(m.group(1)) if m else -1
+
+    return str(max(exports, key=lambda p: (version(p), p.name)))
+
+
 def substance_node_base(usd_path: str) -> str:
     """LOP node name base from the export file, without its version, so v009 updates v008's nodes."""
     stem = Path(usd_path).name.split(".", 1)[0]

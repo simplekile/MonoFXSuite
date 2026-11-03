@@ -5,6 +5,8 @@ from __future__ import annotations
 from tools.fx.auto_material.logic import (
     SubstanceMaterial,
     _substance_texture_slot,
+    find_painter_usd,
+    is_usd_path,
     substance_assign_entries,
     substance_geo_layers,
     substance_node_base,
@@ -119,3 +121,27 @@ def test_bindings_go_to_built_materials_only():
     # Only M_char_Body was built (the user removed the hair from the list).
     entries = substance_assign_entries(source, {"M_char_Body": "/materials/M_char_Body"})
     assert entries == [("/Geo/Base_grp/Body_grp/Geo_Body", "/materials/M_char_Body")]
+
+
+def _touch(path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("#usda 1.0\n", encoding="utf-8")
+
+
+def test_publish_finds_latest_painter_export_in_latest_version(tmp_path):
+    # Painter re-exports into the same publish version: v006, v007, v008 next to each other.
+    v001 = tmp_path / "v001"
+    for n in (6, 7, 8):
+        _touch(v001 / f"char_Helen_texturing_v{n:03d}_full.usd")
+        _touch(v001 / f"char_Helen_texturing_v{n:03d}_full.material.usda")
+    _touch(tmp_path / "v000" / "char_Helen_texturing_v999_full.usd")  # older publish version
+    found = find_painter_usd(str(tmp_path))
+    assert found == str(v001 / "char_Helen_texturing_v008_full.usd")
+    assert is_usd_path(found)
+
+
+def test_publish_without_usd_keeps_texture_folder(tmp_path):
+    (tmp_path / "v002" / "textures").mkdir(parents=True)
+    (tmp_path / "v002" / "textures" / "body_BaseColor_sRGB.1001.exr").write_bytes(b"")
+    assert find_painter_usd(str(tmp_path)) is None
+    assert not is_usd_path(str(tmp_path))

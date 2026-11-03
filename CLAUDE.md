@@ -23,7 +23,10 @@
 - Create runs inside `solaris_adapter.manual_update()` (Houdini updates set to Manual, then put
   back): while the Material Library cooks on changes, every node created in it re-translates all its
   materials, so 16 materials took ~110 s instead of ~1 s.
-- **Substance USD** button reads a Painter USD export with pxr (in the adapter; `logic.py` gets plain
+- The path box takes a texture folder or a USD file (Scan picks by what it is). **From USD** picks a
+  USD file; **Publish** loads the publish's Painter export when its latest `vNNN` holds one
+  (`find_painter_usd`: highest `_vNNN` in the file name, `*.material.usda` skipped), else fills the
+  folder as before. A Painter USD export is read with pxr (in the adapter; `logic.py` gets plain
   `SubstanceMaterial` data and stays testable without pxr). The export only sublayers
   `*.material.usda` (Material prims under `/Geo/material` + `over`s carrying `material:binding`) and
   the geometry it was painted on (e.g. the UV publish, which may hold its own materials, e.g.

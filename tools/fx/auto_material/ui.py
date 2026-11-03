@@ -417,7 +417,7 @@ class AutoMaterialUI(QWidget):
         root.addWidget(title)
 
         # --- Folder row ---
-        folder_section = QLabel("TEXTURE FOLDER")
+        folder_section = QLabel("TEXTURE FOLDER / USD")
         folder_section.setStyleSheet(STYLE_SECTION_LABEL)
         root.addWidget(folder_section)
 
@@ -426,7 +426,7 @@ class AutoMaterialUI(QWidget):
         self._folder_combo = QComboBox()
         self._folder_combo.setEditable(True)
         self._folder_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._folder_combo.lineEdit().setPlaceholderText("Select texture folder...")
+        self._folder_combo.lineEdit().setPlaceholderText("Select texture folder or USD file...")
         self._folder_combo.setStyleSheet(STYLE_COMBO)
         self._folder_combo.setSizePolicy(
             self._folder_combo.sizePolicy().horizontalPolicy(),
@@ -444,17 +444,20 @@ class AutoMaterialUI(QWidget):
         folder_row.addWidget(self._browse_btn)
 
         self._publish_btn = QPushButton("Publish")
-        self._publish_btn.setToolTip("Auto-fill $HIP/../../../03_surfacing/02_texturing/publish")
+        self._publish_btn.setToolTip(
+            "Auto-fill $HIP/../../../03_surfacing/02_texturing/publish; "
+            "its latest Painter USD export is loaded when there is one"
+        )
         self._publish_btn.setStyleSheet(STYLE_BTN)
         folder_row.addWidget(self._publish_btn)
 
-        self._substance_btn = QPushButton("Substance USD")
-        self._substance_btn.setToolTip(
-            "Load a Substance Painter USD export: Create makes a Sublayer with its geometry, "
+        self._from_usd_btn = QPushButton("From USD")
+        self._from_usd_btn.setToolTip(
+            "Pick a Substance Painter USD export: Create makes a Sublayer with its geometry, "
             "the Karma materials and an Assign Material from its bindings."
         )
-        self._substance_btn.setStyleSheet(STYLE_BTN)
-        folder_row.addWidget(self._substance_btn)
+        self._from_usd_btn.setStyleSheet(STYLE_BTN)
+        folder_row.addWidget(self._from_usd_btn)
 
         self._scan_btn = QPushButton("Scan")
         self._scan_btn.setStyleSheet(STYLE_BTN_PRIMARY)
@@ -693,10 +696,10 @@ class AutoMaterialUI(QWidget):
     def on_publish_clicked(self, callback: Callable[[], None]) -> None:
         self._publish_btn.clicked.connect(callback)
 
-    def on_substance_clicked(self, callback: Callable[[], None]) -> None:
-        self._substance_btn.clicked.connect(callback)
+    def on_from_usd_clicked(self, callback: Callable[[], None]) -> None:
+        self._from_usd_btn.clicked.connect(callback)
 
-    def ask_substance_usd(self) -> str:
+    def ask_usd_file(self) -> str:
         path, _ = QFileDialog.getOpenFileName(
             self, "Select Substance Painter USD export", self.get_folder(), "USD (*.usd *.usda *.usdc)",
         )

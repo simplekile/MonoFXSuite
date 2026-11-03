@@ -7,7 +7,13 @@ from __future__ import annotations
 from PySide6.QtWidgets import QMessageBox
 
 from tools.fx.auto_material import config
-from tools.fx.auto_material.logic import scan_and_group, substance_assign_entries, substance_source
+from tools.fx.auto_material.logic import (
+    find_painter_usd,
+    is_usd_path,
+    scan_and_group,
+    substance_assign_entries,
+    substance_source,
+)
 from tools.fx.auto_material.ui import AutoMaterialUI
 
 
@@ -22,14 +28,42 @@ def run() -> None:
     ui = AutoMaterialUI()
     ui.setWindowTitle(config.WINDOW_TITLE)
 
-    # The Painter export loaded last; Scan clears it, so Create builds from the folder again.
+    # The Painter export loaded last; a folder scan clears it, so Create builds from the folder again.
     state: dict = {"substance": None}
 
-    # --- Scan ---
+    # --- USD (Painter export) ---
+    def load_usd(usd_path: str) -> None:
+        state["substance"] = None
+        ui.set_message("")
+        ui.show_loading("Reading USD...")
+        try:
+            sublayers, materials, bindings = sa.read_substance_usd(usd_path)
+            groups, source = substance_source(usd_path, sublayers, materials, bindings)
+        except Exception as e:
+            ui.set_message(f"Cannot read USD: {e}", error=True)
+            return
+        finally:
+            ui.hide_loading()
+        if not groups:
+            ui.set_message("No material with Painter textures in this USD.", error=True)
+            return
+        state["substance"] = source
+        ui.set_materials(groups, [])
+        ui.save_folder_to_history(usd_path)
+        ui.set_message(
+            f"USD: {len(groups)} material(s), geometry {', '.join(source.geo_layers)}. "
+            "Create makes the Sublayer, the materials and the Assign Material.",
+            error=False,
+        )
+
+    # --- Scan: a texture folder, or a USD file in the path box ---
     def on_scan() -> None:
         folder = ui.get_folder()
         if not folder:
-            ui.set_message("Select a texture folder first.", error=True)
+            ui.set_message("Select a texture folder or a USD file first.", error=True)
+            return
+        if is_usd_path(folder):
+            load_usd(folder)
             return
         state["substance"] = None
         ui.set_message("")
@@ -46,12 +80,15 @@ def run() -> None:
 
     ui.on_scan_clicked(on_scan)
 
-    # --- Publish button ---
+    # --- Publish button: the publish's Painter USD export when there is one, else its folder ---
     def on_publish() -> None:
         publish_path = sa.resolve_publish_texture_folder()
         if publish_path:
-            ui.set_folder(publish_path)
+            usd_path = find_painter_usd(publish_path)
+            ui.set_folder(usd_path or publish_path)
             ui.set_message("")
+            if usd_path:
+                load_usd(usd_path)
         else:
             hip = sa.get_hip_dir()
             if hip is None:
@@ -64,33 +101,14 @@ def run() -> None:
 
     ui.on_publish_clicked(on_publish)
 
-    # --- Substance Painter USD export ---
-    def on_substance() -> None:
-        usd_path = ui.ask_substance_usd()
-        if not usd_path:
-            return
-        ui.set_message("")
-        ui.show_loading("Reading Substance USD...")
-        try:
-            sublayers, materials, bindings = sa.read_substance_usd(usd_path)
-            groups, source = substance_source(usd_path, sublayers, materials, bindings)
-        except Exception as e:
-            ui.set_message(f"Cannot read Substance USD: {e}", error=True)
-            return
-        finally:
-            ui.hide_loading()
-        if not groups:
-            ui.set_message("No Painter material with textures in this USD.", error=True)
-            return
-        state["substance"] = source
-        ui.set_materials(groups, [])
-        ui.set_message(
-            f"Substance USD: {len(groups)} material(s), geometry {', '.join(source.geo_layers)}. "
-            "Create makes the Sublayer, the materials and the Assign Material.",
-            error=False,
-        )
+    # --- From USD: pick a USD file ---
+    def on_from_usd() -> None:
+        usd_path = ui.ask_usd_file()
+        if usd_path:
+            ui.set_folder(usd_path)
+            load_usd(usd_path)
 
-    ui.on_substance_clicked(on_substance)
+    ui.on_from_usd_clicked(on_from_usd)
 
     # --- Create ---
     def on_create() -> None:
