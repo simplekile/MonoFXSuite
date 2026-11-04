@@ -1,4 +1,4 @@
-"""Anim USD orientation must match Blender wm.usd_export (transpose of axis_conversion)."""
+"""Anim USD orientation must match Blender wm.usd_export (the USD matrix is the transposed axis_conversion)."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def _transpose3(
 
 
 def test_default_orientation_matches_wm_usd_export_transpose() -> None:
-    """Default publish axes: wm.usd_export applies transpose(axis_conversion(Y,Z,-Z,Y))."""
+    """Default publish axes: wm.usd_export authors transpose(axis_conversion(Y,Z,-Z,Y)) in USD."""
     raw = _axis_conversion_rows("Y", "Z", "-Z", "Y")
     expected = _transpose3(raw)
 
@@ -90,7 +90,7 @@ def test_default_orientation_matches_wm_usd_export_transpose() -> None:
         (0.0, 1.0, 0.0),
     )
 
-    # Previous anim-cache matrix was the non-transposed form (+90° X vs -90° X).
+    # The non-transposed form must not reach USD (+90° X vs -90° X).
     old_buggy = (
         (1.0, 0.0, 0.0),
         (0.0, 0.0, 1.0),

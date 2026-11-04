@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 import bpy
-from mathutils import Vector
+import numpy as np
 
 from . import config
 from .anim_usd_cache_camera_writer import (
@@ -22,6 +22,7 @@ from .anim_usd_cache_camera_writer import (
 )
 from .anim_usd_cache_mesh_writer import UsdAnimCacheMeshWriter
 from .anim_usd_cache_xform_writer import (
+    HierarchyXformRecorder,
     author_hierarchy_bind_xforms,
     resolve_orientation_matrix,
 )
@@ -129,10 +130,15 @@ class _HierarchyNode:
     prim_path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class _MeshTopology:
-    face_vertex_counts: tuple[int, ...]
-    face_vertex_indices: tuple[int, ...]
+    face_vertex_counts: np.ndarray
+    face_vertex_indices: np.ndarray
+
+    def matches(self, other: "_MeshTopology") -> bool:
+        return np.array_equal(
+            self.face_vertex_counts, other.face_vertex_counts
+        ) and np.array_equal(self.face_vertex_indices, other.face_vertex_indices)
 
 
 def _setup_logging() -> None:
@@ -144,10 +150,6 @@ def _setup_logging() -> None:
     )
     logger.addHandler(handler)
     logger.setLevel(logging.INFO)
-
-
-def vector_to_gf(vec: Vector) -> Gf.Vec3f:
-    return Gf.Vec3f(float(vec.x), float(vec.y), float(vec.z))
 
 
 def meters_scale_from_scene(scene: bpy.types.Scene) -> float:
@@ -1050,14 +1052,13 @@ def _release_evaluated_mesh(obj: bpy.types.Object, needs_clear: bool) -> None:
 
 
 def _extract_topology(mesh: bpy.types.Mesh) -> _MeshTopology:
-    face_vertex_counts: list[int] = []
-    face_vertex_indices: list[int] = []
-    for poly in mesh.polygons:
-        face_vertex_counts.append(len(poly.vertices))
-        face_vertex_indices.extend(int(i) for i in poly.vertices)
+    face_vertex_counts = np.empty(len(mesh.polygons), dtype=np.int32)
+    mesh.polygons.foreach_get("loop_total", face_vertex_counts)
+    face_vertex_indices = np.empty(len(mesh.loops), dtype=np.int32)
+    mesh.loops.foreach_get("vertex_index", face_vertex_indices)
     return _MeshTopology(
-        face_vertex_counts=tuple(face_vertex_counts),
-        face_vertex_indices=tuple(face_vertex_indices),
+        face_vertex_counts=face_vertex_counts,
+        face_vertex_indices=face_vertex_indices,
     )
 
 
@@ -1065,19 +1066,17 @@ def _extract_local_mesh_points(
     mesh: bpy.types.Mesh,
     *,
     unit_scale: float,
-) -> list[Gf.Vec3f]:
+) -> np.ndarray:
     """
-    Evaluated mesh points in object-local space (no axis reorientation).
+    Evaluated mesh points in object-local space (no axis reorientation), float32 (N, 3).
 
     Lookdev publish applies Z-up → Y-up on Xform ops; points stay object-local.
     """
-    points: list[Gf.Vec3f] = []
-    for vert in mesh.vertices:
-        local = vert.co
-        if unit_scale != 1.0:
-            local = local * unit_scale
-        points.append(vector_to_gf(local))
-    return points
+    points = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", points)
+    if unit_scale != 1.0:
+        points *= np.float32(unit_scale)
+    return points.reshape(-1, 3)
 
 
 def _write_publish_meta(
@@ -1227,6 +1226,7 @@ class UsdAnimCacheExportSession:
         self._depsgraph = None
         self._orient_matrix = None
         self._xform_prims: dict[str, UsdGeom.Xform] = {}
+        self._xform_recorder: Optional[HierarchyXformRecorder] = None
         self._unit_scale = 1.0
         self._start_time: Optional[float] = None
         self._mesh_index = 0
@@ -1241,6 +1241,8 @@ class UsdAnimCacheExportSession:
         except Exception:
             pass
         self._depsgraph.update()
+        if self._xform_recorder is not None:
+            self._xform_recorder.sample(float(self._current_frame), self._depsgraph)
         self._frame_depsgraph_ready = True
 
     def _advance_frame(self) -> None:
@@ -1282,7 +1284,7 @@ class UsdAnimCacheExportSession:
                     topo.face_vertex_counts,
                     topo.face_vertex_indices,
                 )
-            elif topo != self._reference_topology[mesh_obj.name]:
+            elif not topo.matches(self._reference_topology[mesh_obj.name]):
                 msg = (
                     f"Frame {frame}: topology changed on "
                     f"{strip_blender_namespace(mesh_obj.name)}"
@@ -1472,12 +1474,23 @@ class UsdAnimCacheExportSession:
                             self._stage, node.prim_path
                         )
 
-                author_hierarchy_bind_xforms(
+                bind_ops = author_hierarchy_bind_xforms(
                     context=self.context,
                     hierarchy=self._hierarchy,
                     mesh_prims=self._mesh_prims,
                     xform_prims=self._xform_prims,
                     frame=self.frame_start,
+                    orient_matrix=self._orient_matrix,
+                    unit_scale=self._unit_scale,
+                )
+                prims = {name: mesh.GetPrim() for name, mesh in self._mesh_prims.items()}
+                prims.update(
+                    (name, xform.GetPrim()) for name, xform in self._xform_prims.items()
+                )
+                self._xform_recorder = HierarchyXformRecorder(
+                    hierarchy=self._hierarchy,
+                    prims=prims,
+                    op_cache=bind_ops,
                     orient_matrix=self._orient_matrix,
                     unit_scale=self._unit_scale,
                 )
@@ -1596,6 +1609,10 @@ class UsdAnimCacheExportSession:
 
         try:
             if self._stage is not None:
+                if self._xform_recorder is not None:
+                    self._xform_recorder.author()
+                if self._writer is not None:
+                    self._writer.finish()
                 self._stage.GetRootLayer().Save()
             if self._camera_obj is not None and self.export_camera:
                 cam_err = self._export_camera_via_blender_usd()

@@ -1,5 +1,37 @@
 # MonoFXSuite
 
+## Anim USD export speed (Blender, `anim_usd_cache_exporter.py` + `anim_usd_cache_mesh_writer.py`)
+
+- Points, extent and topology go through numpy, not per-vertex Python: `vertices.foreach_get("co")` as
+  float32 into `Vt.Vec3fArray.FromNumpy`, extent with numpy min/max, topology (`polygons` `loop_total`,
+  `loops` `vertex_index`, int32) compared with `np.array_equal`. Measured on sh025 (14 meshes, 46 frames,
+  ~1.35M points per frame): 301 s -> 26 s; that change alone left the USD files byte-identical.
+- Profiling sh025 showed the time was all in those Python loops (points 90 s, topology 86 s, write 116 s);
+  `frame_set` took under 1 s in total, so sharing frames between rigs would not help. What is left is
+  mostly the topology read (21 s of 26 s), which still runs per mesh per frame to catch changing topology.
+- Keep float32 throughout, including `unit_scale` (`np.float32`): the old `Vector * float` was also
+  float32, so values stay bit-identical. Converting to float64 and back would change rounding.
+
+## Anim USD transforms (Blender, `anim_usd_cache_xform_writer.py`)
+
+- Blender matrices use column vectors, USD row vectors, so `matrix_to_gf` transposes. It did not before:
+  a mesh with its own transform (rigid, e.g. sh025's Spaceship on `CHILD_OF`) lost its translation in USD
+  and landed at the origin, 343 units off. Armature-deformed meshes hid this: their object transform is
+  identity and the points carry the position.
+- `build_axis_conversion_matrix` returns plain `axis_conversion` (Z-up to Y-up in Blender's convention).
+  It used to be transposed, which is why the root looked right while everything else was wrong; the USD
+  value of the root is unchanged.
+- `HierarchyXformRecorder` samples every prim's xform each frame and authors time samples, at the end of
+  the export, only for prims that moved. Static prims keep one value, so files do not grow.
+- Points follow the same rule (`UsdAnimCacheMeshWriter.write_frame` / `finish`): a mesh identical on every
+  frame gets one set of points and one extent at default time; one that changes gets every frame, including
+  those held before the change. It compares evaluated points, not modifiers, because drivers, shape keys and
+  constraints also change a mesh. USD's crate format already stored identical samples once, so this barely
+  shrinks files (sh025: about 1 KB); the gain is that readers see the mesh as static.
+- A byte comparison with an older export proves nothing about correctness: check world positions in the
+  USD against the evaluated blend instead. `tests/test_anim_usd_cache_xform_matrix.py` and
+  `test_anim_usd_cache_mesh_writer.py` need bpy/pxr, so plain pytest skips them; run them in Blender's Python.
+
 ## Auto Material (Houdini, `tools/fx/auto_material/` + `apps/houdini/solaris_adapter.py`)
 
 - Texture names follow Monos Painter publishes: `{set}_{name}_{colorspace}.{UDIM}.{ext}`. The colour

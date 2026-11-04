@@ -59,11 +59,10 @@ def build_axis_conversion_matrix(
     up: str = config.DEFAULT_EXPORT_UP,
 ) -> "Matrix":
     """
-    Match ``wm.usd_export`` root orientation (``usd_writer_transform.cc``).
+    Blender-convention rotation (column vectors) from Z-up to the export axes.
 
-    Blender's C exporter transposes ``mat3_from_axis_conversion`` before
-    ``mat @ matrix_world``; use the same transpose here so anim cache aligns
-    with published model USD.
+    ``matrix_to_gf`` transposes it, so the USD matrix matches the root orientation
+    of ``wm.usd_export`` and the anim cache aligns with published model USD.
     """
     from bpy_extras.io_utils import axis_conversion
 
@@ -73,26 +72,27 @@ def build_axis_conversion_matrix(
         to_forward=_axis_enum_to_io_string(forward),
         to_up=_axis_enum_to_io_string(up),
     )
-    return rot.transposed().to_4x4()
+    return rot.to_4x4()
 
 
 def matrix_to_gf(mat: "Matrix") -> Gf.Matrix4d:
+    """Blender uses column vectors (translation in the last column), USD row vectors (last row)."""
     return Gf.Matrix4d(
         float(mat[0][0]),
-        float(mat[0][1]),
-        float(mat[0][2]),
-        float(mat[0][3]),
         float(mat[1][0]),
-        float(mat[1][1]),
-        float(mat[1][2]),
-        float(mat[1][3]),
         float(mat[2][0]),
-        float(mat[2][1]),
-        float(mat[2][2]),
-        float(mat[2][3]),
         float(mat[3][0]),
+        float(mat[0][1]),
+        float(mat[1][1]),
+        float(mat[2][1]),
         float(mat[3][1]),
+        float(mat[0][2]),
+        float(mat[1][2]),
+        float(mat[2][2]),
         float(mat[3][2]),
+        float(mat[0][3]),
+        float(mat[1][3]),
+        float(mat[2][3]),
         float(mat[3][3]),
     )
 
@@ -232,8 +232,8 @@ def author_hierarchy_bind_xforms(
     frame: int,
     orient_matrix: "Matrix",
     unit_scale: float,
-) -> None:
-    """Write static bind Xforms once at *frame* (typically ``frame_start``)."""
+) -> MatrixXformOpCache:
+    """Write static bind Xforms once at *frame* (typically ``frame_start``); returns their ops."""
     scene = context.scene
     scene.frame_set(int(frame))
     try:
@@ -273,3 +273,50 @@ def author_hierarchy_bind_xforms(
                 continue
             write_prim_bind_xform(xform.GetPrim(), gf, op_cache=bind_cache)
             logger.debug("Bind xform %s", obj_name)
+    return bind_cache
+
+
+class HierarchyXformRecorder:
+    """Per-frame xforms of the exported prims; only prims that move get time samples."""
+
+    def __init__(
+        self,
+        *,
+        hierarchy: Mapping[str, object],
+        prims: Mapping[str, object],
+        op_cache: MatrixXformOpCache,
+        orient_matrix: "Matrix",
+        unit_scale: float,
+    ) -> None:
+        self._hierarchy = hierarchy
+        self._prims = prims
+        self._op_cache = op_cache
+        self._orient_matrix = orient_matrix
+        self._unit_scale = unit_scale
+        self._samples: dict[str, list[tuple[float, Gf.Matrix4d]]] = {
+            obj_name: [] for obj_name in prims
+        }
+
+    def sample(self, frame: float, depsgraph: bpy.types.Depsgraph) -> None:
+        hierarchy_names = set(self._hierarchy.keys())
+        world_matrices = evaluated_world_matrices_for_hierarchy(
+            self._hierarchy,
+            depsgraph=depsgraph,
+        )
+        for obj_name, samples in self._samples.items():
+            mat = usd_xform_from_evaluated_worlds(
+                obj_name,
+                self._hierarchy[obj_name],
+                hierarchy_names,
+                world_matrices,
+                orient_matrix=self._orient_matrix,
+                unit_scale=self._unit_scale,
+            )
+            samples.append((frame, matrix_to_gf(mat)))
+
+    def author(self) -> None:
+        for obj_name, samples in self._samples.items():
+            if all(gf == samples[0][1] for _, gf in samples):
+                continue
+            for frame, gf in samples:
+                self._op_cache.set(self._prims[obj_name], gf, frame=frame)
