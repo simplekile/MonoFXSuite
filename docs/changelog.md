@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Blender
+- Anim USD Cache: export is about 13 times faster (sh025: 301 s to 23 s).
+- Anim USD Cache: meshes with their own transform (rigid, e.g. a vehicle on `CHILD_OF`) keep their position instead of landing at the origin, and moving ones now animate. Shots already published need exporting again.
+- Anim USD Cache: a mesh that never changes gets one set of points instead of a time sample per frame. Bump add-on to **0.9.134**.
+
 
 ## [0.1.23] - 2026-11-04
 
