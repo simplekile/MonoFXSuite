@@ -50,14 +50,14 @@
   their export and record. Chips: `v006→v008` update, `v008` up to date (left alone), `+v008` new
   (`folder_status`). "Also used in N other libraries" lists the others holding these materials; ticked
   ones get their existing materials updated in the same Create.
-- **Link to selection** (Start page and Version manager, saved in `%APPDATA%/MonoFXSuite/
+- **Follows selection** (top bar pill, saved in `%APPDATA%/MonoFXSuite/
   auto_material_prefs.json`): while on, the window polls `hou.selectedNodes()` (`SELECTION_POLL_MS`, no
-  Houdini callback to clean up): selected library rows become the ticks ("Update 2 selected"), and on a
+  Houdini callback to clean up): selected libraries are what the sidebar updates ("Update 2 selected"), and on a
   texture folder one selected library becomes the target.
 - Node menu (`OPmenu.xml` at the suite root, `tools/fx/auto_material/node_menu.py`) on a Material Library
   in `/stage`: MonoFX › Update materials to latest (every selected library plus the clicked one, by
   `updater`, Houdini's progress bar, result on the status bar) and Open in Auto Material.
-- Version manager for Painter exports: every export of the same family (`list_painter_exports`: same
+- A Painter export: every export of the same family (`list_painter_exports`: same
   name without `_vNNN`, in the publish folder and its `vNNN` children) is read; each material can be
   built from any export that has it. Default: the newest, unless the scene pins it. Chip colours:
   emerald up to date, blue will update, violet new, amber pinned, red not in the export the geometry
