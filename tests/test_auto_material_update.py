@@ -609,3 +609,73 @@ def test_build_into_a_renamed_library_updates_it(stage: FakeNode) -> None:
     res = sa.build_material(stage, "M_char_Body", _slots("v002", ["BaseColor_sRGB"]), mat_lib_name="mtl_char")
     assert res is not None and res.updated
     assert stage.node("materiallibrary1") is None
+
+
+# ---------------------------------------------------------------------------
+# Materials another tool made, or pasted from another version
+# ---------------------------------------------------------------------------
+
+def test_same_family_and_node_versions() -> None:
+    from tools.fx.auto_material.logic import MaterialRecord, merge_node_versions, same_family
+
+    assert same_family("/p/char_v008_full.usd", "/p/char_v010.usd")        # suffix dropped
+    assert same_family("/p/char_v008_full.usd", "/p/char_v009_full.usd")
+    assert not same_family("/p/char_v008_full.usd", "/p/char_v010_lite.usd")
+    assert not same_family("/p/char_v008.usd", "/p/prop_v008.usd")
+    records = {"Body": MaterialRecord("v010", pinned=True), "Head": MaterialRecord("v010")}
+    merged = merge_node_versions(records, {"Body": "v008", "Head": "", "Cape": "v008"})
+    assert merged["Body"] == MaterialRecord("v008", pinned=True)   # pasted v008: shows v008, pin kept
+    assert merged["Head"] == MaterialRecord("v010")                  # cannot tell: record kept
+    assert merged["Cape"] == MaterialRecord("v008")
+
+
+def _foreign_material(stage: FakeNode, lib_name: str, folder: str) -> FakeNode:
+    """A builder as SideFX's Painter-to-Karma makes it: untagged images wired into the surface."""
+    lib = stage.node(lib_name) or stage.createNode("materiallibrary", lib_name)
+    b = lib.createNode("subnet", "M_char_Body")
+    surface = b.createNode("mtlxstandard_surface", "standard_surface")
+    img = b.createNode("mtlximage", "baseColor_image")
+    img.parm("file").set(f"{folder}/M_char_Body_Color_ACEScg.1007.exr")
+    surface.setInput(surface.inputIndex("base_color"), img)
+    return b
+
+
+def test_foreign_material_is_read_and_updated_in_place(stage: FakeNode, tmp_path) -> None:
+    from tools.fx.auto_material.logic import RECORD_KEY
+
+    v008 = tmp_path / "v001" / "char_Helen_texturing_v008_full_textures"
+    v008.mkdir(parents=True)
+    (tmp_path / "v001" / "char_Helen_texturing_v008_full.usd").write_bytes(b"")
+    b = _foreign_material(stage, "char_Helen_texturing_materials1", v008.as_posix())
+    lib = stage.node("char_Helen_texturing_materials1")
+
+    # No record, no tool tags: still an asset library, its version from the texture folder
+    [(found, text)] = sa.substance_libraries(stage)
+    meta, records = sa.library_record(found, text)
+    assert found is lib and meta["version"] == "v008" and records["M_char_Body"].version == "v008"
+    assert meta["export"].endswith("char_Helen_texturing_v008_full.usd")
+
+    # Updating it moves the wired image to the new file instead of adding a second image
+    slots = {"base_color": SlotInfo(filepath="/new/v010/M_char_Body_Color_ACEScg.<UDIM>.exr",
+                                    colorspace="ACEScg", udim=True)}
+    notes: list[str] = []
+    sa.update_material(b, slots, notes)
+    img = b.node("baseColor_image")
+    assert img.parm("file").eval() == "/new/v010/M_char_Body_Color_ACEScg.<UDIM>.exr"
+    assert [c.name() for c in b.children() if c.type().name() == "mtlximage"] == ["baseColor_image"]
+    assert img.userData(sa.SLOT_TAG) == "base_color"
+    assert lib.userData(RECORD_KEY) is None  # reading changes nothing
+
+
+def test_pasted_older_material_shows_its_version(stage: FakeNode, tmp_path) -> None:
+    from tools.fx.auto_material.logic import RECORD_KEY, MaterialRecord, PainterExport, dump_record
+
+    old = tmp_path / "v001" / "char_Helen_texturing_v008_full_textures"
+    old.mkdir(parents=True)
+    _foreign_material(stage, "char_Helen_texturing_materials", old.as_posix())
+    export = PainterExport("v010", (tmp_path / "v001" / "char_Helen_texturing_v010.usd").as_posix())
+    lib = stage.node("char_Helen_texturing_materials")
+    lib.setUserData(RECORD_KEY, dump_record(None, export, {"M_char_Body": MaterialRecord("v010")}))
+    [(found, text)] = sa.substance_libraries(stage)
+    meta, records = sa.library_record(found, text)
+    assert meta["version"] == "v008" and records["M_char_Body"].version == "v008"

@@ -417,19 +417,45 @@ def _tag_image(node: Any, slot: str, filepath: str, token: str | None) -> None:
         pass
 
 
+def _wired_image(builder: Any, slot: str) -> Any:
+    """
+    The untagged mtlximage feeding the surface input of *slot* (directly, or through a normal map):
+    how a material built by another tool (e.g. SideFX's Painter-to-Karma) is updated in place.
+    """
+    surface = _find_surface(builder)
+    input_name = SURFACE_INPUT_MAP.get(slot)
+    if surface is None or input_name is None:
+        return None
+    try:
+        idx = surface.inputIndex(input_name)
+        node = surface.input(idx) if idx >= 0 else None
+        for _hop in range(3):
+            if node is None:
+                return None
+            if node.type().name() == "mtlximage":
+                return None if _user_data(node, SLOT_TAG) else node
+            node = node.input(0)
+    except Exception:
+        return None
+    return None
+
+
 def find_image_node(builder: Any, slot: str) -> Any:
-    """The tool's image node for *slot*: tagged by user data, else (older builds) named tex_<slot>."""
+    """
+    The image node for *slot*: tagged by the tool's user data, else (older builds) named tex_<slot>,
+    else (another tool's material) the untagged image wired into the slot's surface input.
+    """
     legacy = None
     for child in builder.children():
         if _user_data(child, SLOT_TAG) == slot:
             return child
         if legacy is None and child.name() == f"tex_{slot}" and child.type().name() == "mtlximage":
             legacy = child
-    return legacy
+    return legacy if legacy is not None else _wired_image(builder, slot)
 
 
 def _image_slots(builder: Any) -> dict[str, Any]:
-    """slot -> image node for every image node the tool made in *builder*."""
+    """slot -> image node for every image node the tool made in *builder*, or another tool wired in."""
     out: dict[str, Any] = {}
     for child in builder.children():
         slot = _user_data(child, SLOT_TAG)
@@ -437,6 +463,12 @@ def _image_slots(builder: Any) -> dict[str, Any]:
             slot = child.name()[4:]
         if slot in SLOT_DEF_MAP and slot not in out:
             out[slot] = child
+    if _find_surface(builder) is not None:
+        for slot in SURFACE_INPUT_MAP:
+            if slot not in out:
+                img = _wired_image(builder, slot)
+                if img is not None and img not in out.values():
+                    out[slot] = img
     return out
 
 
@@ -1235,8 +1267,9 @@ def read_painter_exports(exports: list) -> dict[str, ExportData]:
 
 def _infer_record(mat_lib: Any) -> str | None:
     """
-    Record for a library built before the tool kept one: each material's version is the _vNNN in
-    the folder of the textures the tool set, and the export is the .usd next to that folder.
+    Record for a library with none: built before the tool kept one, pasted, or made by another tool
+    from a Painter export (SideFX's Painter-to-Karma). Each material's version is the _vNNN in the
+    folder of its textures, and the export is the .usd next to that folder.
     """
     from tools.fx.auto_material.logic import (
         MaterialRecord,
@@ -1250,10 +1283,11 @@ def _infer_record(mat_lib: Any) -> str | None:
     materials: dict[str, Any] = {}
     export_path = ""
     for builder in mat_lib.children():
-        files = [f for f in (_user_data(img, FILE_TAG) for img in _image_slots(builder).values()) if f]
-        version = next((v for v in (version_from_path(f) for f in files) if v), None)
-        if not version:
+        files = _builder_files(builder)
+        found = [v for v in (version_from_path(f) for f in files) if v]
+        if not found:
             continue
+        version = min(found, key=version_number)
         materials[builder.name()] = MaterialRecord(version)
         folder = Path(files[0]).parent
         candidate = folder.with_name(folder.name.removesuffix("_textures") + ".usd")
@@ -1280,9 +1314,7 @@ def substance_libraries(stage_node: Any) -> list[tuple[Any, str]]:
                 continue
         except Exception:
             continue
-        record = _user_data(node, RECORD_KEY)
-        if not record and node.name().endswith("_materials"):
-            record = _infer_record(node)
+        record = _user_data(node, RECORD_KEY) or _infer_record(node)
         if record:
             out.append((node, record))
     return out
@@ -1301,16 +1333,41 @@ def _library_nodes(stage_node: Any) -> list[Any]:
 
 def _builder_files(builder: Any) -> list[str]:
     """
-    Texture paths the tool set on *builder*'s images and that are still there (none for a material
-    it did not build). A file changed by hand is the user's: its version says nothing of the publish.
+    Texture paths on *builder*'s images: the ones the tool set and that are still there, and on
+    another tool's images (untagged), their file. A file the user changed on the tool's image is the
+    user's: its version says nothing of the publish.
     """
     out = []
     for img in _image_slots(builder).values():
         recorded = _user_data(img, FILE_TAG)
         parm = img.parm("file")
-        if recorded and (parm is None or parm.unexpandedString() == recorded):
+        current = parm.unexpandedString() if parm is not None else ""
+        if recorded and (parm is None or current == recorded):
             out.append(recorded)
+        elif not recorded and current:
+            out.append(current)
     return out
+
+
+def painter_versions(mat_lib: Any) -> dict[str, str]:
+    """Material -> export version its textures come from (…_v008_full_textures/… -> v008), "" unknown."""
+    from tools.fx.auto_material.logic import version_from_path, version_number
+
+    out: dict[str, str] = {}
+    for builder in mat_lib.children():
+        found = [v for v in (version_from_path(f) for f in _builder_files(builder)) if v]
+        out[builder.name()] = min(found, key=version_number) if found else ""
+    return out
+
+
+def library_record(mat_lib: Any, text: str) -> tuple[dict, dict]:
+    """(record fields, MaterialRecords) of a Painter library, versions as its nodes really have them."""
+    from tools.fx.auto_material.logic import merge_node_versions, oldest_version, parse_record
+
+    meta, records = parse_record(text)
+    records = merge_node_versions(records, painter_versions(mat_lib))
+    meta["version"] = oldest_version(records) or meta.get("version") or ""
+    return meta, records
 
 
 def material_libraries(stage_node: Any) -> dict[str, dict[str, str]]:
@@ -1421,6 +1478,7 @@ def apply_painter_plan(
     plans: list,
     previous: dict,
     cancelled: Any = None,
+    library: str | None = None,
 ) -> ApplyResult:
     """
     Build the Version manager's plan into the scene. The newest export gives the geometry and the
@@ -1428,6 +1486,8 @@ def apply_painter_plan(
     A material is (re)built only when it is new or its version changes; a pin change alone only
     goes into the record. *previous*: the scene's MaterialRecords, kept for materials left out.
     cancelled: optional callable, checked between materials.
+    *library*: another Material Library of the asset (a copy, or one another tool made): only its
+    materials are updated there; the geometry and the assignment stay as they are.
     """
     from tools.fx.auto_material import config
     from tools.fx.auto_material.logic import (
@@ -1440,13 +1500,21 @@ def apply_painter_plan(
     result = ApplyResult()
     latest = data[max(data, key=version_number)]
     base = latest.source.node_base
-    sublayer = get_or_create_substance_sublayer(
-        stage_node, base + config.SUBSTANCE_GEO_NODE_SUFFIX, latest.source.geo_layers,
-    )
-    if sublayer is None:
-        result.notes.append("Cannot create the Sublayer for the Substance geometry.")
-        return result
-    mat_lib_name = base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
+    default_lib = base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
+    in_place = library is not None and library != default_lib
+    if in_place:
+        sublayer = stage_node.node(library)
+        if sublayer is None:
+            result.notes.append(f"{library}: not in the scene.")
+            return result
+    else:
+        sublayer = get_or_create_substance_sublayer(
+            stage_node, base + config.SUBSTANCE_GEO_NODE_SUFFIX, latest.source.geo_layers,
+        )
+        if sublayer is None:
+            result.notes.append("Cannot create the Sublayer for the Substance geometry.")
+            return result
+    mat_lib_name = library if in_place else default_lib
 
     records = dict(previous)
     paths: dict[str, str] = {}
@@ -1488,6 +1556,9 @@ def apply_painter_plan(
             return result
         if result.created:
             layout_material_library(mat_lib, new_names=result.created)
+        if in_place:
+            write_record(mat_lib, dump_record(asset_from_path(latest.export.usd_path), latest.export, records))
+            return result
 
         # Prims per material: the geometry export's bindings, else the chosen export's.
         entries = []

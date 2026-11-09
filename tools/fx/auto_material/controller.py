@@ -24,8 +24,8 @@ from tools.fx.auto_material.logic import (
     latest_publish_version,
     list_painter_exports,
     new_library_name,
-    parse_record,
     pick_library,
+    same_family,
     scan_and_group,
     substance_node_base,
     version_from_path,
@@ -56,15 +56,25 @@ def run(focus: str | None = None) -> None:
     # ------------------------------------------------------------------
     # Scene assets (start page)
     # ------------------------------------------------------------------
-    def scene_records() -> dict[str, tuple[dict, dict]]:
-        """node base -> (record fields, material records) for each library built from an export."""
-        stage = sa.get_stage_context()
-        out: dict[str, tuple[dict, dict]] = {}
-        for _lib, text in sa.substance_libraries(stage):
-            meta, records = parse_record(text)
-            if meta.get("export"):
-                out[substance_node_base(meta["export"])] = (meta, records)
-        return out
+    def scene_records(usd_path: str, library: str | None = None) -> tuple[str | None, dict]:
+        """
+        (library, material records) the scene has of the export's asset: *library* when given, else
+        the asset's own {base}_materials, else the first library of the asset. Versions as the
+        nodes have them (a material pasted from another version shows that version).
+        """
+        base = substance_node_base(usd_path)
+        found = []
+        for lib, text in sa.substance_libraries(sa.get_stage_context()):
+            meta, records = sa.library_record(lib, text)
+            if meta.get("export") and same_family(meta["export"], usd_path):
+                found.append((lib.name(), records))
+        for name, records in found:
+            if name == library:
+                return name, records
+        if library:
+            return library, {}
+        own = base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
+        return next(((n, r) for n, r in found if n == own), found[0] if found else (None, {}))
 
     def asset_label(usd_path: str) -> tuple[str, str]:
         found = asset_from_path(usd_path)
@@ -98,9 +108,8 @@ def run(focus: str | None = None) -> None:
         usd = hip_painter_usd()
         if usd:
             name, _kind = asset_label(usd)
-            base = substance_node_base(usd)
             lib = next((x for x in state["assets"].values()
-                        if x.source == "usd" and substance_node_base(x.location) == base), None)
+                        if x.source == "usd" and same_family(x.location, usd)), None)
             if lib is None:
                 action = "Create its materials and geometry"
             else:
@@ -183,16 +192,19 @@ def run(focus: str | None = None) -> None:
         """The Library box again from the scene, keeping the library chosen."""
         ui.set_libraries(folder_targets())
 
-    def read_asset(usd_path: str) -> dict:
-        """Every export of the asset, read; and what the scene has of it."""
-        _meta, records = scene_records().get(substance_node_base(usd_path), ({}, {}))
-        return updater.read_painter_asset(sa, usd_path, records)
+    def read_asset(usd_path: str, library: str | None = None) -> dict:
+        """Every export of the asset, read; and what the scene (*library*) has of it."""
+        name, records = scene_records(usd_path, library)
+        ctx = updater.read_painter_asset(sa, usd_path, records)
+        ctx["library"] = name
+        return ctx
 
-    def open_usd(usd_path: str) -> None:
+    def open_usd(usd_path: str, library: str | None = None) -> None:
+        """*library*: opened from its row, so that library (a copy too) is the one shown and built."""
         ui.set_message("")
         ui.show_loading("Reading Painter exports...")
         try:
-            ctx = read_asset(usd_path)
+            ctx = read_asset(usd_path, library)
         except Exception as e:
             ui.hide_loading()
             ui.set_message(f"Cannot read the USD: {e}", error=True)
@@ -213,7 +225,7 @@ def run(focus: str | None = None) -> None:
             found[0].lstrip("_") if found else "",
             f"{len(ctx['exports'])} exports, latest {ctx['latest']}",
             f"geometry {geo_v}",
-            f"into {latest.source.node_base}{config.SUBSTANCE_MATLIB_NODE_SUFFIX}",
+            f"into {ctx['library'] or latest.source.node_base + config.SUBSTANCE_MATLIB_NODE_SUFFIX}",
         ) if x)
         ui.show_usd(name, meta, kind, ctx["path"], ctx["plans"],
                     {v: d.groups for v, d in ctx["data"].items()}, set(latest.groups))
@@ -243,7 +255,7 @@ def run(focus: str | None = None) -> None:
         if lib is None:
             return
         if lib.source == "usd":
-            open_usd(lib.location)
+            open_usd(lib.location, library=lib.name)
         else:
             open_folder(lib.location, library=lib.name)
 
@@ -271,7 +283,7 @@ def run(focus: str | None = None) -> None:
     def on_banner() -> None:
         ctx = state["usd"]
         if ctx is not None:
-            open_usd(list_painter_exports(ctx["path"])[-1].usd_path)
+            open_usd(list_painter_exports(ctx["path"])[-1].usd_path, ctx.get("library"))
 
     # ------------------------------------------------------------------
     # Create / update
@@ -352,10 +364,11 @@ def run(focus: str | None = None) -> None:
         ctx = state["usd"]
         ui.show_loading("Building materials...")
         with sa.undo_group("MonoFX: Auto Material create"):
-            result = sa.apply_painter_plan(stage, ctx["data"], ui.plans(), ctx["records"], ui.is_cancelled)
+            result = sa.apply_painter_plan(stage, ctx["data"], ui.plans(), ctx["records"], ui.is_cancelled,
+                                           library=ctx.get("library"))
         cancelled = ui.is_cancelled()
-        open_usd(ctx["path"])  # chips now show the scene as it is; then the result under it
-        lib = ctx["data"][ctx["latest"]].source.node_base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
+        open_usd(ctx["path"], ctx.get("library"))  # chips now show the scene as it is; then the result
+        lib = ctx.get("library") or ctx["data"][ctx["latest"]].source.node_base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
         done(result.created, result.updated, result.notes, cancelled, library=f"{stage.path()}/{lib}")
 
     def on_create() -> None:

@@ -15,7 +15,6 @@ from tools.fx.auto_material.logic import (
     asset_kind,
     latest_publish_version,
     list_painter_exports,
-    parse_record,
     plan_materials,
     scan_and_group,
     substance_node_base,
@@ -55,7 +54,7 @@ def scene_libraries(sa: Any, stage: Any) -> list[SceneLibrary]:
     """Every library the tool built in *stage*, Painter exports first, each in network order."""
     out: list[SceneLibrary] = []
     for lib, text in sa.substance_libraries(stage):
-        meta, records = parse_record(text)
+        meta, records = sa.library_record(lib, text)  # versions as the nodes have them
         export = meta.get("export") or ""
         if not export:
             continue
@@ -94,7 +93,7 @@ def update_library(sa: Any, stage: Any, lib: SceneLibrary, cancelled: Callable[[
     """
     if lib.source == "usd":
         ctx = read_painter_asset(sa, lib.location, lib.records)
-        return sa.apply_painter_plan(stage, ctx["data"], ctx["plans"], ctx["records"], cancelled)
+        return sa.apply_painter_plan(stage, ctx["data"], ctx["plans"], ctx["records"], cancelled, library=lib.name)
     groups, _unmatched = scan_and_group(lib.location)
     return sa.update_folder_library(stage, lib.name, groups, cancelled=cancelled)
 

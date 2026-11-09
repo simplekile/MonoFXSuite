@@ -392,6 +392,26 @@ def substance_node_base(usd_path: str) -> str:
     return re.sub(r"[^A-Za-z0-9_]", "_", stem) or "substance"
 
 
+def export_family(usd_path: str) -> tuple[str, str]:
+    """(name before _vNNN, what follows it): char_Helen_texturing_v008_full -> (char_Helen_texturing, _full)."""
+    stem = Path(usd_path).name.split(".", 1)[0]
+    m = None
+    for m in _VERSION_TOKEN_RE.finditer(stem):
+        pass
+    if m is None:
+        return stem.casefold(), ""
+    return stem[: m.start()].casefold(), stem[m.end():].casefold()
+
+
+def same_family(a: str, b: str) -> bool:
+    """
+    Exports of one asset: same name before the version, and the same suffix, or one of them has none
+    (char_v008_full then char_v010: the suffix was dropped). char_v008_full and char_v010_lite differ.
+    """
+    (pa, sa_), (pb, sb) = export_family(a), export_family(b)
+    return pa == pb and (sa_ == sb or not sa_ or not sb)
+
+
 def substance_groups(
     materials: list[SubstanceMaterial],
 ) -> dict[str, MaterialGroup]:
@@ -549,7 +569,6 @@ def list_painter_exports(usd_path: str) -> list[PainterExport]:
     Every export of the same family as *usd_path* (same name without its _vNNN), in the publish
     folder and its vNNN children, oldest first. *usd_path* itself is always in the list.
     """
-    family = substance_node_base(usd_path)
     root = painter_publish_root(usd_path)
     folders = [root] + sorted(
         (p for p in root.iterdir() if p.is_dir() and _VERSION_DIR_RE.match(p.name)),
@@ -562,7 +581,7 @@ def list_painter_exports(usd_path: str) -> list[PainterExport]:
                 p.is_file()
                 and p.suffix.lower() in USD_EXTENSIONS
                 and ".material." not in p.name.lower()
-                and substance_node_base(str(p)) == family
+                and same_family(str(p), usd_path)
             ):
                 version = version_from_path(p.name)
                 if version:
@@ -738,6 +757,29 @@ def folder_status(scene_version: str | None, version: str) -> str:
     if scene_version and version and version_number(scene_version) >= version_number(version):
         return STATUS_OK
     return STATUS_UPDATE
+
+
+def merge_node_versions(records: dict[str, MaterialRecord], versions: dict[str, str]) -> dict[str, MaterialRecord]:
+    """
+    The record with each material's version as its nodes have it: a material pasted or changed by
+    hand (v008 into a v010 library) shows what the scene really has. Pins and left-out stay.
+    *versions*: material -> version read from its image files ("" = cannot tell, record kept).
+    """
+    out = dict(records)
+    for name, version in versions.items():
+        if not version:
+            continue
+        old = out.get(name)
+        if old is None:
+            out[name] = MaterialRecord(version)
+        elif old.version != version:
+            out[name] = MaterialRecord(version, old.pinned, old.left_out)
+    return out
+
+
+def oldest_version(records: dict[str, MaterialRecord]) -> str:
+    known = [r.version for r in records.values() if r.version and not r.left_out]
+    return min(known, key=version_number) if known else ""
 
 
 RECORD_KEY = "monofx_substance"
