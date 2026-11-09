@@ -37,7 +37,8 @@
   timeline (scene's oldest version, target; for a Painter export a click moves every material that is
   on and not pinned to that version, latest = All to latest), the materials as tiles (base colour
   thumbnail, status colour on the edge, check to leave out, right click: version, pin, leave out,
-  folder) and the maps of the selected tile. **Action bar**: result line, Undo (Houdini's undo of the
+  folder) and, in a full-height column beside them, the maps of the selected tile (two lines a map: name and
+  colour space, then the file). Tiles share the row's width (`_fit_tiles`). **Action bar**: result line, Undo (Houdini's undo of the
   last run), Auto assign (texture folder), the button. On open the window shows the first library
   behind its publish, else the publish when the scene has none, else the first library.
   Latest publish takes the publish's Painter export when its latest `vNNN` holds one
@@ -68,8 +69,8 @@
 - Results and notes of Create go to the line under the window, never a modal dialog: a modal box
   blocks Houdini (and the MCP bridge) until someone closes it.
 - Fonts are set in pixels (`_font`, `font-size: …px`): Houdini scales point sizes with its UI scale,
-  which overflowed painted text. Every label takes a role (`ui._text`): display 22/600 (headline),
-  title 17/600, body 14/400, name 13/600, meta 13/400 in `TEXT_LABEL`, small and caps 12. Two weights
+  which overflowed painted text. Every label takes a role (`ui._text`): display 26/600 (headline),
+  title 19/600, body 15/400, name 14/600, meta 14/400 in `TEXT_LABEL`, small and caps 13. Two weights
   only; supporting text is never `TEXT_META` (icons, placeholders, disabled). Status colours
   (`STATUS_COLORS`) are the same on rings, tile edges, chips and the legend. A pill's radius stays
   under half its height, or Qt draws square corners. Thumbnails load one per event-loop turn

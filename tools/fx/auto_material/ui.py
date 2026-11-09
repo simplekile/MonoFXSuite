@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QFrame,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QListView,
     QListWidget,
@@ -50,8 +49,6 @@ from PySide6.QtWidgets import (
     QStackedWidget,
     QStyledItemDelegate,
     QStyleOptionViewItem,
-    QTableWidget,
-    QTableWidgetItem,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -99,14 +96,14 @@ STATUS_COLORS: dict[str, str] = {
 }
 
 # Type rules: every text takes one role, never a size picked by hand.
-#   display  22px 600 TEXT_PRIMARY   the headline (what Create / Update will do)
-#   title    17px 600 TEXT_PRIMARY   empty state
-#   body     14px 400 TEXT_PRIMARY   buttons, table cells, the result line
-#   name     13px 600 TEXT_PRIMARY   library and material names
-#   meta     13px 400 TEXT_LABEL     second lines, hints, links
-#   small    12px 400/600            tile status, timeline labels, caps (600 + 1px spacing)
+#   display  26px 600 TEXT_PRIMARY   the headline (what Create / Update will do)
+#   title    19px 600 TEXT_PRIMARY   empty state
+#   body     15px 400 TEXT_PRIMARY   buttons, the result line
+#   name     14px 600 TEXT_PRIMARY   library, material and map names
+#   meta     14px 400 TEXT_LABEL     second lines, hints, links, file names
+#   small    13px 400/600            tile status, timeline labels, caps (600 + 1px spacing)
 # Two weights (400, 600). Supporting text is TEXT_LABEL, never TEXT_META.
-FS_DISPLAY, FS_TITLE, FS_BODY, FS_META, FS_SMALL = 22, 17, 14, 13, 12
+FS_DISPLAY, FS_TITLE, FS_BODY, FS_META, FS_SMALL = 26, 19, 15, 14, 13
 
 
 def _text(role: str, color: str | None = None) -> str:
@@ -115,7 +112,7 @@ def _text(role: str, color: str | None = None) -> str:
         "display": (FS_DISPLAY, 600, TEXT_PRIMARY),
         "title": (FS_TITLE, 600, TEXT_PRIMARY),
         "body": (FS_BODY, 400, TEXT_PRIMARY),
-        "name": (FS_META, 600, TEXT_PRIMARY),
+        "name": (FS_META, 600, TEXT_PRIMARY),  # 14px: names share meta's size, bold
         "meta": (FS_META, 400, TEXT_LABEL),
         "caps": (FS_SMALL, 600, TEXT_LABEL),
         "small": (FS_SMALL, 400, TEXT_LABEL),
@@ -189,24 +186,6 @@ STYLE_LINK = f"""
 
 STYLE_LIST = f"""
     QListWidget {{ background: transparent; border: none; outline: none; color: {TEXT_PRIMARY}; }}
-"""
-
-STYLE_TABLE = f"""
-    QTableWidget {{
-        background-color: {BG_APP}; border: 1px solid {LINE}; border-radius: 10px;
-        gridline-color: {LINE}; color: {TEXT_PRIMARY}; font-size: {FS_META}px; outline: none;
-        alternate-background-color: transparent;
-        selection-background-color: {_rgba(ACCENT, 0.15)}; selection-color: {TEXT_PRIMARY};
-    }}
-    QHeaderView {{ background: transparent; border: none; }}
-    QTableCornerButton::section {{ background: transparent; border: none; }}
-    QHeaderView::section {{
-        background-color: {BG_APP}; color: {TEXT_LABEL}; padding: 6px 10px; border: none;
-        border-bottom: 1px solid {LINE}; font-size: {FS_SMALL}px; font-weight: 600;
-    }}
-    QTableWidget::item {{ padding: 0px 10px; border-bottom: 1px solid #1d1d22; background: transparent; color: {TEXT_PRIMARY}; }}
-    QTableWidget QWidget {{ background: {BG_APP}; }}
-    QTableWidget::item:selected {{ background: {_rgba(ACCENT, 0.15)}; color: {TEXT_PRIMARY}; }}
 """
 
 STYLE_CHECKBOX = f"""
@@ -531,7 +510,7 @@ def _paint_ring(painter: QPainter, rect: QRect, behind: int, total: int) -> None
         painter.drawArc(r, 90 * 16, -int(360 * 16 * share))
     painter.setPen(QColor(TEXT_PRIMARY))
     if behind:
-        painter.setFont(_font(11, QFont.Weight.DemiBold))
+        painter.setFont(_font(12, QFont.Weight.DemiBold))
         painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(behind))
     else:
         painter.drawPixmap(QRect(rect.center().x() - 6, rect.center().y() - 6, 12, 12),
@@ -558,7 +537,7 @@ class _LibraryDelegate(QStyledItemDelegate):
             painter.setPen(Qt.PenStyle.NoPen)
         painter.drawRoundedRect(QRectF(rect), 10, 10)
 
-        ring = QRect(rect.left() + 10, rect.center().y() - 15, 30, 30)
+        ring = QRect(rect.left() + 10, rect.center().y() - 16, 32, 32)
         _paint_ring(painter, ring, data.get("behind", 0), data.get("total", 0))
 
         x = ring.right() + 12
@@ -566,7 +545,7 @@ class _LibraryDelegate(QStyledItemDelegate):
         painter.setFont(_font(FS_META, QFont.Weight.DemiBold))
         painter.setPen(QColor(TEXT_PRIMARY))
         name = painter.fontMetrics().elidedText(data.get("name", ""), Qt.TextElideMode.ElideMiddle, width)
-        painter.drawText(QRect(x, rect.top() + 9, width, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
+        painter.drawText(QRect(x, rect.top() + 10, width, 20), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
         painter.setFont(_font(FS_SMALL))
         sub = data.get("sub", "")
         if data.get("selected"):
@@ -575,11 +554,11 @@ class _LibraryDelegate(QStyledItemDelegate):
         else:
             painter.setPen(QColor(TEXT_LABEL))
         sub = painter.fontMetrics().elidedText(sub, Qt.TextElideMode.ElideRight, width)
-        painter.drawText(QRect(x, rect.top() + 28, width, 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sub)
+        painter.drawText(QRect(x, rect.top() + 33, width, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sub)
         painter.restore()
 
     def sizeHint(self, option, index) -> QSize:
-        return QSize(0, 56)
+        return QSize(0, 64)
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +579,7 @@ class _Timeline(QWidget):
         self._latest = ""
         self._pickable: set[str] = set()
         self._on_pick = on_pick
-        self.setFixedHeight(58)
+        self.setFixedHeight(62)
         self.setMouseTracking(True)
 
     def set_state(self, versions: list[str], scene: str, target: str, pickable: set[str]) -> None:
@@ -674,7 +653,7 @@ class _Timeline(QWidget):
 # Material tiles
 # ---------------------------------------------------------------------------
 ROLE_TILE = Qt.ItemDataRole.UserRole + 1
-_TILE = QSize(176, 136)
+_TILE = QSize(196, 156)
 
 
 class _TileDelegate(QStyledItemDelegate):
@@ -703,7 +682,7 @@ class _TileDelegate(QStyledItemDelegate):
         painter.fillPath(path, QColor(BG_RAISED))
         painter.setClipPath(path)
 
-        thumb_rect = QRect(rect.left(), rect.top(), rect.width(), 84)
+        thumb_rect = QRect(rect.left(), rect.top(), rect.width(), 92)
         pm = self._thumbs.get(t.get("thumb", ""))
         if pm is not None and not pm.isNull():
             scaled = pm.scaled(thumb_rect.size() * 2, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
@@ -740,10 +719,10 @@ class _TileDelegate(QStyledItemDelegate):
         painter.setFont(_font(FS_META, QFont.Weight.DemiBold))
         painter.setPen(QColor(TEXT_PRIMARY if enabled else TEXT_META))
         name = painter.fontMetrics().elidedText(t.get("name", ""), Qt.TextElideMode.ElideMiddle, text_w)
-        painter.drawText(QRect(text_left, rect.top() + 90, text_w, 18), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, name)
+        painter.drawText(QRect(text_left, rect.top() + 99, text_w, 20), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, name)
         painter.setFont(_font(FS_SMALL, QFont.Weight.DemiBold))
         painter.setPen(color if enabled else QColor(TEXT_META))
-        painter.drawText(QRect(text_left, rect.top() + 108, text_w, 16), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+        painter.drawText(QRect(text_left, rect.top() + 121, text_w, 18), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
                          t.get("label", "") if enabled else "Left out")
 
         border = QColor(ACCENT) if selected else QColor(LINE)
@@ -755,25 +734,50 @@ class _TileDelegate(QStyledItemDelegate):
         painter.restore()
 
     def sizeHint(self, option, index) -> QSize:
-        return _TILE
+        hint = index.data(Qt.ItemDataRole.SizeHintRole)
+        return hint if isinstance(hint, QSize) and hint.isValid() else _TILE
+
+
+ROLE_MAP = Qt.ItemDataRole.UserRole + 2
 
 
 class _MapDelegate(QStyledItemDelegate):
-    """Maps table cells painted here: Houdini's style paints item rows grey whatever the style sheet says."""
+    """A map row on two lines: map name and colour space, then the file name."""
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        m = index.data(ROLE_MAP) or {}
         painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        rect = option.rect.adjusted(0, 2, 0, -2)
         selected = bool(option.state & option.state.__class__.State_Selected)
-        painter.fillRect(option.rect, QColor(BG_CURRENT) if selected else QColor(BG_APP))
-        painter.setPen(QColor("#1d1d22"))
-        painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
-        fg = index.data(Qt.ItemDataRole.ForegroundRole)
-        painter.setPen(fg.color() if fg is not None else QColor(TEXT_PRIMARY))
-        painter.setFont(_font(FS_META))
-        text = painter.fontMetrics().elidedText(index.data(Qt.ItemDataRole.DisplayRole) or "",
-                                                Qt.TextElideMode.ElideMiddle, option.rect.width() - 20)
-        painter.drawText(option.rect.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+        hovered = bool(option.state & option.state.__class__.State_MouseOver)
+        if selected or hovered:
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(BG_CURRENT if selected else BG_HOVER))
+            painter.drawRoundedRect(QRectF(rect), 8, 8)
+        inner = rect.adjusted(12, 0, -12, 0)
+        painter.setFont(_font(FS_SMALL, QFont.Weight.DemiBold))
+        cs = m.get("colorspace", "")
+        cs_w = painter.fontMetrics().horizontalAdvance(cs) + 16
+        cs_rect = QRect(inner.right() - cs_w, inner.top() + 8, cs_w, 20)
+        painter.setPen(QColor(LINE))
+        painter.setBrush(QColor(BG_RAISED))
+        painter.drawRoundedRect(QRectF(cs_rect), 9, 9)
+        painter.setPen(QColor(TEXT_LABEL if m.get("default_cs") else TEXT_PRIMARY))
+        painter.drawText(cs_rect, Qt.AlignmentFlag.AlignCenter, cs)
+        painter.setFont(_font(FS_META, QFont.Weight.DemiBold))
+        painter.setPen(QColor(TEXT_PRIMARY))
+        painter.drawText(QRect(inner.left(), inner.top() + 6, inner.width() - cs_w - 8, 24),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, m.get("slot", ""))
+        painter.setFont(_font(FS_SMALL))
+        painter.setPen(QColor(TEXT_LABEL))
+        file = painter.fontMetrics().elidedText(m.get("file", ""), Qt.TextElideMode.ElideMiddle, inner.width())
+        painter.drawText(QRect(inner.left(), inner.top() + 30, inner.width(), 20),
+                         Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, file)
         painter.restore()
+
+    def sizeHint(self, option, index) -> QSize:
+        return QSize(0, 58)
 
 
 # ---------------------------------------------------------------------------
@@ -995,8 +999,8 @@ class AutoMaterialUI(QWidget):
         self._timeline = _Timeline(self._pick_version)
         lay.addWidget(self._timeline)
 
-        split = QSplitter(Qt.Orientation.Vertical)
-        split.setHandleWidth(12)
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.setHandleWidth(16)
         split.setStyleSheet("QSplitter::handle { background: transparent; }")
         self._tiles = QListWidget()
         self._tiles.setViewMode(QListView.ViewMode.IconMode)
@@ -1016,41 +1020,43 @@ class AutoMaterialUI(QWidget):
         self._tiles.customContextMenuRequested.connect(self._material_menu)
         split.addWidget(self._tiles)
 
-        maps = QWidget()
+        # Maps of the selected tile: a full-height column, a row of two lines per map
+        maps = QFrame()
+        maps.setObjectName("MapsPanel")
+        maps.setStyleSheet(f"QFrame#MapsPanel {{ background: {BG_RAISED}; border: 1px solid {LINE}; border-radius: 12px; }}")
+        maps.setMinimumWidth(300)
         m_lay = QVBoxLayout(maps)
-        m_lay.setContentsMargins(0, 0, 0, 0)
+        m_lay.setContentsMargins(8, 12, 8, 10)
         m_lay.setSpacing(6)
-        m_head = QHBoxLayout()
         self._maps_label = _label("MAPS", "caps")
-        m_head.addWidget(self._maps_label)
-        m_head.addStretch(1)
-        self._legend = _label("", "small")
-        self._legend.setTextFormat(Qt.TextFormat.RichText)
-        m_head.addWidget(self._legend)
-        m_lay.addLayout(m_head)
-        self._slot_table = QTableWidget(0, 3)
-        self._slot_table.setHorizontalHeaderLabels(["Map", "File", "Colour space"])
-        self._slot_table.setStyleSheet(STYLE_TABLE)
-        self._slot_table.setItemDelegate(_MapDelegate(self._slot_table))
-        header = self._slot_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._slot_table.verticalHeader().setVisible(False)
-        self._slot_table.verticalHeader().setDefaultSectionSize(28)
-        self._slot_table.setShowGrid(False)
-        self._slot_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._slot_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._slot_table.customContextMenuRequested.connect(self._map_menu)
-        m_lay.addWidget(self._slot_table)
+        self._maps_label.setContentsMargins(12, 0, 12, 0)
+        m_lay.addWidget(self._maps_label)
+        self._maps_title = _label("", "name")
+        self._maps_title.setContentsMargins(12, 0, 12, 4)
+        m_lay.addWidget(self._maps_title)
+        self._map_list = QListWidget()
+        self._map_list.setStyleSheet(STYLE_LIST)
+        self._map_list.setItemDelegate(_MapDelegate(self._map_list))
+        self._map_list.setMouseTracking(True)
+        self._map_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._map_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._map_list.customContextMenuRequested.connect(self._map_menu)
+        self._map_list.itemDoubleClicked.connect(
+            lambda item: open_in_explorer(item.data(ROLE_MAP)["path"], select=True))
+        m_lay.addWidget(self._map_list, stretch=1)
         self._maps_note = _label("", "meta", STATUS_COLORS[STATUS_MISSING])
         self._maps_note.setWordWrap(True)
+        self._maps_note.setContentsMargins(12, 0, 12, 0)
         m_lay.addWidget(self._maps_note)
+        self._legend = _label("", "small")
+        self._legend.setTextFormat(Qt.TextFormat.RichText)
+        self._legend.setWordWrap(True)
+        self._legend.setContentsMargins(12, 4, 12, 0)
+        m_lay.addWidget(self._legend)
         split.addWidget(maps)
         split.setStretchFactor(0, 3)
         split.setStretchFactor(1, 1)
-        split.setSizes([420, 190])
+        split.setSizes([640, 340])
         lay.addWidget(split, stretch=1)
 
         self._main_stack.addWidget(content)
@@ -1243,7 +1249,7 @@ class AutoMaterialUI(QWidget):
                 "selected": a["key"] in selected,
             })
             item.setToolTip(f"{a.get('meta', '')}\n{a.get('tooltip', '')}".strip())
-            item.setSizeHint(QSize(0, 56))
+            item.setSizeHint(QSize(0, 64))
             self._library_list.addItem(item)
         has = bool(self._assets)
         self._library_list.setVisible(has)
@@ -1473,7 +1479,7 @@ class AutoMaterialUI(QWidget):
         self._tiles.clear()
         for plan in self._plans:
             item = QListWidgetItem()
-            item.setSizeHint(_TILE)
+            item.setSizeHint(self._tiles.gridSize() if self._tiles.gridSize().isValid() else _TILE)
             item.setData(ROLE_TILE, self._tile_data(plan))
             self._tiles.addItem(item)
         self._tiles.blockSignals(False)
@@ -1500,7 +1506,20 @@ class AutoMaterialUI(QWidget):
                 status, f"Not in {lib} yet: Create makes it there")
         return CHIP_HELP.get(status, "")
 
+    def _fit_tiles(self) -> None:
+        """Tiles share the row's width: as many columns of at least _TILE as fit, none left empty."""
+        width = self._tiles.viewport().width() - 4  # room for rounding, or the last column wraps
+        cols = max(1, width // _TILE.width())
+        cell = QSize(width // cols, _TILE.height())
+        if self._tiles.gridSize() == cell:
+            return
+        self._tiles.setGridSize(cell)
+        for i in range(self._tiles.count()):
+            self._tiles.item(i).setSizeHint(cell)
+
     def eventFilter(self, obj, event) -> bool:
+        if obj is self._tiles.viewport() and event.type() == QEvent.Type.Resize:
+            QTimer.singleShot(0, self._fit_tiles)
         # The leave-out check is painted on the tile: route its clicks here; a double click toggles too.
         if obj is self._tiles.viewport() and event.type() in (QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick) \
                 and event.button() == Qt.MouseButton.LeftButton:
@@ -1678,48 +1697,47 @@ class AutoMaterialUI(QWidget):
         tones = ((STATUS_OK, "up to date"), (STATUS_UPDATE, "will update"), (STATUS_NEW, "new"),
                  (STATUS_PINNED, "pinned"), (STATUS_MISSING, "not in geometry"))
         parts = [f"<span style='color:{STATUS_COLORS[s]}'>●</span> {label}" for s, label in (tones[:3] if folder else tones)]
-        return "&nbsp;&nbsp;&nbsp;".join(parts)
+        return "&nbsp;&nbsp; ".join(parts)
 
     # --- maps ---
 
     def _show_maps(self, row: int) -> None:
-        self._slot_table.setRowCount(0)
-        self._maps_label.setText("MAPS")
+        self._map_list.clear()
+        self._maps_title.setText("")
         self._maps_note.setText("")
         if row < 0 or row >= len(self._plans):
             return
         plan = self._plans[row]
         group = self.group_for(plan)
         version = plan.chosen if self._mode == "usd" else self._folder_versions.get(plan.name, "")
-        self._maps_label.setText(f"MAPS  ·  {plan.name}" + (f"  ·  {version}" if version else ""))
+        self._maps_title.setText(plan.name + (f"  ·  {version}" if version else ""))
         if self._mode == "usd" and plan.name not in self._geometry_materials:
             self._maps_note.setText(f"Not in the export the geometry comes from: the geometry may not match {plan.chosen}.")
         if group is None:
             return
-        slots = sorted(group.slots.items())
-        self._slot_table.setRowCount(len(slots))
-        for i, (slot_name, slot_info) in enumerate(slots):
-            self._slot_table.setItem(i, 0, QTableWidgetItem(_slot_label(slot_name)))
-            path_item = QTableWidgetItem(_file_label(slot_info.filepath))
-            path_item.setToolTip(slot_info.filepath.replace("%(UDIM)d", "<UDIM>"))
-            path_item.setData(Qt.ItemDataRole.UserRole, slot_info.filepath)
-            self._slot_table.setItem(i, 1, path_item)
-            cs_item = QTableWidgetItem(slot_info.colorspace or "default")
-            if not slot_info.colorspace:
-                cs_item.setForeground(QColor(TEXT_LABEL))
-                cs_item.setToolTip("No colour space in the name: the map type's default is used")
-            self._slot_table.setItem(i, 2, cs_item)
+        for slot_name, slot_info in sorted(group.slots.items()):
+            item = QListWidgetItem()
+            item.setData(ROLE_MAP, {
+                "slot": _slot_label(slot_name), "file": _file_label(slot_info.filepath),
+                "path": slot_info.filepath, "colorspace": slot_info.colorspace or "default",
+                "default_cs": not slot_info.colorspace,
+            })
+            item.setToolTip(slot_info.filepath.replace("%(UDIM)d", "<UDIM>")
+                            + ("" if slot_info.colorspace else "\nNo colour space in the name: the map type's default is used")
+                            + "\nDouble click: show in Explorer")
+            item.setSizeHint(QSize(0, 58))
+            self._map_list.addItem(item)
 
     def _map_menu(self, pos: QPoint) -> None:
-        item = self._slot_table.item(self._slot_table.rowAt(pos.y()), 1)
+        item = self._map_list.itemAt(pos)
         if item is None:
             return
-        path = item.data(Qt.ItemDataRole.UserRole) or ""
+        path = item.data(ROLE_MAP)["path"]
         menu = QMenu(self)
         menu.setStyleSheet(STYLE_MENU)
         menu.addAction(_lucide_icon("folder-open", 14), "Show in folder").triggered.connect(
             lambda: open_in_explorer(path, select=True))
-        menu.exec(self._slot_table.viewport().mapToGlobal(pos))
+        menu.exec(self._map_list.viewport().mapToGlobal(pos))
 
     def _open_source_folder(self) -> None:
         if self._source_path:
