@@ -649,6 +649,28 @@ def plan_summary(plans: list[MaterialPlan]) -> dict[str, int]:
     return out
 
 
+DEFAULT_LIBRARY = "materiallibrary1"
+
+
+def pick_library(libraries: dict[str, set[str]], names: list[str], selected: str | None = None) -> str:
+    """
+    Material Library a texture folder's Create goes into by default: the one that already holds the
+    most of *names* (so they update, not get a second copy), else the selected one, else materiallibrary1.
+    *libraries*: name -> material names in it, in network order (the first wins a tie).
+    """
+    wanted = set(names)
+    best, hits = None, 0
+    for lib, materials in libraries.items():
+        n = len(wanted & materials)
+        if n > hits:
+            best, hits = lib, n
+    if best is not None:
+        return best
+    if selected and selected in libraries:
+        return selected
+    return DEFAULT_LIBRARY
+
+
 RECORD_KEY = "monofx_substance"
 
 

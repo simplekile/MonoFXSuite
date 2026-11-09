@@ -508,3 +508,31 @@ def test_aces_exr_publish_builds_acescg_images(stage: FakeNode, tmp_path) -> Non
     assert _image(b, "metallic").parm("filecolorspace").eval() == "Raw"
     assert _image(b, "displacement").parm("filecolorspace").eval() == "Raw"
     assert _image(b, "coat_color").parm("filecolorspace").eval() == "srgb_texture"
+
+
+# ---------------------------------------------------------------------------
+# Which Material Library a texture folder's Create goes into
+# ---------------------------------------------------------------------------
+
+def test_pick_library_prefers_the_one_holding_the_materials() -> None:
+    from tools.fx.auto_material.logic import pick_library
+
+    libs = {"materiallibrary1": {"M_a"}, "mtl_chair": {"M_seat", "M_leg"}}
+    assert pick_library(libs, ["M_seat", "M_leg", "M_new"], selected="materiallibrary1") == "mtl_chair"
+    # None of them built yet: the selected library, else materiallibrary1
+    assert pick_library(libs, ["M_new"], selected="mtl_chair") == "mtl_chair"
+    assert pick_library(libs, ["M_new"], selected="not_a_library") == "materiallibrary1"
+    assert pick_library({}, ["M_new"]) == "materiallibrary1"
+
+
+def test_material_libraries_lists_builders(stage: FakeNode) -> None:
+    sa.build_material(stage, "M_char_Body", _slots("v001", ["BaseColor_sRGB"]), mat_lib_name="mtl_char")
+    stage.createNode("sublayer", "geo")
+    assert sa.material_libraries(stage) == {"mtl_char": {"M_char_Body"}}
+
+
+def test_build_into_a_renamed_library_updates_it(stage: FakeNode) -> None:
+    sa.build_material(stage, "M_char_Body", _slots("v001", ["BaseColor_sRGB"]), mat_lib_name="mtl_char")
+    res = sa.build_material(stage, "M_char_Body", _slots("v002", ["BaseColor_sRGB"]), mat_lib_name="mtl_char")
+    assert res is not None and res.updated
+    assert stage.node("materiallibrary1") is None

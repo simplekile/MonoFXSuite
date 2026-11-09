@@ -22,6 +22,7 @@ from tools.fx.auto_material.logic import (
     is_usd_path,
     list_painter_exports,
     parse_record,
+    pick_library,
     plan_materials,
     scan_and_group,
     substance_node_base,
@@ -84,7 +85,7 @@ def run() -> None:
                 "key": substance_node_base(export),
                 "name": name,
                 "kind": kind,
-                "meta": f"{len(records)} materials · export {scene_v}",
+                "meta": f"{len(records)} materials · export {scene_v} · {lib.name()}",
                 "chip": f"{scene_v}→{latest.version}" if newer else scene_v,
                 "status": STATUS_UPDATE if newer else STATUS_OK,
                 "branch": branch is not None and lib.path() == branch.path(),
@@ -132,8 +133,20 @@ def run() -> None:
             ui.set_message("No image files found in this folder.", error=True)
             return
         state["page"], state["usd"] = "folder", None
-        ui.show_folder(folder, groups, unmatched)
+        libraries = sa.material_libraries(sa.get_stage_context())
+        ui.show_folder(folder, groups, unmatched, libraries, pick_library(libraries, list(groups), selected_library()))
         ui.save_to_history(folder)
+
+    def selected_library() -> str | None:
+        node = sa.get_selected_lop_node()
+        try:
+            return node.name() if node is not None and node.type().name() == "materiallibrary" else None
+        except Exception:
+            return None
+
+    def refresh_libraries() -> None:
+        """The Library box again from the scene, keeping the library chosen."""
+        ui.set_libraries(sa.material_libraries(sa.get_stage_context()), ui.library())
 
     def read_asset(usd_path: str) -> dict:
         """Every export of the asset, read; and what the scene has of it."""
@@ -172,6 +185,7 @@ def run() -> None:
             found[0].lstrip("_") if found else "",
             f"{len(ctx['exports'])} exports, latest {ctx['latest']}",
             f"geometry {geo_v}",
+            f"into {latest.source.node_base}{config.SUBSTANCE_MATLIB_NODE_SUFFIX}",
         ) if x)
         ui.show_usd(name, meta, kind, ctx["path"], ctx["plans"],
                     {v: d.groups for v, d in ctx["data"].items()}, set(latest.groups))
@@ -211,6 +225,9 @@ def run() -> None:
         if state["page"] == "start":
             go_start()
             return
+        if state["page"] == "folder":
+            refresh_libraries()  # a library made, renamed or deleted while away
+            return
         ctx = state["usd"]
         if state["page"] != "usd" or ctx is None:
             return
@@ -236,9 +253,11 @@ def run() -> None:
             ui.set_message("Cannot find /stage node.", error=True)
         return stage
 
-    def done(created: list[str], updated: list[str], notes: list[str], cancelled: bool) -> None:
+    def done(created: list[str], updated: list[str], notes: list[str], cancelled: bool, library: str = "") -> None:
         parts = [f"created {len(created)}" if created else "", f"updated {len(updated)}" if updated else ""]
         text = ", ".join(p for p in parts if p)
+        if text and library:
+            text += f" in {library}"
         if cancelled:
             msg = f"Cancelled: {text} before cancel" if text else "Cancelled"
             ui.show_done(msg, "Click to continue")
@@ -258,12 +277,13 @@ def run() -> None:
     def create_folder(stage) -> None:
         selected = sa.get_selected_lop_node()
         names = ui.get_all_material_prefixes()
+        lib_name = ui.library()
         ui.show_loading("Creating materials...")
         created: list[str] = []
         updated: list[str] = []
         notes: list[str] = []
         cancelled = False
-        with sa.manual_update():
+        with sa.undo_group("MonoFX: Auto Material create"), sa.manual_update():
             mat_lib_node = None
             for idx, plan in enumerate(p for p in ui.plans() if p.enabled):
                 if ui.is_cancelled():
@@ -274,24 +294,27 @@ def run() -> None:
                 if group is None:
                     continue
                 result = sa.build_material(stage=stage, material_name=plan.name, slots=group.slots,
-                                           selected_node=selected)
+                                           mat_lib_name=lib_name, selected_node=selected)
                 if result is None:
                     continue
                 (updated if result.updated else created).append(result.node_name)
                 notes += [f"{result.node_name}: {n}" for n in result.notes]
                 if mat_lib_node is None:
-                    mat_lib_node = stage.node("materiallibrary1")
+                    mat_lib_node = stage.node(lib_name)
             if mat_lib_node and created:
                 sa.layout_material_library(mat_lib_node, new_names=created)
-        done(created, updated, notes, cancelled)
+        refresh_libraries()  # chips: what was made is now "update"
+        done(created, updated, notes, cancelled, library=mat_lib_node.path() if mat_lib_node else lib_name)
 
     def create_usd(stage) -> None:
         ctx = state["usd"]
         ui.show_loading("Building materials...")
-        result = sa.apply_painter_plan(stage, ctx["data"], ui.plans(), ctx["records"], ui.is_cancelled)
+        with sa.undo_group("MonoFX: Auto Material create"):
+            result = sa.apply_painter_plan(stage, ctx["data"], ui.plans(), ctx["records"], ui.is_cancelled)
         cancelled = ui.is_cancelled()
         open_usd(ctx["path"])  # chips now show the scene as it is; then the result under it
-        done(result.created, result.updated, result.notes, cancelled)
+        lib = ctx["data"][ctx["latest"]].source.node_base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
+        done(result.created, result.updated, result.notes, cancelled, library=f"{stage.path()}/{lib}")
 
     def on_create() -> None:
         stage = stage_or_message()
@@ -309,22 +332,24 @@ def run() -> None:
         created: list[str] = []
         updated: list[str] = []
         notes: list[str] = []
-        for i, key in enumerate(keys, 1):
-            path = state["assets"].get(key)
-            if not path:
-                continue
-            ui.show_loading(f"Updating asset {i}/{len(keys)}:  {asset_label(path)[0]}")
-            if ui.is_cancelled():
-                break
-            try:
-                ctx = read_asset(path)
-            except Exception as e:
-                notes.append(f"{asset_label(path)[0]}: cannot read ({e})")
-                continue
-            result = sa.apply_painter_plan(stage, ctx["data"], ctx["plans"], ctx["records"], ui.is_cancelled)
-            created += result.created
-            updated += result.updated
-            notes += result.notes
+        # All ticked assets are one undo step
+        with sa.undo_group("MonoFX: Auto Material update"):
+            for i, key in enumerate(keys, 1):
+                path = state["assets"].get(key)
+                if not path:
+                    continue
+                ui.show_loading(f"Updating asset {i}/{len(keys)}:  {asset_label(path)[0]}")
+                if ui.is_cancelled():
+                    break
+                try:
+                    ctx = read_asset(path)
+                except Exception as e:
+                    notes.append(f"{asset_label(path)[0]}: cannot read ({e})")
+                    continue
+                result = sa.apply_painter_plan(stage, ctx["data"], ctx["plans"], ctx["records"], ui.is_cancelled)
+                created += result.created
+                updated += result.updated
+                notes += result.notes
         done(created, updated, notes, ui.is_cancelled())
         go_start()
 
@@ -344,7 +369,8 @@ def run() -> None:
         ui.set_message("")
         ui.show_loading("Auto assigning materials...")
         try:
-            created, msg = sa.run_auto_assign(stage, selected)
+            with sa.undo_group("MonoFX: Auto assign"):
+                created, msg = sa.run_auto_assign(stage, selected)
             ui.hide_loading()
             if created > 0:
                 ui.show_done(msg, "Click to continue")
@@ -363,7 +389,8 @@ def run() -> None:
                     if reply == QMessageBox.StandardButton.Yes:
                         ui.show_loading("Đang tạo Assign Material LOP...")
                         try:
-                            n = sa.create_assign_for_all_materials(stage, selected, "/world/geo/*")
+                            with sa.undo_group("MonoFX: Auto assign"):
+                                n = sa.create_assign_for_all_materials(stage, selected, "/world/geo/*")
                             if n > 0:
                                 done_msg = f"Đã tạo {n} Assign Material LOP (prim pattern: /world/geo/*). Gán tay sau."
                                 ui.show_done(done_msg, "Click to continue")

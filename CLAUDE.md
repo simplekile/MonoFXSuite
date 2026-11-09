@@ -18,11 +18,16 @@
   carry user data (`monofx_slot`, `monofx_file`, `monofx_colorspace`) recording what the tool set; an
   update changes a file or colour space only while it still equals that record, so edits by hand stay.
   A new map gets an image node wired only into a free surface input; nothing is deleted or re-wired,
-  and existing builders and LOP nodes are not moved. Auto assign adds to `assign_material_auto`
+  and existing builders and LOP nodes are not moved. A material is matched by builder name inside
+  one Material Library: for a texture folder the user picks it in the Library box (any library in
+  `/stage`, or a typed name for a new one); the default (`logic.pick_library`) is the library already
+  holding most of the folder's materials, else the selected one, else materiallibrary1. Chips say
+  update / new for that library. A Painter export always goes into `{base}_materials`. Auto assign adds to `assign_material_auto`
   instead of making another node, keeping the entries already there.
 - Create runs inside `solaris_adapter.manual_update()` (Houdini updates set to Manual, then put
   back): while the Material Library cooks on changes, every node created in it re-translates all its
-  materials, so 16 materials took ~110 s instead of ~1 s.
+  materials, so 16 materials took ~110 s instead of ~1 s. Create, Update (all ticked assets) and
+  Auto assign are each one undo step (`solaris_adapter.undo_group`), a cancelled Create too.
 - The window has two pages. **Start**: three source cards (Latest publish from `$HIP`, Texture folder,
   Painter USD), Recent paths, drag and drop, and **In this scene**: one row per asset built from a
   Painter export, with its version chip and a tick to update several at once. **Version manager**: one

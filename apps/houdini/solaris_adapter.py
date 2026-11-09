@@ -51,6 +51,16 @@ def manual_update() -> Iterator[None]:
         hou.setUpdateMode(old)
 
 
+@contextmanager
+def undo_group(label: str) -> Iterator[None]:
+    """Everything done in the block is one undo step (one Ctrl+Z takes back a whole Create)."""
+    if hou is None:
+        yield
+        return
+    with hou.undos.group(label):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # HIP / Publish path
 # ---------------------------------------------------------------------------
@@ -1275,6 +1285,20 @@ def substance_libraries(stage_node: Any) -> list[tuple[Any, str]]:
             record = _infer_record(node)
         if record:
             out.append((node, record))
+    return out
+
+
+def material_libraries(stage_node: Any) -> dict[str, set[str]]:
+    """Name -> material builder names, for every Material Library in *stage_node*, in network order."""
+    out: dict[str, set[str]] = {}
+    if stage_node is None:
+        return out
+    for node in stage_node.children():
+        try:
+            if node.type().name() == "materiallibrary":
+                out[node.name()] = {c.name() for c in node.children()}
+        except Exception:
+            continue
     return out
 
 

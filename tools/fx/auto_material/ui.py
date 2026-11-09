@@ -50,6 +50,7 @@ from tools.fx.auto_material.logic import (
     STATUS_OK,
     STATUS_PINNED,
     STATUS_UPDATE,
+    DEFAULT_LIBRARY,
     MaterialPlan,
     material_status,
     plan_summary,
@@ -708,6 +709,7 @@ class AutoMaterialUI(QWidget):
         self._geometry_materials: frozenset[str] = frozenset()
         self._unmatched_data: list[str] = []
         self._source_path = ""
+        self._libraries: dict[str, set[str]] = {}       # folder: Material Library -> material names
         self._asset_rows: list[_AssetRow] = []
         self._path_history = _load_path_history()
         self._load_pending = False
@@ -960,6 +962,19 @@ class AutoMaterialUI(QWidget):
             "Select a LOP node first.")
         self._auto_assign_btn.clicked.connect(lambda: self._fire("auto_assign"))
         foot.addWidget(self._auto_assign_btn)
+        # Texture folder: the Material Library Create goes into; a name not in the list makes a new one
+        self._library_label = QLabel("Library")
+        self._library_label.setStyleSheet(f"color: {TEXT_META}; font-size: 13px;")
+        foot.addWidget(self._library_label)
+        self._library_combo = QComboBox()
+        self._library_combo.setEditable(True)
+        self._library_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._library_combo.setStyleSheet(STYLE_COMBO)
+        self._library_combo.setMinimumWidth(190)
+        self._library_combo.setToolTip("Material Library in /stage to create or update the materials in. "
+                                       "Type a new name to make a new library.")
+        self._library_combo.currentTextChanged.connect(lambda _t: self._refresh_rows())
+        foot.addWidget(self._library_combo)
         foot.addStretch(1)
         self._summary_label = QLabel("")
         self._summary_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 13px;")
@@ -1095,13 +1110,16 @@ class AutoMaterialUI(QWidget):
     # Version manager page
     # =====================================================================
 
-    def show_folder(self, path: str, groups: dict, unmatched: list[str]) -> None:
-        """Texture folder: no versions, no chips; maps from the scan."""
+    def show_folder(
+        self, path: str, groups: dict, unmatched: list[str], libraries: dict[str, set[str]], library: str,
+    ) -> None:
+        """Texture folder: no versions; a chip says whether the chosen library already has the material."""
         self._mode = "folder"
         self._source_path = path
         self._groups_by_version = {"": groups}
         self._geometry_materials = frozenset(groups)
         self._plans = [MaterialPlan(name=n, versions=[""], chosen="") for n in groups]
+        self._fill_libraries(libraries, library)
         self._unmatched_data = unmatched
         self._source_icon.setPixmap(_lucide_pixmap("folder", 18, TEXT_LABEL))
         self._source_name.setText(Path(path).name or path)
@@ -1111,6 +1129,8 @@ class AutoMaterialUI(QWidget):
         self._unmatched_btn.setVisible(bool(unmatched))
         self._recursive_cb.setVisible(True)
         self._auto_assign_btn.setVisible(True)
+        self._library_label.setVisible(True)
+        self._library_combo.setVisible(True)
         self._latest_btn.setVisible(False)
         self._banner.setVisible(False)
         self._fill_materials()
@@ -1140,6 +1160,8 @@ class AutoMaterialUI(QWidget):
         self._unmatched_btn.setVisible(False)
         self._recursive_cb.setVisible(False)
         self._auto_assign_btn.setVisible(False)
+        self._library_label.setVisible(False)
+        self._library_combo.setVisible(False)
         self._latest_btn.setVisible(True)
         self._banner.setVisible(False)
         self._fill_materials()
@@ -1151,6 +1173,26 @@ class AutoMaterialUI(QWidget):
 
     def hide_banner(self) -> None:
         self._banner.setVisible(False)
+
+    def set_libraries(self, libraries: dict[str, set[str]], library: str) -> None:
+        """The scene's Material Libraries in the Library box, *library* chosen."""
+        self._fill_libraries(libraries, library)
+        self._refresh_rows()
+
+    def _fill_libraries(self, libraries: dict[str, set[str]], library: str) -> None:
+        self._libraries = libraries
+        self._library_combo.blockSignals(True)
+        self._library_combo.clear()
+        for name, materials in libraries.items():
+            self._library_combo.addItem(name)
+            self._library_combo.setItemData(self._library_combo.count() - 1,
+                                            f"{len(materials)} material(s)", Qt.ItemDataRole.ToolTipRole)
+        self._library_combo.setCurrentText(library)
+        self._library_combo.blockSignals(False)
+
+    def library(self) -> str:
+        """Material Library chosen for a texture folder's Create (typed names too)."""
+        return self._library_combo.currentText().strip() or DEFAULT_LIBRARY
 
     def is_recursive(self) -> bool:
         return self._recursive_cb.isChecked()
@@ -1175,7 +1217,9 @@ class AutoMaterialUI(QWidget):
 
     def _chip_for(self, plan: MaterialPlan) -> tuple[str, str] | None:
         if self._mode != "usd":
-            return None
+            if plan.name in self._libraries.get(self.library(), ()):
+                return "update", STATUS_UPDATE
+            return "new", STATUS_NEW
         status = material_status(plan, self._geometry_materials)
         if status == STATUS_UPDATE:
             return f"{plan.scene}→{plan.chosen}", status
@@ -1209,7 +1253,12 @@ class AutoMaterialUI(QWidget):
             n = len(group.slots)
             udim = any(s.udim for s in group.slots.values())
             item.setData(ROLE_META, f"{n} map{'s' if n != 1 else ''}" + (" · UDIM" if udim else ""))
-        item.setToolTip(CHIP_HELP.get(chip[1], "") if chip else "")
+        if self._mode != "usd":
+            lib = self.library()
+            item.setToolTip(f"Updates {plan.name} in {lib}" if chip[1] == STATUS_UPDATE
+                            else f"Not in {lib} yet: Create makes it there")
+        else:
+            item.setToolTip(CHIP_HELP.get(chip[1], "") if chip else "")
 
     def _refresh_rows(self) -> None:
         for i, plan in enumerate(self._plans):
@@ -1234,7 +1283,7 @@ class AutoMaterialUI(QWidget):
                     self._refresh_rows()
                     return True
                 chip = self._material_delegate.chip_rect(rect, index)
-                if plan.enabled and chip.isValid() and chip.contains(pos):
+                if self._mode == "usd" and plan.enabled and chip.isValid() and chip.contains(pos):
                     self._version_menu(plan).exec(self._material_list.viewport().mapToGlobal(chip.bottomLeft()))
                     return True
         return super().eventFilter(obj, event)
@@ -1373,13 +1422,24 @@ class AutoMaterialUI(QWidget):
             self._legend.setText(self._legend_html())
             self._legend.setVisible(True)
         else:
-            n = len(self.get_all_material_prefixes())
-            total = len(self._plans)
-            self._summary_label.setText(
-                f"{total - n} left out · into a Material Library after the selected LOP node" if n < total
-                else "Into a Material Library after the selected LOP node")
-            self._create_btn.setText(f"Create {n} material{'s' if n != 1 else ''}")
-            self._create_btn.setEnabled(n > 0)
+            lib = self.library()
+            in_lib = self._libraries.get(lib)
+            on = [p for p in self._plans if p.enabled]
+            update = sum(1 for p in on if in_lib and p.name in in_lib)
+            new = len(on) - update
+            parts = [f"{new} new"] if new else []
+            parts += [f"{update} update"] if update else []
+            parts += [f"{len(self._plans) - len(on)} left out"] if len(on) < len(self._plans) else []
+            where = f"in {lib}" if in_lib is not None else f"new library {lib}, after the selected LOP node"
+            self._summary_label.setText(" · ".join(parts + [where]))
+            if new and update:
+                text = f"Create {new} and update {update}"
+            elif update:
+                text = f"Update {update} material{'s' if update != 1 else ''}"
+            else:
+                text = f"Create {new} material{'s' if new != 1 else ''}"
+            self._create_btn.setText(text)
+            self._create_btn.setEnabled(bool(on))
             self._legend.setVisible(False)
 
     @staticmethod
