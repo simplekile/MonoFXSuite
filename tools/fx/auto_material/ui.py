@@ -144,9 +144,14 @@ STYLE_WINDOW = f"""
     QPushButton, QToolButton, QComboBox, QCheckBox, QLineEdit {{ font-size: {FS_META}px; }}
     QToolTip {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE}; padding: 6px; }}
     QSplitter::handle {{ background: transparent; }}
-    QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
-    QScrollBar::handle:vertical {{ background: #2c2c33; border-radius: 4px; min-height: 30px; }}
-    QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
+    QScrollBar:vertical, QScrollBar:horizontal {{ background: transparent; border: none; margin: 2px; }}
+    QScrollBar:vertical {{ width: 10px; }}
+    QScrollBar:horizontal {{ height: 10px; }}
+    QScrollBar::handle {{ background: #2c2c33; border-radius: 3px; min-height: 30px; min-width: 30px; }}
+    QScrollBar::handle:hover {{ background: #3a3a44; }}
+    QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; border: none; background: none; }}
+    QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
+    QScrollBar::up-arrow, QScrollBar::down-arrow, QScrollBar::left-arrow, QScrollBar::right-arrow {{ image: none; }}
 """
 
 STYLE_PRIMARY = f"""
@@ -188,8 +193,9 @@ STYLE_LIST = f"""
 
 STYLE_TABLE = f"""
     QTableWidget {{
-        background-color: transparent; border: 1px solid {LINE}; border-radius: 10px;
+        background-color: {BG_APP}; border: 1px solid {LINE}; border-radius: 10px;
         gridline-color: {LINE}; color: {TEXT_PRIMARY}; font-size: {FS_META}px; outline: none;
+        alternate-background-color: transparent;
         selection-background-color: {_rgba(ACCENT, 0.15)}; selection-color: {TEXT_PRIMARY};
     }}
     QHeaderView {{ background: transparent; border: none; }}
@@ -198,7 +204,9 @@ STYLE_TABLE = f"""
         background-color: {BG_APP}; color: {TEXT_LABEL}; padding: 6px 10px; border: none;
         border-bottom: 1px solid {LINE}; font-size: {FS_SMALL}px; font-weight: 600;
     }}
-    QTableWidget::item {{ padding: 0px 10px; border-bottom: 1px solid #1d1d22; }}
+    QTableWidget::item {{ padding: 0px 10px; border-bottom: 1px solid #1d1d22; background: transparent; color: {TEXT_PRIMARY}; }}
+    QTableWidget QWidget {{ background: {BG_APP}; }}
+    QTableWidget::item:selected {{ background: {_rgba(ACCENT, 0.15)}; color: {TEXT_PRIMARY}; }}
 """
 
 STYLE_CHECKBOX = f"""
@@ -750,6 +758,24 @@ class _TileDelegate(QStyledItemDelegate):
         return _TILE
 
 
+class _MapDelegate(QStyledItemDelegate):
+    """Maps table cells painted here: Houdini's style paints item rows grey whatever the style sheet says."""
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        painter.save()
+        selected = bool(option.state & option.state.__class__.State_Selected)
+        painter.fillRect(option.rect, QColor(BG_CURRENT) if selected else QColor(BG_APP))
+        painter.setPen(QColor("#1d1d22"))
+        painter.drawLine(option.rect.bottomLeft(), option.rect.bottomRight())
+        fg = index.data(Qt.ItemDataRole.ForegroundRole)
+        painter.setPen(fg.color() if fg is not None else QColor(TEXT_PRIMARY))
+        painter.setFont(_font(FS_META))
+        text = painter.fontMetrics().elidedText(index.data(Qt.ItemDataRole.DisplayRole) or "",
+                                                Qt.TextElideMode.ElideMiddle, option.rect.width() - 20)
+        painter.drawText(option.rect.adjusted(10, 0, -10, 0), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+        painter.restore()
+
+
 # ---------------------------------------------------------------------------
 # Window
 # ---------------------------------------------------------------------------
@@ -1005,6 +1031,7 @@ class AutoMaterialUI(QWidget):
         self._slot_table = QTableWidget(0, 3)
         self._slot_table.setHorizontalHeaderLabels(["Map", "File", "Colour space"])
         self._slot_table.setStyleSheet(STYLE_TABLE)
+        self._slot_table.setItemDelegate(_MapDelegate(self._slot_table))
         header = self._slot_table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
