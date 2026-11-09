@@ -1,6 +1,12 @@
 # Auto Material Builder — scan textures, auto-detect naming, create Karma materials in Solaris.
 
-from tools.fx.auto_material.controller import run
+
+def run(focus: str | None = None) -> None:
+    """The shelf tool's entry. Looked up on every call: a name bound at import would keep running the
+    controller's old code after a reload (importlib.reload makes new functions, not new code in old ones)."""
+    from tools.fx.auto_material import controller
+
+    controller.run(focus)
 
 
 def reload_and_run() -> None:

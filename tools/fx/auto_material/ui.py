@@ -1155,6 +1155,7 @@ class AutoMaterialUI(QWidget):
         self._busy.setVisible(False)
         lay.addWidget(self._busy, stretch=1)
         self._cancelled = False
+        self._is_busy = False
         self._undo_btn = QPushButton("  Undo")
         self._undo_btn.setIcon(_lucide_icon("undo", 14, TEXT_LABEL))
         self._undo_btn.setStyleSheet(STYLE_GHOST)
@@ -1917,8 +1918,11 @@ class AutoMaterialUI(QWidget):
         self._undo_btn.setVisible(on)
 
     def show_loading(self, text: str = "Loading...") -> None:
-        """Work in progress on the action bar; the rest of the window is greyed until it ends."""
-        if not self._busy.isVisible():
+        """Work in progress on the action bar; the rest of the window is greyed until it ends.
+        A flag, not isVisible(): the first source is read before the window shows, when nothing is
+        visible yet, and hide_loading would then never clear it."""
+        if not self._is_busy:
+            self._is_busy = True
             self._cancelled = False
             self._busy_bar.setRange(0, 0)
             self._cancel_btn.setEnabled(True)
@@ -1934,7 +1938,8 @@ class AutoMaterialUI(QWidget):
         self.hide_loading()
 
     def hide_loading(self) -> None:
-        if self._busy.isVisible():
+        if self._is_busy:
+            self._is_busy = False
             self._busy.setVisible(False)
             self._message_label.setVisible(True)
             for w in (self._top, self._body, self._undo_btn, self._auto_assign_btn, self._create_btn):
