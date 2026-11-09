@@ -18,18 +18,55 @@
   carry user data (`monofx_slot`, `monofx_file`, `monofx_colorspace`) recording what the tool set; an
   update changes a file or colour space only while it still equals that record, so edits by hand stay.
   A new map gets an image node wired only into a free surface input; nothing is deleted or re-wired,
-  and existing builders and LOP nodes are not moved. Auto assign adds to `assign_material_auto`
+  and existing builders and LOP nodes are not moved. A material is matched by builder name inside
+  one Material Library. A Painter export always goes into `{base}_materials`. Auto assign adds to `assign_material_auto`
   instead of making another node, keeping the entries already there.
 - Create runs inside `solaris_adapter.manual_update()` (Houdini updates set to Manual, then put
   back): while the Material Library cooks on changes, every node created in it re-translates all its
-  materials, so 16 materials took ~110 s instead of ~1 s.
-- The window has two pages. **Start**: three source cards (Latest publish from `$HIP`, Texture folder,
-  Painter USD), Recent paths, drag and drop, and **In this scene**: one row per asset built from a
-  Painter export, with its version chip and a tick to update several at once. **Version manager**: one
-  source's materials (checkbox, name, version chip) and the maps of the selected one; Change goes back.
+  materials, so 16 materials took ~110 s instead of ~1 s. Create, Update (all ticked assets) and
+  Auto assign are each one undo step (`solaris_adapter.undo_group`), a cancelled Create too.
+- One window, scene first (no pages). **Top bar**: the asset, a pill with the latest publish found
+  from `$HIP` (a click reviews it; a newer export turns it into "… just published · Open"), Follows
+  selection, Open (Texture folder, Painter USD, Recent, Include subfolders, Reload). **Sidebar**: every
+  Material Library the tool built or can read (`updater.scene_libraries`), a ring each (share up to
+  date, count behind); a click opens it; "Update all (N)" / "Update N selected" updates without
+  opening (`updater.update_libraries`, one undo step). A texture folder library is found from its image
+  nodes' `monofx_file` (`…/publish/vNNN/…`, `logic.texture_version`); a file changed by hand no longer
+  counts. Its update changes only materials whose version changes and creates none. **Main**: a
+  headline saying what the button does ("5 materials behind v010"), the source line, the version
+  timeline (scene's oldest version, target; for a Painter export a click moves every material that is
+  on and not pinned to that version, latest = All to latest), the materials as tiles (base colour
+  thumbnail, status colour on the edge, check to leave out, right click: version, pin, leave out,
+  folder) and, in a full-height column beside them, the maps of the selected tile (two lines a map: name and
+  colour space, then the file). Tiles share the row's width (`_fit_tiles`). **Action bar**: result line, Undo (Houdini's undo of the
+  last run), Auto assign (texture folder), the button. The page title and the window title are the
+  library being looked at.
+- Reads never hold the window: a Painter export (pxr) and a texture folder scan run on a worker thread
+  (`controller.background`, one at a time; opening something else drops the older result), what the
+  scene has (hou) is read before on the main thread; thumbnails too (`_Thumbnails`, a QImage off the
+  thread, the QPixmap made on the main thread). Only a scene write (Create, Update, Auto assign)
+  disables the window, since hou is main-thread only: the action bar shows a thin bar, what is being
+  done and Cancel, never a dark overlay. A read's result waits while a write runs. The progress state
+  is a flag, not `isVisible()`: the first source is read before the window shows. On open the window shows the first library
+  behind its publish, else the publish when the scene has none, else the first library.
   Latest publish takes the publish's Painter export when its latest `vNNN` holds one
   (`find_painter_usd`: highest `_vNNN` in the file name, `*.material.usda` skipped), else its textures.
-- Version manager for Painter exports: every export of the same family (`list_painter_exports`: same
+- Texture folder target (`logic.pick_library`): the Material Library selected in `/stage` (while
+  linked), else the one holding most of the folder's materials, else a new `{asset}_materials`
+  (`new_library_name`). Opened from a row, that row's library. It shows as a line ("Updating in X ·
+  change"); the box (any library, or a typed new name) only after change or when it follows the
+  selection ("from selection"). Libraries built from a Painter export are not offered: they update from
+  their export and record. Chips: `v006→v008` update, `v008` up to date (left alone), `+v008` new
+  (`folder_status`). "Also used in N other libraries" lists the others holding these materials; ticked
+  ones get their existing materials updated in the same Create.
+- **Follows selection** (top bar pill, saved in `%APPDATA%/MonoFXSuite/
+  auto_material_prefs.json`): while on, the window polls `hou.selectedNodes()` (`SELECTION_POLL_MS`, no
+  Houdini callback to clean up): selected libraries are what the sidebar updates ("Update 2 selected"), and on a
+  texture folder one selected library becomes the target.
+- Node menu (`OPmenu.xml` at the suite root, `tools/fx/auto_material/node_menu.py`) on a Material Library
+  in `/stage`: MonoFX › Update materials to latest (every selected library plus the clicked one, by
+  `updater`, Houdini's progress bar, result on the status bar) and Open in Auto Material.
+- A Painter export: every export of the same family (`list_painter_exports`: same
   name without `_vNNN`, in the publish folder and its `vNNN` children) is read; each material can be
   built from any export that has it. Default: the newest, unless the scene pins it. Chip colours:
   emerald up to date, blue will update, violet new, amber pinned, red not in the export the geometry
@@ -40,7 +77,23 @@
 - Results and notes of Create go to the line under the window, never a modal dialog: a modal box
   blocks Houdini (and the MCP bridge) until someone closes it.
 - Fonts are set in pixels (`_font`, `font-size: …px`): Houdini scales point sizes with its UI scale,
-  which overflowed the painted chips. Base 13px, names 14px, chips 12px.
+  which overflowed painted text. Every label takes a role (`ui._text`): display 26/600 (headline),
+  title 19/600, body 15/400, name 14/600, meta 14/400 in `TEXT_LABEL`, small and caps 13. Two weights
+  only; supporting text is never `TEXT_META` (icons, placeholders, disabled). Status colours
+  (`STATUS_COLORS`) are the same on rings, tile edges, chips and the legend. A pill's radius stays
+  under half its height, or Qt draws square corners. EXR thumbnails need OpenImageIO (Houdini
+  ships it), else the tile shows a placeholder. Icons: Houdini's own node
+  icons for what a row stands for (`_node_icon`: Material Library, MaterialX surface, image; Lucide
+  outside Houdini), a Lucide icon per map kind (`_slot_icon`: colour, value, shape, see-through, light,
+  skin, layers), a status icon before the headline, an icon on every button.
+- Versions of a Painter library come from its image files, not only its record (`library_record`):
+  a material pasted from another version shows that version. Materials another tool made from a
+  Painter export (SideFX's Painter-to-Karma, untagged images) are read and updated in place: the image
+  wired into a slot's surface input is that slot's image (`_wired_image`), and a library without a
+  record gets one from its texture folders (`_infer_record`, any name). A row's Update or Create
+  builds into that library (`apply_painter_plan(library=…)`); a library other than `{base}_materials`
+  keeps its geometry and assignment. Export family (`same_family`): the name before `_vNNN`, and the
+  same suffix or none (`char_v008_full` then `char_v010`; `_lite` stays apart).
 - What the scene has is a JSON record on the asset's Material Library (user data `monofx_substance`:
   asset, export, and per material its version, pin and `left_out`: an unticked material stays off). A library made before the record existed is
   read from the `_vNNN` in the texture folders the tool set (`_infer_record`), so no data is needed

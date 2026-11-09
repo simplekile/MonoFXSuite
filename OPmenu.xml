@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- MonoFX: right-click menu on a Material Library in /stage (tools/fx/auto_material/node_menu.py) -->
+<menuDocument>
+  <menu>
+    <subMenu id="monofx_auto_material">
+      <label>MonoFX</label>
+      <context>
+        <expression><![CDATA[__import__("tools.fx.auto_material.node_menu", fromlist=["node_menu"]).is_material_library(kwargs)]]></expression>
+      </context>
+      <scriptItem id="monofx_auto_material_update">
+        <label>Update materials to latest</label>
+        <scriptCode><![CDATA[
+from tools.fx.auto_material import node_menu
+node_menu.update_to_latest(kwargs)
+]]></scriptCode>
+      </scriptItem>
+      <scriptItem id="monofx_auto_material_open">
+        <label>Open in Auto Material</label>
+        <scriptCode><![CDATA[
+from tools.fx.auto_material import node_menu
+node_menu.open_in_window(kwargs)
+]]></scriptCode>
+      </scriptItem>
+    </subMenu>
+  </menu>
+</menuDocument>
