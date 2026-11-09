@@ -35,6 +35,7 @@ class SceneLibrary:
     latest: str            # newest publish, "" when it cannot be found
     location: str          # newest export's .usd, or the publish folder
     records: dict          # usd: the scene's MaterialRecords
+    behind: int = 0        # materials older than the latest publish
 
     @property
     def needs_update(self) -> bool:
@@ -61,16 +62,21 @@ def scene_libraries(sa: Any, stage: Any) -> list[SceneLibrary]:
         exports = list_painter_exports(export) if Path(export).exists() else []
         latest = exports[-1] if exports else None
         asset, kind = _asset(export, substance_node_base(export))
+        newest = latest.version if latest else ""
+        behind = sum(1 for r in records.values()
+                     if not r.left_out and r.version and version_number(r.version) < version_number(newest))
         out.append(SceneLibrary(
             lib.path(), lib.name(), "usd", asset, kind, len(records), meta.get("version") or "",
-            latest.version if latest else "", latest.usd_path if latest else export, records,
+            newest, latest.usd_path if latest else export, records, behind,
         ))
     for info in sa.folder_libraries(stage):
         newest = latest_publish_version(info.publish)
         asset, kind = _asset(info.publish, info.name)
+        newest_v = newest.name.lower() if newest else ""
+        behind = sum(1 for v in info.versions.values() if v and version_number(v) < version_number(newest_v))
         out.append(SceneLibrary(
             info.path, info.name, "folder", asset, kind, len(info.versions), info.version,
-            newest.name.lower() if newest else "", info.publish, {},
+            newest_v, info.publish, {}, behind,
         ))
     return out
 

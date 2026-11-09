@@ -94,6 +94,8 @@ def run(focus: str | None = None) -> None:
             "chip": f"{lib.version}→{lib.latest}" if lib.needs_update else (lib.version or "?"),
             "status": STATUS_UPDATE if lib.needs_update else STATUS_OK,
             "tooltip": lib.source_label,
+            "behind": lib.behind if lib.needs_update else 0,
+            "total": lib.materials,
         } for lib in libs]
 
     def hip_painter_usd() -> str | None:
@@ -132,13 +134,27 @@ def run(focus: str | None = None) -> None:
         action = action[:1].upper() + action[1:] if action else "Everything is up to date"
         return f"{name} · textures {newest.name.lower() if newest else ''} · from $HIP", action
 
-    def go_start() -> None:
-        state["page"] = "start"
-        state["usd"] = None
-        ui.set_message("")
+    def refresh_sidebar() -> None:
+        """The scene's libraries and the publish found from $HIP, without touching what is open."""
         assets = start_assets()
         latest, action = publish_card()
         ui.show_start(latest, assets, action)
+
+    def go_start() -> None:
+        """First look: the first library behind its publish, else the publish not built yet, else
+        the first library; nothing when the scene has none and there is no publish."""
+        state["page"] = "start"
+        state["usd"] = None
+        ui.set_message("")
+        refresh_sidebar()
+        libs = list(state["assets"].values())
+        behind = next((x for x in libs if x.needs_update), None)
+        if behind is not None:
+            on_open_asset(behind.path)
+        elif (hip_painter_usd() or sa.resolve_publish_texture_folder()) and not libs:
+            on_latest_publish()
+        elif libs:
+            on_open_asset(libs[0].path)
 
     # ------------------------------------------------------------------
     # Loading a source into the Version manager
@@ -241,6 +257,7 @@ def run(focus: str | None = None) -> None:
             ui.set_message(f"Not a folder or a USD file: {path}", error=True)
 
     def on_latest_publish() -> None:
+        ui.set_current("")
         usd = hip_painter_usd()
         publish = sa.resolve_publish_texture_folder()
         if usd or publish:
@@ -254,21 +271,36 @@ def run(focus: str | None = None) -> None:
         lib = state["assets"].get(key)
         if lib is None:
             return
+        ui.set_current(key)
         if lib.source == "usd":
             open_usd(lib.location, library=lib.name)
         else:
             open_folder(lib.location, library=lib.name)
 
     def on_reload() -> None:
+        """Read the opened source again (the library it goes into stays)."""
         path = ui.source_path()
-        if state["page"] in ("folder", "usd") and path:
-            open_path(path)
+        if state["page"] == "usd" and state["usd"] is not None:
+            open_usd(path, state["usd"].get("library"))
+        elif state["page"] == "folder" and path:
+            open_folder(path, library=ui.library())
+
+    def on_undo() -> None:
+        """The action bar's Undo: Houdini's undo of the last run (one step), then the window again."""
+        try:
+            import hou
+            hou.undos.performUndo()
+        except Exception as e:
+            ui.set_message(f"Undo failed: {e}", error=True)
+            return
+        ui.show_undo(False)
+        refresh_sidebar()
+        on_reload()
+        ui.set_message("Undone.")
 
     # A newer export while the Version manager is open: say so, change nothing.
     def on_activated() -> None:
-        if state["page"] == "start":
-            go_start()
-            return
+        refresh_sidebar()
         if state["page"] == "folder":
             refresh_libraries()  # a library made, renamed or deleted while away
             return
@@ -310,6 +342,7 @@ def run(focus: str | None = None) -> None:
             msg = f"Materials {text}."
             ui.show_done(msg, "Click to continue")
             ui.set_message(msg, error=False)
+            ui.show_undo(True)
         else:
             ui.hide_loading()
             ui.set_message("Saved." if not notes else "Nothing was built.", error=False)
@@ -358,6 +391,7 @@ def run(focus: str | None = None) -> None:
                 updated += [f"{other}/{n}" for n in result.updated]
                 notes += [f"{other}: {n}" for n in result.notes]
         refresh_libraries()  # chips: what was made or moved is now up to date
+        refresh_sidebar()
         done(created, updated, notes, cancelled, library=mat_lib_node.path() if mat_lib_node else lib_name)
 
     def create_usd(stage) -> None:
@@ -367,6 +401,7 @@ def run(focus: str | None = None) -> None:
             result = sa.apply_painter_plan(stage, ctx["data"], ui.plans(), ctx["records"], ui.is_cancelled,
                                            library=ctx.get("library"))
         cancelled = ui.is_cancelled()
+        refresh_sidebar()
         open_usd(ctx["path"], ctx.get("library"))  # chips now show the scene as it is; then the result
         lib = ctx.get("library") or ctx["data"][ctx["latest"]].source.node_base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
         done(result.created, result.updated, result.notes, cancelled, library=f"{stage.path()}/{lib}")
@@ -389,7 +424,8 @@ def run(focus: str | None = None) -> None:
             sa, stage, libs, ui.is_cancelled,
             progress=lambda i, lib: ui.show_loading(f"Updating {i}/{len(libs)}:  {lib.name}"))
         done(created, updated, notes, ui.is_cancelled())
-        go_start()
+        refresh_sidebar()
+        on_reload()
 
     # --- Auto assign (texture folders) ---
     def on_auto_assign() -> None:
@@ -451,7 +487,7 @@ def run(focus: str | None = None) -> None:
     ui.on("open_path", open_path)
     ui.on("open_asset", on_open_asset)
     ui.on("update_assets", on_update_assets)
-    ui.on("change", go_start)
+    ui.on("undo", on_undo)
     ui.on("reload", on_reload)
     ui.on("create", on_create)
     ui.on("auto_assign", on_auto_assign)

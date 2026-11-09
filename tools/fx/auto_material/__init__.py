@@ -8,6 +8,7 @@ def reload_and_run() -> None:
     import importlib
     import tools.fx.auto_material.config as _cfg
     import tools.fx.auto_material.logic as _logic
+    import tools.fx.auto_material.updater as _updater
     import tools.fx.auto_material.ui as _ui
     import tools.fx.auto_material.controller as _ctrl
     import apps.houdini.solaris_adapter as _sa
@@ -15,6 +16,7 @@ def reload_and_run() -> None:
     importlib.reload(_cfg)
     importlib.reload(_logic)
     importlib.reload(_sa)
+    importlib.reload(_updater)
     importlib.reload(_ui)
     importlib.reload(_ctrl)
     _ctrl.run()

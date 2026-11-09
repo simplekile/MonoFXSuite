@@ -25,16 +25,22 @@
   back): while the Material Library cooks on changes, every node created in it re-translates all its
   materials, so 16 materials took ~110 s instead of ~1 s. Create, Update (all ticked assets) and
   Auto assign are each one undo step (`solaris_adapter.undo_group`), a cancelled Create too.
-- The window has two pages. **Start**: three source cards (**Build from latest publish** from `$HIP`,
-  with what a click will do: "Update 2 libraries and create 1 new material"; Texture folder; Painter
-  USD), Recent paths, drag and drop, and **In this scene**: one row per Material Library the tool built,
-  from a Painter export or from texture folders (`updater.scene_libraries`), with its version chip
-  (oldest material's version -> newest publish) and a tick; Update moves the ticked ones to their latest
-  publish (`updater.update_libraries`: one undo step). A texture folder library is found from its image
+- One window, scene first (no pages). **Top bar**: the asset, a pill with the latest publish found
+  from `$HIP` (a click reviews it; a newer export turns it into "… just published · Open"), Follows
+  selection, Open (Texture folder, Painter USD, Recent, Include subfolders, Reload). **Sidebar**: every
+  Material Library the tool built or can read (`updater.scene_libraries`), a ring each (share up to
+  date, count behind); a click opens it; "Update all (N)" / "Update N selected" updates without
+  opening (`updater.update_libraries`, one undo step). A texture folder library is found from its image
   nodes' `monofx_file` (`…/publish/vNNN/…`, `logic.texture_version`); a file changed by hand no longer
-  counts. Its update changes only materials whose version changes and creates none.
-  **Version manager**: one source's materials (checkbox, name, chip) and the maps of the selected one;
-  Change goes back. Latest publish takes the publish's Painter export when its latest `vNNN` holds one
+  counts. Its update changes only materials whose version changes and creates none. **Main**: a
+  headline saying what the button does ("5 materials behind v010"), the source line, the version
+  timeline (scene's oldest version, target; for a Painter export a click moves every material that is
+  on and not pinned to that version, latest = All to latest), the materials as tiles (base colour
+  thumbnail, status colour on the edge, check to leave out, right click: version, pin, leave out,
+  folder) and the maps of the selected tile. **Action bar**: result line, Undo (Houdini's undo of the
+  last run), Auto assign (texture folder), the button. On open the window shows the first library
+  behind its publish, else the publish when the scene has none, else the first library.
+  Latest publish takes the publish's Painter export when its latest `vNNN` holds one
   (`find_painter_usd`: highest `_vNNN` in the file name, `*.material.usda` skipped), else its textures.
 - Texture folder target (`logic.pick_library`): the Material Library selected in `/stage` (while
   linked), else the one holding most of the folder's materials, else a new `{asset}_materials`
@@ -62,11 +68,12 @@
 - Results and notes of Create go to the line under the window, never a modal dialog: a modal box
   blocks Houdini (and the MCP bridge) until someone closes it.
 - Fonts are set in pixels (`_font`, `font-size: …px`): Houdini scales point sizes with its UI scale,
-  which overflowed the painted chips. Every label takes a role (`ui._text`): title 20/600, heading
-  15/600, body 14/400 (names in lists 600), meta 13/400 in `TEXT_LABEL`, caps and chips 12/600. Two
-  weights only; 12px only for caps labels and chips; supporting text is never `TEXT_META` (icons,
-  placeholders and disabled only). Panels of controls (source bar, the "Updating in" block) share
-  `STYLE_SOURCE_BAR`.
+  which overflowed painted text. Every label takes a role (`ui._text`): display 22/600 (headline),
+  title 17/600, body 14/400, name 13/600, meta 13/400 in `TEXT_LABEL`, small and caps 12. Two weights
+  only; supporting text is never `TEXT_META` (icons, placeholders, disabled). Status colours
+  (`STATUS_COLORS`) are the same on rings, tile edges, chips and the legend. A pill's radius stays
+  under half its height, or Qt draws square corners. Thumbnails load one per event-loop turn
+  (`_Thumbnails`); EXR needs OpenImageIO, else the tile shows a placeholder.
 - Versions of a Painter library come from its image files, not only its record (`library_record`):
   a material pasted from another version shows that version. Materials another tool made from a
   Painter export (SideFX's Painter-to-Karma, untagged images) are read and updated in place: the image

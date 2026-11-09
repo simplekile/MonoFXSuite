@@ -1,12 +1,15 @@
 """
-Auto Material Builder UI — MONOS design system.
+Auto Material Builder UI — one window, scene first.
 
-Two pages: Start (where the textures come from, and the assets already in the scene) and the
-Version manager (materials of one source, each with its version chip, and the maps of the one selected).
+Top bar: the asset and its latest publish, Follows selection, Open (texture folder, Painter USD, recent).
+Sidebar: the Material Libraries in the scene, a ring each (how many materials are behind).
+Main: what the opened source would do (headline), its versions on a timeline, its materials as tiles
+with a texture thumbnail, and the maps of the selected tile. Action bar: result line, Undo, the button.
 """
 
 from __future__ import annotations
 
+import glob
 import json
 import os
 import subprocess
@@ -14,19 +17,29 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
-from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, QUrl
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontMetrics, QIcon, QPainter, QPixmap
+from PySide6.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl
+from PySide6.QtGui import (
+    QColor,
+    QDesktopServices,
+    QFont,
+    QIcon,
+    QImageReader,
+    QPainter,
+    QPainterPath,
+    QPen,
+    QPixmap,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QCheckBox,
     QComboBox,
-    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListView,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -45,12 +58,12 @@ from PySide6.QtWidgets import (
 )
 
 from tools.fx.auto_material.logic import (
+    DEFAULT_LIBRARY,
     STATUS_MISSING,
     STATUS_NEW,
     STATUS_OK,
     STATUS_PINNED,
     STATUS_UPDATE,
-    DEFAULT_LIBRARY,
     MaterialPlan,
     folder_status,
     group_version,
@@ -61,255 +74,170 @@ from tools.fx.auto_material.logic import (
 )
 
 # ---------------------------------------------------------------------------
-# MONOS palette
+# Palette
 # ---------------------------------------------------------------------------
-BG_PANEL = "#18181b"
-BG_CONTENT = "#121214"
-BG_SURFACE = "#27272a"
-TEXT_PRIMARY = "#fafafa"
-TEXT_LABEL = "#a1a1aa"
-TEXT_META = "#8e8e98"    # icons, placeholders, disabled only (5:1 on the panel)
+BG_APP = "#111113"        # window
+BG_RAISED = "#18181d"     # tiles, pills, inputs
+BG_HOVER = "#1f1f25"
+BG_CURRENT = "#1c2333"    # the opened library in the sidebar
+LINE = "#26262d"          # every border and divider
+TEXT_PRIMARY = "#ededf0"
+TEXT_LABEL = "#a3a3ae"    # every supporting text
+TEXT_META = "#8e8e98"     # icons, placeholders, disabled only
 TEXT_ERROR = "#fca5a5"
-BLUE_600 = "#2563eb"
-BLUE_400 = "#60a5fa"
-EMERALD = "#10b981"
-AMBER = "#f59e0b"
-ZINC_400 = "#a1a1aa"
-ZINC_500 = "#71717a"
+ACCENT = "#5b8cff"        # links, selection, the timeline
+ACCENT_FILL = "#3d6cf0"   # the one primary button
+ACCENT_LINE = "#2f4a80"
 
-# Type rules: every piece of text takes one role, by what it is, never a size picked by hand.
-#   title    20px 600 TEXT_PRIMARY   the window's name
-#   heading  15px 600 TEXT_PRIMARY   the question on Start, the source's name
-#   body     14px 400 TEXT_PRIMARY   names, buttons, table cells, the result line (600 for names in lists)
-#   meta     13px 400 TEXT_LABEL     second lines, hints, summaries, legends, links
-#   caps     12px 600 TEXT_LABEL     section labels in capitals, 1px letter spacing
-#   chip     12px 600 status colour  chips
-# Two weights (400, 600). 12px only for caps and chips. Supporting text is TEXT_LABEL, never TEXT_META.
-FS_TITLE, FS_HEADING, FS_BODY, FS_META, FS_SMALL = 20, 15, 14, 13, 12
+# Status colours: the same in chips, tile edges, rings and the legend
+STATUS_COLORS: dict[str, str] = {
+    STATUS_OK: "#3ecf8e",
+    STATUS_UPDATE: ACCENT,
+    STATUS_NEW: "#a78bfa",
+    STATUS_PINNED: "#f5b14c",
+    STATUS_MISSING: "#f87171",
+}
+
+# Type rules: every text takes one role, never a size picked by hand.
+#   display  22px 600 TEXT_PRIMARY   the headline (what Create / Update will do)
+#   title    17px 600 TEXT_PRIMARY   empty state
+#   body     14px 400 TEXT_PRIMARY   buttons, table cells, the result line
+#   name     13px 600 TEXT_PRIMARY   library and material names
+#   meta     13px 400 TEXT_LABEL     second lines, hints, links
+#   small    12px 400/600            tile status, timeline labels, caps (600 + 1px spacing)
+# Two weights (400, 600). Supporting text is TEXT_LABEL, never TEXT_META.
+FS_DISPLAY, FS_TITLE, FS_BODY, FS_META, FS_SMALL = 22, 17, 14, 13, 12
 
 
 def _text(role: str, color: str | None = None) -> str:
-    """Style sheet for a label of *role* (title, heading, body, name, meta, caps)."""
+    """Style sheet for a label of *role* (display, title, body, name, meta, caps, small)."""
     size, weight, default = {
+        "display": (FS_DISPLAY, 600, TEXT_PRIMARY),
         "title": (FS_TITLE, 600, TEXT_PRIMARY),
-        "heading": (FS_HEADING, 600, TEXT_PRIMARY),
         "body": (FS_BODY, 400, TEXT_PRIMARY),
-        "name": (FS_BODY, 600, TEXT_PRIMARY),
+        "name": (FS_META, 600, TEXT_PRIMARY),
         "meta": (FS_META, 400, TEXT_LABEL),
         "caps": (FS_SMALL, 600, TEXT_LABEL),
+        "small": (FS_SMALL, 400, TEXT_LABEL),
     }[role]
     spacing = " letter-spacing: 1px;" if role == "caps" else ""
-    return f"color: {color or default}; font-size: {size}px; font-weight: {weight};{spacing}"
+    return f"color: {color or default}; font-size: {size}px; font-weight: {weight};{spacing} background: transparent;"
 
 
 def _font(px: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
-    """Font in pixels: Houdini scales point sizes with its UI scale, which overflows painted chips."""
+    """Font in pixels: Houdini scales point sizes with its UI scale, which overflows painted text."""
     font = QFont("Inter")
     font.setPixelSize(px)
     font.setWeight(weight)
     return font
 
 
+def _rgba(hex_color: str, alpha: float) -> str:
+    c = QColor(hex_color)
+    return f"rgba({c.red()}, {c.green()}, {c.blue()}, {alpha})"
+
+
 STYLE_WINDOW = f"""
-    QWidget#AutoMaterialWindow {{
-        background-color: {BG_PANEL};
-        color: {TEXT_PRIMARY};
-    }}
-    QLabel {{ color: {TEXT_PRIMARY}; }}
-    QWidget#AutoMaterialWindow QWidget {{ font-size: 13px; }}
-    QPushButton, QToolButton, QComboBox, QCheckBox, QLineEdit {{ font-size: 14px; }}
+    QWidget#AutoMaterialWindow {{ background-color: {BG_APP}; color: {TEXT_PRIMARY}; }}
+    QLabel {{ color: {TEXT_PRIMARY}; background: transparent; }}
+    QWidget#AutoMaterialWindow QWidget {{ font-size: {FS_META}px; }}
+    QPushButton, QToolButton, QComboBox, QCheckBox, QLineEdit {{ font-size: {FS_META}px; }}
+    QToolTip {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE}; padding: 6px; }}
+    QSplitter::handle {{ background: transparent; }}
+    QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px; }}
+    QScrollBar::handle:vertical {{ background: #2c2c33; border-radius: 4px; min-height: 30px; }}
+    QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 """
 
-STYLE_BTN = """
-    QPushButton, QToolButton {
-        background: rgba(24, 24, 27, 0.35);
-        color: #a1a1aa;
-        padding: 6px 12px;
-        border: 1px solid rgba(39, 39, 42, 0.50);
-        border-radius: 8px;
-    }
-    QPushButton:hover, QToolButton:hover {
-        background: rgba(255, 255, 255, 0.12);
-        border: 1px solid rgba(63, 63, 70, 0.80);
-        color: #e4e4e7;
-    }
-    QPushButton:disabled, QToolButton:disabled {
-        color: rgba(161, 161, 170, 0.5);
-        background: rgba(24, 24, 27, 0.25);
-    }
-"""
-
-STYLE_BTN_LINK = f"""
-    QPushButton {{ background: transparent; border: none; color: {TEXT_LABEL}; padding: 2px 4px; }}
-    QPushButton:hover {{ color: {BLUE_400}; }}
-"""
-
-STYLE_BTN_PRIMARY = f"""
+STYLE_PRIMARY = f"""
     QPushButton {{
-        background: rgba(37, 99, 235, 0.22);
-        border: 1px solid rgba(37, 99, 235, 0.70);
-        color: {TEXT_PRIMARY};
-        padding: 8px 16px;
-        border-radius: 8px;
-        font-weight: 600;
-        font-size: 14px;
+        background: {ACCENT_FILL}; color: #ffffff; border: none; border-radius: 10px;
+        padding: 10px 20px; font-size: {FS_BODY}px; font-weight: 600;
     }}
-    QPushButton:hover {{
-        background: rgba(37, 99, 235, 0.35);
-        border-color: rgba(59, 130, 246, 0.80);
-    }}
-    QPushButton:disabled {{
-        border: 1px solid rgba(39, 39, 42, 0.50);
-        background: rgba(24, 24, 27, 0.35);
-        color: rgba(250, 250, 250, 0.45);
-    }}
+    QPushButton:hover {{ background: #4b78f5; }}
+    QPushButton:disabled {{ background: {BG_RAISED}; color: {TEXT_META}; }}
 """
 
-# Same as primary but emerald/green (for Auto assign)
-STYLE_BTN_PRIMARY_EMERALD = f"""
-    QPushButton {{
-        background: rgba(16, 185, 129, 0.22);
-        border: 1px solid rgba(16, 185, 129, 0.70);
-        color: {TEXT_PRIMARY};
-        padding: 8px 16px;
-        border-radius: 8px;
-        font-weight: 600;
+STYLE_GHOST = f"""
+    QPushButton, QToolButton {{
+        background: transparent; color: {TEXT_LABEL}; border: 1px solid #33333b; border-radius: 10px;
+        padding: 9px 14px; font-size: {FS_META}px;
     }}
-    QPushButton:hover {{
-        background: rgba(16, 185, 129, 0.35);
-        border-color: rgba(52, 211, 153, 0.80);
+    QPushButton:hover, QToolButton:hover {{ background: {BG_HOVER}; color: {TEXT_PRIMARY}; }}
+    QToolButton::menu-indicator {{ image: none; width: 0; }}
+"""
+
+STYLE_PILL = f"""
+    QPushButton, QToolButton {{
+        background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid #2c2c33; border-radius: 13px;
+        padding: 5px 12px; font-size: {FS_META}px; text-align: left;
     }}
+    QPushButton:hover, QToolButton:hover {{ border-color: #3a3a44; background: {BG_HOVER}; }}
+    QPushButton:checked {{ background: {_rgba(ACCENT, 0.16)}; border-color: {ACCENT_LINE}; color: {ACCENT}; }}
+    QToolButton::menu-indicator {{ image: none; width: 0; }}
+"""
+
+STYLE_LINK = f"""
+    QPushButton {{ background: transparent; border: none; color: {ACCENT}; padding: 0; font-size: {FS_META}px; }}
+    QPushButton:hover {{ color: #8fb0ff; }}
 """
 
 STYLE_LIST = f"""
-    QListWidget {{
-        background-color: #0d0d0f;
-        border: none;
-        outline: none;
-        padding: 5px;
-        border-radius: 8px;
-        color: {TEXT_PRIMARY};
-    }}
+    QListWidget {{ background: transparent; border: none; outline: none; color: {TEXT_PRIMARY}; }}
 """
 
 STYLE_TABLE = f"""
     QTableWidget {{
-        background-color: {BG_CONTENT};
-        border: 1px solid #2a2a2c;
-        gridline-color: #2a2a2c;
-        color: #eeeeee;
-        font-size: 14px;
-        selection-background-color: rgba(37, 99, 235, 0.15);
-        selection-color: {BLUE_400};
-        outline: none;
-        border-radius: 8px;
+        background-color: transparent; border: 1px solid {LINE}; border-radius: 10px;
+        gridline-color: {LINE}; color: {TEXT_PRIMARY}; font-size: {FS_META}px; outline: none;
+        selection-background-color: {_rgba(ACCENT, 0.15)}; selection-color: {TEXT_PRIMARY};
     }}
+    QHeaderView {{ background: transparent; border: none; }}
+    QTableCornerButton::section {{ background: transparent; border: none; }}
     QHeaderView::section {{
-        background-color: #0d0d0f;
-        color: #4a4a4c;
-        padding: 8px 12px;
-        border: none;
-        border-bottom: 2px solid #2a2a2c;
-        font-weight: 600;
-        font-size: 13px;
+        background-color: {BG_APP}; color: {TEXT_LABEL}; padding: 6px 10px; border: none;
+        border-bottom: 1px solid {LINE}; font-size: {FS_SMALL}px; font-weight: 600;
     }}
-    QTableWidget::item {{
-        padding: 0px 10px;
-        border-bottom: 1px solid #1e1e20;
-        background-color: {BG_CONTENT};
-    }}
-    QTableWidget::item:selected {{ background: rgba(37, 99, 235, 0.15); color: {BLUE_400}; }}
+    QTableWidget::item {{ padding: 0px 10px; border-bottom: 1px solid #1d1d22; }}
 """
 
 STYLE_CHECKBOX = f"""
-    QCheckBox {{ color: {TEXT_LABEL}; spacing: 6px; }}
-    QCheckBox::indicator {{
-        width: 14px; height: 14px; border-radius: 3px;
-        border: 1px solid {ZINC_500}; background: transparent;
-    }}
-    QCheckBox::indicator:checked {{ background: rgba(37, 99, 235, 0.80); border-color: {BLUE_400}; }}
+    QCheckBox {{ color: {TEXT_LABEL}; spacing: 8px; font-size: {FS_META}px; background: transparent; }}
+    QCheckBox::indicator {{ width: 14px; height: 14px; border-radius: 4px; border: 1px solid #4a4a55; background: transparent; }}
+    QCheckBox::indicator:checked {{ background: {ACCENT_FILL}; border-color: {ACCENT}; }}
 """
-
-STYLE_SECTION_LABEL = _text("caps")
 
 STYLE_COMBO = f"""
     QComboBox {{
-        padding: 6px 8px;
-        border: 1px solid rgba(39, 39, 42, 0.50);
-        border-radius: 6px;
-        background: {BG_SURFACE};
-        color: {TEXT_PRIMARY};
+        padding: 6px 10px; border: 1px solid #2c2c33; border-radius: 8px; background: {BG_RAISED};
+        color: {TEXT_PRIMARY}; font-size: {FS_META}px;
     }}
-    QComboBox:focus {{ border: 1px solid {BLUE_600}; }}
+    QComboBox:focus {{ border: 1px solid {ACCENT}; }}
     QComboBox::drop-down {{ border: none; width: 20px; }}
     QComboBox::down-arrow {{
-        image: none;
-        border-left: 4px solid transparent;
-        border-right: 4px solid transparent;
-        border-top: 5px solid {TEXT_META};
-        margin-right: 6px;
+        image: none; border-left: 4px solid transparent; border-right: 4px solid transparent;
+        border-top: 5px solid {TEXT_LABEL}; margin-right: 8px;
     }}
     QComboBox QAbstractItemView {{
-        background: {BG_SURFACE};
-        color: {TEXT_PRIMARY};
-        border: 1px solid rgba(39, 39, 42, 0.70);
-        selection-background-color: rgba(37, 99, 235, 0.20);
-        selection-color: {TEXT_PRIMARY};
-        padding: 4px;
-        outline: none;
+        background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};
+        selection-background-color: {_rgba(ACCENT, 0.20)}; padding: 4px; outline: none;
     }}
 """
 
 STYLE_MENU = f"""
-    QMenu {{
-        background: {BG_PANEL};
-        color: {TEXT_PRIMARY};
-        border: 1px solid #3f3f46;
-        border-radius: 8px;
-        padding: 4px;
-    }}
-    QMenu::item {{ padding: 6px 14px; border-radius: 6px; }}
-    QMenu::item:selected {{ background: rgba(37, 99, 235, 0.20); }}
+    QMenu {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid #33333b; border-radius: 10px; padding: 4px; }}
+    QMenu::item {{ padding: 7px 16px; border-radius: 6px; font-size: {FS_META}px; }}
+    QMenu::item:selected {{ background: {_rgba(ACCENT, 0.20)}; }}
     QMenu::item:disabled {{ color: {TEXT_META}; }}
-    QMenu::separator {{ height: 1px; background: #27272a; margin: 4px 6px; }}
+    QMenu::separator {{ height: 1px; background: {LINE}; margin: 4px 8px; }}
 """
 
-STYLE_CARD = """
-    QFrame#SourceCard {
-        background: rgba(24, 24, 27, 0.35);
-        border: 1px solid rgba(63, 63, 70, 0.60);
-        border-radius: 12px;
-    }
-    QFrame#SourceCard:hover { background: rgba(255, 255, 255, 0.06); border-color: rgba(96, 165, 250, 0.60); }
-    QFrame#SourceCard[primary="true"] { border: 2px solid rgba(37, 99, 235, 0.80); }
-    QFrame#SourceCard[enabled_card="false"] { border-color: rgba(39, 39, 42, 0.60); }
-"""
 
-STYLE_BANNER = """
-    QFrame#Banner {
-        background: rgba(37, 99, 235, 0.16);
-        border: 1px solid rgba(37, 99, 235, 0.50);
-        border-radius: 8px;
-    }
-"""
+def _chip_style(status: str) -> str:
+    color = STATUS_COLORS.get(status, TEXT_LABEL)
+    return (f"color: {color}; background: {_rgba(color, 0.14)}; border: 1px solid {_rgba(color, 0.40)};"
+            f" border-radius: 10px; padding: 2px 9px; font-size: {FS_SMALL}px; font-weight: 600;")
 
-STYLE_SOURCE_BAR = """
-    QFrame#SourceBar {
-        background: rgba(24, 24, 27, 0.35);
-        border: 1px solid rgba(63, 63, 70, 0.60);
-        border-radius: 8px;
-    }
-"""
-
-# Version chips: (text colour, rgb of the tint) — MONOS emerald / blue / violet / amber / red.
-CHIP_TONES: dict[str, tuple[str, str]] = {
-    STATUS_OK:      ("#34d399", "16, 185, 129"),
-    STATUS_UPDATE:  (BLUE_400,  "37, 99, 235"),
-    STATUS_NEW:     ("#a78bfa", "139, 92, 246"),
-    STATUS_PINNED:  ("#fbbf24", "245, 158, 11"),
-    STATUS_MISSING: ("#f87171", "239, 68, 68"),
-    "zinc":         (TEXT_LABEL, "63, 63, 70"),
-}
 
 CHIP_HELP = {
     STATUS_OK: "Up to date",
@@ -318,15 +246,6 @@ CHIP_HELP = {
     STATUS_PINNED: "Pinned: All to latest and later updates keep it here",
     STATUS_MISSING: "Not in the export the geometry comes from: the geometry may not match",
 }
-
-
-def _chip_style(tone: str) -> str:
-    fg, rgb = CHIP_TONES.get(tone, CHIP_TONES["zinc"])
-    return (
-        f"color: {fg}; background: rgba({rgb}, 0.16); border: 1px solid rgba({rgb}, 0.45);"
-        "border-radius: 9px; padding: 1px 8px; font-size: 12px; font-weight: 600;"
-    )
-
 
 # ---------------------------------------------------------------------------
 # Lucide icons
@@ -337,22 +256,20 @@ LUCIDE = {
     "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     "package": '<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 7.703 4.734a2 2 0 0 0 1.994 0L20.7 7"/><path d="m7.5 4.27 9 5.15"/>',
     "file-box": '<path d="M14.5 22H18a2 2 0 0 0 2-2V7l-5-5H6a2 2 0 0 0-2 2v4"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M3 13.1a2 2 0 0 0-1 1.76v3.24a2 2 0 0 0 .97 1.78L6 21.7a2 2 0 0 0 2.03.01L11 19.9a2 2 0 0 0 1-1.76V14.9a2 2 0 0 0-.97-1.78L8 11.3a2 2 0 0 0-2.03-.01Z"/><path d="M7 17v5"/><path d="M11.7 14.2 7 17l-4.7-2.8"/>',
-    "arrow-left-right": '<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>',
     "user": '<path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>',
     "box": '<path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/>',
     "building": '<rect width="16" height="20" x="4" y="2" rx="2" ry="2"/><path d="M9 22v-4h6v4"/><path d="M8 6h.01"/><path d="M16 6h.01"/><path d="M12 6h.01"/><path d="M12 10h.01"/><path d="M12 14h.01"/><path d="M16 10h.01"/><path d="M16 14h.01"/><path d="M8 10h.01"/><path d="M8 14h.01"/>',
-    "chevron-right": '<path d="m9 18 6-6-6-6"/>',
     "pin": '<path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/>',
     "check": '<path d="M20 6 9 17l-5-5"/>',
-    "triangle-alert": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
     "sparkles": '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>',
+    "link": '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+    "unlink": '<path d="m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71"/><path d="m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71"/><path d="M8 2v3"/><path d="M2 8h3"/><path d="M16 22v-3"/><path d="M22 16h-3"/>',
+    "plus": '<path d="M5 12h14"/><path d="M12 5v14"/>',
+    "undo": '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"/>',
+    "image": '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>',
+    "chevron-down": '<path d="m6 9 6 6 6-6"/>',
+    "triangle-alert": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
 }
-
-LUCIDE["link"] = ('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>'
-                  '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>')
-LUCIDE["unlink"] = ('<path d="m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71"/>'
-                    '<path d="m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71"/>'
-                    '<path d="M8 2v3"/><path d="M2 8h3"/><path d="M16 22v-3"/><path d="M22 16h-3"/>')
 
 ASSET_ICONS = {"character": "user", "prop": "box", "environment": "building"}
 
@@ -383,9 +300,9 @@ def _lucide_icon(name: str, size: int = 16, color: str = TEXT_LABEL) -> QIcon:
     return icon
 
 
-def _section_label(text: str) -> QLabel:
+def _label(text: str, role: str, color: str | None = None) -> QLabel:
     label = QLabel(text)
-    label.setStyleSheet(STYLE_SECTION_LABEL)
+    label.setStyleSheet(_text(role, color))
     return label
 
 
@@ -397,13 +314,14 @@ def _file_label(filepath: str) -> str:
     return Path(filepath.replace("%(UDIM)d", "<UDIM>")).name
 
 
-def _icon_button(icon: str, tooltip: str) -> QToolButton:
-    btn = QToolButton()
-    btn.setIcon(_lucide_icon(icon))
-    btn.setIconSize(QSize(16, 16))
-    btn.setToolTip(tooltip)
-    btn.setStyleSheet(STYLE_BTN)
-    return btn
+def _divider(vertical: bool = False) -> QFrame:
+    line = QFrame()
+    if vertical:
+        line.setFixedWidth(1)
+    else:
+        line.setFixedHeight(1)
+    line.setStyleSheet(f"background: {LINE};")
+    return line
 
 
 def open_in_explorer(path: str, select: bool = False) -> None:
@@ -417,69 +335,122 @@ def open_in_explorer(path: str, select: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Path history (Recent)
+# Path history (Recent) and preferences
 # ---------------------------------------------------------------------------
 _HISTORY_DIR = Path(os.environ.get("APPDATA", Path.home())) / "MonoFXSuite"
 _HISTORY_FILE = _HISTORY_DIR / "auto_material_paths.json"
+_PREFS_FILE = _HISTORY_DIR / "auto_material_prefs.json"
 _MAX_HISTORY = 15
 
 
-def _load_path_history() -> list[str]:
+def _load_json(path: Path, kind: type) -> Any:
     try:
-        data = json.loads(_HISTORY_FILE.read_text("utf-8"))
-        if isinstance(data, list):
-            return [str(p) for p in data[:_MAX_HISTORY]]
+        data = json.loads(path.read_text("utf-8"))
+        return data if isinstance(data, kind) else kind()
     except (FileNotFoundError, json.JSONDecodeError, OSError):
-        pass
-    return []
+        return kind()
 
 
-def _save_path_history(paths: list[str]) -> None:
+def _save_json(path: Path, data: Any) -> None:
     try:
         _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        _HISTORY_FILE.write_text(json.dumps(paths[:_MAX_HISTORY], ensure_ascii=False), "utf-8")
+        path.write_text(json.dumps(data, ensure_ascii=False), "utf-8")
     except OSError:
         pass
 
 
-_PREFS_FILE = _HISTORY_DIR / "auto_material_prefs.json"
+def _load_path_history() -> list[str]:
+    return [str(p) for p in _load_json(_HISTORY_FILE, list)[:_MAX_HISTORY]]
 
 
 def _load_prefs() -> dict:
-    try:
-        data = json.loads(_PREFS_FILE.read_text("utf-8"))
-        return data if isinstance(data, dict) else {}
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return {}
+    return _load_json(_PREFS_FILE, dict)
 
 
-def _save_prefs(prefs: dict) -> None:
-    try:
-        _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        _PREFS_FILE.write_text(json.dumps(prefs), "utf-8")
-    except OSError:
-        pass
+# ---------------------------------------------------------------------------
+# Texture thumbnails (base colour map), loaded one at a time so the window never stalls
+# ---------------------------------------------------------------------------
+_QT_IMAGE_EXT = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".tga", ".bmp", ".webp"}
+_THUMB_W, _THUMB_H = 168, 84
 
 
-class _LinkToggle(QPushButton):
-    """'Link to selection' switch: while on, the window follows the Material Libraries selected in /stage."""
+def _first_tile(path: str) -> str | None:
+    """An existing file for a texture path: the path itself, or the first UDIM tile of <UDIM> / %(UDIM)d."""
+    path = path.replace("%(UDIM)d", "<UDIM>")
+    if "<UDIM>" not in path:
+        return path if os.path.isfile(path) else None
+    tiles = sorted(glob.glob(glob.escape(path).replace(glob.escape("<UDIM>"), "[0-9][0-9][0-9][0-9]")))
+    return tiles[0] if tiles else None
 
-    def __init__(self, on_toggle: Callable[[bool], None]) -> None:
-        super().__init__()
-        self.setCheckable(True)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setToolTip("While on, selecting Material Library nodes in /stage picks them here")
-        self.toggled.connect(self._restyle)
-        self.toggled.connect(on_toggle)
-        self._restyle(False)
 
-    def _restyle(self, on: bool) -> None:
-        self.setText("Linked to selection" if on else "Link to selection")
-        self.setIcon(_lucide_icon("link" if on else "unlink", 13, BLUE_400 if on else TEXT_LABEL))
-        tone = "background: rgba(37, 99, 235, 0.22); border: 1px solid rgba(37, 99, 235, 0.70);" \
-            f" color: {BLUE_400};" if on else \
-            f"background: transparent; border: 1px solid rgba(63, 63, 70, 0.80); color: {TEXT_LABEL};"
-        self.setStyleSheet(f"QPushButton {{ {tone} border-radius: 12px; padding: 3px 10px; font-size: {FS_META}px; }}")
+def _read_thumbnail(path: str) -> QPixmap | None:
+    """A small picture of a texture; None when it cannot be read quickly (EXR without OpenImageIO)."""
+    file = _first_tile(path)
+    if file is None:
+        return None
+    ext = os.path.splitext(file)[1].lower()
+    if ext in _QT_IMAGE_EXT:
+        reader = QImageReader(file)
+        size = reader.size()
+        if size.isValid() and size.width() > 0:
+            scale = max(_THUMB_W * 2 / size.width(), _THUMB_H * 2 / size.height())
+            reader.setScaledSize(QSize(max(1, int(size.width() * scale)), max(1, int(size.height() * scale))))
+        image = reader.read()
+        return QPixmap.fromImage(image) if not image.isNull() else None
+    if ext == ".exr":
+        try:  # Houdini ships OpenImageIO in some builds; without it an EXR tile shows no picture
+            import OpenImageIO as oiio
+            from PySide6.QtGui import QImage
+
+            buf = oiio.ImageBuf(file)
+            spec = buf.spec()
+            step = max(1, max(spec.width // (_THUMB_W * 2), spec.height // (_THUMB_H * 2)))
+            small = oiio.ImageBufAlgo.resample(buf, roi=oiio.ROI(0, spec.width // step, 0, spec.height // step))
+            pixels = small.get_pixels(oiio.FLOAT)
+            h, w = pixels.shape[0], pixels.shape[1]
+            image = QImage(w, h, QImage.Format.Format_RGB32)
+            for y in range(h):
+                for x in range(w):
+                    r, g, b = (min(1.0, max(0.0, float(pixels[y, x, i]))) ** (1 / 2.2) for i in range(3))
+                    image.setPixel(x, y, QColor(int(r * 255), int(g * 255), int(b * 255)).rgb())
+            return QPixmap.fromImage(image)
+        except Exception:
+            return None
+    return None
+
+
+class _Thumbnails:
+    """Cache of texture thumbnails; *request* queues a path, *on_ready* repaints when one is in."""
+
+    def __init__(self, on_ready: Callable[[], None]) -> None:
+        self._cache: dict[str, QPixmap | None] = {}
+        self._queue: list[str] = []
+        self._on_ready = on_ready
+        self._timer = QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._next)
+
+    def get(self, path: str) -> QPixmap | None:
+        if not path:
+            return None
+        if path not in self._cache:
+            if path not in self._queue:
+                self._queue.append(path)
+                self._timer.start(0)
+            return None
+        return self._cache[path]
+
+    def _next(self) -> None:
+        if not self._queue:
+            return
+        path = self._queue.pop(0)
+        try:
+            self._cache[path] = _read_thumbnail(path)
+        except Exception:
+            self._cache[path] = None
+        self._on_ready()
+        if self._queue:
+            self._timer.start(0)
 
 
 # ---------------------------------------------------------------------------
@@ -487,19 +458,12 @@ class _LinkToggle(QPushButton):
 # ---------------------------------------------------------------------------
 
 class _LoadingOverlay(QWidget):
-    """Semi-transparent overlay with centered status text.
-    Modes: loading (cancelable), done (click to dismiss)."""
-
-    _MODE_LOADING = 0
-    _MODE_DONE = 1
+    """Semi-transparent overlay with centred status text; a click cancels."""
 
     def __init__(self, parent: QWidget) -> None:
         super().__init__(parent)
         self._text = "Loading..."
-        self._sub_text: str | None = None
-        self._mode = self._MODE_LOADING
         self._cancelled = False
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setVisible(False)
 
@@ -509,43 +473,27 @@ class _LoadingOverlay(QWidget):
 
     def reset(self) -> None:
         self._cancelled = False
-        self._mode = self._MODE_LOADING
 
-    def set_text(self, text: str, sub_text: str | None = None) -> None:
+    def set_text(self, text: str) -> None:
         self._text = text
-        self._sub_text = sub_text or "Click to cancel"
-        self._mode = self._MODE_LOADING
-        self.update()
-
-    def set_done(self, text: str, sub_text: str | None = None) -> None:
-        self._text = text
-        self._sub_text = sub_text or "Click to continue"
-        self._mode = self._MODE_DONE
         self.update()
 
     def paintEvent(self, event) -> None:
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 180))
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 170))
         painter.setPen(QColor(TEXT_PRIMARY))
-        painter.setFont(_font(FS_HEADING, QFont.Weight.DemiBold))
-        painter.drawText(self.rect().adjusted(0, -20, 0, 0), Qt.AlignmentFlag.AlignCenter, self._text)
-        if self._sub_text:
-            color = QColor(TEXT_ERROR) if self._mode == self._MODE_LOADING else QColor(TEXT_META)
-            painter.setPen(color)
-            painter.setFont(_font(13))
-            painter.drawText(self.rect().adjusted(0, 40, 0, 0), Qt.AlignmentFlag.AlignCenter, self._sub_text)
+        painter.setFont(_font(FS_TITLE, QFont.Weight.DemiBold))
+        painter.drawText(self.rect().adjusted(0, -18, 0, 0), Qt.AlignmentFlag.AlignCenter, self._text)
+        painter.setPen(QColor(TEXT_LABEL))
+        painter.setFont(_font(FS_META))
+        painter.drawText(self.rect().adjusted(0, 34, 0, 0), Qt.AlignmentFlag.AlignCenter,
+                         "Cancelling…" if self._cancelled else "Click to cancel")
         painter.end()
 
     def mousePressEvent(self, event) -> None:
-        if self._mode == self._MODE_DONE:
-            self.reset()
-            self.setVisible(False)
-        elif self._mode == self._MODE_LOADING:
-            self._cancelled = True
-            self._text = "Cancelling..."
-            self._sub_text = None
-            self.update()
+        self._cancelled = True
+        self.update()
         event.accept()
 
     def showEvent(self, event) -> None:
@@ -554,229 +502,252 @@ class _LoadingOverlay(QWidget):
 
 
 # ---------------------------------------------------------------------------
-# Material list: checkbox, name, version chip
+# Sidebar: one row per Material Library in the scene, with its ring
 # ---------------------------------------------------------------------------
-
-ROLE_NAME = Qt.ItemDataRole.UserRole
-ROLE_ENABLED = Qt.ItemDataRole.UserRole + 1
-ROLE_CHIP = Qt.ItemDataRole.UserRole + 2     # (text, status) or None
-ROLE_META = Qt.ItemDataRole.UserRole + 3     # e.g. "8 maps · UDIM" (folder source, no chip)
-
-_BOX = 14
+ROLE_DATA = Qt.ItemDataRole.UserRole
 
 
-class _MaterialDelegate(QStyledItemDelegate):
-    """Row: [checkbox] name ............ [chip]. The chip is the version and its status."""
+def _paint_ring(painter: QPainter, rect: QRect, behind: int, total: int) -> None:
+    """A ring: the share of materials up to date, green when all are, blue with the count behind."""
+    pen_w = 3
+    r = QRectF(rect).adjusted(pen_w, pen_w, -pen_w, -pen_w)
+    painter.setPen(QPen(QColor("#2c2c33"), pen_w))
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawEllipse(r)
+    share = 1.0 if total <= 0 else (total - behind) / total
+    color = QColor(STATUS_COLORS[STATUS_UPDATE] if behind else STATUS_COLORS[STATUS_OK])
+    pen = QPen(color, pen_w)
+    pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(pen)
+    if share > 0:
+        painter.drawArc(r, 90 * 16, -int(360 * 16 * share))
+    painter.setPen(QColor(TEXT_PRIMARY))
+    if behind:
+        painter.setFont(_font(11, QFont.Weight.DemiBold))
+        painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, str(behind))
+    else:
+        painter.drawPixmap(QRect(rect.center().x() - 6, rect.center().y() - 6, 12, 12),
+                           _lucide_pixmap("check", 12, STATUS_COLORS[STATUS_OK]))
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
-        self._icons: dict[tuple[str, str], QPixmap] = {}
 
-    def _icon(self, name: str, color: str) -> QPixmap:
-        key = (name, color)
-        if key not in self._icons:
-            self._icons[key] = _lucide_pixmap(name, 11, color)
-        return self._icons[key]
-
-    @staticmethod
-    def box_rect(rect: QRect) -> QRect:
-        return QRect(rect.left() + 10, rect.center().y() - _BOX // 2, _BOX, _BOX)
-
-    def chip_rect(self, rect: QRect, index) -> QRect:
-        chip = index.data(ROLE_CHIP)
-        if not chip:
-            return QRect()
-        w = QFontMetrics(_font(12, QFont.Weight.DemiBold)).horizontalAdvance(chip[0]) + 18
-        if chip[1] in (STATUS_OK, STATUS_PINNED, STATUS_MISSING):
-            w += 14
-        return QRect(rect.right() - w - 10, rect.center().y() - 10, w, 20)
+class _LibraryDelegate(QStyledItemDelegate):
+    """[ring] name / "2 behind v010" ; current row tinted, scene-selected rows marked."""
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        data = index.data(ROLE_DATA) or {}
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        rect: QRect = option.rect
-        enabled = bool(index.data(ROLE_ENABLED))
-        selected = bool(option.state & option.state.__class__.State_Selected)
+        rect = option.rect.adjusted(2, 2, -2, -2)
         hovered = bool(option.state & option.state.__class__.State_MouseOver)
-
-        bg = QColor(37, 99, 235, 30) if selected else QColor(255, 255, 255, 8) if hovered else QColor(0, 0, 0, 0)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(bg)
-        painter.drawRoundedRect(rect.adjusted(2, 1, -2, -1), 6, 6)
-
-        # Checkbox
-        box = self.box_rect(rect)
-        if enabled:
-            painter.setBrush(QColor(37, 99, 235, 200))
+        if data.get("current"):
+            painter.setBrush(QColor(BG_CURRENT))
+            painter.setPen(QColor(ACCENT_LINE))
+        elif hovered:
+            painter.setBrush(QColor(BG_HOVER))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(box, 3, 3)
-            painter.drawPixmap(box.adjusted(2, 2, -1, -1), self._icon("check", TEXT_PRIMARY))
         else:
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.setPen(QColor(ZINC_500))
-            painter.drawRoundedRect(box, 3, 3)
+            painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRoundedRect(QRectF(rect), 10, 10)
 
-        # Chip / meta on the right
-        right = rect.right() - 10
-        chip = index.data(ROLE_CHIP)
-        if chip and enabled:
-            text, status = chip
-            fg, rgb = CHIP_TONES.get(status, CHIP_TONES["zinc"])
-            cr = self.chip_rect(rect, index)
-            r, g, b = (int(x) for x in rgb.split(","))
-            painter.setBrush(QColor(r, g, b, 45))
-            painter.setPen(QColor(r, g, b, 120))
-            painter.drawRoundedRect(cr, 10, 10)
-            x = cr.left() + 9
-            icon = {STATUS_OK: "check", STATUS_PINNED: "pin", STATUS_MISSING: "triangle-alert"}.get(status)
-            if icon:
-                painter.drawPixmap(QRect(x, cr.center().y() - 5, 11, 11), self._icon(icon, fg))
-                x += 14
-            painter.setPen(QColor(fg))
-            painter.setFont(_font(12, QFont.Weight.DemiBold))
-            painter.drawText(QRect(x, cr.top(), cr.right() - x - 6, cr.height()),
-                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
-            right = cr.left() - 8
-        elif index.data(ROLE_META):
-            meta = index.data(ROLE_META)
-            painter.setFont(_font(FS_META))
+        ring = QRect(rect.left() + 10, rect.center().y() - 15, 30, 30)
+        _paint_ring(painter, ring, data.get("behind", 0), data.get("total", 0))
+
+        x = ring.right() + 12
+        width = rect.right() - x - 10
+        painter.setFont(_font(FS_META, QFont.Weight.DemiBold))
+        painter.setPen(QColor(TEXT_PRIMARY))
+        name = painter.fontMetrics().elidedText(data.get("name", ""), Qt.TextElideMode.ElideMiddle, width)
+        painter.drawText(QRect(x, rect.top() + 9, width, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, name)
+        painter.setFont(_font(FS_SMALL))
+        sub = data.get("sub", "")
+        if data.get("selected"):
+            painter.setPen(QColor(ACCENT))
+            sub = "Selected in scene · " + sub
+        else:
             painter.setPen(QColor(TEXT_LABEL))
-            w = painter.fontMetrics().horizontalAdvance(meta)
-            painter.drawText(QRect(right - w, rect.top(), w, rect.height()),
-                             Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, meta)
-            right -= w + 8
-
-        # Name
-        font = _font(FS_BODY, QFont.Weight.DemiBold if selected else QFont.Weight.Normal)
-        font.setStrikeOut(not enabled)
-        painter.setFont(font)
-        painter.setPen(QColor(ZINC_500) if not enabled else QColor(BLUE_400) if selected else QColor("#e4e4e7"))
-        name_rect = QRect(box.right() + 10, rect.top(), max(0, right - box.right() - 10), rect.height())
-        text = painter.fontMetrics().elidedText(index.data(Qt.ItemDataRole.DisplayRole) or "",
-                                                Qt.TextElideMode.ElideRight, name_rect.width())
-        painter.drawText(name_rect, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+        sub = painter.fontMetrics().elidedText(sub, Qt.TextElideMode.ElideRight, width)
+        painter.drawText(QRect(x, rect.top() + 28, width, 16), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sub)
         painter.restore()
 
     def sizeHint(self, option, index) -> QSize:
-        return QSize(0, 36)
+        return QSize(0, 56)
 
 
 # ---------------------------------------------------------------------------
-# Start page pieces
+# Version timeline
 # ---------------------------------------------------------------------------
 
-class _SourceCard(QFrame):
-    """Big clickable card: icon, title, one line under it."""
+class _Timeline(QWidget):
+    """
+    v006 · v007 · v008 · v010 on a line: the scene's version (white ring), the target (blue, glowing),
+    the line filled up to the target. A click on a version picks it, when *pickable* allows.
+    """
 
-    def __init__(self, icon: str, title: str, sub: str, on_click: Callable[[], None]) -> None:
+    def __init__(self, on_pick: Callable[[str], None]) -> None:
         super().__init__()
-        self.setObjectName("SourceCard")
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setStyleSheet(STYLE_CARD)
-        self.setMinimumHeight(104)
-        self._on_click = on_click
-        lay = QVBoxLayout(self)
-        lay.setContentsMargins(16, 14, 16, 14)
-        lay.setSpacing(4)
-        self._icon = QLabel()
-        self._icon.setPixmap(_lucide_pixmap(icon, 22, TEXT_LABEL))
-        lay.addWidget(self._icon)
-        lay.addSpacing(6)
-        self._title = QLabel(title)
-        self._title.setStyleSheet(_text("name"))
-        lay.addWidget(self._title)
-        self._sub = QLabel(sub)
-        self._sub.setStyleSheet(_text("meta"))
-        self._sub.setWordWrap(True)
-        lay.addWidget(self._sub)
-        # What a click will do, in the accent colour (Latest publish only)
-        self._action = QLabel("")
-        self._action.setStyleSheet(_text("meta", BLUE_400))
-        self._action.setWordWrap(True)
-        self._action.setVisible(False)
-        lay.addWidget(self._action)
-        lay.addStretch()
-        self._icon_name = icon
-        self._usable = True
+        self._versions: list[str] = []
+        self._scene = ""
+        self._target = ""
+        self._latest = ""
+        self._pickable: set[str] = set()
+        self._on_pick = on_pick
+        self.setFixedHeight(58)
+        self.setMouseTracking(True)
 
-    def set_state(self, sub: str, usable: bool = True, primary: bool = False, action: str = "") -> None:
-        self._sub.setText(sub)
-        self._action.setText(action)
-        self._action.setVisible(bool(action))
-        self._usable = usable
-        self.setProperty("primary", "true" if primary and usable else "false")
-        self.setProperty("enabled_card", "true" if usable else "false")
-        self._icon.setPixmap(_lucide_pixmap(self._icon_name, 22, BLUE_400 if primary and usable else TEXT_LABEL))
-        self.setCursor(Qt.CursorShape.PointingHandCursor if usable else Qt.CursorShape.ArrowCursor)
-        self.style().unpolish(self)
-        self.style().polish(self)
+    def set_state(self, versions: list[str], scene: str, target: str, pickable: set[str]) -> None:
+        self._versions = sorted(set(versions), key=version_number)
+        self._latest = self._versions[-1] if self._versions else ""
+        self._scene, self._target, self._pickable = scene, target, pickable
+        self.update()
+
+    def _points(self) -> list[tuple[str, int]]:
+        n = len(self._versions)
+        if n == 0:
+            return []
+        left, right = 40, self.width() - 40
+        if n == 1:
+            return [(self._versions[0], left)]
+        return [(v, int(left + (right - left) * i / (n - 1))) for i, v in enumerate(self._versions)]
+
+    def paintEvent(self, event) -> None:
+        points = self._points()
+        if not points:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        y = 16
+        painter.setPen(QPen(QColor("#2c2c33"), 2))
+        painter.drawLine(points[0][1], y, points[-1][1], y)
+        target_x = next((x for v, x in points if v == self._target), None)
+        if target_x is not None:
+            painter.setPen(QPen(QColor(ACCENT), 2))
+            painter.drawLine(points[0][1], y, target_x, y)
+        for v, x in points:
+            done = target_x is not None and x <= target_x
+            if v == self._target:
+                painter.setPen(Qt.PenStyle.NoPen)
+                glow = QColor(ACCENT)
+                glow.setAlphaF(0.25)
+                painter.setBrush(glow)
+                painter.drawEllipse(QPoint(x, y), 11, 11)
+            painter.setPen(QPen(QColor(TEXT_PRIMARY if v == self._scene else (ACCENT if done else "#3a3a44")), 2))
+            painter.setBrush(QColor(ACCENT if done and v != self._scene else BG_APP))
+            painter.drawEllipse(QPoint(x, y), 6, 6)
+            label = v + ("  · scene" if v == self._scene else "") + ("  · latest" if v == self._latest and v != self._scene else "")
+            painter.setFont(_font(FS_SMALL, QFont.Weight.DemiBold if v == self._target else QFont.Weight.Normal))
+            painter.setPen(QColor(TEXT_PRIMARY if v == self._target else TEXT_LABEL))
+            w = painter.fontMetrics().horizontalAdvance(label)
+            lx = min(max(x - w // 2, 0), self.width() - w)
+            painter.drawText(QRect(lx, y + 14, w, 18), Qt.AlignmentFlag.AlignCenter, label)
+        painter.end()
+
+    def _version_at(self, x: int) -> str | None:
+        best = min(self._points(), key=lambda p: abs(p[1] - x), default=None)
+        return best[0] if best is not None and abs(best[1] - x) < 30 else None
+
+    def mouseMoveEvent(self, event) -> None:
+        v = self._version_at(int(event.position().x()))
+        self.setCursor(Qt.CursorShape.PointingHandCursor if v in self._pickable else Qt.CursorShape.ArrowCursor)
+        if v and v not in self._pickable:
+            self.setToolTip(f"{v} is what the scene has; a texture folder builds only its own version")
+        elif v:
+            self.setToolTip(f"Move the materials to {v}")
+        else:
+            self.setToolTip("")
 
     def mouseReleaseEvent(self, event) -> None:
-        if self._usable and event.button() == Qt.MouseButton.LeftButton:
-            self._on_click()
-        super().mouseReleaseEvent(event)
+        v = self._version_at(int(event.position().x()))
+        if v and v in self._pickable:
+            self._on_pick(v)
 
 
-class _AssetRow(QWidget):
-    """Library in the scene: [tick if it has a newer publish] icon name · meta ....... chip  >"""
+# ---------------------------------------------------------------------------
+# Material tiles
+# ---------------------------------------------------------------------------
+ROLE_TILE = Qt.ItemDataRole.UserRole + 1
+_TILE = QSize(176, 136)
 
-    def __init__(self, asset: dict, on_open: Callable[[str], None], on_tick: Callable[[], None]) -> None:
-        super().__init__()
-        self.key = asset["key"]
-        self.default_tick = asset["status"] == STATUS_UPDATE
-        self.setObjectName("AssetRow")
-        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setToolTip(asset.get("tooltip", ""))
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 6, 10, 6)
-        lay.setSpacing(10)
-        # Only assets with something to build get a tick; the others keep its room so icons line up.
-        self.can_update = asset["status"] in (STATUS_UPDATE, STATUS_NEW)
-        self.tick = QCheckBox()
-        self.tick.setStyleSheet(STYLE_CHECKBOX)
-        self.tick.setChecked(asset["status"] == STATUS_UPDATE)
-        self.tick.setToolTip("Update with the others")
-        self.tick.toggled.connect(lambda _on: on_tick())
-        policy = self.tick.sizePolicy()
-        policy.setRetainSizeWhenHidden(True)
-        self.tick.setSizePolicy(policy)
-        self.tick.setVisible(self.can_update)
-        lay.addWidget(self.tick)
-        icon = QLabel()
-        icon.setPixmap(_lucide_pixmap(ASSET_ICONS.get(asset.get("kind", ""), "box"), 18, TEXT_LABEL))
-        lay.addWidget(icon)
-        text = QVBoxLayout()
-        text.setSpacing(0)
-        name = QLabel(asset["name"] + (f"   <span style='color:{BLUE_400}; font-size:{FS_META}px'>selected branch</span>"
-                                       if asset.get("branch") else ""))
-        name.setStyleSheet(_text("name"))
-        text.addWidget(name)
-        self._meta_text = asset.get("meta", "")
-        meta = QLabel(self._meta_text)
-        meta.setStyleSheet(_text("meta"))
-        text.addWidget(meta)
-        self._meta = meta
-        lay.addLayout(text, stretch=1)
-        chip = QLabel(asset["chip"])
-        chip.setStyleSheet(_chip_style(asset["status"]))
-        chip.setToolTip(CHIP_HELP.get(asset["status"], ""))
-        chip.setFixedHeight(22)
-        lay.addWidget(chip, alignment=Qt.AlignmentFlag.AlignVCenter)
-        arrow = QLabel()
-        arrow.setPixmap(_lucide_pixmap("chevron-right", 14, TEXT_META))
-        lay.addWidget(arrow)
-        self._on_open = on_open
 
-    def set_scene_selected(self, on: bool) -> None:
-        """Selected in /stage while linked: highlighted and said so."""
-        self.setStyleSheet("QWidget#AssetRow { background: rgba(37, 99, 235, 0.14); border-radius: 6px; }" if on else "")
-        self._meta.setText(self._meta_text + ("  ·  selected in scene" if on else ""))
+class _TileDelegate(QStyledItemDelegate):
+    """A tile: texture thumbnail, status edge, name, status line; a check to leave it out."""
 
-    def mouseReleaseEvent(self, event) -> None:
-        if event.button() == Qt.MouseButton.LeftButton:
-            self._on_open(self.key)
-        super().mouseReleaseEvent(event)
+    def __init__(self, thumbs: _Thumbnails, parent=None) -> None:
+        super().__init__(parent)
+        self._thumbs = thumbs
+
+    @staticmethod
+    def check_rect(rect: QRect) -> QRect:
+        return QRect(rect.left() + 12, rect.top() + 12, 18, 18)
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        t = index.data(ROLE_TILE) or {}
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, True)
+        rect = option.rect.adjusted(4, 4, -4, -4)
+        selected = bool(option.state & option.state.__class__.State_Selected)
+        enabled = t.get("enabled", True)
+        color = QColor(STATUS_COLORS.get(t.get("status"), TEXT_LABEL))
+
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(rect), 10, 10)
+        painter.fillPath(path, QColor(BG_RAISED))
+        painter.setClipPath(path)
+
+        thumb_rect = QRect(rect.left(), rect.top(), rect.width(), 84)
+        pm = self._thumbs.get(t.get("thumb", ""))
+        if pm is not None and not pm.isNull():
+            scaled = pm.scaled(thumb_rect.size() * 2, Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                               Qt.TransformationMode.SmoothTransformation)
+            src = QRect((scaled.width() - thumb_rect.width() * 2) // 2, (scaled.height() - thumb_rect.height() * 2) // 2,
+                        thumb_rect.width() * 2, thumb_rect.height() * 2)
+            painter.drawPixmap(thumb_rect, scaled, src)
+        else:
+            painter.fillRect(thumb_rect, QColor("#1f1f26"))
+            painter.drawPixmap(QRect(thumb_rect.center().x() - 10, thumb_rect.center().y() - 10, 20, 20),
+                               _lucide_pixmap("image", 20, "#3a3a44"))
+        painter.fillRect(QRect(rect.left(), rect.top(), 3, rect.height()), color)
+        painter.setClipping(False)
+
+        # Leave-out check
+        box = self.check_rect(rect)
+        if enabled:
+            painter.setPen(Qt.PenStyle.NoPen)
+        else:
+            painter.setPen(QPen(QColor(255, 255, 255, 200), 1.5))
+        painter.setBrush(QColor(ACCENT_FILL) if enabled else QColor(0, 0, 0, 120))
+        painter.drawRoundedRect(QRectF(box), 5, 5)
+        if enabled:
+            painter.drawPixmap(box.adjusted(3, 3, -3, -3), _lucide_pixmap("check", 12, "#ffffff"))
+        if t.get("pinned"):
+            pin = QRect(rect.right() - 26, rect.top() + 10, 18, 18)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QColor(0, 0, 0, 140))
+            painter.drawEllipse(pin)
+            painter.drawPixmap(pin.adjusted(3, 3, -3, -3), _lucide_pixmap("pin", 12, STATUS_COLORS[STATUS_PINNED]))
+
+        text_left = rect.left() + 12
+        text_w = rect.width() - 22
+        painter.setFont(_font(FS_META, QFont.Weight.DemiBold))
+        painter.setPen(QColor(TEXT_PRIMARY if enabled else TEXT_META))
+        name = painter.fontMetrics().elidedText(t.get("name", ""), Qt.TextElideMode.ElideMiddle, text_w)
+        painter.drawText(QRect(text_left, rect.top() + 90, text_w, 18), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, name)
+        painter.setFont(_font(FS_SMALL, QFont.Weight.DemiBold))
+        painter.setPen(color if enabled else QColor(TEXT_META))
+        painter.drawText(QRect(text_left, rect.top() + 108, text_w, 16), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
+                         t.get("label", "") if enabled else "Left out")
+
+        border = QColor(ACCENT) if selected else QColor(LINE)
+        painter.setPen(QPen(border, 1.5 if selected else 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawRoundedRect(QRectF(rect).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10)
+        if not enabled:
+            painter.fillPath(path, QColor(17, 17, 19, 120))
+        painter.restore()
+
+    def sizeHint(self, option, index) -> QSize:
+        return _TILE
 
 
 # ---------------------------------------------------------------------------
@@ -788,295 +759,191 @@ class AutoMaterialUI(QWidget):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("AutoMaterialWindow")
-        self.setWindowTitle("Auto Material Builder")
-        self.setMinimumWidth(760)
-        self.setMinimumHeight(600)
-        self.resize(1040, 860)
+        self.setWindowTitle("Auto Material")
+        self.setMinimumSize(900, 620)
+        self.resize(1180, 800)
         self.setAcceptDrops(True)
         self.setStyleSheet(STYLE_WINDOW)
 
         self._callbacks: dict[str, Callable[..., Any]] = {}
-        self._mode = "folder"                  # "folder" | "usd"
+        self._mode = "empty"                   # "empty" | "folder" | "usd"
         self._plans: list[MaterialPlan] = []
         self._groups_by_version: dict[str, dict] = {}   # usd: version -> {name: MaterialGroup}
         self._geometry_materials: frozenset[str] = frozenset()
         self._unmatched_data: list[str] = []
         self._source_path = ""
         self._libraries: dict[str, dict[str, str]] = {}  # folder: library -> {material: version}
-        self._library_why = "new"              # folder: how the library was picked (pick_library)
-        self._extra_ticks: dict[str, QCheckBox] = {}     # folder: other libraries to update too
-        self._asset_rows: list[_AssetRow] = []
-        self._scene_selection: list[str] = []  # Material Library paths selected in /stage
+        self._library_why = "new"
+        self._folder_versions: dict[str, str] = {}
+        self._following = False
+        self._extra_ticks: dict[str, QCheckBox] = {}
+        self._assets: list[dict] = []
+        self._current_key = ""
+        self._scene_selection: list[str] = []
         self._path_history = _load_path_history()
         self._prefs = _load_prefs()
-        self._load_pending = False
-        self._link_toggles: list[_LinkToggle] = []
-        self._folder_versions: dict[str, str] = {}      # folder: material -> version in the folder
-        self._following = False
+        self._recursive = bool(self._prefs.get("recursive", True))
+        self._usd_meta = ""
+        self._thumbs = _Thumbnails(lambda: self._tiles.viewport().update())
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 18, 20, 18)
-        root.setSpacing(10)
-
-        self._pages = QStackedWidget()
-        self._pages.addWidget(self._build_start_page())
-        self._pages.addWidget(self._build_manager_page())
-        root.addWidget(self._pages, stretch=1)
-
-        self._message_label = QLabel("")
-        self._message_label.setWordWrap(True)
-        self._message_label.setVisible(False)
-        root.addWidget(self._message_label)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+        root.addWidget(self._build_top_bar())
+        root.addWidget(_divider())
+        body = QSplitter(Qt.Orientation.Horizontal)
+        body.setHandleWidth(1)
+        body.setStyleSheet(f"QSplitter::handle {{ background: {LINE}; }}")
+        body.addWidget(self._build_sidebar())
+        body.addWidget(self._build_main())
+        body.setStretchFactor(1, 1)
+        body.setSizes([290, 890])
+        root.addWidget(body, stretch=1)
+        root.addWidget(_divider())
+        root.addWidget(self._build_action_bar())
 
         self._loading = _LoadingOverlay(self)
+        self._refresh_main()
 
     # =====================================================================
     # Build
     # =====================================================================
 
-    def _build_start_page(self) -> QWidget:
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 0, 0, 0)
+    def _build_top_bar(self) -> QWidget:
+        bar = QWidget()
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(16, 10, 16, 10)
         lay.setSpacing(10)
+        self._asset_icon = QLabel()
+        self._asset_icon.setPixmap(_lucide_pixmap("package", 18, ACCENT))
+        lay.addWidget(self._asset_icon)
+        self._asset_name = _label("Auto Material", "name")
+        self._asset_name.setStyleSheet(_text("body") + " font-weight: 600;")
+        lay.addWidget(self._asset_name)
 
-        title = QLabel("Auto Material Builder")
-        title.setStyleSheet(_text("title"))
-        lay.addWidget(title)
-        sub = QLabel("Karma materials from a texture folder or a Substance Painter USD export.")
-        sub.setStyleSheet(_text("meta"))
-        lay.addWidget(sub)
-        lay.addSpacing(10)
+        self._publish_pill = QPushButton("")
+        self._publish_pill.setStyleSheet(STYLE_PILL)
+        self._publish_pill.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._publish_pill.clicked.connect(self._on_publish_pill)
+        lay.addWidget(self._publish_pill)
+        self._banner_text = ""
+        lay.addStretch(1)
 
-        question = QLabel("Where are the textures?")
-        question.setStyleSheet(_text("heading"))
-        lay.addWidget(question)
+        self._link_pill = QPushButton("")
+        self._link_pill.setCheckable(True)
+        self._link_pill.setStyleSheet(STYLE_PILL)
+        self._link_pill.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._link_pill.setToolTip("While on, selecting Material Library nodes in /stage picks them here")
+        self._link_pill.setChecked(self.linked())
+        self._link_pill.toggled.connect(self._set_linked)
+        lay.addWidget(self._link_pill)
+        self._restyle_link()
 
-        cards = QHBoxLayout()
-        cards.setSpacing(10)
-        self._card_publish = _SourceCard("package", "Build from latest publish", "Looking for the publish…",
-                                         lambda: self._fire("latest_publish"))
-        self._card_publish.setToolTip("Opens a review of the publish found from $HIP: nothing changes until Create")
-        self._card_folder = _SourceCard("folder", "Texture folder", "Pick a folder of textures",
-                                        self._pick_folder)
-        self._card_usd = _SourceCard("file-box", "Painter USD", "Pick a Substance Painter .usd export",
-                                     self._pick_usd)
-        for card in (self._card_publish, self._card_folder, self._card_usd):
-            cards.addWidget(card, stretch=1)
-        lay.addLayout(cards)
+        self._open_btn = QToolButton()
+        self._open_btn.setText("  Open")
+        self._open_btn.setIcon(_lucide_icon("plus", 14, TEXT_PRIMARY))
+        self._open_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._open_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._open_btn.setStyleSheet(STYLE_PILL)
+        self._open_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._open_menu = QMenu(self)
+        self._open_menu.setStyleSheet(STYLE_MENU)
+        self._open_menu.aboutToShow.connect(self._fill_open_menu)
+        self._open_btn.setMenu(self._open_menu)
+        lay.addWidget(self._open_btn)
+        return bar
 
-        recent_row = QHBoxLayout()
-        recent_row.setSpacing(8)
-        recent_label = QLabel("Recent")
-        recent_label.setStyleSheet(_text("meta"))
-        recent_row.addWidget(recent_label)
-        self._recent_combo = QComboBox()
-        self._recent_combo.setEditable(True)
-        self._recent_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._recent_combo.lineEdit().setPlaceholderText("Paste a folder or .usd path and press Enter")
-        self._recent_combo.setStyleSheet(STYLE_COMBO)
-        self._recent_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self._refill_recent()
-        # Enter can fire returnPressed and activated (activated only for a history entry): one load.
-        self._recent_combo.lineEdit().returnPressed.connect(self._request_open_recent)
-        self._recent_combo.activated.connect(lambda _i: self._request_open_recent())
-        recent_row.addWidget(self._recent_combo, stretch=1)
-        lay.addLayout(recent_row)
-        drop = QLabel("Or drop a folder or a .usd file anywhere on this window.")
-        drop.setStyleSheet(_text("meta"))
-        lay.addWidget(drop)
-
-        lay.addSpacing(14)
-        self._assets_header = QHBoxLayout()
-        self._assets_label = _section_label("IN THIS SCENE")
-        self._assets_header.addWidget(self._assets_label)
-        self._assets_header.addStretch()
-        self._assets_hint = QLabel("")
-        self._assets_hint.setStyleSheet(_text("meta"))
-        self._assets_header.addWidget(self._assets_hint)
-        self._assets_header.addSpacing(8)
-        self._assets_header.addWidget(self._new_link_toggle())
-        lay.addLayout(self._assets_header)
-
-        self._asset_list = QListWidget()
-        self._asset_list.setStyleSheet(STYLE_LIST)
-        self._asset_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
-        self._asset_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        lay.addWidget(self._asset_list, stretch=1)
-        self._assets_empty = QLabel("Nothing built from a publish in this scene yet.")
-        self._assets_empty.setStyleSheet(_text("meta") + " padding: 8px 2px;")
-        lay.addWidget(self._assets_empty)
-
-        foot = QHBoxLayout()
-        self._assets_foot_hint = QLabel("")
-        self._assets_foot_hint.setStyleSheet(_text("meta"))
-        foot.addWidget(self._assets_foot_hint)
-        foot.addStretch()
-        self._update_assets_btn = QPushButton("Update")
-        self._update_assets_btn.setStyleSheet(STYLE_BTN_PRIMARY)
+    def _build_sidebar(self) -> QWidget:
+        side = QWidget()
+        side.setMinimumWidth(240)
+        lay = QVBoxLayout(side)
+        lay.setContentsMargins(10, 14, 10, 12)
+        lay.setSpacing(8)
+        head = QHBoxLayout()
+        head.setContentsMargins(6, 0, 4, 0)
+        head.addWidget(_label("IN THIS SCENE", "caps"))
+        head.addStretch(1)
+        self._update_assets_btn = QPushButton("")
+        self._update_assets_btn.setStyleSheet(STYLE_LINK)
+        self._update_assets_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._update_assets_btn.clicked.connect(lambda: self._fire("update_assets", self.ticked_assets()))
-        foot.addWidget(self._update_assets_btn)
-        lay.addLayout(foot)
-        return page
+        head.addWidget(self._update_assets_btn)
+        lay.addLayout(head)
 
-    def _build_manager_page(self) -> QWidget:
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(10)
+        self._library_list = QListWidget()
+        self._library_list.setStyleSheet(STYLE_LIST)
+        self._library_list.setItemDelegate(_LibraryDelegate(self._library_list))
+        self._library_list.setMouseTracking(True)
+        self._library_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        self._library_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._library_list.itemClicked.connect(lambda item: self._fire("open_asset", item.data(ROLE_DATA)["key"]))
+        lay.addWidget(self._library_list, stretch=1)
+        self._library_empty = _label("Nothing built from a publish here yet.", "meta")
+        self._library_empty.setWordWrap(True)
+        self._library_empty.setContentsMargins(6, 0, 6, 0)
+        lay.addWidget(self._library_empty)
+        lay.addStretch(0)
+        return side
 
-        # New export banner
-        self._banner = QFrame()
-        self._banner.setObjectName("Banner")
-        self._banner.setStyleSheet(STYLE_BANNER)
-        b_lay = QHBoxLayout(self._banner)
-        b_lay.setContentsMargins(12, 6, 8, 6)
-        spark = QLabel()
-        spark.setPixmap(_lucide_pixmap("sparkles", 16, BLUE_400))
-        b_lay.addWidget(spark)
-        self._banner_label = QLabel("")
-        self._banner_label.setStyleSheet(_text("body", BLUE_400))
-        b_lay.addWidget(self._banner_label, stretch=1)
-        self._banner_btn = QPushButton("Open version manager")
-        self._banner_btn.setStyleSheet(STYLE_BTN)
-        self._banner_btn.clicked.connect(lambda: self._fire("banner"))
-        b_lay.addWidget(self._banner_btn)
-        self._banner.setVisible(False)
-        lay.addWidget(self._banner)
+    def _build_main(self) -> QWidget:
+        self._main_stack = QStackedWidget()
 
-        # Source bar
-        bar = QFrame()
-        bar.setObjectName("SourceBar")
-        bar.setStyleSheet(STYLE_SOURCE_BAR)
-        bar_lay = QHBoxLayout(bar)
-        bar_lay.setContentsMargins(12, 6, 6, 6)
-        bar_lay.setSpacing(10)
-        self._source_icon = QLabel()
-        bar_lay.addWidget(self._source_icon)
-        self._source_name = QLabel("")
-        self._source_name.setStyleSheet(_text("heading"))
-        bar_lay.addWidget(self._source_name)
-        self._source_meta = QLabel("")
-        self._source_meta.setStyleSheet(_text("meta"))
-        self._source_meta.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        bar_lay.addWidget(self._source_meta, stretch=1)
+        # Empty: nothing opened
+        empty = QWidget()
+        e_lay = QVBoxLayout(empty)
+        e_lay.addStretch(1)
+        icon = QLabel()
+        icon.setPixmap(_lucide_pixmap("package", 40, "#3a3a44"))
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        e_lay.addWidget(icon)
+        self._empty_title = _label("Drop a texture folder or a Painter .usd here", "title")
+        self._empty_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        e_lay.addWidget(self._empty_title)
+        self._empty_sub = _label("Or pick a library on the left, or Open › Texture folder / Painter USD.", "meta")
+        self._empty_sub.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        e_lay.addWidget(self._empty_sub)
+        e_lay.addStretch(2)
+        self._main_stack.addWidget(empty)
+
+        # Content
+        content = QWidget()
+        lay = QVBoxLayout(content)
+        lay.setContentsMargins(22, 18, 22, 8)
+        lay.setSpacing(12)
+
+        head = QHBoxLayout()
+        head.setSpacing(12)
+        titles = QVBoxLayout()
+        titles.setSpacing(4)
+        self._headline = _label("", "display")
+        titles.addWidget(self._headline)
+        self._subline = _label("", "meta")
+        self._subline.setTextFormat(Qt.TextFormat.RichText)
+        self._subline.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._subline.linkActivated.connect(self._on_subline_link)
+        titles.addWidget(self._subline)
+        head.addLayout(titles, stretch=1)
         self._unmatched_btn = QPushButton("")
-        self._unmatched_btn.setStyleSheet(
-            f"QPushButton {{ {_chip_style(STATUS_PINNED)} }} QPushButton:hover {{ background: rgba(245,158,11,0.28); }}")
+        self._unmatched_btn.setStyleSheet(f"QPushButton {{ {_chip_style(STATUS_PINNED)} }}")
         self._unmatched_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._unmatched_btn.clicked.connect(self._on_unmatched_clicked)
-        self._unmatched_btn.setVisible(False)
-        bar_lay.addWidget(self._unmatched_btn)
-        self._recursive_cb = QCheckBox("Include subfolders")
-        self._recursive_cb.setChecked(True)
-        self._recursive_cb.setStyleSheet(STYLE_CHECKBOX)
-        self._recursive_cb.toggled.connect(lambda _on: self._fire("reload"))
-        bar_lay.addWidget(self._recursive_cb)
-        self._folder_btn = _icon_button("folder-open", "Open the source folder in Explorer")
-        self._folder_btn.clicked.connect(self._open_source_folder)
-        bar_lay.addWidget(self._folder_btn)
-        self._reload_btn = _icon_button("rotate-cw", "Reload from disk")
-        self._reload_btn.clicked.connect(lambda: self._fire("reload"))
-        bar_lay.addWidget(self._reload_btn)
-        self._change_btn = QPushButton("Change")
-        self._change_btn.setIcon(_lucide_icon("arrow-left-right", 14, BLUE_400))
-        self._change_btn.setStyleSheet(STYLE_BTN_LINK + f"QPushButton {{ color: {BLUE_400}; }}")
-        self._change_btn.setToolTip("Pick another source")
-        self._change_btn.clicked.connect(lambda: self._fire("change"))
-        bar_lay.addWidget(self._change_btn)
-        lay.addWidget(bar)
+        head.addWidget(self._unmatched_btn, alignment=Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(head)
 
-        # Body: materials | maps
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setHandleWidth(14)
-        splitter.setStyleSheet("QSplitter::handle { background: transparent; }")
-
-        left = QWidget()
-        l_lay = QVBoxLayout(left)
-        l_lay.setContentsMargins(0, 0, 0, 0)
-        l_lay.setSpacing(6)
-        l_head = QHBoxLayout()
-        self._materials_label = _section_label("MATERIALS")
-        l_head.addWidget(self._materials_label)
-        l_head.addStretch()
-        self._latest_btn = QPushButton("All to latest")
-        self._latest_btn.setStyleSheet(STYLE_BTN_LINK)
-        self._latest_btn.setToolTip("Every material that is not pinned to its newest version")
-        self._latest_btn.clicked.connect(self._all_to_latest)
-        l_head.addWidget(self._latest_btn)
-        l_lay.addLayout(l_head)
-
-        self._material_list = QListWidget()
-        self._material_list.setStyleSheet(STYLE_LIST)
-        self._material_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self._material_list.setMouseTracking(True)
-        self._material_delegate = _MaterialDelegate(self._material_list)
-        self._material_list.setItemDelegate(self._material_delegate)
-        self._material_list.currentRowChanged.connect(self._show_maps)
-        self._material_list.viewport().installEventFilter(self)
-        self._material_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._material_list.customContextMenuRequested.connect(self._material_menu)
-        l_lay.addWidget(self._material_list)
-
-        self._legend = QLabel("")
-        self._legend.setTextFormat(Qt.TextFormat.RichText)
-        self._legend.setWordWrap(True)
-        l_lay.addWidget(self._legend)
-        splitter.addWidget(left)
-
-        right = QWidget()
-        r_lay = QVBoxLayout(right)
-        r_lay.setContentsMargins(0, 0, 0, 0)
-        r_lay.setSpacing(6)
-        self._maps_label = _section_label("MAPS")
-        r_lay.addWidget(self._maps_label)
-        self._slot_table = QTableWidget(0, 3)
-        self._slot_table.setHorizontalHeaderLabels(["Map", "File", "Color space"])
-        self._slot_table.setStyleSheet(STYLE_TABLE)
-        header = self._slot_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self._slot_table.verticalHeader().setVisible(False)
-        self._slot_table.verticalHeader().setDefaultSectionSize(32)
-        self._slot_table.setShowGrid(False)
-        self._slot_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self._slot_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self._slot_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._slot_table.customContextMenuRequested.connect(self._map_menu)
-        r_lay.addWidget(self._slot_table)
-        self._maps_note = QLabel("")
-        self._maps_note.setStyleSheet(_text("meta", CHIP_TONES[STATUS_MISSING][0]))
-        self._maps_note.setWordWrap(True)
-        r_lay.addWidget(self._maps_note)
-        splitter.addWidget(right)
-        splitter.setSizes([360, 660])
-        lay.addWidget(splitter, stretch=1)
-
-        # Texture folder: where Create goes. A line ("Updating in X · change"); the box only on change,
-        # or when it follows the scene selection. A name not in the box makes a new library.
-        self._target = QFrame()
-        self._target.setObjectName("TargetBar")
-        self._target.setStyleSheet(STYLE_SOURCE_BAR.replace("SourceBar", "TargetBar"))
+        # Texture folder target: which library, changeable; other libraries holding the same materials
+        self._target = QWidget()
         t_lay = QVBoxLayout(self._target)
-        t_lay.setContentsMargins(12, 8, 8, 8)
+        t_lay.setContentsMargins(0, 0, 0, 0)
         t_lay.setSpacing(6)
         t_row = QHBoxLayout()
         t_row.setSpacing(8)
-        self._target_line = QLabel("")
-        self._target_line.setTextFormat(Qt.TextFormat.RichText)
-        self._target_line.setStyleSheet(_text("body", TEXT_LABEL))
-        self._target_line.linkActivated.connect(lambda _l: self._show_library_box())
-        t_row.addWidget(self._target_line)
-        self._library_label = QLabel("Into")
-        self._library_label.setStyleSheet(_text("body", TEXT_LABEL))
+        self._library_label = _label("Into", "meta")
         t_row.addWidget(self._library_label)
         self._library_combo = QComboBox()
         self._library_combo.setEditable(True)
         self._library_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self._library_combo.setStyleSheet(STYLE_COMBO)
-        self._library_combo.setMinimumWidth(260)
+        self._library_combo.setMinimumWidth(300)
         self._library_combo.setToolTip("Material Library in /stage to create or update the materials in. "
                                        "Type a new name to make a new library.")
         self._library_combo.currentTextChanged.connect(lambda _t: self._on_library_changed())
@@ -1085,47 +952,114 @@ class AutoMaterialUI(QWidget):
         self._from_selection.setStyleSheet(_chip_style(STATUS_UPDATE))
         t_row.addWidget(self._from_selection)
         t_row.addStretch(1)
-        t_row.addWidget(self._new_link_toggle())
         t_lay.addLayout(t_row)
-        self._dup_line = QLabel("")
+        self._dup_line = _label("", "meta")
         self._dup_line.setTextFormat(Qt.TextFormat.RichText)
-        self._dup_line.setStyleSheet(_text("meta"))
         self._dup_line.linkActivated.connect(lambda _l: self._extra_box.setVisible(not self._extra_box.isVisible()))
         t_lay.addWidget(self._dup_line)
         self._extra_box = QWidget()
         self._extra_lay = QVBoxLayout(self._extra_box)
         self._extra_lay.setContentsMargins(0, 0, 0, 0)
-        self._extra_lay.setSpacing(2)
+        self._extra_lay.setSpacing(4)
+        self._extra_box.setVisible(False)
         t_lay.addWidget(self._extra_box)
+        self._target.setVisible(False)
         lay.addWidget(self._target)
 
-        # Footer
-        divider = QFrame()
-        divider.setFixedHeight(1)
-        divider.setStyleSheet("background: rgba(39, 39, 42, 0.80);")
-        lay.addWidget(divider)
-        foot = QHBoxLayout()
-        foot.setSpacing(10)
+        self._timeline = _Timeline(self._pick_version)
+        lay.addWidget(self._timeline)
+
+        split = QSplitter(Qt.Orientation.Vertical)
+        split.setHandleWidth(12)
+        split.setStyleSheet("QSplitter::handle { background: transparent; }")
+        self._tiles = QListWidget()
+        self._tiles.setViewMode(QListView.ViewMode.IconMode)
+        self._tiles.setResizeMode(QListView.ResizeMode.Adjust)
+        self._tiles.setMovement(QListView.Movement.Static)
+        self._tiles.setUniformItemSizes(True)
+        self._tiles.setGridSize(_TILE)
+        self._tiles.setSpacing(0)
+        self._tiles.setStyleSheet(STYLE_LIST)
+        self._tiles.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._tiles.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._tile_delegate = _TileDelegate(self._thumbs, self._tiles)
+        self._tiles.setItemDelegate(self._tile_delegate)
+        self._tiles.currentRowChanged.connect(self._show_maps)
+        self._tiles.viewport().installEventFilter(self)
+        self._tiles.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._tiles.customContextMenuRequested.connect(self._material_menu)
+        split.addWidget(self._tiles)
+
+        maps = QWidget()
+        m_lay = QVBoxLayout(maps)
+        m_lay.setContentsMargins(0, 0, 0, 0)
+        m_lay.setSpacing(6)
+        m_head = QHBoxLayout()
+        self._maps_label = _label("MAPS", "caps")
+        m_head.addWidget(self._maps_label)
+        m_head.addStretch(1)
+        self._legend = _label("", "small")
+        self._legend.setTextFormat(Qt.TextFormat.RichText)
+        m_head.addWidget(self._legend)
+        m_lay.addLayout(m_head)
+        self._slot_table = QTableWidget(0, 3)
+        self._slot_table.setHorizontalHeaderLabels(["Map", "File", "Colour space"])
+        self._slot_table.setStyleSheet(STYLE_TABLE)
+        header = self._slot_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._slot_table.verticalHeader().setVisible(False)
+        self._slot_table.verticalHeader().setDefaultSectionSize(28)
+        self._slot_table.setShowGrid(False)
+        self._slot_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._slot_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._slot_table.customContextMenuRequested.connect(self._map_menu)
+        m_lay.addWidget(self._slot_table)
+        self._maps_note = _label("", "meta", STATUS_COLORS[STATUS_MISSING])
+        self._maps_note.setWordWrap(True)
+        m_lay.addWidget(self._maps_note)
+        split.addWidget(maps)
+        split.setStretchFactor(0, 3)
+        split.setStretchFactor(1, 1)
+        split.setSizes([420, 190])
+        lay.addWidget(split, stretch=1)
+
+        self._main_stack.addWidget(content)
+        return self._main_stack
+
+    def _build_action_bar(self) -> QWidget:
+        bar = QWidget()
+        bar.setStyleSheet("background: #141418;")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(18, 12, 16, 12)
+        lay.setSpacing(10)
+        self._message_label = _label("", "meta")
+        self._message_label.setWordWrap(True)
+        self._message_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        lay.addWidget(self._message_label, stretch=1)
+        self._undo_btn = QPushButton("  Undo")
+        self._undo_btn.setIcon(_lucide_icon("undo", 14, TEXT_LABEL))
+        self._undo_btn.setStyleSheet(STYLE_GHOST)
+        self._undo_btn.setToolTip("Takes back the last Create / Update (one step, like Ctrl+Z)")
+        self._undo_btn.clicked.connect(lambda: self._fire("undo"))
+        self._undo_btn.setVisible(False)
+        lay.addWidget(self._undo_btn)
         self._auto_assign_btn = QPushButton("Auto assign")
-        self._auto_assign_btn.setStyleSheet(STYLE_BTN_PRIMARY_EMERALD)
+        self._auto_assign_btn.setStyleSheet(STYLE_GHOST)
         self._auto_assign_btn.setToolTip(
             "Match prims named *_grp / *_Grp with M_char_* under /materials and create Assign Material LOPs. "
             "Select a LOP node first.")
         self._auto_assign_btn.clicked.connect(lambda: self._fire("auto_assign"))
-        foot.addWidget(self._auto_assign_btn)
-        foot.addStretch(1)
-        self._summary_label = QLabel("")
-        self._summary_label.setStyleSheet(_text("meta"))
-        self._summary_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self._summary_label.setWordWrap(True)
-        foot.addWidget(self._summary_label, stretch=2)
+        lay.addWidget(self._auto_assign_btn)
         self._create_btn = QPushButton("Create")
-        self._create_btn.setStyleSheet(STYLE_BTN_PRIMARY)
-        self._create_btn.setMinimumWidth(230)
+        self._create_btn.setStyleSheet(STYLE_PRIMARY)
+        self._create_btn.setMinimumWidth(200)
+        self._create_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._create_btn.clicked.connect(lambda: self._fire("create"))
-        foot.addWidget(self._create_btn)
-        lay.addLayout(foot)
-        return page
+        lay.addWidget(self._create_btn)
+        return bar
 
     # =====================================================================
     # Callbacks (controller)
@@ -1133,8 +1067,8 @@ class AutoMaterialUI(QWidget):
 
     def on(self, event: str, callback: Callable[..., Any]) -> None:
         """
-        latest_publish(), open_path(path), open_asset(key), update_assets(keys), change(), reload(),
-        create(), auto_assign(), banner(), activated()
+        latest_publish(), open_path(path), open_asset(key), update_assets(keys), reload(),
+        create(), auto_assign(), banner(), activated(), undo()
         """
         self._callbacks[event] = callback
 
@@ -1144,82 +1078,79 @@ class AutoMaterialUI(QWidget):
             cb(*args)
 
     # =====================================================================
-    # Start page
+    # Top bar
     # =====================================================================
 
-    def show_start(self, latest: str | None, assets: list[dict], action: str = "") -> None:
-        """
-        latest: where the publish found from $HIP is (e.g. "char_Helen · textures v008 · from $HIP") or None.
-        action: what building from it will do ("Update 2 libraries and create 1 new material").
-        assets: dicts with key (library path), name, kind, meta, chip, status, tooltip.
-        """
-        self._card_publish.set_state(latest or "No publish next to this .hip", usable=bool(latest), primary=True,
-                                     action=action if latest else "")
-        self._asset_list.clear()
-        self._asset_rows = []
-        for asset in assets:
-            row = _AssetRow(asset, lambda key: self._fire("open_asset", key), self._refresh_update_button)
-            item = QListWidgetItem()
-            item.setSizeHint(QSize(0, 58))
-            self._asset_list.addItem(item)
-            self._asset_list.setItemWidget(item, row)
-            self._asset_rows.append(row)
-        has_assets = bool(assets)
-        self._asset_list.setVisible(has_assets)
-        self._assets_empty.setVisible(not has_assets)
-        n_upd = sum(1 for a in assets if a["status"] == STATUS_UPDATE)
-        self._assets_hint.setText(f"{n_upd} with a newer publish" if n_upd else ("All up to date" if has_assets else ""))
-        self._apply_scene_selection()
-        self._pages.setCurrentIndex(0)
+    def _on_publish_pill(self) -> None:
+        self._fire("banner" if self._banner_text else "latest_publish")
 
-    def ticked_assets(self) -> list[str]:
-        return [row.key for row in self._asset_rows if row.can_update and row.tick.isChecked()]
-
-    def _selected_rows(self) -> list[_AssetRow]:
-        return [r for r in self._asset_rows if r.key in self._scene_selection] if self.linked() else []
-
-    def _refresh_update_button(self) -> None:
-        n = len(self.ticked_assets())
-        by_selection = bool(self._selected_rows())
-        self._update_assets_btn.setVisible(any(row.can_update for row in self._asset_rows))
-        self._update_assets_btn.setEnabled(n > 0)
-        if by_selection:
-            text = f"Update {n} selected" if n else "Selected are up to date"
+    def _restyle_publish_pill(self, latest: str | None, action: str) -> None:
+        if self._banner_text:
+            self._publish_pill.setText(f"  {self._banner_text}  ·  Open")
+            self._publish_pill.setIcon(_lucide_icon("sparkles", 14, ACCENT))
+            self._publish_pill.setToolTip("A newer export was published: open it to see what changes")
+        elif latest:
+            self._publish_pill.setText(f"  Latest publish  ·  {latest}")
+            self._publish_pill.setIcon(_lucide_icon("package", 14, ACCENT))
+            self._publish_pill.setToolTip(f"{action}\nOpens a review of it: nothing changes until you press the button.")
         else:
-            text = f"Update {n} librar{'ies' if n != 1 else 'y'}" if n else "Tick libraries to update"
-        self._update_assets_btn.setText(text)
-        if not self.linked():
-            hint = "Not linked: the scene selection is not used"
-        elif by_selection:
-            hint = "Ticks follow the libraries selected in /stage"
-        else:
-            hint = "Select library nodes in /stage to update just those"
-        self._assets_foot_hint.setText(hint if any(row.can_update for row in self._asset_rows) else "")
+            self._publish_pill.setText("  No publish next to this .hip")
+            self._publish_pill.setIcon(_lucide_icon("package", 14, TEXT_META))
+            self._publish_pill.setToolTip("The publish is found from $HIP/../../../03_surfacing/02_texturing/publish")
+        self._publish_pill.setEnabled(bool(latest or self._banner_text))
 
-    # --- Link to selection ---
+    def _fill_open_menu(self) -> None:
+        menu = self._open_menu
+        menu.clear()
+        menu.addAction(_lucide_icon("folder", 14), "Texture folder…").triggered.connect(self._pick_folder)
+        menu.addAction(_lucide_icon("file-box", 14), "Painter USD…").triggered.connect(self._pick_usd)
+        if self._path_history:
+            recent = menu.addMenu("Recent")
+            recent.setStyleSheet(STYLE_MENU)
+            for p in self._path_history:
+                recent.addAction(p).triggered.connect(lambda _c=False, path=p: self._fire("open_path", path))
+        menu.addSeparator()
+        sub = menu.addAction("Include subfolders")
+        sub.setCheckable(True)
+        sub.setChecked(self._recursive)
+        sub.toggled.connect(self._set_recursive)
+        reload_action = menu.addAction(_lucide_icon("rotate-cw", 14), "Reload from disk")
+        reload_action.setEnabled(self._mode != "empty")
+        reload_action.triggered.connect(lambda: self._fire("reload"))
+        show = menu.addAction(_lucide_icon("folder-open", 14), "Show source in Explorer")
+        show.setEnabled(bool(self._source_path))
+        show.triggered.connect(self._open_source_folder)
 
-    def _new_link_toggle(self) -> _LinkToggle:
-        toggle = _LinkToggle(self._set_linked)
-        toggle.blockSignals(True)
-        toggle.setChecked(bool(self._prefs.get("link_selection", True)))
-        toggle._restyle(toggle.isChecked())
-        toggle.blockSignals(False)
-        self._link_toggles.append(toggle)
-        return toggle
+    def _set_recursive(self, on: bool) -> None:
+        self._recursive = on
+        self._prefs["recursive"] = on
+        _save_json(_PREFS_FILE, self._prefs)
+        if self._mode == "folder":
+            self._fire("reload")
+
+    def show_banner(self, text: str) -> None:
+        self._banner_text = text
+        self._restyle_publish_pill(self._latest_label, self._latest_action)
+
+    def hide_banner(self) -> None:
+        self._banner_text = ""
+        self._restyle_publish_pill(self._latest_label, self._latest_action)
+
+    # --- Follows selection ---
 
     def linked(self) -> bool:
         return bool(self._prefs.get("link_selection", True))
 
+    def _restyle_link(self) -> None:
+        on = self._link_pill.isChecked()
+        self._link_pill.setText("  Follows selection" if on else "  Not linked")
+        self._link_pill.setIcon(_lucide_icon("link" if on else "unlink", 14, ACCENT if on else TEXT_LABEL))
+
     def _set_linked(self, on: bool) -> None:
         self._prefs["link_selection"] = on
-        _save_prefs(self._prefs)
-        for toggle in self._link_toggles:  # the Start page's and the Version manager's
-            if toggle.isChecked() != on:
-                toggle.blockSignals(True)
-                toggle.setChecked(on)
-                toggle._restyle(on)
-                toggle.blockSignals(False)
-        self._apply_scene_selection()
+        _save_json(_PREFS_FILE, self._prefs)
+        self._restyle_link()
+        self._refresh_sidebar()
         if on and self._mode == "folder":
             self._follow_selection()
 
@@ -1228,86 +1159,78 @@ class AutoMaterialUI(QWidget):
         if paths == self._scene_selection:
             return
         self._scene_selection = list(paths)
-        self._apply_scene_selection()
-        if self._mode == "folder" and self._pages.currentIndex() == 1:
+        self._refresh_sidebar()
+        if self._mode == "folder":
             self._follow_selection()
 
-    def _apply_scene_selection(self) -> None:
-        """Start page: while linked and some rows are selected in the scene, the ticks are those rows."""
-        selected = self._selected_rows()
-        for row in self._asset_rows:
-            on = row in selected
-            row.set_scene_selected(on)
-            if row.can_update:
-                row.tick.blockSignals(True)
-                row.tick.setChecked(on if selected else row.default_tick)
-                row.tick.blockSignals(False)
-        self._refresh_update_button()
+    # =====================================================================
+    # Sidebar
+    # =====================================================================
 
-    def _pick_folder(self) -> None:
-        folder = QFileDialog.getExistingDirectory(self, "Select Texture Folder", self._last_dir())
-        if folder:
-            self._fire("open_path", folder)
+    def show_start(self, latest: str | None, assets: list[dict], action: str = "") -> None:
+        """
+        The scene's libraries in the sidebar, and the publish found from $HIP in the top bar.
+        latest: "char_Helen · Painter USD v010 · from $HIP" or None; action: what building from it does.
+        assets: dicts with key (library path), name, kind, meta, chip, status, tooltip, behind, total.
+        """
+        self._latest_label, self._latest_action = latest, action
+        asset = (latest or "").split(" · ", 1)[0]
+        if asset:
+            self._asset_name.setText(asset)
+        kinds = {a.get("kind") for a in assets}
+        self._asset_icon.setPixmap(_lucide_pixmap(ASSET_ICONS.get(next(iter(kinds)) if len(kinds) == 1 else "", "package"), 18, ACCENT))
+        self._restyle_publish_pill(latest, action)
+        self._assets = assets
+        self._refresh_sidebar()
 
-    def _pick_usd(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Select Substance Painter USD export", self._last_dir(), "USD (*.usd *.usda *.usdc)")
-        if path:
-            self._fire("open_path", path)
+    _latest_label: str | None = None
+    _latest_action = ""
 
-    def _last_dir(self) -> str:
-        last = self._source_path or (self._path_history[0] if self._path_history else "")
-        return last if os.path.isdir(last) else os.path.dirname(last)
+    def set_current(self, key: str) -> None:
+        """The library opened in the main area (highlighted in the sidebar)."""
+        self._current_key = key
+        self._refresh_sidebar()
 
-    def _request_open_recent(self) -> None:
-        if self._load_pending:
-            return
-        self._load_pending = True
+    def _selected_assets(self) -> list[dict]:
+        return [a for a in self._assets if a["key"] in self._scene_selection] if self.linked() else []
 
-        def run() -> None:
-            self._load_pending = False
-            path = self._recent_combo.currentText().strip()
-            if path:
-                self._fire("open_path", path)
+    def ticked_assets(self) -> list[str]:
+        """Libraries the sidebar's Update acts on: the ones selected in the scene, else every one behind."""
+        chosen = self._selected_assets() or self._assets
+        return [a["key"] for a in chosen if a.get("status") == STATUS_UPDATE]
 
-        QTimer.singleShot(0, run)
-
-    def _refill_recent(self) -> None:
-        self._recent_combo.clear()
-        for p in self._path_history:
-            self._recent_combo.addItem(p)
-        self._recent_combo.setCurrentText("")
-
-    def save_to_history(self, path: str) -> None:
-        path = path.strip()
-        if not path:
-            return
-        if path in self._path_history:
-            self._path_history.remove(path)
-        self._path_history.insert(0, path)
-        self._path_history = self._path_history[:_MAX_HISTORY]
-        _save_path_history(self._path_history)
-        self._refill_recent()
-
-    # Drag and drop: a folder or a .usd anywhere on the window
-    def dragEnterEvent(self, event) -> None:
-        if event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
-            event.acceptProposedAction()
-
-    def dropEvent(self, event) -> None:
-        for url in event.mimeData().urls():
-            if url.isLocalFile():
-                self._fire("open_path", url.toLocalFile())
-                break
-
-    # Window comes back to the front: the controller checks for a newer export
-    def changeEvent(self, event) -> None:
-        super().changeEvent(event)
-        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
-            self._fire("activated")
+    def _refresh_sidebar(self) -> None:
+        self._library_list.clear()
+        selected = {a["key"] for a in self._selected_assets()}
+        for a in self._assets:
+            item = QListWidgetItem()
+            sub = a.get("chip", "")
+            behind = a.get("behind", 1 if a.get("status") == STATUS_UPDATE else 0)
+            if a.get("status") == STATUS_UPDATE:
+                sub = f"{behind} behind · {sub}"
+            else:
+                sub = f"Up to date · {sub}"
+            item.setData(ROLE_DATA, {
+                "key": a["key"], "name": a.get("name", ""), "sub": sub, "behind": behind,
+                "total": a.get("total", max(behind, 1)), "current": a["key"] == self._current_key,
+                "selected": a["key"] in selected,
+            })
+            item.setToolTip(f"{a.get('meta', '')}\n{a.get('tooltip', '')}".strip())
+            item.setSizeHint(QSize(0, 56))
+            self._library_list.addItem(item)
+        has = bool(self._assets)
+        self._library_list.setVisible(has)
+        self._library_empty.setVisible(not has)
+        n = len(self.ticked_assets())
+        if selected:
+            text = f"Update {n} selected" if n else ""
+        else:
+            text = f"Update all ({n})" if n else ""
+        self._update_assets_btn.setText(text)
+        self._update_assets_btn.setVisible(bool(text))
 
     # =====================================================================
-    # Version manager page
+    # Main: a texture folder or a Painter export
     # =====================================================================
 
     def show_folder(
@@ -1315,9 +1238,9 @@ class AutoMaterialUI(QWidget):
         library: str, why: str,
     ) -> None:
         """
-        Texture folder: a chip per material against the chosen library (version there -> this folder's).
+        Texture folder: a tile per material against the chosen library (version there -> this folder's).
         *why*: how *library* was picked: "selection", "holds", "new" (logic.pick_library) or "fixed"
-        (opened from its row on the Start page).
+        (opened from its library in the sidebar).
         """
         self._mode = "folder"
         self._source_path = path
@@ -1329,20 +1252,9 @@ class AutoMaterialUI(QWidget):
         self._fill_libraries(libraries, library)
         self._set_library_box(why == "selection")
         self._unmatched_data = unmatched
-        self._source_icon.setPixmap(_lucide_pixmap("folder", 18, TEXT_LABEL))
-        versions = sorted({v for v in self._folder_versions.values() if v}, key=version_number)
-        self._source_name.setText(f"textures {versions[-1]}" if versions else (Path(path).name or path))
-        self._source_meta.setText(f"Texture folder · {path}")
-        self._source_meta.setToolTip(path)
-        self._unmatched_btn.setText(f"{len(unmatched)} unmatched file(s)")
-        self._unmatched_btn.setVisible(bool(unmatched))
-        self._recursive_cb.setVisible(True)
-        self._auto_assign_btn.setVisible(True)
-        self._target.setVisible(True)
-        self._latest_btn.setVisible(False)
-        self._banner.setVisible(False)
-        self._fill_materials()
-        self._pages.setCurrentIndex(1)
+        self._extra_box.setVisible(False)
+        self._fill_tiles()
+        self._refresh_main()
 
     def show_usd(
         self,
@@ -1354,37 +1266,47 @@ class AutoMaterialUI(QWidget):
         groups_by_version: dict[str, dict],
         geometry_materials: set[str],
     ) -> None:
-        """Painter exports of one asset: a chip per material, maps of the chosen version."""
+        """Painter exports of one asset: a tile per material, the versions on the timeline."""
         self._mode = "usd"
         self._source_path = usd_path
         self._plans = plans
         self._groups_by_version = groups_by_version
         self._geometry_materials = frozenset(geometry_materials)
         self._unmatched_data = []
-        self._source_icon.setPixmap(_lucide_pixmap(ASSET_ICONS.get(kind, "box"), 18, TEXT_LABEL))
-        self._source_name.setText(asset)
-        self._source_meta.setText(meta)
-        self._source_meta.setToolTip(usd_path)
-        self._unmatched_btn.setVisible(False)
-        self._recursive_cb.setVisible(False)
-        self._auto_assign_btn.setVisible(False)
+        self._usd_meta = meta
         self._target.setVisible(False)
-        self._latest_btn.setVisible(True)
-        self._banner.setVisible(False)
-        self._fill_materials()
-        self._pages.setCurrentIndex(1)
+        self._asset_name.setText(asset)
+        self._asset_icon.setPixmap(_lucide_pixmap(ASSET_ICONS.get(kind, "box"), 18, ACCENT))
+        self._banner_text = ""
+        self._restyle_publish_pill(self._latest_label, self._latest_action)
+        self._fill_tiles()
+        self._refresh_main()
 
-    def show_banner(self, text: str) -> None:
-        self._banner_label.setText(text)
-        self._banner.setVisible(True)
+    def is_recursive(self) -> bool:
+        return self._recursive
 
-    def hide_banner(self) -> None:
-        self._banner.setVisible(False)
+    def mode(self) -> str:
+        return self._mode
+
+    def source_path(self) -> str:
+        return self._source_path
+
+    def plans(self) -> list[MaterialPlan]:
+        return self._plans
+
+    def get_all_material_prefixes(self) -> list[str]:
+        """Names of the materials left on, in order."""
+        return [p.name for p in self._plans if p.enabled]
+
+    def group_for(self, plan: MaterialPlan):
+        return self._groups_by_version.get(plan.chosen, {}).get(plan.name)
+
+    # --- texture folder target ---
 
     def set_libraries(self, libraries: dict[str, dict[str, str]], library: str | None = None) -> None:
         """The scene's Material Libraries again (after a Create, or coming back), *library* chosen."""
         self._fill_libraries(libraries, library or self.library())
-        self._refresh_rows()
+        self._refresh_tiles()
 
     def _fill_libraries(self, libraries: dict[str, dict[str, str]], library: str) -> None:
         self._libraries = libraries
@@ -1413,29 +1335,28 @@ class AutoMaterialUI(QWidget):
         return text.split("  ·  ")[0].strip() or DEFAULT_LIBRARY
 
     def _set_library_box(self, box: bool) -> None:
-        self._library_label.setVisible(box)
-        self._library_combo.setVisible(box)
-        self._from_selection.setVisible(box and self._library_why == "selection")
-        self._target_line.setVisible(not box)
+        self._library_box = box
+        self._target.setVisible(self._mode == "folder" and box)
 
-    def _show_library_box(self) -> None:
-        self._library_why = "chosen"
-        self._set_library_box(True)
-        self._library_combo.setFocus()
-        self._refresh_target()
+    _library_box = False
+
+    def _on_subline_link(self, link: str) -> None:
+        if link == "change":
+            self._library_why = "chosen"
+            self._set_library_box(True)
+            self._library_combo.setFocus()
+            self._refresh_main()
 
     def _on_library_changed(self) -> None:
         if self._library_why == "selection" and not self._following:
             self._library_why = "chosen"
-            self._from_selection.setVisible(False)
-        self._refresh_rows()
+        self._refresh_tiles()
 
     def _follow_selection(self) -> None:
-        """Linked, one Material Library selected in /stage: the box shows it, with a flash."""
+        """Linked, one Material Library selected in /stage: it becomes the target, with a flash."""
         if not self.linked():
             return
         names = [p.rsplit("/", 1)[-1] for p in self._scene_selection]
-        # Only a library this page can use (a Painter export's library updates from its export)
         if len(names) != 1 or names[0] not in self._libraries \
                 or (names[0] == self.library() and self._library_why == "selection"):
             return
@@ -1444,21 +1365,21 @@ class AutoMaterialUI(QWidget):
         self._set_library_box(True)
         self._set_combo_library(names[0])
         self._following = False
-        self._refresh_rows()
-        self._library_combo.setStyleSheet(STYLE_COMBO + f"QComboBox {{ border: 1px solid {AMBER}; }}")
+        self._refresh_tiles()
+        self._library_combo.setStyleSheet(STYLE_COMBO + f"QComboBox {{ border: 1px solid {STATUS_COLORS[STATUS_PINNED]}; }}")
         QTimer.singleShot(900, lambda: self._library_combo.setStyleSheet(STYLE_COMBO))
 
-    def _refresh_target(self) -> None:
-        """The 'Updating in X · change' line and the other libraries that have these materials."""
+    def extra_libraries(self) -> list[str]:
+        """Other libraries ticked to update too (their existing materials only)."""
+        return [name for name, box in self._extra_ticks.items() if box.isChecked()]
+
+    def folder_status_of(self, plan: MaterialPlan) -> str:
+        """new / update / ok for a texture folder material against the chosen library."""
+        scene = self._libraries.get(self.library(), {}).get(plan.name)
+        return folder_status(scene, self._folder_versions.get(plan.name, ""))
+
+    def _refresh_extra(self) -> None:
         lib = self.library()
-        exists = lib in self._libraries
-        has = exists and any(m in self._libraries[lib] for m in self._folder_versions)
-        verb = "Updating in" if has else "Creating in" if exists else "Creating"
-        new = "" if exists else "  (new library)"
-        self._target_line.setText(
-            f"{verb} <b style='color:{TEXT_PRIMARY}'>{lib}</b>{new}  ·  "
-            f"<a href='change' style='color:{BLUE_400}; text-decoration:none'>Change</a>")
-        self._from_selection.setVisible(self._library_combo.isVisibleTo(self) and self._library_why == "selection")
         others = [name for name, mats in self._libraries.items()
                   if name != lib and any(m in mats for m in self._folder_versions)]
         old = {name: box.isChecked() for name, box in self._extra_ticks.items()}
@@ -1475,129 +1396,99 @@ class AutoMaterialUI(QWidget):
             box.setStyleSheet(STYLE_CHECKBOX)
             box.setEnabled(n > 0)
             box.setChecked(old.get(name, False) and n > 0)
-            box.toggled.connect(lambda _on: self._refresh_summary())
+            box.toggled.connect(lambda _on: self._refresh_main())
             self._extra_lay.addWidget(box)
             self._extra_ticks[name] = box
         self._dup_line.setVisible(bool(others))
         self._dup_line.setText(
-            f"<a href='dup' style='color:{BLUE_400}; text-decoration:none'>Also used in {len(others)} other "
-            f"librar{'ies' if len(others) != 1 else 'y'}</a>  · not changed "
-            "unless ticked</span>")
-        if not others:
-            self._extra_box.setVisible(False)
+            f"<a href='dup' style='color:{ACCENT}; text-decoration:none'>Also used in {len(others)} other "
+            f"librar{'ies' if len(others) != 1 else 'y'}</a>  · not changed unless ticked")
+        self._target.setVisible(self._mode == "folder" and (self._library_box or bool(others)))
+        for w in (self._library_label, self._library_combo):
+            w.setVisible(self._library_box)
+        self._from_selection.setVisible(self._library_box and self._library_why == "selection")
 
-    def extra_libraries(self) -> list[str]:
-        """Other libraries ticked to update too (their existing materials only)."""
-        return [name for name, box in self._extra_ticks.items() if box.isChecked()]
+    # --- tiles ---
 
-    def folder_status_of(self, plan: MaterialPlan) -> str:
-        """new / update / ok for a texture folder material against the chosen library."""
-        scene = self._libraries.get(self.library(), {}).get(plan.name)
-        return folder_status(scene, self._folder_versions.get(plan.name, ""))
-
-    def is_recursive(self) -> bool:
-        return self._recursive_cb.isChecked()
-
-    def mode(self) -> str:
-        return self._mode
-
-    def source_path(self) -> str:
-        return self._source_path
-
-    def plans(self) -> list[MaterialPlan]:
-        return self._plans
-
-    def get_all_material_prefixes(self) -> list[str]:
-        """Names of the materials left on, in list order."""
-        return [p.name for p in self._plans if p.enabled]
-
-    def group_for(self, plan: MaterialPlan):
-        return self._groups_by_version.get(plan.chosen, {}).get(plan.name)
-
-    # --- list ---
-
-    def _chip_for(self, plan: MaterialPlan) -> tuple[str, str] | None:
-        if self._mode != "usd":
+    def _status_of(self, plan: MaterialPlan) -> tuple[str, str]:
+        """(status, label) of a tile."""
+        if self._mode == "folder":
             version = self._folder_versions.get(plan.name, "")
             scene = self._libraries.get(self.library(), {}).get(plan.name)
             status = folder_status(scene, version)
             if status == STATUS_NEW:
-                return (f"+{version}" if version else "new"), status
+                return status, f"+ {version} new" if version else "New"
             if status == STATUS_OK:
-                return version or "up to date", status
-            return (f"{scene}→{version}" if scene and version else "update"), status
+                return status, version or "Up to date"
+            return status, f"{scene} → {version}" if scene and version else "Update"
         status = material_status(plan, self._geometry_materials)
-        if status == STATUS_UPDATE:
-            return f"{plan.scene}→{plan.chosen}", status
-        if status == STATUS_NEW:
-            return f"+{plan.chosen}", status
-        return plan.chosen, status
+        label = {
+            STATUS_UPDATE: f"{plan.scene} → {plan.chosen}",
+            STATUS_NEW: f"+ {plan.chosen} new",
+            STATUS_PINNED: f"Pinned {plan.chosen}",
+            STATUS_MISSING: f"{plan.chosen} · not in geometry",
+        }.get(status, plan.chosen)
+        return status, label
 
-    def _fill_materials(self) -> None:
-        current = self._material_list.currentRow()
-        self._material_list.blockSignals(True)
-        self._material_list.clear()
-        for plan in self._plans:
-            item = QListWidgetItem(plan.name)
-            item.setData(ROLE_NAME, plan.name)
-            self._apply_item(item, plan)
-            self._material_list.addItem(item)
-        self._material_list.blockSignals(False)
-        if self._plans:
-            self._material_list.setCurrentRow(min(max(current, 0), len(self._plans) - 1))
-            self._show_maps(self._material_list.currentRow())
-        else:
-            self._show_maps(-1)
-        self._refresh_summary()
-
-    def _apply_item(self, item: QListWidgetItem, plan: MaterialPlan) -> None:
-        item.setData(ROLE_ENABLED, plan.enabled)
-        chip = self._chip_for(plan)
-        item.setData(ROLE_CHIP, chip)
+    def _tile_data(self, plan: MaterialPlan) -> dict:
+        status, label = self._status_of(plan)
         group = self.group_for(plan)
-        if chip is None and group is not None:
-            n = len(group.slots)
-            udim = any(s.udim for s in group.slots.values())
-            item.setData(ROLE_META, f"{n} map{'s' if n != 1 else ''}" + (" · UDIM" if udim else ""))
-        if self._mode != "usd":
-            lib = self.library()
-            item.setToolTip({STATUS_UPDATE: f"Updates {plan.name} in {lib}",
-                             STATUS_OK: f"Already at this version in {lib}: left as it is"}.get(
-                chip[1], f"Not in {lib} yet: Create makes it there"))
-        else:
-            item.setToolTip(CHIP_HELP.get(chip[1], "") if chip else "")
+        thumb = ""
+        if group is not None:
+            slot = group.slots.get("base_color") or next(iter(group.slots.values()), None)
+            thumb = slot.filepath if slot is not None else ""
+        return {"name": plan.name, "status": status, "label": label, "enabled": plan.enabled,
+                "pinned": plan.pinned, "thumb": thumb}
 
-    def _refresh_rows(self) -> None:
+    def _fill_tiles(self) -> None:
+        current = self._tiles.currentRow()
+        self._tiles.blockSignals(True)
+        self._tiles.clear()
+        for plan in self._plans:
+            item = QListWidgetItem()
+            item.setSizeHint(_TILE)
+            item.setData(ROLE_TILE, self._tile_data(plan))
+            self._tiles.addItem(item)
+        self._tiles.blockSignals(False)
+        if self._plans:
+            self._tiles.setCurrentRow(min(max(current, 0), len(self._plans) - 1))
+        self._show_maps(self._tiles.currentRow())
+
+    def _refresh_tiles(self) -> None:
         for i, plan in enumerate(self._plans):
-            item = self._material_list.item(i)
+            item = self._tiles.item(i)
             if item is not None:
-                self._apply_item(item, plan)
-        self._material_list.viewport().update()
-        self._show_maps(self._material_list.currentRow())
-        self._refresh_summary()
+                item.setData(ROLE_TILE, self._tile_data(plan))
+                item.setToolTip(self._tile_tip(plan))
+        self._tiles.viewport().update()
+        self._show_maps(self._tiles.currentRow())
+        self._refresh_main()
+
+    def _tile_tip(self, plan: MaterialPlan) -> str:
+        status, _label = self._status_of(plan)
+        if self._mode == "folder":
+            lib = self.library()
+            return {STATUS_UPDATE: f"Updates {plan.name} in {lib}",
+                    STATUS_OK: f"Already at this version in {lib}: left as it is"}.get(
+                status, f"Not in {lib} yet: Create makes it there")
+        return CHIP_HELP.get(status, "")
 
     def eventFilter(self, obj, event) -> bool:
-        # Checkbox and chip are painted by the delegate: route their clicks here.
-        if obj is self._material_list.viewport() and event.type() == QEvent.Type.MouseButtonRelease \
+        # The leave-out check is painted on the tile: route its clicks here; a double click toggles too.
+        if obj is self._tiles.viewport() and event.type() in (QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick) \
                 and event.button() == Qt.MouseButton.LeftButton:
-            index = self._material_list.indexAt(event.position().toPoint())
+            index = self._tiles.indexAt(event.position().toPoint())
             if index.isValid():
-                rect = self._material_list.visualRect(index)
-                pos = event.position().toPoint()
-                plan = self._plans[index.row()]
-                if _MaterialDelegate.box_rect(rect).adjusted(-6, -6, 6, 6).contains(pos):
+                rect = self._tiles.visualRect(index).adjusted(4, 4, -4, -4)
+                inside = _TileDelegate.check_rect(rect).adjusted(-6, -6, 6, 6).contains(event.position().toPoint())
+                if inside or event.type() == QEvent.Type.MouseButtonDblClick:
+                    plan = self._plans[index.row()]
                     plan.enabled = not plan.enabled
-                    self._refresh_rows()
-                    return True
-                chip = self._material_delegate.chip_rect(rect, index)
-                if self._mode == "usd" and plan.enabled and chip.isValid() and chip.contains(pos):
-                    self._version_menu(plan).exec(self._material_list.viewport().mapToGlobal(chip.bottomLeft()))
+                    self._refresh_tiles()
                     return True
         return super().eventFilter(obj, event)
 
-    def _version_menu(self, plan: MaterialPlan) -> QMenu:
-        menu = QMenu(self)
-        menu.setStyleSheet(STYLE_MENU)
+    def _version_menu(self, plan: MaterialPlan, menu: QMenu) -> None:
         for version in reversed(plan.versions):
             label = version + ("   · in scene" if version == plan.scene else "")
             if version == plan.versions[-1]:
@@ -1606,55 +1497,161 @@ class AutoMaterialUI(QWidget):
             action.setCheckable(True)
             action.setChecked(version == plan.chosen)
             action.triggered.connect(lambda _c=False, v=version: self._choose(plan, v))
-        menu.addSeparator()
-        pin = menu.addAction(_lucide_icon("pin", 14, CHIP_TONES[STATUS_PINNED][0]),
-                             "Unpin" if plan.pinned else f"Pin to {plan.chosen}")
-        pin.triggered.connect(lambda: self._toggle_pin(plan))
-        return menu
 
     def _material_menu(self, pos: QPoint) -> None:
-        index = self._material_list.indexAt(pos)
+        index = self._tiles.indexAt(pos)
         if not index.isValid():
             return
         plan = self._plans[index.row()]
         menu = QMenu(self)
         menu.setStyleSheet(STYLE_MENU)
+        if self._mode == "usd":
+            versions = menu.addMenu("Version")
+            versions.setStyleSheet(STYLE_MENU)
+            self._version_menu(plan, versions)
+            pin = menu.addAction(_lucide_icon("pin", 14, STATUS_COLORS[STATUS_PINNED]),
+                                 "Unpin" if plan.pinned else f"Pin to {plan.chosen}")
+            pin.triggered.connect(lambda: self._toggle_pin(plan))
+            menu.addSeparator()
+        toggle = menu.addAction("Leave out" if plan.enabled else "Bring back")
+        toggle.triggered.connect(lambda: self._toggle_enabled(plan))
         group = self.group_for(plan)
         folder = os.path.dirname(next(iter(group.slots.values())).filepath) if group and group.slots else ""
         open_action = menu.addAction(_lucide_icon("folder-open", 14), "Open textures folder")
         open_action.setEnabled(bool(folder))
         open_action.triggered.connect(lambda: open_in_explorer(folder))
-        if self._mode == "usd":
-            pin = menu.addAction(_lucide_icon("pin", 14, CHIP_TONES[STATUS_PINNED][0]),
-                                 "Unpin" if plan.pinned else f"Pin to {plan.chosen}")
-            pin.triggered.connect(lambda: self._toggle_pin(plan))
-            versions = menu.addMenu("Pick version")
-            versions.setStyleSheet(STYLE_MENU)
-            for v in reversed(plan.versions):
-                a = versions.addAction(v + ("   · in scene" if v == plan.scene else ""))
-                a.setCheckable(True)
-                a.setChecked(v == plan.chosen)
-                a.triggered.connect(lambda _c=False, vv=v: self._choose(plan, vv))
-        menu.addSeparator()
-        toggle = menu.addAction("Leave out" if plan.enabled else "Bring back")
-        toggle.triggered.connect(lambda: self._toggle_enabled(plan))
-        menu.exec(self._material_list.viewport().mapToGlobal(pos))
+        menu.exec(self._tiles.viewport().mapToGlobal(pos))
 
     def _choose(self, plan: MaterialPlan, version: str) -> None:
         plan.chosen = version  # a pinned material keeps its pin, now on this version
-        self._refresh_rows()
+        self._refresh_tiles()
 
     def _toggle_pin(self, plan: MaterialPlan) -> None:
         plan.pinned = not plan.pinned
-        self._refresh_rows()
+        self._refresh_tiles()
 
     def _toggle_enabled(self, plan: MaterialPlan) -> None:
         plan.enabled = not plan.enabled
-        self._refresh_rows()
+        self._refresh_tiles()
 
-    def _all_to_latest(self) -> None:
-        to_latest(self._plans)
-        self._refresh_rows()
+    # --- timeline ---
+
+    def _timeline_state(self) -> tuple[list[str], str, str, set[str]]:
+        """(versions, scene's oldest, target, pickable) of the opened source."""
+        if self._mode == "usd":
+            versions = sorted({v for p in self._plans for v in p.versions}, key=version_number)
+            scene = min((p.scene for p in self._plans if p.scene), key=version_number, default="")
+            chosen = [p.chosen for p in self._plans if p.enabled and not p.pinned]
+            target = max(chosen, key=version_number) if chosen else (versions[-1] if versions else "")
+            return versions + ([scene] if scene and scene not in versions else []), scene, target, set(versions)
+        here = self._libraries.get(self.library(), {})
+        scene_versions = {here[m] for m in self._folder_versions if here.get(m)}
+        target = max((v for v in self._folder_versions.values() if v), key=version_number, default="")
+        scene = min(scene_versions, key=version_number, default="")
+        return sorted(scene_versions | ({target} if target else set()), key=version_number), scene, target, {target}
+
+    def _pick_version(self, version: str) -> None:
+        """The timeline: every material that is on and not pinned goes to *version* (or the nearest below)."""
+        if self._mode != "usd":
+            return
+        if version == max((v for p in self._plans for v in p.versions), key=version_number, default=""):
+            to_latest(self._plans)
+        else:
+            for p in self._plans:
+                if not p.enabled or p.pinned:
+                    continue
+                below = [v for v in p.versions if version_number(v) <= version_number(version)]
+                if below:
+                    p.chosen = max(below, key=version_number)
+        self._refresh_tiles()
+
+    # --- headline, subline, button ---
+
+    def _refresh_main(self) -> None:
+        if self._mode == "empty":
+            self._main_stack.setCurrentIndex(0)
+            self._create_btn.setText("Create")
+            self._create_btn.setEnabled(False)
+            self._auto_assign_btn.setVisible(False)
+            return
+        self._main_stack.setCurrentIndex(1)
+        versions, scene, target, pickable = self._timeline_state()
+        self._timeline.set_state(versions, scene, target, pickable)
+        self._timeline.setVisible(len(versions) > 1 or (len(versions) == 1 and self._mode == "usd"))
+        self._auto_assign_btn.setVisible(self._mode == "folder")
+        self._unmatched_btn.setText(f"{len(self._unmatched_data)} unmatched file(s)")
+        self._unmatched_btn.setVisible(bool(self._unmatched_data))
+
+        if self._mode == "usd":
+            s = plan_summary(self._plans)
+            new, update = s["new"], s["update"]
+            if update and new:
+                head = f"{update} to update · {new} new"
+            elif update:
+                head = f"{update} material{'s' if update != 1 else ''} behind {target}"
+            elif new:
+                head = f"{new} new material{'s' if new != 1 else ''} from {target}"
+            else:
+                head = f"Everything at {target}"
+            self._subline.setText(self._usd_meta)
+            if new and update:
+                button = f"Create {new} and update {update}"
+            elif new:
+                built = any(p.scene for p in self._plans)
+                button = f"Create {new} material{'s' if new != 1 else ''}" + ("" if built else " + geometry")
+            elif update:
+                button = f"Update {update} to {target}"
+            elif s["save"]:
+                button = "Save choices"
+            else:
+                button = ""
+            self._legend.setText(self._legend_html())
+        else:
+            self._refresh_extra()
+            on = [p for p in self._plans if p.enabled]
+            statuses = [self.folder_status_of(p) for p in on]
+            new, update, ok = (statuses.count(x) for x in (STATUS_NEW, STATUS_UPDATE, STATUS_OK))
+            lib = self.library()
+            if update and new:
+                head = f"{update} to update · {new} new"
+            elif update:
+                head = f"{update} material{'s' if update != 1 else ''} behind {target or 'this folder'}"
+            elif new:
+                head = f"{new} new material{'s' if new != 1 else ''}"
+            else:
+                head = f"Everything at {target}" if target else "Nothing to change"
+            exists = lib in self._libraries
+            verb = "Updating in" if update or ok else ("Creating in" if exists else "Creating")
+            new_lib = "" if exists else "  (new library)"
+            change = "" if self._library_box else \
+                f"  ·  <a href='change' style='color:{ACCENT}; text-decoration:none'>Change</a>"
+            self._subline.setText(
+                f"{verb} <b style='color:{TEXT_PRIMARY}'>{lib}</b>{new_lib}{change}"
+                f"  ·  texture folder <span style='color:{TEXT_META}'>{self._source_path}</span>")
+            if new and update:
+                button = f"Create {new} and update {update}"
+            elif update:
+                button = f"Update {update} to {target}" if target else f"Update {update}"
+            elif new:
+                button = f"Create {new} material{'s' if new != 1 else ''}"
+            else:
+                button = ""
+            extra = len(self.extra_libraries())
+            if extra:
+                more = f"{extra} more librar{'ies' if extra != 1 else 'y'}"
+                button = f"{button} + {more}" if button else f"Update {more}"
+            self._legend.setText(self._legend_html(folder=True))
+        left_out = sum(1 for p in self._plans if not p.enabled)
+        self._headline.setText(head + (f"  ·  {left_out} left out" if left_out else ""))
+        self._create_btn.setText(button or "Nothing to change")
+        self._create_btn.setEnabled(bool(button))
+
+    @staticmethod
+    def _legend_html(folder: bool = False) -> str:
+        tones = ((STATUS_OK, "up to date"), (STATUS_UPDATE, "will update"), (STATUS_NEW, "new"),
+                 (STATUS_PINNED, "pinned"), (STATUS_MISSING, "not in geometry"))
+        parts = [f"<span style='color:{STATUS_COLORS[s]}'>●</span> {label}" for s, label in (tones[:3] if folder else tones)]
+        return "&nbsp;&nbsp;&nbsp;".join(parts)
 
     # --- maps ---
 
@@ -1666,8 +1663,8 @@ class AutoMaterialUI(QWidget):
             return
         plan = self._plans[row]
         group = self.group_for(plan)
-        version = f"  ·  {plan.chosen}" if self._mode == "usd" else ""
-        self._maps_label.setText(f"MAPS  ·  {plan.name}{version}")
+        version = plan.chosen if self._mode == "usd" else self._folder_versions.get(plan.name, "")
+        self._maps_label.setText(f"MAPS  ·  {plan.name}" + (f"  ·  {version}" if version else ""))
         if self._mode == "usd" and plan.name not in self._geometry_materials:
             self._maps_note.setText(f"Not in the export the geometry comes from: the geometry may not match {plan.chosen}.")
         if group is None:
@@ -1701,69 +1698,51 @@ class AutoMaterialUI(QWidget):
         if self._source_path:
             open_in_explorer(self._source_path, select=os.path.isfile(self._source_path))
 
-    # --- footer ---
+    # =====================================================================
+    # Opening sources
+    # =====================================================================
 
-    def _refresh_summary(self) -> None:
-        if self._mode == "usd":
-            s = plan_summary(self._plans)
-            parts = [f"{s['new']} new"] if s["new"] else []
-            parts += [f"{s['update']} update"] if s["update"] else []
-            parts += [f"{s['unchanged']} unchanged"] if s["unchanged"] else []
-            parts += [f"{s['left_out']} left out"] if s["left_out"] else []
-            pinned = sum(1 for p in self._plans if p.enabled and p.pinned)
-            parts += [f"{pinned} pinned"] if pinned else []
-            self._summary_label.setText(" · ".join(parts))
-            if s["new"] and s["update"]:
-                text = f"Create {s['new']} and update {s['update']}"
-            elif s["new"]:
-                built = any(p.scene for p in self._plans)
-                text = f"Create {s['new']} material{'s' if s['new'] != 1 else ''}" + ("" if built else " + geometry")
-            elif s["update"]:
-                text = f"Update {s['update']} material{'s' if s['update'] != 1 else ''}"
-            elif s["save"]:
-                text = "Save choices"
-            else:
-                text = "Nothing to change"
-            self._create_btn.setText(text)
-            self._create_btn.setEnabled(bool(s["new"] or s["update"] or s["save"]))
-            self._legend.setText(self._legend_html())
-            self._legend.setVisible(True)
-        else:
-            self._refresh_target()
-            on = [p for p in self._plans if p.enabled]
-            statuses = [self.folder_status_of(p) for p in on]
-            new, update, ok = (statuses.count(s) for s in (STATUS_NEW, STATUS_UPDATE, STATUS_OK))
-            parts = [f"{new} new"] if new else []
-            parts += [f"{update} update"] if update else []
-            parts += [f"{ok} up to date"] if ok else []
-            parts += [f"{len(self._plans) - len(on)} left out"] if len(on) < len(self._plans) else []
-            self._summary_label.setText(" · ".join(parts))
-            if new and update:
-                text = f"Create {new} and update {update}"
-            elif update:
-                text = f"Update {update} material{'s' if update != 1 else ''}"
-            elif new:
-                text = f"Create {new} material{'s' if new != 1 else ''}"
-            else:
-                text = ""
-            extra = len(self.extra_libraries())
-            if extra:
-                more = f"{extra} more librar{'ies' if extra != 1 else 'y'}"
-                text = f"{text} + {more}" if text else f"Update {more}"
-            self._create_btn.setText(text or "Nothing to change")
-            self._create_btn.setEnabled(bool(text))
-            self._legend.setText(self._legend_html(folder=True))
-            self._legend.setVisible(True)
+    def _pick_folder(self) -> None:
+        folder = QFileDialog.getExistingDirectory(self, "Select Texture Folder", self._last_dir())
+        if folder:
+            self._fire("open_path", folder)
 
-    @staticmethod
-    def _legend_html(folder: bool = False) -> str:
-        parts = []
-        tones = ((STATUS_OK, "up to date"), (STATUS_UPDATE, "will update"), (STATUS_NEW, "new"),
-                 (STATUS_PINNED, "pinned"), (STATUS_MISSING, "not in geometry"))
-        for status, label in tones[:3] if folder else tones:
-            fg = CHIP_TONES[status][0]
-            parts.append(f"<span style='color:{fg}'>●</span> <span style='color:{TEXT_LABEL}'>{label}</span>")
-        return f"<span style='font-size:{FS_META}px'>" + "&nbsp;&nbsp;&nbsp;&nbsp;".join(parts) + "</span>"
+    def _pick_usd(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Select Substance Painter USD export", self._last_dir(), "USD (*.usd *.usda *.usdc)")
+        if path:
+            self._fire("open_path", path)
+
+    def _last_dir(self) -> str:
+        last = self._source_path or (self._path_history[0] if self._path_history else "")
+        return last if os.path.isdir(last) else os.path.dirname(last)
+
+    def save_to_history(self, path: str) -> None:
+        path = path.strip()
+        if not path:
+            return
+        if path in self._path_history:
+            self._path_history.remove(path)
+        self._path_history.insert(0, path)
+        self._path_history = self._path_history[:_MAX_HISTORY]
+        _save_json(_HISTORY_FILE, self._path_history)
+
+    # Drag and drop: a folder or a .usd anywhere on the window
+    def dragEnterEvent(self, event) -> None:
+        if event.mimeData().hasUrls() and any(u.isLocalFile() for u in event.mimeData().urls()):
+            event.acceptProposedAction()
+
+    def dropEvent(self, event) -> None:
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                self._fire("open_path", url.toLocalFile())
+                break
+
+    # Window comes back to the front: the controller checks for a newer export
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow():
+            self._fire("activated")
 
     # =====================================================================
     # Messages and loading
@@ -1773,10 +1752,12 @@ class AutoMaterialUI(QWidget):
         self._message_label.setText(text)
         self._message_label.setToolTip(tooltip)
         self._message_label.setStyleSheet(_text("body", TEXT_ERROR if error else TEXT_LABEL))
-        self._message_label.setVisible(bool(text))
 
     def message(self) -> str:
         return self._message_label.text()
+
+    def show_undo(self, on: bool) -> None:
+        self._undo_btn.setVisible(on)
 
     def show_loading(self, text: str = "Loading...") -> None:
         self._loading.set_text(text)
@@ -1786,11 +1767,8 @@ class AutoMaterialUI(QWidget):
         QApplication.processEvents()
 
     def show_done(self, text: str, sub_text: str | None = None) -> None:
-        self._loading.set_done(text, sub_text)
-        self._loading.setGeometry(self.rect())
-        self._loading.setVisible(True)
-        self._loading.raise_()
-        QApplication.processEvents()
+        """The run is over: the overlay goes; the result is on the action bar (set_message)."""
+        self.hide_loading()
 
     def hide_loading(self) -> None:
         self._loading.setVisible(False)
@@ -1806,34 +1784,16 @@ class AutoMaterialUI(QWidget):
         self._loading.setGeometry(self.rect())
 
     def _on_unmatched_clicked(self) -> None:
+        """The files no material took, in a window that does not block Houdini."""
         if not self._unmatched_data:
             return
-        dlg = QDialog(self)
-        dlg.setWindowTitle("Unmatched files")
-        dlg.setMinimumSize(480, 320)
-        dlg.resize(560, 400)
-        layout = QVBoxLayout(dlg)
-        layout.setSpacing(12)
-        label = QLabel(f"{len(self._unmatched_data)} file(s) were not assigned to any material.")
-        label.setStyleSheet(_text("body"))
-        layout.addWidget(label)
         log = QPlainTextEdit()
+        log.setWindowTitle(f"{len(self._unmatched_data)} unmatched file(s)")
         log.setReadOnly(True)
         log.setPlainText("\n".join(self._unmatched_data))
-        log.setStyleSheet(f"""
-            QPlainTextEdit {{
-                background: {BG_CONTENT};
-                color: {TEXT_LABEL};
-                border: 1px solid #2a2a2c;
-                border-radius: 6px;
-                padding: 8px;
-                font-size: 13px;
-            }}
-        """)
-        layout.addWidget(log, stretch=1)
-        ok_btn = QPushButton("OK")
-        ok_btn.setMinimumWidth(80)
-        ok_btn.clicked.connect(dlg.accept)
-        layout.addWidget(ok_btn, alignment=Qt.AlignmentFlag.AlignRight)
-        dlg.setStyleSheet(f"QDialog {{ background: {BG_PANEL}; }}")
-        dlg.exec()
+        log.setStyleSheet(f"QPlainTextEdit {{ background: {BG_APP}; color: {TEXT_LABEL}; padding: 10px;"
+                          f" font-size: {FS_META}px; border: none; }}")
+        log.resize(620, 420)
+        log.setParent(self, Qt.WindowType.Window)
+        log.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        log.show()
