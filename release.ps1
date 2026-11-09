@@ -30,14 +30,15 @@ function Fail([string]$Message) {
     exit 1
 }
 
-function Git([string[]]$GitArgs) {
-    $out = & git @GitArgs 2>&1
+function Invoke-Git([string[]]$GitArgs) {
+    # Not "Git": PowerShell names are case-blind, so a function Git would call itself for git
+    $out = & git.exe @GitArgs 2>&1
     if ($LASTEXITCODE -ne 0) { Fail "git $($GitArgs -join ' ') failed: $out" }
     return ($out | Out-String).Trim()
 }
 
 function Assert-Clean {
-    $dirty = Git @("status", "--porcelain", "--untracked-files=no")
+    $dirty = Invoke-Git @("status", "--porcelain", "--untracked-files=no")
     if ($dirty) { Fail "uncommitted changes:`n$dirty" }
 }
 
@@ -68,8 +69,8 @@ if ($Step -eq "prepare") {
     if ($LASTEXITCODE -ne 0) { Fail "bump_version.ps1 failed" }
     $version = Get-Version
     if ($version -eq $before) { Fail "VERSION did not change" }
-    Git @("add", "VERSION", "docs/changelog.md", "RELEASE_NOTES.md") | Out-Null
-    Git @("commit", "-q", "-m", "docs: release v$version") | Out-Null
+    Invoke-Git @("add", "VERSION", "docs/changelog.md", "RELEASE_NOTES.md") | Out-Null
+    Invoke-Git @("commit", "-q", "-m", "docs: release v$version") | Out-Null
     Write-Host ""
     Write-Host "Prepared v$version ($before -> $version), committed. Next: get this commit onto main, then:" -ForegroundColor Green
     Write-Host "  .\release.ps1 publish"
@@ -82,17 +83,17 @@ $tag = "v$version"
 Write-Host "Publishing $tag"
 
 Assert-Clean
-Git @("fetch", "-q", "origin", "main", "--tags") | Out-Null
-$head = Git @("rev-parse", "HEAD")
-$main = Git @("rev-parse", "origin/main")
+Invoke-Git @("fetch", "-q", "origin", "main", "--tags") | Out-Null
+$head = Invoke-Git @("rev-parse", "HEAD")
+$main = Invoke-Git @("rev-parse", "origin/main")
 if ($head -ne $main) { Fail "HEAD is not origin/main ($main). Merge the release commit, then check out origin/main." }
 
 $changelog = Get-Content (Join-Path $Root "docs\changelog.md") -Raw
 if ($changelog -notmatch "## \[$([regex]::Escape($version))\]") {
     Fail "docs/changelog.md has no [$version] section: run .\release.ps1 prepare first"
 }
-if (Git @("tag", "-l", $tag)) { Fail "tag $tag already exists locally" }
-if (Git @("ls-remote", "--tags", "origin", $tag)) { Fail "tag $tag already exists on origin" }
+if (Invoke-Git @("tag", "-l", $tag)) { Fail "tag $tag already exists locally" }
+if (Invoke-Git @("ls-remote", "--tags", "origin", $tag)) { Fail "tag $tag already exists on origin" }
 & gh auth status *> $null
 if ($LASTEXITCODE -ne 0) { Fail "gh is not logged in (gh auth login)" }
 & gh release view $tag *> $null
@@ -119,8 +120,8 @@ if ($DryRun) {
     exit 0
 }
 
-Git @("tag", "-a", $tag, "-m", "Release $tag") | Out-Null
-Git @("push", "-q", "origin", $tag) | Out-Null
+Invoke-Git @("tag", "-a", $tag, "-m", "Release $tag") | Out-Null
+Invoke-Git @("push", "-q", "origin", $tag) | Out-Null
 & (Join-Path $Root "publish_release.ps1")
 if ($LASTEXITCODE -ne 0) { Fail "publish_release.ps1 failed (the tag $tag is pushed; fix and run publish_release.ps1 again)" }
 Write-Host ""
