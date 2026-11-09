@@ -1288,18 +1288,90 @@ def substance_libraries(stage_node: Any) -> list[tuple[Any, str]]:
     return out
 
 
-def material_libraries(stage_node: Any) -> dict[str, set[str]]:
-    """Name -> material builder names, for every Material Library in *stage_node*, in network order."""
-    out: dict[str, set[str]] = {}
-    if stage_node is None:
-        return out
-    for node in stage_node.children():
+def _library_nodes(stage_node: Any) -> list[Any]:
+    out = []
+    for node in stage_node.children() if stage_node is not None else ():
         try:
             if node.type().name() == "materiallibrary":
-                out[node.name()] = {c.name() for c in node.children()}
+                out.append(node)
         except Exception:
             continue
     return out
+
+
+def _builder_files(builder: Any) -> list[str]:
+    """
+    Texture paths the tool set on *builder*'s images and that are still there (none for a material
+    it did not build). A file changed by hand is the user's: its version says nothing of the publish.
+    """
+    out = []
+    for img in _image_slots(builder).values():
+        recorded = _user_data(img, FILE_TAG)
+        parm = img.parm("file")
+        if recorded and (parm is None or parm.unexpandedString() == recorded):
+            out.append(recorded)
+    return out
+
+
+def material_libraries(stage_node: Any) -> dict[str, dict[str, str]]:
+    """
+    Name -> {material builder: texture version} for every Material Library in *stage_node*, in
+    network order. The version is "" for a material the tool did not build or with no version.
+    """
+    from tools.fx.auto_material.logic import folder_library
+
+    out: dict[str, dict[str, str]] = {}
+    for lib in _library_nodes(stage_node):
+        files = {b.name(): _builder_files(b) for b in lib.children()}
+        info = folder_library(lib.name(), lib.path(), files)
+        out[lib.name()] = {name: (info.versions.get(name, "") if info else "") for name in files}
+    return out
+
+
+def folder_libraries(stage_node: Any) -> list[Any]:
+    """logic.FolderLibrary for every library the tool built from texture folders (not Painter exports)."""
+    from tools.fx.auto_material.logic import folder_library
+
+    painter = {lib.path() for lib, _record in substance_libraries(stage_node)}
+    out = []
+    for lib in _library_nodes(stage_node):
+        if lib.path() in painter:
+            continue
+        info = folder_library(lib.name(), lib.path(), {b.name(): _builder_files(b) for b in lib.children()})
+        if info is not None and info.publish:
+            out.append(info)
+    return out
+
+
+def update_folder_library(
+    stage_node: Any, lib_name: str, groups: dict, names: list[str] | None = None, cancelled: Any = None,
+) -> "ApplyResult":
+    """
+    Move the materials already in *lib_name* to *groups* (a folder scan). Only materials whose
+    version changes (or that still use Houdini's %(UDIM)d) are touched; none is created.
+    *names*: only these materials. cancelled: optional callable, checked between materials.
+    """
+    from tools.fx.auto_material.logic import folder_status, group_version
+
+    result = ApplyResult()
+    lib = stage_node.node(lib_name) if stage_node is not None else None
+    if lib is None:
+        return result
+    have = material_libraries(stage_node).get(lib_name, {})
+    with manual_update():
+        for name, group in groups.items():
+            if name not in have or (names is not None and name not in names):
+                continue
+            if cancelled is not None and cancelled():
+                break
+            builder = lib.node(name)
+            if folder_status(have[name], group_version(group)) != "update" and not _uses_houdini_udim(builder):
+                continue
+            notes: list[str] = []
+            update_material(builder, group.slots, notes)
+            result.updated.append(name)
+            result.notes += [f"{name}: {n}" for n in notes]
+    return result
 
 
 def write_record(mat_lib: Any, record: str) -> None:

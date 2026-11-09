@@ -120,6 +120,9 @@ class FakeNode:
     def type(self) -> FakeType:
         return self._type
 
+    def path(self) -> str:
+        return (self.parent.path() if self.parent is not None else "") + "/" + self._name
+
     def children(self) -> list[FakeNode]:
         return list(self._children)
 
@@ -514,21 +517,91 @@ def test_aces_exr_publish_builds_acescg_images(stage: FakeNode, tmp_path) -> Non
 # Which Material Library a texture folder's Create goes into
 # ---------------------------------------------------------------------------
 
-def test_pick_library_prefers_the_one_holding_the_materials() -> None:
+def test_pick_library_order() -> None:
     from tools.fx.auto_material.logic import pick_library
 
-    libs = {"materiallibrary1": {"M_a"}, "mtl_chair": {"M_seat", "M_leg"}}
-    assert pick_library(libs, ["M_seat", "M_leg", "M_new"], selected="materiallibrary1") == "mtl_chair"
-    # None of them built yet: the selected library, else materiallibrary1
-    assert pick_library(libs, ["M_new"], selected="mtl_chair") == "mtl_chair"
-    assert pick_library(libs, ["M_new"], selected="not_a_library") == "materiallibrary1"
-    assert pick_library({}, ["M_new"]) == "materiallibrary1"
+    libs = {"materiallibrary1": {"M_a": ""}, "mtl_chair": {"M_seat": "v001", "M_leg": "v001"}}
+    # The library selected in the scene wins: the user picked it
+    assert pick_library(libs, ["M_seat", "M_leg"], selected="materiallibrary1") == ("materiallibrary1", "selection")
+    # Else the one holding the most of them, so they update instead of getting a copy
+    assert pick_library(libs, ["M_seat", "M_leg", "M_new"]) == ("mtl_chair", "holds")
+    assert pick_library(libs, ["M_seat"], selected="not_a_library") == ("mtl_chair", "holds")
+    # Else a new library
+    assert pick_library(libs, ["M_new"], new_name="char_Helen_materials") == ("char_Helen_materials", "new")
+    assert pick_library({}, ["M_new"]) == ("materiallibrary1", "new")
 
 
-def test_material_libraries_lists_builders(stage: FakeNode) -> None:
+def test_texture_version_and_new_library_name() -> None:
+    from tools.fx.auto_material.logic import new_library_name, texture_version
+
+    assert texture_version("D:/a/publish/v006/textures/M_Body_BaseColor_sRGB.<UDIM>.png") == ("D:/a/publish", "v006")
+    assert texture_version("D:\\a\\publish\\V012\\M_Body_BaseColor.png") == ("D:/a/publish", "v012")
+    assert texture_version("/tex/M_Body_BaseColor_v003.png") == (None, "v003")
+    assert texture_version("/tex/M_Body_BaseColor.png") == (None, None)
+    assert new_library_name("D:/job/01_assets/_characters/char_Helen/03_surfacing/publish") == "char_Helen_materials"
+    assert new_library_name("D:/somewhere/textures") == "materiallibrary1"
+
+
+def test_folder_status() -> None:
+    from tools.fx.auto_material.logic import STATUS_NEW, STATUS_OK, STATUS_UPDATE, folder_status
+
+    assert folder_status(None, "v008") == STATUS_NEW
+    assert folder_status("v008", "v008") == STATUS_OK
+    assert folder_status("v006", "v008") == STATUS_UPDATE
+    assert folder_status("", "v008") == STATUS_UPDATE   # built by hand or no version: Create may update it
+
+
+def test_material_libraries_reads_versions(stage: FakeNode) -> None:
     sa.build_material(stage, "M_char_Body", _slots("v001", ["BaseColor_sRGB"]), mat_lib_name="mtl_char")
+    stage.node("mtl_char").createNode("subnet", "M_by_hand")
     stage.createNode("sublayer", "geo")
-    assert sa.material_libraries(stage) == {"mtl_char": {"M_char_Body"}}
+    assert sa.material_libraries(stage) == {"mtl_char": {"M_char_Body": "v001", "M_by_hand": ""}}
+
+
+def _publish(root, version: str, materials: list[str]) -> None:
+    tex = root / "publish" / version / "textures"
+    tex.mkdir(parents=True)
+    for m in materials:
+        for name in ("BaseColor_sRGB.1001.png", "Roughness_Raw.1001.png"):
+            (tex / f"{m}_{name}").write_bytes(b"")
+
+
+def test_folder_library_rows_and_update(stage: FakeNode, tmp_path) -> None:
+    from tools.fx.auto_material import updater
+
+    _publish(tmp_path, "v006", ["M_char_Body", "M_char_Head"])
+    groups, _ = scan_and_group(str(tmp_path / "publish"))
+    for name, group in groups.items():
+        sa.build_material(stage, name, group.slots, mat_lib_name="mtl_char")
+    b = stage.node("mtl_char").node("M_char_Body")
+    _image(b, "roughness").parm("file").set("/my/own/rough.png")  # edited by hand: stays
+    _publish(tmp_path, "v008", ["M_char_Body", "M_char_Head", "M_char_Cape"])
+
+    [lib] = updater.scene_libraries(sa, stage)
+    assert (lib.name, lib.source, lib.version, lib.latest, lib.needs_update) == ("mtl_char", "folder", "v006", "v008", True)
+    assert lib.location == (tmp_path / "publish").as_posix()
+
+    created, updated, _notes = updater.update_libraries(sa, stage, [lib])
+    assert created == [] and sorted(updated) == ["mtl_char/M_char_Body", "mtl_char/M_char_Head"]
+    # The new material is not made by an update; only the Version manager's Create makes it
+    assert [c.name() for c in stage.node("mtl_char").children()] == ["M_char_Body", "M_char_Head"]
+    assert "/v008/" in _image(b, "base_color").parm("file").eval().replace("\\", "/")
+    assert _image(b, "roughness").parm("file").eval() == "/my/own/rough.png"
+    [lib] = updater.scene_libraries(sa, stage)
+    assert not lib.needs_update
+
+    # Same version again: nothing is touched
+    assert sa.update_folder_library(stage, "mtl_char", scan_and_group(str(tmp_path / "publish"))[0]).updated == []
+
+
+def test_painter_library_is_not_a_folder_row(stage: FakeNode, tmp_path) -> None:
+    from tools.fx.auto_material.logic import RECORD_KEY
+
+    _publish(tmp_path, "v001", ["M_char_Body"])
+    groups, _ = scan_and_group(str(tmp_path / "publish"))
+    sa.build_material(stage, "M_char_Body", groups["M_char_Body"].slots, mat_lib_name="chair_materials")
+    stage.node("chair_materials").setUserData(RECORD_KEY, '{"export": "/x/chair_v001.usd", "materials": {}}')
+    assert sa.folder_libraries(stage) == []
 
 
 def test_build_into_a_renamed_library_updates_it(stage: FakeNode) -> None:

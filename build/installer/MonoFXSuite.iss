@@ -47,6 +47,8 @@ Source: "..\..\toolbar\*"; DestDir: "{app}\toolbar"; Flags: ignoreversion recurs
 Source: "..\..\scripts\*"; DestDir: "{app}\scripts"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\config\*"; DestDir: "{app}\config"; Flags: ignoreversion recursesubdirs createallsubdirs
 Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
+; Houdini reads OPmenu.xml from the root of each HOUDINI_PATH folder (MonoFX node menu)
+Source: "..\..\OPmenu.xml"; DestDir: "{app}"; Flags: ignoreversion
 ; MonoStudio version detection (optional): if MonoStudio is installed, drop VERSION into its tools folder.
 Source: "..\..\VERSION"; DestDir: "{code:GetMonoStudioToolsSuiteDir}"; Flags: ignoreversion; Check: ShouldInstallMonoStudioVersion
 ; Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion

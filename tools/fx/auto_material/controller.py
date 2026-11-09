@@ -7,23 +7,25 @@ Version manager: one source's materials; for Painter exports, the version of eac
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QMessageBox
 
-from tools.fx.auto_material import config
+from tools.fx.auto_material import config, updater
 from tools.fx.auto_material.logic import (
-    STATUS_NEW,
     STATUS_OK,
     STATUS_UPDATE,
     asset_from_path,
     asset_kind,
     find_painter_usd,
     is_usd_path,
+    latest_publish_version,
     list_painter_exports,
+    new_library_name,
     parse_record,
     pick_library,
-    plan_materials,
     scan_and_group,
     substance_node_base,
     version_from_path,
@@ -31,8 +33,12 @@ from tools.fx.auto_material.logic import (
 )
 from tools.fx.auto_material.ui import AutoMaterialUI
 
+# How often the window reads the /stage selection while linked to it (ms)
+SELECTION_POLL_MS = 400
 
-def run() -> None:
+
+def run(focus: str | None = None) -> None:
+    """Open the window; *focus*: a Material Library path to open straight away (node menu)."""
     import importlib
     import apps.houdini.solaris_adapter as sa
     importlib.reload(sa)
@@ -44,7 +50,8 @@ def run() -> None:
     ui.setWindowTitle(config.WINDOW_TITLE)
 
     # What the Version manager shows: a folder scan, or one asset's Painter exports.
-    state: dict = {"page": "start", "usd": None, "assets": {}}
+    # assets: library path -> updater.SceneLibrary, the Start page's rows.
+    state: dict = {"page": "start", "usd": None, "assets": {}, "folder_library": None}
 
     # ------------------------------------------------------------------
     # Scene assets (start page)
@@ -66,63 +73,69 @@ def run() -> None:
         return substance_node_base(usd_path), "prop"
 
     def start_assets() -> list[dict]:
-        stage = sa.get_stage_context()
-        libraries = sa.substance_libraries(stage)
-        branch = sa.branch_library(sa.get_selected_lop_node(), [lib for lib, _ in libraries])
-        assets: list[dict] = []
-        keys: dict[str, str] = {}
-        for lib, text in libraries:
-            meta, records = parse_record(text)
-            export = meta.get("export") or ""
-            if not export:
-                continue
-            exports = list_painter_exports(export) if Path(export).exists() else []
-            latest = exports[-1] if exports else None
-            scene_v = meta.get("version") or ""
-            name, kind = asset_label(export)
-            newer = latest is not None and version_number(latest.version) > version_number(scene_v)
-            assets.append({
-                "key": substance_node_base(export),
-                "name": name,
-                "kind": kind,
-                "meta": f"{len(records)} materials · export {scene_v} · {lib.name()}",
-                "chip": f"{scene_v}→{latest.version}" if newer else scene_v,
-                "status": STATUS_UPDATE if newer else STATUS_OK,
-                "branch": branch is not None and lib.path() == branch.path(),
-            })
-            keys[substance_node_base(export)] = (latest.usd_path if latest else export)
-        # The .hip's own asset, when its latest export is not built yet.
-        usd = hip_painter_usd()
-        if usd and substance_node_base(usd) not in keys:
-            name, kind = asset_label(usd)
-            version = version_from_path(Path(usd).name) or ""
-            assets.append({"key": substance_node_base(usd), "name": name, "kind": kind,
-                           "meta": "Not in the scene yet", "chip": f"+{version}", "status": STATUS_NEW})
-            keys[substance_node_base(usd)] = usd
-        state["assets"] = keys
-        return assets
+        """One row per library the tool built (Painter export or texture folder)."""
+        libs = updater.scene_libraries(sa, sa.get_stage_context())
+        state["assets"] = {lib.path: lib for lib in libs}
+        return [{
+            "key": lib.path,
+            "name": lib.name,
+            "kind": lib.kind,
+            "meta": f"{lib.asset} · {lib.materials} materials",
+            "chip": f"{lib.version}→{lib.latest}" if lib.needs_update else (lib.version or "?"),
+            "status": STATUS_UPDATE if lib.needs_update else STATUS_OK,
+            "tooltip": lib.source_label,
+        } for lib in libs]
 
     def hip_painter_usd() -> str | None:
         publish = sa.resolve_publish_texture_folder()
         return find_painter_usd(publish) if publish else None
 
+    def same_folder(a: str, b: str) -> bool:
+        return os.path.normcase(os.path.normpath(a)) == os.path.normcase(os.path.normpath(b))
+
+    def publish_card() -> tuple[str | None, str]:
+        """Where the publish found from $HIP is, and what building from it will do."""
+        usd = hip_painter_usd()
+        if usd:
+            name, _kind = asset_label(usd)
+            base = substance_node_base(usd)
+            lib = next((x for x in state["assets"].values()
+                        if x.source == "usd" and substance_node_base(x.location) == base), None)
+            if lib is None:
+                action = "Create its materials and geometry"
+            else:
+                action = f"Update {lib.name}" if lib.needs_update else f"{lib.name} is up to date"
+            return f"{name} · Painter USD {version_from_path(Path(usd).name) or ''} · from $HIP", action
+        publish = sa.resolve_publish_texture_folder()
+        if not publish:
+            return None, ""
+        newest = latest_publish_version(publish)
+        found = asset_from_path(publish)
+        name = found[1] if found else Path(publish).name
+        groups, _unmatched = scan_and_group(publish)
+        in_scene = {m for mats in sa.material_libraries(sa.get_stage_context()).values() for m in mats}
+        new = [n for n in groups if n not in in_scene]
+        old = [x for x in state["assets"].values()
+               if x.source == "folder" and same_folder(x.location, publish) and x.needs_update]
+        parts = [f"update {len(old)} librar{'ies' if len(old) != 1 else 'y'}"] if old else []
+        parts += [f"create {len(new)} new material{'s' if len(new) != 1 else ''}"] if new else []
+        action = " and ".join(parts)
+        action = action[:1].upper() + action[1:] if action else "Everything is up to date"
+        return f"{name} · textures {newest.name.lower() if newest else ''} · from $HIP", action
+
     def go_start() -> None:
         state["page"] = "start"
         state["usd"] = None
         ui.set_message("")
-        usd = hip_painter_usd()
-        if usd:
-            name, _kind = asset_label(usd)
-            latest = f"{name} · {version_from_path(Path(usd).name) or ''} · USD"
-        else:
-            publish = sa.resolve_publish_texture_folder()
-            latest = f"{Path(publish).name} · textures" if publish else None
-        ui.show_start(latest, start_assets())
+        assets = start_assets()
+        latest, action = publish_card()
+        ui.show_start(latest, assets, action)
 
     # ------------------------------------------------------------------
     # Loading a source into the Version manager
     # ------------------------------------------------------------------
-    def open_folder(folder: str) -> None:
+    def open_folder(folder: str, library: str | None = None) -> None:
+        """*library*: opened from its row, so that library is the target (no guessing)."""
         ui.set_message("")
         ui.show_loading("Scanning textures...")
         try:
@@ -133,32 +146,47 @@ def run() -> None:
             ui.set_message("No image files found in this folder.", error=True)
             return
         state["page"], state["usd"] = "folder", None
-        libraries = sa.material_libraries(sa.get_stage_context())
-        ui.show_folder(folder, groups, unmatched, libraries, pick_library(libraries, list(groups), selected_library()))
+        libraries = folder_targets()
+        if library:
+            lib, why = library, "fixed"
+        else:
+            lib, why = pick_library(libraries, list(groups), selected_library(), new_library_name(folder))
+        ui.show_folder(folder, groups, unmatched, libraries, lib, why)
         ui.save_to_history(folder)
 
-    def selected_library() -> str | None:
-        node = sa.get_selected_lop_node()
+    def folder_targets() -> dict[str, dict[str, str]]:
+        """Libraries a texture folder can go into: not the ones built from a Painter export, whose
+        version record would no longer match (they update from their export)."""
+        stage = sa.get_stage_context()
+        painter = {lib.name() for lib, _record in sa.substance_libraries(stage)}
+        return {k: v for k, v in sa.material_libraries(stage).items() if k not in painter}
+
+    def scene_selection() -> list[str]:
+        """Paths of the Material Libraries selected in /stage."""
         try:
-            return node.name() if node is not None and node.type().name() == "materiallibrary" else None
+            import hou
+            return [n.path() for n in hou.selectedNodes()
+                    if n.type().name() == "materiallibrary" and n.parent().path() == "/stage"]
         except Exception:
-            return None
+            return []
+
+    def selected_library() -> str | None:
+        """The one Material Library selected in /stage, while the window is linked to the selection."""
+        paths = scene_selection() if ui.linked() else []
+        return paths[0].rsplit("/", 1)[-1] if len(paths) == 1 else None
+
+    def poll_selection() -> None:
+        if ui.isVisible() and ui.linked():
+            ui.set_scene_selection(scene_selection())
 
     def refresh_libraries() -> None:
         """The Library box again from the scene, keeping the library chosen."""
-        ui.set_libraries(sa.material_libraries(sa.get_stage_context()), ui.library())
+        ui.set_libraries(folder_targets())
 
     def read_asset(usd_path: str) -> dict:
         """Every export of the asset, read; and what the scene has of it."""
-        exports = list_painter_exports(usd_path)
-        data = sa.read_painter_exports(exports)
-        if not data:
-            raise RuntimeError("No Painter export could be read.")
-        latest = exports[-1].version
         _meta, records = scene_records().get(substance_node_base(usd_path), ({}, {}))
-        plans = plan_materials({v: d.groups for v, d in data.items()}, records)
-        return {"path": exports[-1].usd_path, "exports": exports, "data": data,
-                "latest": latest, "records": records, "plans": plans}
+        return updater.read_painter_asset(sa, usd_path, records)
 
     def open_usd(usd_path: str) -> None:
         ui.set_message("")
@@ -211,9 +239,13 @@ def run() -> None:
             ui.set_message("Publish folder not found: $HIP/../../../03_surfacing/02_texturing/publish", error=True)
 
     def on_open_asset(key: str) -> None:
-        path = state["assets"].get(key)
-        if path:
-            open_usd(path)
+        lib = state["assets"].get(key)
+        if lib is None:
+            return
+        if lib.source == "usd":
+            open_usd(lib.location)
+        else:
+            open_folder(lib.location, library=lib.name)
 
     def on_reload() -> None:
         path = ui.source_path()
@@ -276,34 +308,44 @@ def run() -> None:
 
     def create_folder(stage) -> None:
         selected = sa.get_selected_lop_node()
-        names = ui.get_all_material_prefixes()
         lib_name = ui.library()
+        plans = [p for p in ui.plans() if p.enabled]
         ui.show_loading("Creating materials...")
         created: list[str] = []
         updated: list[str] = []
         notes: list[str] = []
         cancelled = False
         with sa.undo_group("MonoFX: Auto Material create"), sa.manual_update():
-            mat_lib_node = None
-            for idx, plan in enumerate(p for p in ui.plans() if p.enabled):
+            for idx, plan in enumerate(plans):
                 if ui.is_cancelled():
                     cancelled = True
                     break
-                ui.show_loading(f"Creating material {idx + 1}/{len(names)}:  {plan.name}")
                 group = ui.group_for(plan)
                 if group is None:
                     continue
+                if ui.folder_status_of(plan) == STATUS_OK:
+                    # Same version: left alone, unless it still has Houdini's %(UDIM)d
+                    builder = stage.node(f"{lib_name}/{plan.name}")
+                    if builder is not None and sa._uses_houdini_udim(builder):
+                        sa.update_material(builder, group.slots, [])
+                    continue
+                ui.show_loading(f"Creating material {idx + 1}/{len(plans)}:  {plan.name}")
                 result = sa.build_material(stage=stage, material_name=plan.name, slots=group.slots,
                                            mat_lib_name=lib_name, selected_node=selected)
                 if result is None:
                     continue
                 (updated if result.updated else created).append(result.node_name)
                 notes += [f"{result.node_name}: {n}" for n in result.notes]
-                if mat_lib_node is None:
-                    mat_lib_node = stage.node(lib_name)
+            mat_lib_node = stage.node(lib_name)
             if mat_lib_node and created:
                 sa.layout_material_library(mat_lib_node, new_names=created)
-        refresh_libraries()  # chips: what was made is now "update"
+            # Other libraries ticked under "Also used in": their materials only, none created
+            groups = {p.name: ui.group_for(p) for p in plans if ui.group_for(p) is not None}
+            for other in ([] if cancelled else ui.extra_libraries()):
+                result = sa.update_folder_library(stage, other, groups, cancelled=ui.is_cancelled)
+                updated += [f"{other}/{n}" for n in result.updated]
+                notes += [f"{other}: {n}" for n in result.notes]
+        refresh_libraries()  # chips: what was made or moved is now up to date
         done(created, updated, notes, cancelled, library=mat_lib_node.path() if mat_lib_node else lib_name)
 
     def create_usd(stage) -> None:
@@ -329,27 +371,10 @@ def run() -> None:
         stage = stage_or_message()
         if stage is None or not keys:
             return
-        created: list[str] = []
-        updated: list[str] = []
-        notes: list[str] = []
-        # All ticked assets are one undo step
-        with sa.undo_group("MonoFX: Auto Material update"):
-            for i, key in enumerate(keys, 1):
-                path = state["assets"].get(key)
-                if not path:
-                    continue
-                ui.show_loading(f"Updating asset {i}/{len(keys)}:  {asset_label(path)[0]}")
-                if ui.is_cancelled():
-                    break
-                try:
-                    ctx = read_asset(path)
-                except Exception as e:
-                    notes.append(f"{asset_label(path)[0]}: cannot read ({e})")
-                    continue
-                result = sa.apply_painter_plan(stage, ctx["data"], ctx["plans"], ctx["records"], ui.is_cancelled)
-                created += result.created
-                updated += result.updated
-                notes += result.notes
+        libs = [state["assets"][k] for k in keys if k in state["assets"]]
+        created, updated, notes = updater.update_libraries(
+            sa, stage, libs, ui.is_cancelled,
+            progress=lambda i, lib: ui.show_loading(f"Updating {i}/{len(libs)}:  {lib.name}"))
         done(created, updated, notes, ui.is_cancelled())
         go_start()
 
@@ -419,8 +444,17 @@ def run() -> None:
     ui.on("auto_assign", on_auto_assign)
     ui.on("banner", on_banner)
     ui.on("activated", on_activated)
+    ui.open_library = on_open_asset  # the node menu's "Open in Auto Material" on a window already open
+
+    # Link to selection: read the /stage selection while the window is up (no Houdini callback to undo)
+    timer = QTimer(ui)
+    timer.setInterval(SELECTION_POLL_MS)
+    timer.timeout.connect(poll_selection)
+    timer.start()
 
     go_start()
+    if focus:
+        on_open_asset(focus)
 
     # --- Show ---
     # A window owned by Houdini's main window stays above Houdini only, not above other apps.

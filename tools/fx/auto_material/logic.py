@@ -650,25 +650,94 @@ def plan_summary(plans: list[MaterialPlan]) -> dict[str, int]:
 
 
 DEFAULT_LIBRARY = "materiallibrary1"
+NEW_LIBRARY_SUFFIX = "_materials"
 
 
-def pick_library(libraries: dict[str, set[str]], names: list[str], selected: str | None = None) -> str:
+def texture_version(path: str) -> tuple[str | None, str | None]:
     """
-    Material Library a texture folder's Create goes into by default: the one that already holds the
-    most of *names* (so they update, not get a second copy), else the selected one, else materiallibrary1.
-    *libraries*: name -> material names in it, in network order (the first wins a tie).
+    (publish folder, version) of a texture: …/publish/v006/textures/x.png -> (…/publish, "v006").
+    Outside a Monos publish there is no publish folder; the version is the name's _vNNN, if any.
     """
+    parts = Path(path.replace("\\", "/")).parts
+    for i in range(len(parts) - 2, 0, -1):
+        if _VERSION_DIR_RE.match(parts[i]):
+            return Path(*parts[:i]).as_posix(), parts[i].lower()
+    return None, version_from_path(path)
+
+
+def group_version(group: MaterialGroup) -> str:
+    """Version of a scanned material: its oldest map's, "" when no map has one."""
+    versions = [v for v in (texture_version(s.filepath)[1] for s in group.slots.values()) if v]
+    return min(versions, key=version_number) if versions else ""
+
+
+@dataclass
+class FolderLibrary:
+    """A Material Library the tool built from texture folders, read back from its image nodes."""
+    name: str
+    path: str
+    publish: str | None                       # publish folder most of its textures come from
+    versions: dict[str, str]                  # material -> oldest texture version ("" unknown)
+
+    @property
+    def version(self) -> str:
+        known = [v for v in self.versions.values() if v]
+        return min(known, key=version_number) if known else ""
+
+
+def folder_library(name: str, path: str, files: dict[str, list[str]]) -> FolderLibrary | None:
+    """*files*: material -> texture paths the tool set. None when no material has one."""
+    versions: dict[str, str] = {}
+    publishes: dict[str, int] = {}
+    for material, paths in files.items():
+        if not paths:
+            continue
+        found = [texture_version(p) for p in paths]
+        known = [v for _p, v in found if v]
+        versions[material] = min(known, key=version_number) if known else ""
+        for publish, _v in found:
+            if publish:
+                publishes[publish] = publishes.get(publish, 0) + 1
+    if not versions:
+        return None
+    publish = max(publishes, key=publishes.get) if publishes else None
+    return FolderLibrary(name, path, publish, versions)
+
+
+def new_library_name(folder: str) -> str:
+    """Name for a new library: {asset}_materials for a Monos asset, else materiallibrary1."""
+    found = asset_from_path(folder)
+    return found[1] + NEW_LIBRARY_SUFFIX if found else DEFAULT_LIBRARY
+
+
+def pick_library(
+    libraries: dict[str, dict[str, str]], names: list[str], selected: str | None = None, new_name: str = DEFAULT_LIBRARY,
+) -> tuple[str, str]:
+    """
+    Material Library a texture folder goes into, and why: ("selection") the library selected in the
+    scene, ("holds") the one already holding the most of *names* (so they update, not get a second
+    copy), else ("new") *new_name*. *libraries*: name -> {material: version}, in network order.
+    """
+    if selected and selected in libraries:
+        return selected, "selection"
     wanted = set(names)
     best, hits = None, 0
     for lib, materials in libraries.items():
-        n = len(wanted & materials)
+        n = len(wanted & set(materials))
         if n > hits:
             best, hits = lib, n
     if best is not None:
-        return best
-    if selected and selected in libraries:
-        return selected
-    return DEFAULT_LIBRARY
+        return best, "holds"
+    return new_name, "new"
+
+
+def folder_status(scene_version: str | None, version: str) -> str:
+    """Chip status of a scanned material against a library: None = not in it."""
+    if scene_version is None:
+        return STATUS_NEW
+    if scene_version and version and version_number(scene_version) >= version_number(version):
+        return STATUS_OK
+    return STATUS_UPDATE
 
 
 RECORD_KEY = "monofx_substance"

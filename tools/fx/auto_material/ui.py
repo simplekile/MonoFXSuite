@@ -52,9 +52,12 @@ from tools.fx.auto_material.logic import (
     STATUS_UPDATE,
     DEFAULT_LIBRARY,
     MaterialPlan,
+    folder_status,
+    group_version,
     material_status,
     plan_summary,
     to_latest,
+    version_number,
 )
 
 # ---------------------------------------------------------------------------
@@ -320,6 +323,12 @@ LUCIDE = {
     "sparkles": '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>',
 }
 
+LUCIDE["link"] = ('<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>'
+                  '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>')
+LUCIDE["unlink"] = ('<path d="m18.84 12.25 1.72-1.71h-.02a5.004 5.004 0 0 0-.12-7.07 5.006 5.006 0 0 0-6.95 0l-1.72 1.71"/>'
+                    '<path d="m5.17 11.75-1.71 1.71a5.004 5.004 0 0 0 .12 7.07 5.006 5.006 0 0 0 6.95 0l1.71-1.71"/>'
+                    '<path d="M8 2v3"/><path d="M2 8h3"/><path d="M16 22v-3"/><path d="M22 16h-3"/>')
+
 ASSET_ICONS = {"character": "user", "prop": "box", "environment": "building"}
 
 
@@ -406,6 +415,46 @@ def _save_path_history(paths: list[str]) -> None:
         _HISTORY_FILE.write_text(json.dumps(paths[:_MAX_HISTORY], ensure_ascii=False), "utf-8")
     except OSError:
         pass
+
+
+_PREFS_FILE = _HISTORY_DIR / "auto_material_prefs.json"
+
+
+def _load_prefs() -> dict:
+    try:
+        data = json.loads(_PREFS_FILE.read_text("utf-8"))
+        return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {}
+
+
+def _save_prefs(prefs: dict) -> None:
+    try:
+        _HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        _PREFS_FILE.write_text(json.dumps(prefs), "utf-8")
+    except OSError:
+        pass
+
+
+class _LinkToggle(QPushButton):
+    """'Link to selection' switch: while on, the window follows the Material Libraries selected in /stage."""
+
+    def __init__(self, on_toggle: Callable[[bool], None]) -> None:
+        super().__init__()
+        self.setCheckable(True)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("While on, selecting Material Library nodes in /stage picks them here")
+        self.toggled.connect(self._restyle)
+        self.toggled.connect(on_toggle)
+        self._restyle(False)
+
+    def _restyle(self, on: bool) -> None:
+        self.setText("Linked to selection" if on else "Link to selection")
+        self.setIcon(_lucide_icon("link" if on else "unlink", 13, BLUE_400 if on else TEXT_LABEL))
+        tone = "background: rgba(37, 99, 235, 0.22); border: 1px solid rgba(37, 99, 235, 0.70);" \
+            f" color: {BLUE_400};" if on else \
+            f"background: transparent; border: 1px solid rgba(63, 63, 70, 0.80); color: {TEXT_LABEL};"
+        self.setStyleSheet(f"QPushButton {{ {tone} border-radius: 11px; padding: 2px 10px; font-size: 12px; }}")
 
 
 # ---------------------------------------------------------------------------
@@ -615,12 +664,20 @@ class _SourceCard(QFrame):
         self._sub.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 13px;")
         self._sub.setWordWrap(True)
         lay.addWidget(self._sub)
+        # What a click will do, in the accent colour (Latest publish only)
+        self._action = QLabel("")
+        self._action.setStyleSheet(f"color: {BLUE_400}; font-size: 13px;")
+        self._action.setWordWrap(True)
+        self._action.setVisible(False)
+        lay.addWidget(self._action)
         lay.addStretch()
         self._icon_name = icon
         self._usable = True
 
-    def set_state(self, sub: str, usable: bool = True, primary: bool = False) -> None:
+    def set_state(self, sub: str, usable: bool = True, primary: bool = False, action: str = "") -> None:
         self._sub.setText(sub)
+        self._action.setText(action)
+        self._action.setVisible(bool(action))
         self._usable = usable
         self.setProperty("primary", "true" if primary and usable else "false")
         self.setProperty("enabled_card", "true" if usable else "false")
@@ -636,11 +693,15 @@ class _SourceCard(QFrame):
 
 
 class _AssetRow(QWidget):
-    """Asset in the scene: [tick if it has a newer export] icon name · meta ....... chip  >"""
+    """Library in the scene: [tick if it has a newer publish] icon name · meta ....... chip  >"""
 
     def __init__(self, asset: dict, on_open: Callable[[str], None], on_tick: Callable[[], None]) -> None:
         super().__init__()
         self.key = asset["key"]
+        self.default_tick = asset["status"] == STATUS_UPDATE
+        self.setObjectName("AssetRow")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setToolTip(asset.get("tooltip", ""))
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 6, 10, 6)
@@ -666,9 +727,11 @@ class _AssetRow(QWidget):
                                        if asset.get("branch") else ""))
         name.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 14px; font-weight: 600;")
         text.addWidget(name)
-        meta = QLabel(asset.get("meta", ""))
+        self._meta_text = asset.get("meta", "")
+        meta = QLabel(self._meta_text)
         meta.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 12px;")
         text.addWidget(meta)
+        self._meta = meta
         lay.addLayout(text, stretch=1)
         chip = QLabel(asset["chip"])
         chip.setStyleSheet(_chip_style(asset["status"]))
@@ -679,6 +742,11 @@ class _AssetRow(QWidget):
         arrow.setPixmap(_lucide_pixmap("chevron-right", 14, TEXT_META))
         lay.addWidget(arrow)
         self._on_open = on_open
+
+    def set_scene_selected(self, on: bool) -> None:
+        """Selected in /stage while linked: highlighted and said so."""
+        self.setStyleSheet("QWidget#AssetRow { background: rgba(37, 99, 235, 0.14); border-radius: 6px; }" if on else "")
+        self._meta.setText(self._meta_text + ("  ·  selected in scene" if on else ""))
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -709,10 +777,17 @@ class AutoMaterialUI(QWidget):
         self._geometry_materials: frozenset[str] = frozenset()
         self._unmatched_data: list[str] = []
         self._source_path = ""
-        self._libraries: dict[str, set[str]] = {}       # folder: Material Library -> material names
+        self._libraries: dict[str, dict[str, str]] = {}  # folder: library -> {material: version}
+        self._library_why = "new"              # folder: how the library was picked (pick_library)
+        self._extra_ticks: dict[str, QCheckBox] = {}     # folder: other libraries to update too
         self._asset_rows: list[_AssetRow] = []
+        self._scene_selection: list[str] = []  # Material Library paths selected in /stage
         self._path_history = _load_path_history()
+        self._prefs = _load_prefs()
         self._load_pending = False
+        self._link_toggles: list[_LinkToggle] = []
+        self._folder_versions: dict[str, str] = {}      # folder: material -> version in the folder
+        self._following = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(20, 18, 20, 18)
@@ -754,8 +829,9 @@ class AutoMaterialUI(QWidget):
 
         cards = QHBoxLayout()
         cards.setSpacing(10)
-        self._card_publish = _SourceCard("package", "Latest publish", "Looking for the publish…",
+        self._card_publish = _SourceCard("package", "Build from latest publish", "Looking for the publish…",
                                          lambda: self._fire("latest_publish"))
+        self._card_publish.setToolTip("Opens a review of the publish found from $HIP: nothing changes until Create")
         self._card_folder = _SourceCard("folder", "Texture folder", "Pick a folder of textures",
                                         self._pick_folder)
         self._card_usd = _SourceCard("file-box", "Painter USD", "Pick a Substance Painter .usd export",
@@ -793,6 +869,8 @@ class AutoMaterialUI(QWidget):
         self._assets_hint = QLabel("")
         self._assets_hint.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 12px;")
         self._assets_header.addWidget(self._assets_hint)
+        self._assets_header.addSpacing(8)
+        self._assets_header.addWidget(self._new_link_toggle())
         lay.addLayout(self._assets_header)
 
         self._asset_list = QListWidget()
@@ -800,11 +878,14 @@ class AutoMaterialUI(QWidget):
         self._asset_list.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
         self._asset_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         lay.addWidget(self._asset_list, stretch=1)
-        self._assets_empty = QLabel("No asset from a Painter export in this scene yet.")
+        self._assets_empty = QLabel("Nothing built from a publish in this scene yet.")
         self._assets_empty.setStyleSheet(f"color: {TEXT_META}; font-size: 13px; padding: 8px 2px;")
         lay.addWidget(self._assets_empty)
 
         foot = QHBoxLayout()
+        self._assets_foot_hint = QLabel("")
+        self._assets_foot_hint.setStyleSheet(f"color: {TEXT_META}; font-size: 12px;")
+        foot.addWidget(self._assets_foot_hint)
         foot.addStretch()
         self._update_assets_btn = QPushButton("Update")
         self._update_assets_btn.setStyleSheet(STYLE_BTN_PRIMARY)
@@ -948,6 +1029,49 @@ class AutoMaterialUI(QWidget):
         splitter.setSizes([360, 660])
         lay.addWidget(splitter, stretch=1)
 
+        # Texture folder: where Create goes. A line ("Updating in X · change"); the box only on change,
+        # or when it follows the scene selection. A name not in the box makes a new library.
+        self._target = QWidget()
+        t_lay = QVBoxLayout(self._target)
+        t_lay.setContentsMargins(0, 0, 0, 0)
+        t_lay.setSpacing(4)
+        t_row = QHBoxLayout()
+        t_row.setSpacing(8)
+        self._target_line = QLabel("")
+        self._target_line.setTextFormat(Qt.TextFormat.RichText)
+        self._target_line.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 13px;")
+        self._target_line.linkActivated.connect(lambda _l: self._show_library_box())
+        t_row.addWidget(self._target_line)
+        self._library_label = QLabel("Into")
+        self._library_label.setStyleSheet(f"color: {TEXT_META}; font-size: 13px;")
+        t_row.addWidget(self._library_label)
+        self._library_combo = QComboBox()
+        self._library_combo.setEditable(True)
+        self._library_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self._library_combo.setStyleSheet(STYLE_COMBO)
+        self._library_combo.setMinimumWidth(260)
+        self._library_combo.setToolTip("Material Library in /stage to create or update the materials in. "
+                                       "Type a new name to make a new library.")
+        self._library_combo.currentTextChanged.connect(lambda _t: self._on_library_changed())
+        t_row.addWidget(self._library_combo)
+        self._from_selection = QLabel("from selection")
+        self._from_selection.setStyleSheet(_chip_style(STATUS_UPDATE))
+        t_row.addWidget(self._from_selection)
+        t_row.addStretch(1)
+        t_row.addWidget(self._new_link_toggle())
+        t_lay.addLayout(t_row)
+        self._dup_line = QLabel("")
+        self._dup_line.setTextFormat(Qt.TextFormat.RichText)
+        self._dup_line.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 12px;")
+        self._dup_line.linkActivated.connect(lambda _l: self._extra_box.setVisible(not self._extra_box.isVisible()))
+        t_lay.addWidget(self._dup_line)
+        self._extra_box = QWidget()
+        self._extra_lay = QVBoxLayout(self._extra_box)
+        self._extra_lay.setContentsMargins(12, 0, 0, 0)
+        self._extra_lay.setSpacing(2)
+        t_lay.addWidget(self._extra_box)
+        lay.addWidget(self._target)
+
         # Footer
         divider = QFrame()
         divider.setFixedHeight(1)
@@ -962,19 +1086,6 @@ class AutoMaterialUI(QWidget):
             "Select a LOP node first.")
         self._auto_assign_btn.clicked.connect(lambda: self._fire("auto_assign"))
         foot.addWidget(self._auto_assign_btn)
-        # Texture folder: the Material Library Create goes into; a name not in the list makes a new one
-        self._library_label = QLabel("Library")
-        self._library_label.setStyleSheet(f"color: {TEXT_META}; font-size: 13px;")
-        foot.addWidget(self._library_label)
-        self._library_combo = QComboBox()
-        self._library_combo.setEditable(True)
-        self._library_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._library_combo.setStyleSheet(STYLE_COMBO)
-        self._library_combo.setMinimumWidth(190)
-        self._library_combo.setToolTip("Material Library in /stage to create or update the materials in. "
-                                       "Type a new name to make a new library.")
-        self._library_combo.currentTextChanged.connect(lambda _t: self._refresh_rows())
-        foot.addWidget(self._library_combo)
         foot.addStretch(1)
         self._summary_label = QLabel("")
         self._summary_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 13px;")
@@ -1009,12 +1120,14 @@ class AutoMaterialUI(QWidget):
     # Start page
     # =====================================================================
 
-    def show_start(self, latest: str | None, assets: list[dict]) -> None:
+    def show_start(self, latest: str | None, assets: list[dict], action: str = "") -> None:
         """
-        latest: label of the publish found from $HIP (e.g. "char_Helen · v008 · USD") or None.
-        assets: dicts with key, name, kind, meta, chip, status, branch.
+        latest: where the publish found from $HIP is (e.g. "char_Helen · textures v008 · from $HIP") or None.
+        action: what building from it will do ("Update 2 libraries and create 1 new material").
+        assets: dicts with key (library path), name, kind, meta, chip, status, tooltip.
         """
-        self._card_publish.set_state(latest or "No publish next to this .hip", usable=bool(latest), primary=True)
+        self._card_publish.set_state(latest or "No publish next to this .hip", usable=bool(latest), primary=True,
+                                     action=action if latest else "")
         self._asset_list.clear()
         self._asset_rows = []
         for asset in assets:
@@ -1028,21 +1141,81 @@ class AutoMaterialUI(QWidget):
         self._asset_list.setVisible(has_assets)
         self._assets_empty.setVisible(not has_assets)
         n_upd = sum(1 for a in assets if a["status"] == STATUS_UPDATE)
-        n_new = sum(1 for a in assets if a["status"] == STATUS_NEW)
-        hint = [f"{n_upd} with a newer export"] if n_upd else []
-        hint += [f"{n_new} not in the scene yet"] if n_new else []
-        self._assets_hint.setText(" · ".join(hint) or ("All up to date" if has_assets else ""))
-        self._refresh_update_button()
+        self._assets_hint.setText(f"{n_upd} with a newer publish" if n_upd else ("All up to date" if has_assets else ""))
+        self._apply_scene_selection()
         self._pages.setCurrentIndex(0)
 
     def ticked_assets(self) -> list[str]:
         return [row.key for row in self._asset_rows if row.can_update and row.tick.isChecked()]
 
+    def _selected_rows(self) -> list[_AssetRow]:
+        return [r for r in self._asset_rows if r.key in self._scene_selection] if self.linked() else []
+
     def _refresh_update_button(self) -> None:
         n = len(self.ticked_assets())
+        by_selection = bool(self._selected_rows())
         self._update_assets_btn.setVisible(any(row.can_update for row in self._asset_rows))
         self._update_assets_btn.setEnabled(n > 0)
-        self._update_assets_btn.setText(f"Update {n} asset" + ("s" if n != 1 else "") if n else "Tick assets to update")
+        if by_selection:
+            text = f"Update {n} selected" if n else "Selected are up to date"
+        else:
+            text = f"Update {n} librar{'ies' if n != 1 else 'y'}" if n else "Tick libraries to update"
+        self._update_assets_btn.setText(text)
+        if not self.linked():
+            hint = "Not linked: the scene selection is not used"
+        elif by_selection:
+            hint = "Ticks follow the libraries selected in /stage"
+        else:
+            hint = "Select library nodes in /stage to update just those"
+        self._assets_foot_hint.setText(hint if self._asset_rows else "")
+
+    # --- Link to selection ---
+
+    def _new_link_toggle(self) -> _LinkToggle:
+        toggle = _LinkToggle(self._set_linked)
+        toggle.blockSignals(True)
+        toggle.setChecked(bool(self._prefs.get("link_selection", True)))
+        toggle._restyle(toggle.isChecked())
+        toggle.blockSignals(False)
+        self._link_toggles.append(toggle)
+        return toggle
+
+    def linked(self) -> bool:
+        return bool(self._prefs.get("link_selection", True))
+
+    def _set_linked(self, on: bool) -> None:
+        self._prefs["link_selection"] = on
+        _save_prefs(self._prefs)
+        for toggle in self._link_toggles:  # the Start page's and the Version manager's
+            if toggle.isChecked() != on:
+                toggle.blockSignals(True)
+                toggle.setChecked(on)
+                toggle._restyle(on)
+                toggle.blockSignals(False)
+        self._apply_scene_selection()
+        if on and self._mode == "folder":
+            self._follow_selection()
+
+    def set_scene_selection(self, paths: list[str]) -> None:
+        """Material Library node paths selected in /stage (the controller polls the selection)."""
+        if paths == self._scene_selection:
+            return
+        self._scene_selection = list(paths)
+        self._apply_scene_selection()
+        if self._mode == "folder" and self._pages.currentIndex() == 1:
+            self._follow_selection()
+
+    def _apply_scene_selection(self) -> None:
+        """Start page: while linked and some rows are selected in the scene, the ticks are those rows."""
+        selected = self._selected_rows()
+        for row in self._asset_rows:
+            on = row in selected
+            row.set_scene_selected(on)
+            if row.can_update:
+                row.tick.blockSignals(True)
+                row.tick.setChecked(on if selected else row.default_tick)
+                row.tick.blockSignals(False)
+        self._refresh_update_button()
 
     def _pick_folder(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Select Texture Folder", self._last_dir())
@@ -1111,26 +1284,34 @@ class AutoMaterialUI(QWidget):
     # =====================================================================
 
     def show_folder(
-        self, path: str, groups: dict, unmatched: list[str], libraries: dict[str, set[str]], library: str,
+        self, path: str, groups: dict, unmatched: list[str], libraries: dict[str, dict[str, str]],
+        library: str, why: str,
     ) -> None:
-        """Texture folder: no versions; a chip says whether the chosen library already has the material."""
+        """
+        Texture folder: a chip per material against the chosen library (version there -> this folder's).
+        *why*: how *library* was picked: "selection", "holds", "new" (logic.pick_library) or "fixed"
+        (opened from its row on the Start page).
+        """
         self._mode = "folder"
         self._source_path = path
         self._groups_by_version = {"": groups}
         self._geometry_materials = frozenset(groups)
         self._plans = [MaterialPlan(name=n, versions=[""], chosen="") for n in groups]
+        self._folder_versions = {n: group_version(g) for n, g in groups.items()}
+        self._library_why = why
         self._fill_libraries(libraries, library)
+        self._set_library_box(why == "selection")
         self._unmatched_data = unmatched
         self._source_icon.setPixmap(_lucide_pixmap("folder", 18, TEXT_LABEL))
-        self._source_name.setText(Path(path).name or path)
+        versions = sorted({v for v in self._folder_versions.values() if v}, key=version_number)
+        self._source_name.setText(f"textures {versions[-1]}" if versions else (Path(path).name or path))
         self._source_meta.setText(f"Texture folder · {path}")
         self._source_meta.setToolTip(path)
         self._unmatched_btn.setText(f"{len(unmatched)} unmatched file(s)")
         self._unmatched_btn.setVisible(bool(unmatched))
         self._recursive_cb.setVisible(True)
         self._auto_assign_btn.setVisible(True)
-        self._library_label.setVisible(True)
-        self._library_combo.setVisible(True)
+        self._target.setVisible(True)
         self._latest_btn.setVisible(False)
         self._banner.setVisible(False)
         self._fill_materials()
@@ -1160,8 +1341,7 @@ class AutoMaterialUI(QWidget):
         self._unmatched_btn.setVisible(False)
         self._recursive_cb.setVisible(False)
         self._auto_assign_btn.setVisible(False)
-        self._library_label.setVisible(False)
-        self._library_combo.setVisible(False)
+        self._target.setVisible(False)
         self._latest_btn.setVisible(True)
         self._banner.setVisible(False)
         self._fill_materials()
@@ -1174,25 +1354,119 @@ class AutoMaterialUI(QWidget):
     def hide_banner(self) -> None:
         self._banner.setVisible(False)
 
-    def set_libraries(self, libraries: dict[str, set[str]], library: str) -> None:
-        """The scene's Material Libraries in the Library box, *library* chosen."""
-        self._fill_libraries(libraries, library)
+    def set_libraries(self, libraries: dict[str, dict[str, str]], library: str | None = None) -> None:
+        """The scene's Material Libraries again (after a Create, or coming back), *library* chosen."""
+        self._fill_libraries(libraries, library or self.library())
         self._refresh_rows()
 
-    def _fill_libraries(self, libraries: dict[str, set[str]], library: str) -> None:
+    def _fill_libraries(self, libraries: dict[str, dict[str, str]], library: str) -> None:
         self._libraries = libraries
+        names = list(self._folder_versions)
         self._library_combo.blockSignals(True)
         self._library_combo.clear()
         for name, materials in libraries.items():
-            self._library_combo.addItem(name)
-            self._library_combo.setItemData(self._library_combo.count() - 1,
-                                            f"{len(materials)} material(s)", Qt.ItemDataRole.ToolTipRole)
-        self._library_combo.setCurrentText(library)
+            n = sum(1 for m in names if m in materials)
+            self._library_combo.addItem(f"{name}  ·  {n} here" if n else name, name)
+        self._set_combo_library(library)
         self._library_combo.blockSignals(False)
+
+    def _set_combo_library(self, library: str) -> None:
+        idx = self._library_combo.findData(library)
+        if idx >= 0:
+            self._library_combo.setCurrentIndex(idx)
+        else:
+            self._library_combo.setEditText(library)
 
     def library(self) -> str:
         """Material Library chosen for a texture folder's Create (typed names too)."""
-        return self._library_combo.currentText().strip() or DEFAULT_LIBRARY
+        idx = self._library_combo.currentIndex()
+        text = self._library_combo.currentText().strip()
+        if idx >= 0 and text == self._library_combo.itemText(idx).strip():
+            return self._library_combo.itemData(idx) or text
+        return text.split("  ·  ")[0].strip() or DEFAULT_LIBRARY
+
+    def _set_library_box(self, box: bool) -> None:
+        self._library_label.setVisible(box)
+        self._library_combo.setVisible(box)
+        self._from_selection.setVisible(box and self._library_why == "selection")
+        self._target_line.setVisible(not box)
+
+    def _show_library_box(self) -> None:
+        self._library_why = "chosen"
+        self._set_library_box(True)
+        self._library_combo.setFocus()
+        self._refresh_target()
+
+    def _on_library_changed(self) -> None:
+        if self._library_why == "selection" and not self._following:
+            self._library_why = "chosen"
+            self._from_selection.setVisible(False)
+        self._refresh_rows()
+
+    def _follow_selection(self) -> None:
+        """Linked, one Material Library selected in /stage: the box shows it, with a flash."""
+        if not self.linked():
+            return
+        names = [p.rsplit("/", 1)[-1] for p in self._scene_selection]
+        # Only a library this page can use (a Painter export's library updates from its export)
+        if len(names) != 1 or names[0] not in self._libraries \
+                or (names[0] == self.library() and self._library_why == "selection"):
+            return
+        self._following = True
+        self._library_why = "selection"
+        self._set_library_box(True)
+        self._set_combo_library(names[0])
+        self._following = False
+        self._refresh_rows()
+        self._library_combo.setStyleSheet(STYLE_COMBO + f"QComboBox {{ border: 1px solid {AMBER}; }}")
+        QTimer.singleShot(900, lambda: self._library_combo.setStyleSheet(STYLE_COMBO))
+
+    def _refresh_target(self) -> None:
+        """The 'Updating in X · change' line and the other libraries that have these materials."""
+        lib = self.library()
+        exists = lib in self._libraries
+        has = exists and any(m in self._libraries[lib] for m in self._folder_versions)
+        verb = "Updating in" if has else "Creating in" if exists else "Creating"
+        new = "" if exists else f"  <span style='color:{TEXT_META}'>(new library)</span>"
+        self._target_line.setText(
+            f"{verb} <b style='color:{TEXT_PRIMARY}'>{lib}</b>{new}  ·  "
+            f"<a href='change' style='color:{BLUE_400}; text-decoration:none'>change</a>")
+        self._from_selection.setVisible(self._library_combo.isVisibleTo(self) and self._library_why == "selection")
+        others = [name for name, mats in self._libraries.items()
+                  if name != lib and any(m in mats for m in self._folder_versions)]
+        old = {name: box.isChecked() for name, box in self._extra_ticks.items()}
+        while self._extra_lay.count():
+            w = self._extra_lay.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        self._extra_ticks = {}
+        for name in others:
+            mats = self._libraries[name]
+            n = sum(1 for m in self._folder_versions
+                    if m in mats and folder_status(mats[m], self._folder_versions[m]) == STATUS_UPDATE)
+            box = QCheckBox(f"Update there too: {name}  ·  {n} to update" if n else f"{name}  ·  up to date")
+            box.setStyleSheet(STYLE_CHECKBOX)
+            box.setEnabled(n > 0)
+            box.setChecked(old.get(name, False) and n > 0)
+            box.toggled.connect(lambda _on: self._refresh_summary())
+            self._extra_lay.addWidget(box)
+            self._extra_ticks[name] = box
+        self._dup_line.setVisible(bool(others))
+        self._dup_line.setText(
+            f"<a href='dup' style='color:{BLUE_400}; text-decoration:none'>Also used in {len(others)} other "
+            f"librar{'ies' if len(others) != 1 else 'y'}</a>  <span style='color:{TEXT_META}'>· not changed "
+            "unless ticked</span>")
+        if not others:
+            self._extra_box.setVisible(False)
+
+    def extra_libraries(self) -> list[str]:
+        """Other libraries ticked to update too (their existing materials only)."""
+        return [name for name, box in self._extra_ticks.items() if box.isChecked()]
+
+    def folder_status_of(self, plan: MaterialPlan) -> str:
+        """new / update / ok for a texture folder material against the chosen library."""
+        scene = self._libraries.get(self.library(), {}).get(plan.name)
+        return folder_status(scene, self._folder_versions.get(plan.name, ""))
 
     def is_recursive(self) -> bool:
         return self._recursive_cb.isChecked()
@@ -1217,9 +1491,14 @@ class AutoMaterialUI(QWidget):
 
     def _chip_for(self, plan: MaterialPlan) -> tuple[str, str] | None:
         if self._mode != "usd":
-            if plan.name in self._libraries.get(self.library(), ()):
-                return "update", STATUS_UPDATE
-            return "new", STATUS_NEW
+            version = self._folder_versions.get(plan.name, "")
+            scene = self._libraries.get(self.library(), {}).get(plan.name)
+            status = folder_status(scene, version)
+            if status == STATUS_NEW:
+                return (f"+{version}" if version else "new"), status
+            if status == STATUS_OK:
+                return version or "up to date", status
+            return (f"{scene}→{version}" if scene and version else "update"), status
         status = material_status(plan, self._geometry_materials)
         if status == STATUS_UPDATE:
             return f"{plan.scene}→{plan.chosen}", status
@@ -1255,8 +1534,9 @@ class AutoMaterialUI(QWidget):
             item.setData(ROLE_META, f"{n} map{'s' if n != 1 else ''}" + (" · UDIM" if udim else ""))
         if self._mode != "usd":
             lib = self.library()
-            item.setToolTip(f"Updates {plan.name} in {lib}" if chip[1] == STATUS_UPDATE
-                            else f"Not in {lib} yet: Create makes it there")
+            item.setToolTip({STATUS_UPDATE: f"Updates {plan.name} in {lib}",
+                             STATUS_OK: f"Already at this version in {lib}: left as it is"}.get(
+                chip[1], f"Not in {lib} yet: Create makes it there"))
         else:
             item.setToolTip(CHIP_HELP.get(chip[1], "") if chip else "")
 
@@ -1422,31 +1702,38 @@ class AutoMaterialUI(QWidget):
             self._legend.setText(self._legend_html())
             self._legend.setVisible(True)
         else:
-            lib = self.library()
-            in_lib = self._libraries.get(lib)
+            self._refresh_target()
             on = [p for p in self._plans if p.enabled]
-            update = sum(1 for p in on if in_lib and p.name in in_lib)
-            new = len(on) - update
+            statuses = [self.folder_status_of(p) for p in on]
+            new, update, ok = (statuses.count(s) for s in (STATUS_NEW, STATUS_UPDATE, STATUS_OK))
             parts = [f"{new} new"] if new else []
             parts += [f"{update} update"] if update else []
+            parts += [f"{ok} up to date"] if ok else []
             parts += [f"{len(self._plans) - len(on)} left out"] if len(on) < len(self._plans) else []
-            where = f"in {lib}" if in_lib is not None else f"new library {lib}, after the selected LOP node"
-            self._summary_label.setText(" · ".join(parts + [where]))
+            self._summary_label.setText(" · ".join(parts))
             if new and update:
                 text = f"Create {new} and update {update}"
             elif update:
                 text = f"Update {update} material{'s' if update != 1 else ''}"
-            else:
+            elif new:
                 text = f"Create {new} material{'s' if new != 1 else ''}"
-            self._create_btn.setText(text)
-            self._create_btn.setEnabled(bool(on))
-            self._legend.setVisible(False)
+            else:
+                text = ""
+            extra = len(self.extra_libraries())
+            if extra:
+                more = f"{extra} more librar{'ies' if extra != 1 else 'y'}"
+                text = f"{text} + {more}" if text else f"Update {more}"
+            self._create_btn.setText(text or "Nothing to change")
+            self._create_btn.setEnabled(bool(text))
+            self._legend.setText(self._legend_html(folder=True))
+            self._legend.setVisible(True)
 
     @staticmethod
-    def _legend_html() -> str:
+    def _legend_html(folder: bool = False) -> str:
         parts = []
-        for status, label in ((STATUS_OK, "up to date"), (STATUS_UPDATE, "will update"), (STATUS_NEW, "new"),
-                              (STATUS_PINNED, "pinned"), (STATUS_MISSING, "not in geometry")):
+        tones = ((STATUS_OK, "up to date"), (STATUS_UPDATE, "will update"), (STATUS_NEW, "new"),
+                 (STATUS_PINNED, "pinned"), (STATUS_MISSING, "not in geometry"))
+        for status, label in tones[:3] if folder else tones:
             fg = CHIP_TONES[status][0]
             parts.append(f"<span style='color:{fg}'>●</span> <span style='color:{TEXT_META}'>{label}</span>")
         return "<span style='font-size:12px'>" + "&nbsp;&nbsp;&nbsp;".join(parts) + "</span>"
