@@ -68,7 +68,7 @@ BG_CONTENT = "#121214"
 BG_SURFACE = "#27272a"
 TEXT_PRIMARY = "#fafafa"
 TEXT_LABEL = "#a1a1aa"
-TEXT_META = "#71717a"
+TEXT_META = "#8e8e98"    # icons, placeholders, disabled only (5:1 on the panel)
 TEXT_ERROR = "#fca5a5"
 BLUE_600 = "#2563eb"
 BLUE_400 = "#60a5fa"
@@ -76,6 +76,31 @@ EMERALD = "#10b981"
 AMBER = "#f59e0b"
 ZINC_400 = "#a1a1aa"
 ZINC_500 = "#71717a"
+
+# Type rules: every piece of text takes one role, by what it is, never a size picked by hand.
+#   title    20px 600 TEXT_PRIMARY   the window's name
+#   heading  15px 600 TEXT_PRIMARY   the question on Start, the source's name
+#   body     14px 400 TEXT_PRIMARY   names, buttons, table cells, the result line (600 for names in lists)
+#   meta     13px 400 TEXT_LABEL     second lines, hints, summaries, legends, links
+#   caps     12px 600 TEXT_LABEL     section labels in capitals, 1px letter spacing
+#   chip     12px 600 status colour  chips
+# Two weights (400, 600). 12px only for caps and chips. Supporting text is TEXT_LABEL, never TEXT_META.
+FS_TITLE, FS_HEADING, FS_BODY, FS_META, FS_SMALL = 20, 15, 14, 13, 12
+
+
+def _text(role: str, color: str | None = None) -> str:
+    """Style sheet for a label of *role* (title, heading, body, name, meta, caps)."""
+    size, weight, default = {
+        "title": (FS_TITLE, 600, TEXT_PRIMARY),
+        "heading": (FS_HEADING, 600, TEXT_PRIMARY),
+        "body": (FS_BODY, 400, TEXT_PRIMARY),
+        "name": (FS_BODY, 600, TEXT_PRIMARY),
+        "meta": (FS_META, 400, TEXT_LABEL),
+        "caps": (FS_SMALL, 600, TEXT_LABEL),
+    }[role]
+    spacing = " letter-spacing: 1px;" if role == "caps" else ""
+    return f"color: {color or default}; font-size: {size}px; font-weight: {weight};{spacing}"
+
 
 def _font(px: int, weight: QFont.Weight = QFont.Weight.Normal) -> QFont:
     """Font in pixels: Houdini scales point sizes with its UI scale, which overflows painted chips."""
@@ -92,7 +117,7 @@ STYLE_WINDOW = f"""
     }}
     QLabel {{ color: {TEXT_PRIMARY}; }}
     QWidget#AutoMaterialWindow QWidget {{ font-size: 13px; }}
-    QPushButton, QToolButton, QComboBox, QCheckBox, QLineEdit {{ font-size: 13px; }}
+    QPushButton, QToolButton, QComboBox, QCheckBox, QLineEdit {{ font-size: 14px; }}
 """
 
 STYLE_BTN = """
@@ -185,7 +210,7 @@ STYLE_TABLE = f"""
         padding: 8px 12px;
         border: none;
         border-bottom: 2px solid #2a2a2c;
-        font-weight: 800;
+        font-weight: 600;
         font-size: 13px;
     }}
     QTableWidget::item {{
@@ -205,7 +230,7 @@ STYLE_CHECKBOX = f"""
     QCheckBox::indicator:checked {{ background: rgba(37, 99, 235, 0.80); border-color: {BLUE_400}; }}
 """
 
-STYLE_SECTION_LABEL = f"color: {TEXT_META}; font-size: 12px; font-weight: 800; letter-spacing: 1px;"
+STYLE_SECTION_LABEL = _text("caps")
 
 STYLE_COMBO = f"""
     QComboBox {{
@@ -454,7 +479,7 @@ class _LinkToggle(QPushButton):
         tone = "background: rgba(37, 99, 235, 0.22); border: 1px solid rgba(37, 99, 235, 0.70);" \
             f" color: {BLUE_400};" if on else \
             f"background: transparent; border: 1px solid rgba(63, 63, 70, 0.80); color: {TEXT_LABEL};"
-        self.setStyleSheet(f"QPushButton {{ {tone} border-radius: 11px; padding: 2px 10px; font-size: 12px; }}")
+        self.setStyleSheet(f"QPushButton {{ {tone} border-radius: 12px; padding: 3px 10px; font-size: {FS_META}px; }}")
 
 
 # ---------------------------------------------------------------------------
@@ -503,7 +528,7 @@ class _LoadingOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.fillRect(self.rect(), QColor(0, 0, 0, 180))
         painter.setPen(QColor(TEXT_PRIMARY))
-        painter.setFont(_font(16, QFont.Weight.DemiBold))
+        painter.setFont(_font(FS_HEADING, QFont.Weight.DemiBold))
         painter.drawText(self.rect().adjusted(0, -20, 0, 0), Qt.AlignmentFlag.AlignCenter, self._text)
         if self._sub_text:
             color = QColor(TEXT_ERROR) if self._mode == self._MODE_LOADING else QColor(TEXT_META)
@@ -614,15 +639,15 @@ class _MaterialDelegate(QStyledItemDelegate):
             right = cr.left() - 8
         elif index.data(ROLE_META):
             meta = index.data(ROLE_META)
-            painter.setFont(_font(12))
-            painter.setPen(QColor(ZINC_500))
+            painter.setFont(_font(FS_META))
+            painter.setPen(QColor(TEXT_LABEL))
             w = painter.fontMetrics().horizontalAdvance(meta)
             painter.drawText(QRect(right - w, rect.top(), w, rect.height()),
                              Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, meta)
             right -= w + 8
 
         # Name
-        font = _font(14, QFont.Weight.DemiBold if selected else QFont.Weight.Medium)
+        font = _font(FS_BODY, QFont.Weight.DemiBold if selected else QFont.Weight.Normal)
         font.setStrikeOut(not enabled)
         painter.setFont(font)
         painter.setPen(QColor(ZINC_500) if not enabled else QColor(BLUE_400) if selected else QColor("#e4e4e7"))
@@ -658,15 +683,15 @@ class _SourceCard(QFrame):
         lay.addWidget(self._icon)
         lay.addSpacing(6)
         self._title = QLabel(title)
-        self._title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 14px; font-weight: 600;")
+        self._title.setStyleSheet(_text("name"))
         lay.addWidget(self._title)
         self._sub = QLabel(sub)
-        self._sub.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 13px;")
+        self._sub.setStyleSheet(_text("meta"))
         self._sub.setWordWrap(True)
         lay.addWidget(self._sub)
         # What a click will do, in the accent colour (Latest publish only)
         self._action = QLabel("")
-        self._action.setStyleSheet(f"color: {BLUE_400}; font-size: 13px;")
+        self._action.setStyleSheet(_text("meta", BLUE_400))
         self._action.setWordWrap(True)
         self._action.setVisible(False)
         lay.addWidget(self._action)
@@ -723,13 +748,13 @@ class _AssetRow(QWidget):
         lay.addWidget(icon)
         text = QVBoxLayout()
         text.setSpacing(0)
-        name = QLabel(asset["name"] + (f"   <span style='color:{BLUE_400}; font-size:12px'>selected branch</span>"
+        name = QLabel(asset["name"] + (f"   <span style='color:{BLUE_400}; font-size:{FS_META}px'>selected branch</span>"
                                        if asset.get("branch") else ""))
-        name.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 14px; font-weight: 600;")
+        name.setStyleSheet(_text("name"))
         text.addWidget(name)
         self._meta_text = asset.get("meta", "")
         meta = QLabel(self._meta_text)
-        meta.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 12px;")
+        meta.setStyleSheet(_text("meta"))
         text.addWidget(meta)
         self._meta = meta
         lay.addLayout(text, stretch=1)
@@ -816,15 +841,15 @@ class AutoMaterialUI(QWidget):
         lay.setSpacing(10)
 
         title = QLabel("Auto Material Builder")
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 20px; font-weight: 700;")
+        title.setStyleSheet(_text("title"))
         lay.addWidget(title)
         sub = QLabel("Karma materials from a texture folder or a Substance Painter USD export.")
-        sub.setStyleSheet(f"color: {TEXT_META}; font-size: 13px;")
+        sub.setStyleSheet(_text("meta"))
         lay.addWidget(sub)
         lay.addSpacing(10)
 
         question = QLabel("Where are the textures?")
-        question.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 15px; font-weight: 600;")
+        question.setStyleSheet(_text("heading"))
         lay.addWidget(question)
 
         cards = QHBoxLayout()
@@ -843,7 +868,7 @@ class AutoMaterialUI(QWidget):
         recent_row = QHBoxLayout()
         recent_row.setSpacing(8)
         recent_label = QLabel("Recent")
-        recent_label.setStyleSheet(f"color: {TEXT_META}; font-size: 13px;")
+        recent_label.setStyleSheet(_text("meta"))
         recent_row.addWidget(recent_label)
         self._recent_combo = QComboBox()
         self._recent_combo.setEditable(True)
@@ -858,7 +883,7 @@ class AutoMaterialUI(QWidget):
         recent_row.addWidget(self._recent_combo, stretch=1)
         lay.addLayout(recent_row)
         drop = QLabel("Or drop a folder or a .usd file anywhere on this window.")
-        drop.setStyleSheet(f"color: {TEXT_META}; font-size: 12px;")
+        drop.setStyleSheet(_text("meta"))
         lay.addWidget(drop)
 
         lay.addSpacing(14)
@@ -867,7 +892,7 @@ class AutoMaterialUI(QWidget):
         self._assets_header.addWidget(self._assets_label)
         self._assets_header.addStretch()
         self._assets_hint = QLabel("")
-        self._assets_hint.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 12px;")
+        self._assets_hint.setStyleSheet(_text("meta"))
         self._assets_header.addWidget(self._assets_hint)
         self._assets_header.addSpacing(8)
         self._assets_header.addWidget(self._new_link_toggle())
@@ -879,12 +904,12 @@ class AutoMaterialUI(QWidget):
         self._asset_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         lay.addWidget(self._asset_list, stretch=1)
         self._assets_empty = QLabel("Nothing built from a publish in this scene yet.")
-        self._assets_empty.setStyleSheet(f"color: {TEXT_META}; font-size: 13px; padding: 8px 2px;")
+        self._assets_empty.setStyleSheet(_text("meta") + " padding: 8px 2px;")
         lay.addWidget(self._assets_empty)
 
         foot = QHBoxLayout()
         self._assets_foot_hint = QLabel("")
-        self._assets_foot_hint.setStyleSheet(f"color: {TEXT_META}; font-size: 12px;")
+        self._assets_foot_hint.setStyleSheet(_text("meta"))
         foot.addWidget(self._assets_foot_hint)
         foot.addStretch()
         self._update_assets_btn = QPushButton("Update")
@@ -910,7 +935,7 @@ class AutoMaterialUI(QWidget):
         spark.setPixmap(_lucide_pixmap("sparkles", 16, BLUE_400))
         b_lay.addWidget(spark)
         self._banner_label = QLabel("")
-        self._banner_label.setStyleSheet(f"color: {BLUE_400}; font-size: 14px;")
+        self._banner_label.setStyleSheet(_text("body", BLUE_400))
         b_lay.addWidget(self._banner_label, stretch=1)
         self._banner_btn = QPushButton("Open version manager")
         self._banner_btn.setStyleSheet(STYLE_BTN)
@@ -929,10 +954,10 @@ class AutoMaterialUI(QWidget):
         self._source_icon = QLabel()
         bar_lay.addWidget(self._source_icon)
         self._source_name = QLabel("")
-        self._source_name.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 15px; font-weight: 700;")
+        self._source_name.setStyleSheet(_text("heading"))
         bar_lay.addWidget(self._source_name)
         self._source_meta = QLabel("")
-        self._source_meta.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 13px;")
+        self._source_meta.setStyleSheet(_text("meta"))
         self._source_meta.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         bar_lay.addWidget(self._source_meta, stretch=1)
         self._unmatched_btn = QPushButton("")
@@ -1022,7 +1047,7 @@ class AutoMaterialUI(QWidget):
         self._slot_table.customContextMenuRequested.connect(self._map_menu)
         r_lay.addWidget(self._slot_table)
         self._maps_note = QLabel("")
-        self._maps_note.setStyleSheet(f"color: {CHIP_TONES[STATUS_MISSING][0]}; font-size: 13px;")
+        self._maps_note.setStyleSheet(_text("meta", CHIP_TONES[STATUS_MISSING][0]))
         self._maps_note.setWordWrap(True)
         r_lay.addWidget(self._maps_note)
         splitter.addWidget(right)
@@ -1031,19 +1056,21 @@ class AutoMaterialUI(QWidget):
 
         # Texture folder: where Create goes. A line ("Updating in X · change"); the box only on change,
         # or when it follows the scene selection. A name not in the box makes a new library.
-        self._target = QWidget()
+        self._target = QFrame()
+        self._target.setObjectName("TargetBar")
+        self._target.setStyleSheet(STYLE_SOURCE_BAR.replace("SourceBar", "TargetBar"))
         t_lay = QVBoxLayout(self._target)
-        t_lay.setContentsMargins(0, 0, 0, 0)
-        t_lay.setSpacing(4)
+        t_lay.setContentsMargins(12, 8, 8, 8)
+        t_lay.setSpacing(6)
         t_row = QHBoxLayout()
         t_row.setSpacing(8)
         self._target_line = QLabel("")
         self._target_line.setTextFormat(Qt.TextFormat.RichText)
-        self._target_line.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 13px;")
+        self._target_line.setStyleSheet(_text("body", TEXT_LABEL))
         self._target_line.linkActivated.connect(lambda _l: self._show_library_box())
         t_row.addWidget(self._target_line)
         self._library_label = QLabel("Into")
-        self._library_label.setStyleSheet(f"color: {TEXT_META}; font-size: 13px;")
+        self._library_label.setStyleSheet(_text("body", TEXT_LABEL))
         t_row.addWidget(self._library_label)
         self._library_combo = QComboBox()
         self._library_combo.setEditable(True)
@@ -1062,12 +1089,12 @@ class AutoMaterialUI(QWidget):
         t_lay.addLayout(t_row)
         self._dup_line = QLabel("")
         self._dup_line.setTextFormat(Qt.TextFormat.RichText)
-        self._dup_line.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 12px;")
+        self._dup_line.setStyleSheet(_text("meta"))
         self._dup_line.linkActivated.connect(lambda _l: self._extra_box.setVisible(not self._extra_box.isVisible()))
         t_lay.addWidget(self._dup_line)
         self._extra_box = QWidget()
         self._extra_lay = QVBoxLayout(self._extra_box)
-        self._extra_lay.setContentsMargins(12, 0, 0, 0)
+        self._extra_lay.setContentsMargins(0, 0, 0, 0)
         self._extra_lay.setSpacing(2)
         t_lay.addWidget(self._extra_box)
         lay.addWidget(self._target)
@@ -1088,7 +1115,7 @@ class AutoMaterialUI(QWidget):
         foot.addWidget(self._auto_assign_btn)
         foot.addStretch(1)
         self._summary_label = QLabel("")
-        self._summary_label.setStyleSheet(f"color: {TEXT_LABEL}; font-size: 13px;")
+        self._summary_label.setStyleSheet(_text("meta"))
         self._summary_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self._summary_label.setWordWrap(True)
         foot.addWidget(self._summary_label, stretch=2)
@@ -1427,10 +1454,10 @@ class AutoMaterialUI(QWidget):
         exists = lib in self._libraries
         has = exists and any(m in self._libraries[lib] for m in self._folder_versions)
         verb = "Updating in" if has else "Creating in" if exists else "Creating"
-        new = "" if exists else f"  <span style='color:{TEXT_META}'>(new library)</span>"
+        new = "" if exists else "  (new library)"
         self._target_line.setText(
             f"{verb} <b style='color:{TEXT_PRIMARY}'>{lib}</b>{new}  ·  "
-            f"<a href='change' style='color:{BLUE_400}; text-decoration:none'>change</a>")
+            f"<a href='change' style='color:{BLUE_400}; text-decoration:none'>Change</a>")
         self._from_selection.setVisible(self._library_combo.isVisibleTo(self) and self._library_why == "selection")
         others = [name for name, mats in self._libraries.items()
                   if name != lib and any(m in mats for m in self._folder_versions)]
@@ -1454,7 +1481,7 @@ class AutoMaterialUI(QWidget):
         self._dup_line.setVisible(bool(others))
         self._dup_line.setText(
             f"<a href='dup' style='color:{BLUE_400}; text-decoration:none'>Also used in {len(others)} other "
-            f"librar{'ies' if len(others) != 1 else 'y'}</a>  <span style='color:{TEXT_META}'>· not changed "
+            f"librar{'ies' if len(others) != 1 else 'y'}</a>  · not changed "
             "unless ticked</span>")
         if not others:
             self._extra_box.setVisible(False)
@@ -1655,7 +1682,7 @@ class AutoMaterialUI(QWidget):
             self._slot_table.setItem(i, 1, path_item)
             cs_item = QTableWidgetItem(slot_info.colorspace or "default")
             if not slot_info.colorspace:
-                cs_item.setForeground(QColor(TEXT_META))
+                cs_item.setForeground(QColor(TEXT_LABEL))
                 cs_item.setToolTip("No colour space in the name: the map type's default is used")
             self._slot_table.setItem(i, 2, cs_item)
 
@@ -1735,8 +1762,8 @@ class AutoMaterialUI(QWidget):
                  (STATUS_PINNED, "pinned"), (STATUS_MISSING, "not in geometry"))
         for status, label in tones[:3] if folder else tones:
             fg = CHIP_TONES[status][0]
-            parts.append(f"<span style='color:{fg}'>●</span> <span style='color:{TEXT_META}'>{label}</span>")
-        return "<span style='font-size:12px'>" + "&nbsp;&nbsp;&nbsp;".join(parts) + "</span>"
+            parts.append(f"<span style='color:{fg}'>●</span> <span style='color:{TEXT_LABEL}'>{label}</span>")
+        return f"<span style='font-size:{FS_META}px'>" + "&nbsp;&nbsp;&nbsp;&nbsp;".join(parts) + "</span>"
 
     # =====================================================================
     # Messages and loading
@@ -1745,7 +1772,7 @@ class AutoMaterialUI(QWidget):
     def set_message(self, text: str, error: bool = False, tooltip: str = "") -> None:
         self._message_label.setText(text)
         self._message_label.setToolTip(tooltip)
-        self._message_label.setStyleSheet(f"color: {TEXT_ERROR if error else TEXT_LABEL}; font-size: 14px;")
+        self._message_label.setStyleSheet(_text("body", TEXT_ERROR if error else TEXT_LABEL))
         self._message_label.setVisible(bool(text))
 
     def message(self) -> str:
@@ -1788,7 +1815,7 @@ class AutoMaterialUI(QWidget):
         layout = QVBoxLayout(dlg)
         layout.setSpacing(12)
         label = QLabel(f"{len(self._unmatched_data)} file(s) were not assigned to any material.")
-        label.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: 14px;")
+        label.setStyleSheet(_text("body"))
         layout.addWidget(label)
         log = QPlainTextEdit()
         log.setReadOnly(True)

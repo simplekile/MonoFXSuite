@@ -62,7 +62,19 @@
 - Results and notes of Create go to the line under the window, never a modal dialog: a modal box
   blocks Houdini (and the MCP bridge) until someone closes it.
 - Fonts are set in pixels (`_font`, `font-size: …px`): Houdini scales point sizes with its UI scale,
-  which overflowed the painted chips. Base 13px, names 14px, chips 12px.
+  which overflowed the painted chips. Every label takes a role (`ui._text`): title 20/600, heading
+  15/600, body 14/400 (names in lists 600), meta 13/400 in `TEXT_LABEL`, caps and chips 12/600. Two
+  weights only; 12px only for caps labels and chips; supporting text is never `TEXT_META` (icons,
+  placeholders and disabled only). Panels of controls (source bar, the "Updating in" block) share
+  `STYLE_SOURCE_BAR`.
+- Versions of a Painter library come from its image files, not only its record (`library_record`):
+  a material pasted from another version shows that version. Materials another tool made from a
+  Painter export (SideFX's Painter-to-Karma, untagged images) are read and updated in place: the image
+  wired into a slot's surface input is that slot's image (`_wired_image`), and a library without a
+  record gets one from its texture folders (`_infer_record`, any name). A row's Update or Create
+  builds into that library (`apply_painter_plan(library=…)`); a library other than `{base}_materials`
+  keeps its geometry and assignment. Export family (`same_family`): the name before `_vNNN`, and the
+  same suffix or none (`char_v008_full` then `char_v010`; `_lite` stays apart).
 - What the scene has is a JSON record on the asset's Material Library (user data `monofx_substance`:
   asset, export, and per material its version, pin and `left_out`: an unticked material stays off). A library made before the record existed is
   read from the `_vNNN` in the texture folders the tool set (`_infer_record`), so no data is needed
