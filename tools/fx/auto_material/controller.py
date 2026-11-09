@@ -232,19 +232,18 @@ def run(focus: str | None = None) -> None:
         state["page"], state["usd"] = "usd", ctx
         latest = ctx["data"][ctx["latest"]]
         name, kind = asset_label(ctx["path"])
-        found = asset_from_path(ctx["path"])
         geo = latest.source.geo_layers[0] if latest.source.geo_layers else ""
         # A publish keeps its version in the file name (_v005) or in its folder (…/v005/file.usd).
         folder = Path(geo).parent.name
         geo_v = version_from_path(geo) or (folder if version_number(folder) >= 0 and folder[:1] in "vV" else Path(geo).name)
         meta = " · ".join(x for x in (
-            found[0].lstrip("_") if found else "",
+            f"{name} · Painter USD",
             f"{len(ctx['exports'])} exports, latest {ctx['latest']}",
             f"geometry {geo_v}",
-            f"into {ctx['library'] or latest.source.node_base + config.SUBSTANCE_MATLIB_NODE_SUFFIX}",
         ) if x)
+        library = ctx["library"] or latest.source.node_base + config.SUBSTANCE_MATLIB_NODE_SUFFIX
         ui.show_usd(name, meta, kind, ctx["path"], ctx["plans"],
-                    {v: d.groups for v, d in ctx["data"].items()}, set(latest.groups))
+                    {v: d.groups for v, d in ctx["data"].items()}, set(latest.groups), library=library)
         ui.save_to_history(usd_path)
 
     def open_path(path: str) -> None:

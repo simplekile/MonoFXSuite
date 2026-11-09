@@ -39,7 +39,9 @@
   thumbnail, status colour on the edge, check to leave out, right click: version, pin, leave out,
   folder) and, in a full-height column beside them, the maps of the selected tile (two lines a map: name and
   colour space, then the file). Tiles share the row's width (`_fit_tiles`). **Action bar**: result line, Undo (Houdini's undo of the
-  last run), Auto assign (texture folder), the button. On open the window shows the first library
+  last run), Auto assign (texture folder), the button. Work in progress shows there too (a thin bar,
+  what is being done, Cancel) with the rest of the window disabled, never a dark overlay. The page
+  title and the window title are the library being looked at. On open the window shows the first library
   behind its publish, else the publish when the scene has none, else the first library.
   Latest publish takes the publish's Painter export when its latest `vNNN` holds one
   (`find_painter_usd`: highest `_vNNN` in the file name, `*.material.usda` skipped), else its textures.
@@ -74,7 +76,10 @@
   only; supporting text is never `TEXT_META` (icons, placeholders, disabled). Status colours
   (`STATUS_COLORS`) are the same on rings, tile edges, chips and the legend. A pill's radius stays
   under half its height, or Qt draws square corners. Thumbnails load one per event-loop turn
-  (`_Thumbnails`); EXR needs OpenImageIO, else the tile shows a placeholder.
+  (`_Thumbnails`); EXR needs OpenImageIO, else the tile shows a placeholder. Icons: Houdini's own node
+  icons for what a row stands for (`_node_icon`: Material Library, MaterialX surface, image; Lucide
+  outside Houdini), a Lucide icon per map kind (`_slot_icon`: colour, value, shape, see-through, light,
+  skin, layers), a status icon before the headline, an icon on every button.
 - Versions of a Painter library come from its image files, not only its record (`library_record`):
   a material pasted from another version shows that version. Materials another tool made from a
   Painter export (SideFX's Painter-to-Karma, untagged images) are read and updated in place: the image

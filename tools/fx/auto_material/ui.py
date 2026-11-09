@@ -43,6 +43,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPlainTextEdit,
+    QProgressBar,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -258,7 +259,74 @@ LUCIDE = {
     "triangle-alert": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
 }
 
+LUCIDE.update({
+    "palette": '<circle cx="13.5" cy="6.5" r=".5"/><circle cx="17.5" cy="10.5" r=".5"/><circle cx="8.5" cy="7.5" r=".5"/><circle cx="6.5" cy="12.5" r=".5"/><path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z"/>',
+    "sliders": '<line x1="21" x2="14" y1="4" y2="4"/><line x1="10" x2="3" y1="4" y2="4"/><line x1="21" x2="12" y1="12" y2="12"/><line x1="8" x2="3" y1="12" y2="12"/><line x1="21" x2="16" y1="20" y2="20"/><line x1="12" x2="3" y1="20" y2="20"/><line x1="14" x2="14" y1="2" y2="6"/><line x1="8" x2="8" y1="10" y2="14"/><line x1="16" x2="16" y1="18" y2="22"/>',
+    "mountain": '<path d="m8 3 4 8 5-5 5 15H2L8 3z"/>',
+    "eye": '<path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/>',
+    "sun": '<circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>',
+    "droplet": '<path d="M12 22a7 7 0 0 0 7-7c0-2-1-3.9-3-5.5s-3.5-4-4-6.5c-.5 2.5-2 4.9-4 6.5C6 11.1 5 13 5 15a7 7 0 0 0 7 7z"/>',
+    "layers": '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
+    "gem": '<path d="M6 3h12l4 6-10 13L2 9Z"/><path d="M11 3 8 9l4 13 4-13-3-6"/><path d="M2 9h20"/>',
+    "refresh": '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
+    "circle-check": '<circle cx="12" cy="12" r="10"/><path d="m9 12 2 2 4-4"/>',
+    "circle-up": '<circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4"/><path d="M12 16V8"/>',
+    "circle-plus": '<circle cx="12" cy="12" r="10"/><path d="M8 12h8"/><path d="M12 8v8"/>',
+    "x": '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    "target": '<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>',
+    "library": '<path d="m16 6 4 14"/><path d="M12 6v14"/><path d="M8 8v12"/><path d="M4 4v16"/>',
+    "save": '<path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7"/><path d="M7 3v4a1 1 0 0 0 1 1h7"/>',
+})
+
 ASSET_ICONS = {"character": "user", "prop": "box", "environment": "building"}
+
+# Map icons, by what the slot does: colour, a value, the surface shape, see-through, light, skin, layers
+_SLOT_ICON_WORDS = (
+    (("emission",), "sun"),
+    (("subsurface",), "droplet"),
+    (("coat", "sheen"), "layers"),
+    (("normal", "bump", "height", "displacement"), "mountain"),
+    (("opacity", "transmission", "alpha"), "eye"),
+    (("metal",), "gem"),
+    (("color", "diffuse", "albedo"), "palette"),
+)
+
+
+def _slot_icon(slot: str) -> str:
+    for words, icon in _SLOT_ICON_WORDS:
+        if any(w in slot for w in words):
+            return icon
+    return "sliders"
+
+
+# Houdini's own node icons, so a row looks like the node it stands for; Lucide outside Houdini
+_NODE_ICONS = {  # kind -> (category, node type, fallback)
+    "library": ("lop", "materiallibrary", "library"),
+    "material": ("vop", "mtlxstandard_surface", "layers"),
+    "image": ("vop", "mtlximage", "image"),
+}
+_node_icon_cache: dict[tuple[str, int], QPixmap] = {}
+
+
+def _node_icon(kind: str, size: int = 16) -> QPixmap:
+    key = (kind, size)
+    if key not in _node_icon_cache:
+        category, type_name, fallback = _NODE_ICONS[kind]
+        pm = None
+        try:
+            import hou
+            cat = hou.lopNodeTypeCategory() if category == "lop" else hou.vopNodeTypeCategory()
+            node_type = hou.nodeType(cat, type_name)
+            if node_type is not None:
+                icon = hou.qt.Icon(node_type.icon(), size * 2, size * 2)
+                pm = icon.pixmap(size * 2, size * 2)
+                pm.setDevicePixelRatio(2.0)
+                if pm.isNull():
+                    pm = None
+        except Exception:
+            pm = None
+        _node_icon_cache[key] = pm or _lucide_pixmap(fallback, size, TEXT_LABEL)
+    return _node_icon_cache[key]
 
 
 def _lucide_pixmap(name: str, size: int = 16, color: str = TEXT_LABEL, scale: float = 2.0) -> QPixmap:
@@ -441,54 +509,6 @@ class _Thumbnails:
 
 
 # ---------------------------------------------------------------------------
-# Loading overlay
-# ---------------------------------------------------------------------------
-
-class _LoadingOverlay(QWidget):
-    """Semi-transparent overlay with centred status text; a click cancels."""
-
-    def __init__(self, parent: QWidget) -> None:
-        super().__init__(parent)
-        self._text = "Loading..."
-        self._cancelled = False
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setVisible(False)
-
-    @property
-    def cancelled(self) -> bool:
-        return self._cancelled
-
-    def reset(self) -> None:
-        self._cancelled = False
-
-    def set_text(self, text: str) -> None:
-        self._text = text
-        self.update()
-
-    def paintEvent(self, event) -> None:
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.fillRect(self.rect(), QColor(0, 0, 0, 170))
-        painter.setPen(QColor(TEXT_PRIMARY))
-        painter.setFont(_font(FS_TITLE, QFont.Weight.DemiBold))
-        painter.drawText(self.rect().adjusted(0, -18, 0, 0), Qt.AlignmentFlag.AlignCenter, self._text)
-        painter.setPen(QColor(TEXT_LABEL))
-        painter.setFont(_font(FS_META))
-        painter.drawText(self.rect().adjusted(0, 34, 0, 0), Qt.AlignmentFlag.AlignCenter,
-                         "Cancelling…" if self._cancelled else "Click to cancel")
-        painter.end()
-
-    def mousePressEvent(self, event) -> None:
-        self._cancelled = True
-        self.update()
-        event.accept()
-
-    def showEvent(self, event) -> None:
-        super().showEvent(event)
-        self.raise_()
-
-
-# ---------------------------------------------------------------------------
 # Sidebar: one row per Material Library in the scene, with its ring
 # ---------------------------------------------------------------------------
 ROLE_DATA = Qt.ItemDataRole.UserRole
@@ -541,6 +561,8 @@ class _LibraryDelegate(QStyledItemDelegate):
         _paint_ring(painter, ring, data.get("behind", 0), data.get("total", 0))
 
         x = ring.right() + 12
+        painter.drawPixmap(QRect(x, rect.top() + 12, 16, 16), _node_icon("library", 16))
+        x += 22
         width = rect.right() - x - 10
         painter.setFont(_font(FS_META, QFont.Weight.DemiBold))
         painter.setPen(QColor(TEXT_PRIMARY))
@@ -553,8 +575,8 @@ class _LibraryDelegate(QStyledItemDelegate):
             sub = "Selected in scene · " + sub
         else:
             painter.setPen(QColor(TEXT_LABEL))
-        sub = painter.fontMetrics().elidedText(sub, Qt.TextElideMode.ElideRight, width)
-        painter.drawText(QRect(x, rect.top() + 33, width, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sub)
+        sub = painter.fontMetrics().elidedText(sub, Qt.TextElideMode.ElideRight, width + 22)
+        painter.drawText(QRect(x - 22, rect.top() + 33, width + 22, 18), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, sub)
         painter.restore()
 
     def sizeHint(self, option, index) -> QSize:
@@ -755,7 +777,9 @@ class _MapDelegate(QStyledItemDelegate):
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(BG_CURRENT if selected else BG_HOVER))
             painter.drawRoundedRect(QRectF(rect), 8, 8)
-        inner = rect.adjusted(12, 0, -12, 0)
+        painter.drawPixmap(QRect(rect.left() + 12, rect.top() + 10, 18, 18),
+                           _lucide_pixmap(_slot_icon(m.get("slot_key", "")), 18, ACCENT))
+        inner = rect.adjusted(40, 0, -12, 0)
         painter.setFont(_font(FS_SMALL, QFont.Weight.DemiBold))
         cs = m.get("colorspace", "")
         cs_w = painter.fontMetrics().horizontalAdvance(cs) + 16
@@ -819,20 +843,21 @@ class AutoMaterialUI(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-        root.addWidget(self._build_top_bar())
+        self._top = self._build_top_bar()
+        root.addWidget(self._top)
         root.addWidget(_divider())
         body = QSplitter(Qt.Orientation.Horizontal)
         body.setHandleWidth(1)
         body.setStyleSheet(f"QSplitter::handle {{ background: {LINE}; }}")
+        self._body = body
         body.addWidget(self._build_sidebar())
         body.addWidget(self._build_main())
         body.setStretchFactor(1, 1)
-        body.setSizes([290, 890])
+        body.setSizes([330, 850])
         root.addWidget(body, stretch=1)
         root.addWidget(_divider())
         root.addWidget(self._build_action_bar())
 
-        self._loading = _LoadingOverlay(self)
         self._refresh_main()
 
     # =====================================================================
@@ -885,12 +910,16 @@ class AutoMaterialUI(QWidget):
 
     def _build_sidebar(self) -> QWidget:
         side = QWidget()
-        side.setMinimumWidth(240)
+        side.setMinimumWidth(260)
         lay = QVBoxLayout(side)
         lay.setContentsMargins(10, 14, 10, 12)
         lay.setSpacing(8)
         head = QHBoxLayout()
         head.setContentsMargins(6, 0, 4, 0)
+        head.setSpacing(8)
+        lib_icon = QLabel()
+        lib_icon.setPixmap(_node_icon("library", 16))
+        head.addWidget(lib_icon)
         head.addWidget(_label("IN THIS SCENE", "caps"))
         head.addStretch(1)
         self._update_assets_btn = QPushButton("")
@@ -945,8 +974,24 @@ class AutoMaterialUI(QWidget):
         head.setSpacing(12)
         titles = QVBoxLayout()
         titles.setSpacing(4)
+        # Page title: the library being looked at (the node it is, its name)
+        lib_row = QHBoxLayout()
+        lib_row.setSpacing(8)
+        lib_icon = QLabel()
+        lib_icon.setPixmap(_node_icon("library", 18))
+        lib_row.addWidget(lib_icon)
+        self._page_title = _label("", "title")
+        self._page_title.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        lib_row.addWidget(self._page_title, stretch=1)
+        titles.addLayout(lib_row)
+        titles.addSpacing(4)
+        head_row = QHBoxLayout()
+        head_row.setSpacing(10)
+        self._head_icon = QLabel()
+        head_row.addWidget(self._head_icon)
         self._headline = _label("", "display")
-        titles.addWidget(self._headline)
+        head_row.addWidget(self._headline, stretch=1)
+        titles.addLayout(head_row)
         self._subline = _label("", "meta")
         self._subline.setTextFormat(Qt.TextFormat.RichText)
         self._subline.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -1029,12 +1074,25 @@ class AutoMaterialUI(QWidget):
         m_lay = QVBoxLayout(maps)
         m_lay.setContentsMargins(8, 12, 8, 10)
         m_lay.setSpacing(6)
+        m_head = QHBoxLayout()
+        m_head.setContentsMargins(12, 0, 12, 0)
+        m_head.setSpacing(8)
+        image_icon = QLabel()
+        image_icon.setPixmap(_node_icon("image", 16))
+        m_head.addWidget(image_icon)
         self._maps_label = _label("MAPS", "caps")
-        self._maps_label.setContentsMargins(12, 0, 12, 0)
-        m_lay.addWidget(self._maps_label)
+        m_head.addWidget(self._maps_label)
+        m_head.addStretch(1)
+        m_lay.addLayout(m_head)
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(12, 0, 12, 4)
+        title_row.setSpacing(8)
+        material_icon = QLabel()
+        material_icon.setPixmap(_node_icon("material", 16))
+        title_row.addWidget(material_icon)
         self._maps_title = _label("", "name")
-        self._maps_title.setContentsMargins(12, 0, 12, 4)
-        m_lay.addWidget(self._maps_title)
+        title_row.addWidget(self._maps_title, stretch=1)
+        m_lay.addLayout(title_row)
         self._map_list = QListWidget()
         self._map_list.setStyleSheet(STYLE_LIST)
         self._map_list.setItemDelegate(_MapDelegate(self._map_list))
@@ -1073,6 +1131,30 @@ class AutoMaterialUI(QWidget):
         self._message_label.setWordWrap(True)
         self._message_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         lay.addWidget(self._message_label, stretch=1)
+
+        # Work in progress: a thin bar and what is being done, with Cancel; the window stays visible
+        self._busy = QWidget()
+        b_lay = QHBoxLayout(self._busy)
+        b_lay.setContentsMargins(0, 0, 0, 0)
+        b_lay.setSpacing(12)
+        self._busy_bar = QProgressBar()
+        self._busy_bar.setRange(0, 0)
+        self._busy_bar.setTextVisible(False)
+        self._busy_bar.setFixedSize(140, 4)
+        self._busy_bar.setStyleSheet(f"QProgressBar {{ background: {LINE}; border: none; border-radius: 2px; }}"
+                                     f" QProgressBar::chunk {{ background: {ACCENT}; border-radius: 2px; }}")
+        b_lay.addWidget(self._busy_bar)
+        self._busy_text = _label("", "body")
+        self._busy_text.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        b_lay.addWidget(self._busy_text, stretch=1)
+        self._cancel_btn = QPushButton("  Cancel")
+        self._cancel_btn.setIcon(_lucide_icon("x", 14, TEXT_LABEL))
+        self._cancel_btn.setStyleSheet(STYLE_GHOST)
+        self._cancel_btn.clicked.connect(self._on_cancel)
+        b_lay.addWidget(self._cancel_btn)
+        self._busy.setVisible(False)
+        lay.addWidget(self._busy, stretch=1)
+        self._cancelled = False
         self._undo_btn = QPushButton("  Undo")
         self._undo_btn.setIcon(_lucide_icon("undo", 14, TEXT_LABEL))
         self._undo_btn.setStyleSheet(STYLE_GHOST)
@@ -1080,7 +1162,8 @@ class AutoMaterialUI(QWidget):
         self._undo_btn.clicked.connect(lambda: self._fire("undo"))
         self._undo_btn.setVisible(False)
         lay.addWidget(self._undo_btn)
-        self._auto_assign_btn = QPushButton("Auto assign")
+        self._auto_assign_btn = QPushButton("  Auto assign")
+        self._auto_assign_btn.setIcon(_lucide_icon("target", 14, TEXT_LABEL))
         self._auto_assign_btn.setStyleSheet(STYLE_GHOST)
         self._auto_assign_btn.setToolTip(
             "Match prims named *_grp / *_Grp with M_char_* under /materials and create Assign Material LOPs. "
@@ -1299,9 +1382,12 @@ class AutoMaterialUI(QWidget):
         plans: list[MaterialPlan],
         groups_by_version: dict[str, dict],
         geometry_materials: set[str],
+        library: str = "",
     ) -> None:
-        """Painter exports of one asset: a tile per material, the versions on the timeline."""
+        """Painter exports of one asset: a tile per material, the versions on the timeline.
+        *library*: the Material Library they go into (the page title)."""
         self._mode = "usd"
+        self._usd_library = library
         self._source_path = usd_path
         self._plans = plans
         self._groups_by_version = groups_by_version
@@ -1373,6 +1459,7 @@ class AutoMaterialUI(QWidget):
         self._target.setVisible(self._mode == "folder" and box)
 
     _library_box = False
+    _usd_library = ""
 
     def _on_subline_link(self, link: str) -> None:
         if link == "change":
@@ -1621,12 +1708,21 @@ class AutoMaterialUI(QWidget):
 
     def _refresh_main(self) -> None:
         if self._mode == "empty":
+            self.setWindowTitle("Auto Material")
             self._main_stack.setCurrentIndex(0)
             self._create_btn.setText("Create")
             self._create_btn.setEnabled(False)
             self._auto_assign_btn.setVisible(False)
             return
         self._main_stack.setCurrentIndex(1)
+        if self._mode == "usd":
+            lib = self._usd_library or "Material Library"
+            title = lib
+        else:
+            lib = self.library()
+            title = lib + ("" if lib in self._libraries else "   (new library)")
+        self._page_title.setText(title)
+        self.setWindowTitle(f"{lib} — Auto Material")
         versions, scene, target, pickable = self._timeline_state()
         self._timeline.set_state(versions, scene, target, pickable)
         self._timeline.setVisible(len(versions) > 1 or (len(versions) == 1 and self._mode == "usd"))
@@ -1695,7 +1791,17 @@ class AutoMaterialUI(QWidget):
             self._legend.setText(self._legend_html(folder=True))
         left_out = sum(1 for p in self._plans if not p.enabled)
         self._headline.setText(head + (f"  ·  {left_out} left out" if left_out else ""))
-        self._create_btn.setText(button or "Nothing to change")
+        if update:
+            icon, tone = "circle-up", STATUS_COLORS[STATUS_UPDATE]
+        elif new:
+            icon, tone = "circle-plus", STATUS_COLORS[STATUS_NEW]
+        else:
+            icon, tone = "circle-check", STATUS_COLORS[STATUS_OK]
+        self._head_icon.setPixmap(_lucide_pixmap(icon, 26, tone))
+        self._create_btn.setText(("  " + button) if button else "Nothing to change")
+        self._create_btn.setIcon(_lucide_icon(
+            "refresh" if button.startswith("Update") else "save" if button.startswith("Save") else "plus", 16,
+            "#ffffff") if button else QIcon())
         self._create_btn.setEnabled(bool(button))
 
     @staticmethod
@@ -1724,7 +1830,7 @@ class AutoMaterialUI(QWidget):
         for slot_name, slot_info in sorted(group.slots.items()):
             item = QListWidgetItem()
             item.setData(ROLE_MAP, {
-                "slot": _slot_label(slot_name), "file": _file_label(slot_info.filepath),
+                "slot": _slot_label(slot_name), "slot_key": slot_name, "file": _file_label(slot_info.filepath),
                 "path": slot_info.filepath, "colorspace": slot_info.colorspace or "default",
                 "default_cs": not slot_info.colorspace,
             })
@@ -1811,28 +1917,40 @@ class AutoMaterialUI(QWidget):
         self._undo_btn.setVisible(on)
 
     def show_loading(self, text: str = "Loading...") -> None:
-        self._loading.set_text(text)
-        self._loading.setGeometry(self.rect())
-        self._loading.setVisible(True)
-        self._loading.raise_()
+        """Work in progress on the action bar; the rest of the window is greyed until it ends."""
+        if not self._busy.isVisible():
+            self._cancelled = False
+            self._busy_bar.setRange(0, 0)
+            self._cancel_btn.setEnabled(True)
+            self._busy.setVisible(True)
+            self._message_label.setVisible(False)
+            for w in (self._top, self._body, self._undo_btn, self._auto_assign_btn, self._create_btn):
+                w.setEnabled(False)
+        self._busy_text.setText(text)
         QApplication.processEvents()
 
     def show_done(self, text: str, sub_text: str | None = None) -> None:
-        """The run is over: the overlay goes; the result is on the action bar (set_message)."""
+        """The run is over: the result is on the action bar (set_message)."""
         self.hide_loading()
 
     def hide_loading(self) -> None:
-        self._loading.setVisible(False)
-        self._loading.reset()
+        if self._busy.isVisible():
+            self._busy.setVisible(False)
+            self._message_label.setVisible(True)
+            for w in (self._top, self._body, self._undo_btn, self._auto_assign_btn, self._create_btn):
+                w.setEnabled(True)
+            self._refresh_main()
+        self._cancelled = False
         QApplication.processEvents()
+
+    def _on_cancel(self) -> None:
+        self._cancelled = True
+        self._busy_text.setText("Cancelling… (what is done stays, one undo step)")
+        self._cancel_btn.setEnabled(False)
 
     def is_cancelled(self) -> bool:
         QApplication.processEvents()
-        return self._loading.cancelled
-
-    def resizeEvent(self, event) -> None:
-        super().resizeEvent(event)
-        self._loading.setGeometry(self.rect())
+        return self._cancelled
 
     def _on_unmatched_clicked(self) -> None:
         """The files no material took, in a window that does not block Houdini."""
