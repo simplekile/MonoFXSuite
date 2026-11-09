@@ -1016,6 +1016,7 @@ class AutoMaterialUI(QWidget):
         self._tiles.setItemDelegate(self._tile_delegate)
         self._tiles.currentRowChanged.connect(self._show_maps)
         self._tiles.viewport().installEventFilter(self)
+        self._tiles.installEventFilter(self)  # its own resize, not the viewport's (see _fit_tiles)
         self._tiles.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self._tiles.customContextMenuRequested.connect(self._material_menu)
         split.addWidget(self._tiles)
@@ -1507,8 +1508,13 @@ class AutoMaterialUI(QWidget):
         return CHIP_HELP.get(status, "")
 
     def _fit_tiles(self) -> None:
-        """Tiles share the row's width: as many columns of at least _TILE as fit, none left empty."""
-        width = self._tiles.viewport().width() - 4  # room for rounding, or the last column wraps
+        """
+        Tiles share the row's width: as many columns of at least _TILE as fit, none left empty.
+        The width is the list's, less a scroll bar's whether one shows or not: from the viewport's,
+        a scroll bar appearing would shrink the tiles, hide itself, grow them again, and so on.
+        """
+        bar = self._tiles.verticalScrollBar().sizeHint().width()
+        width = self._tiles.width() - 2 * self._tiles.frameWidth() - bar - 4
         cols = max(1, width // _TILE.width())
         cell = QSize(width // cols, _TILE.height())
         if self._tiles.gridSize() == cell:
@@ -1518,7 +1524,7 @@ class AutoMaterialUI(QWidget):
             self._tiles.item(i).setSizeHint(cell)
 
     def eventFilter(self, obj, event) -> bool:
-        if obj is self._tiles.viewport() and event.type() == QEvent.Type.Resize:
+        if obj is self._tiles and event.type() == QEvent.Type.Resize:
             QTimer.singleShot(0, self._fit_tiles)
         # The leave-out check is painted on the tile: route its clicks here; a double click toggles too.
         if obj is self._tiles.viewport() and event.type() in (QEvent.Type.MouseButtonRelease, QEvent.Type.MouseButtonDblClick) \
