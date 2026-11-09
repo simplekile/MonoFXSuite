@@ -146,3 +146,12 @@
   and read on every drop: on/off, LOP layer mode (ask / reference / sublayer), Auto Material for
   textures in LOP, base-colour materials for other images, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
   drop handler and tests read prefs without Qt.
+
+## Release (`release.ps1`, skill `.claude/skills/release`)
+
+- Two steps. `release.ps1 prepare` on the branch going to main: clean tree, tests pass, notes under
+  `## [Unreleased]` in `docs/changelog.md`, then `bump_version.ps1` and one commit `docs: release vX.Y.Z`.
+  `release.ps1 publish` only at `origin/main` (a detached checkout works in a worktree): every check
+  first, the build before the tag (a failed build leaves no tag), then tag, push the tag,
+  `publish_release.ps1`. `-DryRun` stops after the build. Patch bumps unless asked otherwise.
+- The release commit goes to main through the PR; merging is the user's call.

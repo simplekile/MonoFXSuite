@@ -17,7 +17,8 @@ def _load_xform_writer():
     try:
         spec.loader.exec_module(mod)
     except ModuleNotFoundError as exc:
-        if exc.name not in {"bpy", "pxr", "mathutils"}:
+        # "bpy.types" too: another test puts a bare stub module at sys.modules["bpy"]
+        if (exc.name or "").split(".")[0] not in {"bpy", "pxr", "mathutils"}:
             raise
         return None
     return mod
