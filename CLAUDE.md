@@ -39,9 +39,15 @@
   thumbnail, status colour on the edge, check to leave out, right click: version, pin, leave out,
   folder) and, in a full-height column beside them, the maps of the selected tile (two lines a map: name and
   colour space, then the file). Tiles share the row's width (`_fit_tiles`). **Action bar**: result line, Undo (Houdini's undo of the
-  last run), Auto assign (texture folder), the button. Work in progress shows there too (a thin bar,
-  what is being done, Cancel) with the rest of the window disabled, never a dark overlay. The page
-  title and the window title are the library being looked at. On open the window shows the first library
+  last run), Auto assign (texture folder), the button. The page title and the window title are the
+  library being looked at.
+- Reads never hold the window: a Painter export (pxr) and a texture folder scan run on a worker thread
+  (`controller.background`, one at a time; opening something else drops the older result), what the
+  scene has (hou) is read before on the main thread; thumbnails too (`_Thumbnails`, a QImage off the
+  thread, the QPixmap made on the main thread). Only a scene write (Create, Update, Auto assign)
+  disables the window, since hou is main-thread only: the action bar shows a thin bar, what is being
+  done and Cancel, never a dark overlay. A read's result waits while a write runs. The progress state
+  is a flag, not `isVisible()`: the first source is read before the window shows. On open the window shows the first library
   behind its publish, else the publish when the scene has none, else the first library.
   Latest publish takes the publish's Painter export when its latest `vNNN` holds one
   (`find_painter_usd`: highest `_vNNN` in the file name, `*.material.usda` skipped), else its textures.
@@ -75,8 +81,8 @@
   title 19/600, body 15/400, name 14/600, meta 14/400 in `TEXT_LABEL`, small and caps 13. Two weights
   only; supporting text is never `TEXT_META` (icons, placeholders, disabled). Status colours
   (`STATUS_COLORS`) are the same on rings, tile edges, chips and the legend. A pill's radius stays
-  under half its height, or Qt draws square corners. Thumbnails load one per event-loop turn
-  (`_Thumbnails`); EXR needs OpenImageIO, else the tile shows a placeholder. Icons: Houdini's own node
+  under half its height, or Qt draws square corners. EXR thumbnails need OpenImageIO (Houdini
+  ships it), else the tile shows a placeholder. Icons: Houdini's own node
   icons for what a row stands for (`_node_icon`: Material Library, MaterialX surface, image; Lucide
   outside Houdini), a Lucide icon per map kind (`_slot_icon`: colour, value, shape, see-through, light,
   skin, layers), a status icon before the headline, an icon on every button.

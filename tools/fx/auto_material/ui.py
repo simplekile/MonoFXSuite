@@ -23,6 +23,7 @@ from PySide6.QtGui import (
     QDesktopServices,
     QFont,
     QIcon,
+    QImage,
     QImageReader,
     QPainter,
     QPainterPath,
@@ -438,8 +439,11 @@ def _first_tile(path: str) -> str | None:
     return tiles[0] if tiles else None
 
 
-def _read_thumbnail(path: str) -> QPixmap | None:
-    """A small picture of a texture; None when it cannot be read quickly (EXR without OpenImageIO)."""
+def _read_thumbnail(path: str) -> QImage | None:
+    """
+    A small picture of a texture; None when it cannot be read (EXR without OpenImageIO).
+    Runs off the main thread: a QImage only (a QPixmap is made on the main thread).
+    """
     file = _first_tile(path)
     if file is None:
         return None
@@ -451,61 +455,63 @@ def _read_thumbnail(path: str) -> QPixmap | None:
             scale = max(_THUMB_W * 2 / size.width(), _THUMB_H * 2 / size.height())
             reader.setScaledSize(QSize(max(1, int(size.width() * scale)), max(1, int(size.height() * scale))))
         image = reader.read()
-        return QPixmap.fromImage(image) if not image.isNull() else None
+        return image if not image.isNull() else None
     if ext == ".exr":
-        try:  # Houdini ships OpenImageIO in some builds; without it an EXR tile shows no picture
+        try:  # Houdini ships OpenImageIO; without it an EXR tile shows no picture
+            import numpy as np
             import OpenImageIO as oiio
-            from PySide6.QtGui import QImage
 
             buf = oiio.ImageBuf(file)
             spec = buf.spec()
             step = max(1, max(spec.width // (_THUMB_W * 2), spec.height // (_THUMB_H * 2)))
             small = oiio.ImageBufAlgo.resample(buf, roi=oiio.ROI(0, spec.width // step, 0, spec.height // step))
-            pixels = small.get_pixels(oiio.FLOAT)
-            h, w = pixels.shape[0], pixels.shape[1]
-            image = QImage(w, h, QImage.Format.Format_RGB32)
-            for y in range(h):
-                for x in range(w):
-                    r, g, b = (min(1.0, max(0.0, float(pixels[y, x, i]))) ** (1 / 2.2) for i in range(3))
-                    image.setPixel(x, y, QColor(int(r * 255), int(g * 255), int(b * 255)).rgb())
-            return QPixmap.fromImage(image)
+            pixels = np.asarray(small.get_pixels(oiio.FLOAT))
+            if pixels.ndim == 2:
+                pixels = pixels[:, :, None]
+            rgb = pixels[:, :, :3] if pixels.shape[2] >= 3 else np.repeat(pixels[:, :, :1], 3, axis=2)
+            rgb = (np.clip(rgb, 0.0, 1.0) ** (1 / 2.2) * 255).astype(np.uint8)
+            h, w = rgb.shape[0], rgb.shape[1]
+            data = np.ascontiguousarray(rgb).tobytes()
+            return QImage(data, w, h, w * 3, QImage.Format.Format_RGB888).copy()
         except Exception:
             return None
     return None
 
 
 class _Thumbnails:
-    """Cache of texture thumbnails; *request* queues a path, *on_ready* repaints when one is in."""
+    """Texture thumbnails read off the main thread; *get* asks for one, *on_ready* repaints when in."""
 
     def __init__(self, on_ready: Callable[[], None]) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+
         self._cache: dict[str, QPixmap | None] = {}
-        self._queue: list[str] = []
+        self._pending: dict[str, Any] = {}
+        self._pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="monofx_thumbnails")
         self._on_ready = on_ready
         self._timer = QTimer()
-        self._timer.setSingleShot(True)
-        self._timer.timeout.connect(self._next)
+        self._timer.setInterval(50)
+        self._timer.timeout.connect(self._collect)
 
     def get(self, path: str) -> QPixmap | None:
         if not path:
             return None
-        if path not in self._cache:
-            if path not in self._queue:
-                self._queue.append(path)
-                self._timer.start(0)
-            return None
-        return self._cache[path]
+        if path in self._cache:
+            return self._cache[path]
+        if path not in self._pending:
+            self._pending[path] = self._pool.submit(_read_thumbnail, path)
+            self._timer.start()
+        return None
 
-    def _next(self) -> None:
-        if not self._queue:
-            return
-        path = self._queue.pop(0)
-        try:
-            self._cache[path] = _read_thumbnail(path)
-        except Exception:
-            self._cache[path] = None
-        self._on_ready()
-        if self._queue:
-            self._timer.start(0)
+    def _collect(self) -> None:
+        done = [p for p, f in self._pending.items() if f.done()]
+        for path in done:
+            future = self._pending.pop(path)
+            image = None if future.exception() else future.result()
+            self._cache[path] = QPixmap.fromImage(image) if image is not None else None
+        if done:
+            self._on_ready()
+        if not self._pending:
+            self._timer.stop()
 
 
 # ---------------------------------------------------------------------------
@@ -1156,6 +1162,7 @@ class AutoMaterialUI(QWidget):
         lay.addWidget(self._busy, stretch=1)
         self._cancelled = False
         self._is_busy = False
+        self._reading = False
         self._undo_btn = QPushButton("  Undo")
         self._undo_btn.setIcon(_lucide_icon("undo", 14, TEXT_LABEL))
         self._undo_btn.setStyleSheet(STYLE_GHOST)
@@ -1917,14 +1924,39 @@ class AutoMaterialUI(QWidget):
     def show_undo(self, on: bool) -> None:
         self._undo_btn.setVisible(on)
 
+    # --- reads: the window stays free ---
+
+    def show_reading(self, text: str) -> None:
+        """A read off the main thread: shown on the action bar, nothing disabled, no Cancel."""
+        if self._is_busy:
+            return
+        self._reading = True
+        self._busy_text.setText(text)
+        self._cancel_btn.setVisible(False)
+        self._busy.setVisible(True)
+        self._message_label.setVisible(False)
+
+    def hide_reading(self) -> None:
+        if self._reading and not self._is_busy:
+            self._busy.setVisible(False)
+            self._message_label.setVisible(True)
+        self._reading = False
+
+    def is_blocking(self) -> bool:
+        """A scene write is running (show_loading): the window waits for it."""
+        return self._is_busy
+
+    # --- scene writes: the window waits ---
+
     def show_loading(self, text: str = "Loading...") -> None:
-        """Work in progress on the action bar; the rest of the window is greyed until it ends.
+        """A scene write in progress on the action bar; the rest of the window is greyed until it ends.
         A flag, not isVisible(): the first source is read before the window shows, when nothing is
         visible yet, and hide_loading would then never clear it."""
         if not self._is_busy:
             self._is_busy = True
             self._cancelled = False
             self._busy_bar.setRange(0, 0)
+            self._cancel_btn.setVisible(True)
             self._cancel_btn.setEnabled(True)
             self._busy.setVisible(True)
             self._message_label.setVisible(False)
@@ -1940,7 +1972,7 @@ class AutoMaterialUI(QWidget):
     def hide_loading(self) -> None:
         if self._is_busy:
             self._is_busy = False
-            self._busy.setVisible(False)
+            self._busy.setVisible(self._reading)
             self._message_label.setVisible(True)
             for w in (self._top, self._body, self._undo_btn, self._auto_assign_btn, self._create_btn):
                 w.setEnabled(True)

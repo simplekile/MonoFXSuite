@@ -8,6 +8,7 @@ Version manager: one source's materials; for Painter exports, the version of eac
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
@@ -35,6 +36,11 @@ from tools.fx.auto_material.ui import AutoMaterialUI
 
 # How often the window reads the /stage selection while linked to it (ms)
 SELECTION_POLL_MS = 400
+# How often a read running off the main thread is checked for its result (ms)
+READ_POLL_MS = 40
+
+# Reads of files only (Painter exports with pxr, texture folders): never hou, which is main-thread only
+_READER = ThreadPoolExecutor(max_workers=1, thread_name_prefix="monofx_auto_material")
 
 
 def run(focus: str | None = None) -> None:
@@ -159,14 +165,47 @@ def run(focus: str | None = None) -> None:
     # ------------------------------------------------------------------
     # Loading a source into the Version manager
     # ------------------------------------------------------------------
+    reads = {"token": 0}
+
+    def background(label: str, work, finish) -> None:
+        """
+        Run *work* (files only, no hou) off the main thread, the window free meanwhile; then
+        *finish(result, error)* on the main thread. Opening something else drops this result. A
+        result waits while a scene write blocks the window, so it never lands in the middle of one.
+        """
+        reads["token"] += 1
+        token = reads["token"]
+        ui.show_reading(label)
+        future = _READER.submit(work)
+        timer = QTimer(ui)
+        timer.setInterval(READ_POLL_MS)
+
+        def check() -> None:
+            if not future.done() or ui.is_blocking():
+                return
+            timer.stop()
+            timer.deleteLater()
+            if token != reads["token"]:
+                return
+            ui.hide_reading()
+            error = future.exception()
+            finish(None if error else future.result(), error)
+
+        timer.timeout.connect(check)
+        timer.start()
+
     def open_folder(folder: str, library: str | None = None) -> None:
         """*library*: opened from its row, so that library is the target (no guessing)."""
         ui.set_message("")
-        ui.show_loading("Scanning textures...")
-        try:
-            groups, unmatched = scan_and_group(folder, recursive=ui.is_recursive())
-        finally:
-            ui.hide_loading()
+        recursive = ui.is_recursive()
+        background("Scanning textures…", lambda: scan_and_group(folder, recursive=recursive),
+                   lambda result, error: show_folder(folder, library, result, error))
+
+    def show_folder(folder: str, library: str | None, result, error) -> None:
+        if error is not None:
+            ui.set_message(f"Cannot read the folder: {error}", error=True)
+            return
+        groups, unmatched = result
         if not groups and not unmatched:
             ui.set_message("No image files found in this folder.", error=True)
             return
@@ -208,24 +247,19 @@ def run(focus: str | None = None) -> None:
         """The Library box again from the scene, keeping the library chosen."""
         ui.set_libraries(folder_targets())
 
-    def read_asset(usd_path: str, library: str | None = None) -> dict:
-        """Every export of the asset, read; and what the scene (*library*) has of it."""
-        name, records = scene_records(usd_path, library)
-        ctx = updater.read_painter_asset(sa, usd_path, records)
-        ctx["library"] = name
-        return ctx
-
     def open_usd(usd_path: str, library: str | None = None) -> None:
-        """*library*: opened from its row, so that library (a copy too) is the one shown and built."""
+        """*library*: opened from its row, so that library (a copy too) is the one shown and built.
+        What the scene has is read here (hou); every export is read off the main thread (pxr)."""
         ui.set_message("")
-        ui.show_loading("Reading Painter exports...")
-        try:
-            ctx = read_asset(usd_path, library)
-        except Exception as e:
-            ui.hide_loading()
-            ui.set_message(f"Cannot read the USD: {e}", error=True)
+        name, records = scene_records(usd_path, library)
+        background("Reading Painter exports…", lambda: updater.read_painter_asset(sa, usd_path, records),
+                   lambda ctx, error: show_usd(usd_path, name, ctx, error))
+
+    def show_usd(usd_path: str, library_name: str | None, ctx, error) -> None:
+        if error is not None:
+            ui.set_message(f"Cannot read the USD: {error}", error=True)
             return
-        ui.hide_loading()
+        ctx["library"] = library_name
         if not ctx["plans"]:
             ui.set_message("No material with Painter textures in this USD.", error=True)
             return
