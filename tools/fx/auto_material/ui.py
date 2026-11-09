@@ -1167,7 +1167,7 @@ class AutoMaterialUI(QWidget):
             hint = "Ticks follow the libraries selected in /stage"
         else:
             hint = "Select library nodes in /stage to update just those"
-        self._assets_foot_hint.setText(hint if self._asset_rows else "")
+        self._assets_foot_hint.setText(hint if any(row.can_update for row in self._asset_rows) else "")
 
     # --- Link to selection ---
 
