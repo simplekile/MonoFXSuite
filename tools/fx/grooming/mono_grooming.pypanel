@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pythonPanelDocument>
+  <!-- MONO Grooming panel docked in a Houdini pane. Installed by the panel's Dock button
+       (tools/fx/grooming/controller.py, hou.pypanel.installFile). -->
+  <interface name="mono_grooming" label="MONO Grooming" icon="SOP_hairgen" showNetworkNavigationBar="false" help_url="">
+    <script><![CDATA[
+def onCreateInterface():
+    from tools.fx.grooming import controller
+    ui, _controller = controller.create_panel(docked=True)
+    return ui
+]]></script>
+    <includeInToolbarMenu menu_position="0" create_separator="false"/>
+    <help><![CDATA[]]></help>
+  </interface>
+</pythonPanelDocument>
