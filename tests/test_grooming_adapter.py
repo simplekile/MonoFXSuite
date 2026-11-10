@@ -115,13 +115,19 @@ def test_apply_detect_keeps_settings_moves_orphans_and_only_stales_on_change(loc
     assert out.regions_stale is True
 
 
-def test_promote_unchanged_only_for_identical_root_and_length():
+def test_detect_again_on_unchanged_unnamed_mesh_is_ok():
+    """A mesh without per-lock names, detected twice: identical root and length match "ok" in
+    logic.match_locks; a lock that moved a little stays "unsure"."""
     locks = [Lock(id=1, name="", group="g", root=(0, 0, 0), length=0.2),
              Lock(id=2, name="", group="g", root=(1, 0, 0), length=0.2)]
     pieces = [_piece(0, root=(0, 0, 0)), _piece(1, root=(1.01, 0, 0))]
-    rep = DetectReport(matches=[Match(0, 1, "unsure"), Match(1, 2, "unsure")])
-    ga.promote_unchanged(rep, pieces, locks)
-    assert [m.status for m in rep.matches] == ["ok", "unsure"]
+    rep = logic.match_locks(pieces, locks, next_id=3)
+    assert [(m.lock_id, m.status) for m in rep.matches] == [(1, "ok"), (2, "unsure")]
+
+
+def test_apply_detect_stores_direction():
+    out = ga.apply_detect(GroomData(), [_piece(0)], ["g"], DetectReport(matches=[Match(0, 1, "new")]))
+    assert out.lock(1).direction == (0.0, -1.0, 0.0)
 
 
 def test_lock_display_attribs_resolve_settings_and_visibility():

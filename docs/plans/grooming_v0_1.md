@@ -60,8 +60,9 @@ geometry and are multiplied / added by the resolved settings; they are never wri
 | spine points | `curveu` | float | 0 root → 1 tip |
 | spine points | `lock_width`, `lock_thick` | float | Measured cross-section (scene units) |
 | spine points | `lock_twist` | float | Measured twist (radians) |
-| scalp points | `lock_owner` | int | Lock id that grows hair here, -1 none |
-| scalp points | `density` | float | Strands/cm² after settings |
+| scalp prims | `lock_owners` | int array | Locks growing hair on this prim (stacked locks share it) |
+| scalp prims | `lock_owner`, `share` | int | First owner (-1 none), number of owners |
+| scalp prims | `density` | float | Mean strands/cm² of the owners (each grows its density / share here) |
 | output strand prims | `lock_id`, `name`, `group`, `clump_id` | | For shading, selection, solo |
 | output strand points | `Cd` | vector | Display colour only |
 
@@ -90,6 +91,18 @@ object with these functions, so its tests run with a fake adapter.
 | `selected_lock_ids(node) -> list[int]` | Locks whose spines or strands are selected in the viewport (empty when none) |
 | `select_locks(node, ids)` | Select those locks in the viewport |
 | `publish(node, version: str \| None) -> PublishResult` | Writes the USD and `_grooming/`, refuses to overwrite; result has path, version, message |
+| `publish_context(node) -> (scene_name, existing_versions)` | For the panel's version field (`logic.publish_version`) |
+| `display_state(node) -> (mode, color_by)` | The node's display parms, shown when the panel opens |
+
+Lock colours come from `logic.lock_color`, so the panel and the viewport agree.
+
+## Shots (decided by test t02, `tests/t02_karma_hair_procedural/NOTES.md` in the sandbox)
+
+Karma's `houdinihairprocedural` in Generate mode does not reproduce clump, frizz and skin attributes
+from guides, so shots do not generate hair at render time. The asset publish carries full strands
+(clumped, frizzed, with per-strand attributes); a shot deforms them by the animated hair mesh (input 2,
+Point Deform) and caches, as today. The procedural's Deform mode passed and is the lighter option to
+try later (publish animated guides only, deform the rest strands at render time).
 
 `LockInfo`, `DetectReport`, `PublishResult` are dataclasses in `tools/fx/grooming/logic.py` (no `hou`).
 
@@ -98,6 +111,12 @@ object with these functions, so its tests run with a fake adapter.
 - Region split is frozen: it is stored in the node (a stash) and changes only when the user presses
   "Chia vùng". Adding, moving or deleting a lock never silently changes another lock's region; the panel
   shows "regions out of date" instead.
+- Region rule (`logic.region_owners`, decided after the Helen test where nearest-root left 19/61 locks
+  without hair): the scalp is subdivided bilinearly (`region_subdiv`, default 2) and each scalp prim
+  belongs to every lock whose footprint covers its centroid (radius = `REGION_FOOTPRINT` 0.5 x the
+  lock's measured root width), else to the nearest lock of its group. Stacked locks (Helen's fringe
+  layers, roots 1-4 mm apart) share the patch and divide its density, so the scalp's strand count does
+  not change; every lock gets at least its nearest prim.
 - Re-import keeps ids: match by name, then root position on the scalp, then shape. Unsure matches are
   marked and need a confirm; locks that disappear go to `orphans` with their settings kept.
 - Publish never overwrites silently. Version default = the `_vNNN` of the scene name; when that version

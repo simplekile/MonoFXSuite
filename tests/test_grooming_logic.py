@@ -322,3 +322,39 @@ def test_lock_name_ignores_other_shapes():
 
 def test_lock_name_empty_prefix():
     assert logic.lock_name("", ["lock_01"]) == "lock_02"
+
+
+# ---- region_owners: footprint split, stacked locks share ----
+
+def test_region_owners_stacked_locks_share_their_patch():
+    # Two fringe layers 2 mm apart with 3 cm wide roots (radius 1.5 cm) over the same scalp points,
+    # and a third lock far away: nearest-root would give the patch to one layer only.
+    pts = [(0.0, 0.0, 0.0), (0.005, 0.0, 0.0), (0.01, 0.0, 0.0), (0.2, 0.0, 0.0)]
+    roots = {1: (0.0, 0.0, 0.0), 2: (0.002, 0.0, 0.0), 3: (0.2, 0.0, 0.0)}
+    radii = {1: 0.015, 2: 0.015, 3: 0.015}
+    groups = {1: "bang", 2: "bang", 3: "bang"}
+    owners = logic.region_owners(pts, roots, radii, groups, ["bang"] * 4)
+    assert set(owners[0]) == set(owners[1]) == set(owners[2]) == {1, 2}
+    assert owners[3] == [3]
+    assert owners[1][0] == 2          # nearest first (0.003 from lock 2, 0.005 from lock 1)
+
+
+def test_region_owners_point_outside_every_footprint_goes_to_nearest():
+    owners = logic.region_owners([(0.1, 0, 0), (0.3, 0, 0)], {1: (0, 0, 0), 2: (0.3, 0, 0)},
+                                 {1: 0.01, 2: 0.01}, {1: "g", 2: "g"}, ["g", "g"])
+    assert owners == [[1], [2]]
+
+
+def test_region_owners_every_lock_gets_a_point_and_groups_stay_apart():
+    # Lock 2 is crowded out (its footprint has no point and no point is nearest to it) but still
+    # gets its nearest point; lock 3 is in another group and never takes "g" points.
+    pts = [(0, 0, 0), (0.01, 0, 0)]
+    roots = {1: (0, 0, 0), 2: (0.004, 0, 0.05), 3: (0.01, 0, 0)}
+    owners = logic.region_owners(pts, roots, {1: 0.02, 2: 0.0, 3: 0.02}, {1: "g", 2: "g", 3: "h"},
+                                 ["g", "g"])
+    flat = [lid for o in owners for lid in o]
+    assert 2 in flat and 3 not in flat
+
+
+def test_region_owners_point_in_group_without_locks_has_none():
+    assert logic.region_owners([(0, 0, 0)], {1: (0, 0, 0)}, {1: 1.0}, {1: "g"}, ["other"]) == [[]]

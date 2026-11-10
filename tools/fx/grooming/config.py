@@ -42,4 +42,10 @@ MATCH_SHAPE_ROOT_TOL = 1.0     # shape only: root moved <= 1 x length ...
 MATCH_SHAPE_LENGTH_RATIO = 1.1  # ... length within x1.1 ...
 MATCH_SHAPE_MIN_DOT = 0.9      # ... and direction within ~25 degrees (when the lock knows its direction)
 
+MATCH_UNCHANGED_TOL = 1e-5     # root and length within 1e-5 x length: the mesh did not change -> "ok"
+
+# Region split (logic.region_owners): a lock's footprint radius = this x its measured root width.
+REGION_FOOTPRINT = 0.5
+REGION_SUBDIV = 2              # bilinear subdivisions of the scalp before the split (x4 points each)
+
 LOCK_NAME_DIGITS = 2           # fringe_01

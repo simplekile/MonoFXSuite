@@ -53,6 +53,7 @@ class Lock:
     source: str = "mesh"        # "mesh" (detected from the hair mesh); "drawn" arrives in v0.2
     root: tuple[float, float, float] = (0.0, 0.0, 0.0)  # root position at detection, for re-import matching
     length: float = 0.0          # measured length at detection, for re-import matching
+    direction: tuple[float, float, float] | None = None  # unit root -> tip at detection, for shape matching
     overrides: dict[str, float] = field(default_factory=dict)
     visible: bool = True
     display: str | None = None
@@ -144,6 +145,8 @@ class GroomData:
                     source=str(lk.get("source", "mesh")),
                     root=tuple(float(c) for c in lk.get("root", (0.0, 0.0, 0.0)))[:3],  # type: ignore[arg-type]
                     length=float(lk.get("length", 0.0)),
+                    direction=(tuple(float(c) for c in lk["direction"])[:3]  # type: ignore[arg-type]
+                               if lk.get("direction") else None),
                     overrides=_clean_overrides(lk.get("overrides")),
                     visible=bool(lk.get("visible", True)), display=lk.get("display"),
                     match=str(lk.get("match", "ok")),

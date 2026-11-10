@@ -9,7 +9,6 @@ tools/fx/grooming/build_hda.py; its two Python SOPs call `cook_assign` and `cook
 
 from __future__ import annotations
 
-import colorsys
 import datetime as _dt
 import getpass
 import json
@@ -30,7 +29,9 @@ from tools.fx.grooming.logic import DetectReport, LockInfo, MeshPiece, PublishRe
 NODE_SPINES_RAW = "SPINES_RAW"       # one spine per hair-mesh piece, measured, no lock ids yet
 NODE_SPINES_LOCKS = "SPINES_LOCKS"   # spines with lock_id / name / group and resolved settings
 NODE_SPINES = "SPINES"               # spines after settings (width_mult, twist_add ...)
-NODE_SCALP_REGIONS = "SCALP_REGIONS" # scalp with lock_owner, density, area_cm2
+NODE_SCALP_FINE = "SCALP_FINE"       # scalp after the bilinear subdivision used for regions
+NODE_SCALP_REGIONS = "SCALP_REGIONS" # scalp prims with lock_owners (shared when stacked), share, density, area_cm2
+ATTR_LOCK_OWNERS = "lock_owners"     # int array: every lock growing hair on a scalp prim
 NODE_HAIR = "HAIR"                   # strands at the current density (preview or full)
 NODE_PUBLISH_USD = "PUBLISH_USD"     # usdexport SOP fed by the full hair
 
@@ -56,11 +57,10 @@ UNDETECTED_COLOR = (0.25, 0.25, 0.25)
 # ---------------------------------------------------------------------------
 
 def lock_color(lock_id: int) -> tuple[float, float, float]:
-    """Display colour of a lock: hues spread by the golden ratio, so neighbouring ids differ."""
+    """Display colour of a lock (logic.lock_color, the panel's colour too); grey before Detect."""
     if lock_id < 0:
         return UNDETECTED_COLOR
-    h = (lock_id * 0.618033988749895) % 1.0
-    return tuple(round(c, 4) for c in colorsys.hsv_to_rgb(h, 0.55, 0.92))  # type: ignore[return-value]
+    return logic.lock_color(lock_id)
 
 
 def group_color(index: int) -> tuple[float, float, float]:
@@ -162,21 +162,6 @@ def assign_pieces(pieces: Sequence[tuple[str, tuple[float, float, float], float]
     return out
 
 
-def promote_unchanged(report: DetectReport, pieces: Sequence[MeshPiece], locks: Sequence[model.Lock],
-                      tol: float = 1e-5) -> DetectReport:
-    """An "unsure" match whose piece has exactly the lock's stored root and length is "ok": Detect
-    run again on an unchanged mesh without unique names would otherwise ask to confirm every lock
-    (logic.match_locks only trusts names)."""
-    by_index = {p.index: p for p in pieces}
-    by_id = {lk.id: lk for lk in locks}
-    for m in report.matches:
-        lk, p = by_id.get(m.lock_id), by_index.get(m.piece)
-        if m.status == "unsure" and lk is not None and p is not None:
-            if math.dist(lk.root, p.root) <= tol and abs(lk.length - p.length) <= tol:
-                m.status = "ok"
-    return report
-
-
 def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_groups: Sequence[str],
                  report: DetectReport, asset: str = "") -> model.GroomData:
     """New GroomData after Detect: matched locks keep id and settings and take the new root / length,
@@ -200,12 +185,14 @@ def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_group
             if math.dist(lk.root, root) > 1e-5 or abs(lk.length - length) > 1e-5:
                 stale = True
             lk.root, lk.length, lk.match = root, length, m.status  # type: ignore[assignment]
+            lk.direction = tuple(round(c, 6) for c in piece.direction)  # type: ignore[assignment]
             locks.append(lk)
             continue
         name = piece.name or logic.lock_name(group, taken)
         taken.append(name)
         locks.append(model.Lock(id=m.lock_id, name=name, group=group, root=root,  # type: ignore[arg-type]
-                                length=length, match="new"))
+                                length=length, match="new",
+                                direction=tuple(round(c, 6) for c in piece.direction)))  # type: ignore[arg-type]
         stale = True
     for lid in report.orphaned:
         lk = old[lid]
@@ -363,10 +350,12 @@ def lock_infos(node) -> list[LockInfo]:
     """From the cooked spines: id, name, group, root, length, width, thick, twist, strands, region area."""
     geo = _cooked(node, NODE_SPINES_LOCKS)
     scalp = _cooked(node, NODE_SCALP_REGIONS)
-    area: dict[int, float] = {}
-    owners = _prim_values(scalp, config.ATTR_LOCK_OWNER, "i")
-    for lid, a in zip(owners, _prim_values(scalp, "area_cm2", "f")):
-        area[lid] = area.get(lid, 0.0) + a
+    area: dict[int, float] = {}   # a shared prim counts 1/share for each of its owners
+    for prim in scalp.iterPrims():
+        own = prim.attribValue(ATTR_LOCK_OWNERS) if scalp.findPrimAttrib(ATTR_LOCK_OWNERS) else ()
+        a = prim.floatAttribValue("area_cm2")
+        for lid in own:
+            area[lid] = area.get(lid, 0.0) + a / len(own)
     infos = []
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
@@ -405,7 +394,7 @@ def detect(node) -> DetectReport:
     """Detect locks from the hair mesh, match ids against the JSON (logic.match_locks), write the JSON."""
     pieces, groups = _pieces(node)
     data = read_data(node)
-    report = promote_unchanged(logic.match_locks(pieces, data.locks, data.next_lock_id()), pieces, data.locks)
+    report = logic.match_locks(pieces, data.locks, data.next_lock_id())
     asset = asset_from_scene(hou.hipFile.basename())
     new = apply_detect(data, pieces, groups, report, asset=asset)
     write_data(node, new, UNDO_PREFIX + "Detect")
@@ -416,34 +405,56 @@ def detect(node) -> DetectReport:
 
 
 def split_regions(node) -> None:
-    """Recompute and freeze `lock_owner` (logic.split_regions), clear `regions_stale`. One undo step."""
+    """Recompute and freeze the growth regions, clear `regions_stale`. One undo step.
+
+    Per prim of the subdivided scalp (`SCALP_FINE`), at its centroid: the locks whose footprint covers
+    it (logic.region_owners: radius = REGION_FOOTPRINT x the lock's measured root width), else the
+    nearest lock; stacked locks share. Frozen as one point per prim with `lock_owners` (int array)."""
     data = read_data(node)
     spines = _cooked(node, NODE_SPINES_LOCKS)
-    scalp_node = _inner(node, "IN_SCALP")
-    scalp_node.cook()
-    scalp = scalp_node.geometry()
+    scalp = _cooked(node, NODE_SCALP_FINE)
     roots: dict[int, tuple[float, float, float]] = {}
-    for lid, root in zip(_prim_values(spines, config.ATTR_LOCK_ID, "i"), _prim_values(spines, "root", "v")):
-        if lid >= 0:
-            roots[lid] = root
-    flat = scalp.pointFloatAttribValues("P")
-    pts = [tuple(flat[i:i + 3]) for i in range(0, len(flat), 3)]
-    if scalp.findPointAttrib(config.ATTR_GROUP) is not None:
-        point_groups = list(scalp.pointStringAttribValues(config.ATTR_GROUP))
+    radii: dict[int, float] = {}
+    for prim in spines.iterPrims():
+        lid = prim.intAttribValue(config.ATTR_LOCK_ID)
+        if lid < 0:
+            continue
+        roots[lid] = tuple(prim.attribValue("root"))  # type: ignore[assignment]
+        pts0 = prim.points()
+        width = pts0[0].floatAttribValue(config.ATTR_LOCK_WIDTH) if pts0 else 0.0
+        radii[lid] = config.REGION_FOOTPRINT * width
+    has_group = scalp.findPointAttrib(config.ATTR_GROUP) is not None
+    centroids: list[tuple[float, float, float]] = []
+    prim_groups: list[str] = []
+    for prim in scalp.iterPrims():
+        pp = prim.points()
+        n = max(len(pp), 1)
+        c = [0.0, 0.0, 0.0]
+        for p in pp:
+            pos = p.position()
+            c[0] += pos[0]; c[1] += pos[1]; c[2] += pos[2]
+        centroids.append((c[0] / n, c[1] / n, c[2] / n))
+        prim_groups.append(pp[0].stringAttribValue(config.ATTR_GROUP) if has_group and pp else "")
+    if has_group:
         groups_of = {lk.id: lk.group for lk in data.locks}
-    else:  # scalp without regions: every point may grow any lock
-        point_groups = [""] * len(pts)
+    else:  # scalp without regions: every prim may grow any lock
         groups_of = {lid: "" for lid in roots}
-    owners = logic.split_regions(pts, roots, groups_of, point_groups)
+    owners = logic.region_owners(centroids, roots, radii, groups_of, prim_groups)
     frozen = hou.Geometry()
-    frozen.createPoints(pts)
+    frozen.createPoints(centroids)
+    frozen.addArrayAttrib(hou.attribType.Point, ATTR_LOCK_OWNERS, hou.attribData.Int)
     frozen.addAttrib(hou.attribType.Point, config.ATTR_LOCK_OWNER, config.NO_OWNER)
-    frozen.setPointIntAttribValues(config.ATTR_LOCK_OWNER, owners)
+    for pt, own in zip(frozen.points(), owners):
+        pt.setAttribValue(ATTR_LOCK_OWNERS, own)
+        pt.setAttribValue(config.ATTR_LOCK_OWNER, own[0] if own else config.NO_OWNER)
     data.regions_stale = False
     with hou.undos.group(UNDO_PREFIX + "Chia vùng"):
         node.parm(PARM_REGIONS).set(frozen)
         node.parm(config.DATA_PARM).set(data.to_json())
-    _status(f"{config.HDA_LABEL}: chia vùng cho {len(roots)} lọn, {len(pts)} điểm da")
+    grown = {lid for own in owners for lid in own}
+    shared = sum(1 for own in owners if len(own) > 1)
+    _status(f"{config.HDA_LABEL}: chia vùng cho {len(grown)}/{len(roots)} lọn, {len(centroids)} prim da, "
+            f"{shared} prim dùng chung")
 
 
 def set_display(node, mode: str, color_by: str, preview: float = config.PREVIEW_FRACTION) -> None:
@@ -499,6 +510,25 @@ def select_locks(node, ids: Iterable[int]) -> None:
     viewer.setCurrentGeometrySelection(hou.geometryType.Primitives, (node,), (hou.Selection(prims),))
 
 
+def display_state(node) -> tuple[str, str]:
+    """The node's own display mode and colour-by, for the panel to show on open."""
+    return (config.DISPLAY_MODES[node.evalParm(PARM_DISPLAY)], config.COLOR_BY[node.evalParm(PARM_COLOR_BY)])
+
+
+def _existing_versions(hip_dir: str, asset: str) -> list[str]:
+    usd0, _ = logic.publish_paths(hip_dir, asset, "v001")
+    pub_dir = os.path.dirname(os.path.dirname(usd0))
+    return sorted(os.listdir(pub_dir)) if os.path.isdir(pub_dir) else []
+
+
+def publish_context(node) -> tuple[str, list[str]]:
+    """(scene name without extension, versions already published) for logic.publish_version."""
+    data = read_data(node)
+    scene = hou.hipFile.basename()
+    asset = data.asset or asset_from_scene(scene)
+    return os.path.splitext(scene)[0], _existing_versions(os.path.dirname(hou.hipFile.path()), asset)
+
+
 def publish(node, version: str | None = None) -> PublishResult:
     """Write the asset groom USD and `vNNN/_grooming/` (grooming_data.json, publish.json); never overwrite."""
     data = read_data(node)
@@ -507,10 +537,7 @@ def publish(node, version: str | None = None) -> PublishResult:
     hip_dir = os.path.dirname(hou.hipFile.path())
     try:
         if not version:
-            usd0, _ = logic.publish_paths(hip_dir, asset, "v001")
-            pub_dir = os.path.dirname(os.path.dirname(usd0))
-            existing = sorted(os.listdir(pub_dir)) if os.path.isdir(pub_dir) else []
-            version, _note = logic.publish_version(os.path.splitext(scene)[0], existing)
+            version, _note = logic.publish_version(os.path.splitext(scene)[0], _existing_versions(hip_dir, asset))
         usd, tool_dir = logic.publish_paths(hip_dir, asset, version)
     except ValueError as exc:
         return PublishResult(False, "", version or "", f"Không publish được: {exc}")
@@ -618,5 +645,5 @@ def cook_frozen_regions(sop) -> None:
 
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "lock_infos", "detect", "split_regions",
-    "set_display", "selected_lock_ids", "select_locks", "publish",
+    "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
 ]

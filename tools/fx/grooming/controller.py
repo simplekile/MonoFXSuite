@@ -14,7 +14,6 @@ What the controller calls on its view (ui.GroomingUI, or a fake in tests):
 
 from __future__ import annotations
 
-import colorsys
 from typing import Any, Callable
 
 from tools.fx.grooming import config, logic, model
@@ -55,9 +54,8 @@ ORPHANS_ROW = "__orphans__"
 
 
 def lock_color(lock_id: int) -> tuple[float, float, float]:
-    """Colour of a lock when colouring by lock: hues spread by the golden ratio, so neighbours differ."""
-    hue = (lock_id * 0.618033988749895) % 1.0
-    return colorsys.hsv_to_rgb(hue, 0.55, 0.92)
+    """Colour of a lock when colouring by lock: logic.lock_color, the viewport's colour too."""
+    return logic.lock_color(lock_id)
 
 
 def report_text(counts: dict[str, int]) -> str:

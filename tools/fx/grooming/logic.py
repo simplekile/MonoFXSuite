@@ -101,6 +101,7 @@ def match_locks(pieces: Sequence[MeshPiece], locks: Sequence["object"], next_id:
     does not depend on scene units (thresholds in `config.MATCH_*`):
 
     1. same name, root moved <= 0.5 x scale  -> "ok"
+    1b. piece without a name, root and length unchanged (<= 1e-5 x scale) -> "ok"
     2. same name, root farther               -> "unsure" (the lock moved a lot)
     3. root moved <= 0.25 x scale and length within x1.5  -> "unsure" (renamed, or the mesh has no names)
     4. root moved <= 1 x scale, length within x1.1 and, when the lock stores a `direction`, direction
@@ -150,7 +151,19 @@ def match_locks(pieces: Sequence[MeshPiece], locks: Sequence["object"], next_id:
                 return None
         return d, "unsure"
 
-    for score in (by_name(True), by_name(False), by_root, by_shape):
+    def unchanged(p, lk):
+        # A piece without a name, at the same root and length as stored at the last Detect: the mesh
+        # did not change there, so the match is sure (a hair mesh without per-lock names). A named
+        # piece whose name changed stays "unsure" below, so a rename is shown to the user.
+        if p.name:
+            return None
+        if _dist(p.root, lk.root) > config.MATCH_UNCHANGED_TOL * scale(p, lk):
+            return None
+        if abs(float(p.length) - float(lk.length)) > config.MATCH_UNCHANGED_TOL * scale(p, lk):
+            return None
+        return 0.0, "ok"
+
+    for score in (by_name(True), unchanged, by_name(False), by_root, by_shape):
         cands = []
         for p in free_pieces.values():
             for lk in free_locks.values():
@@ -234,6 +247,46 @@ def split_regions(scalp_points: Sequence[tuple[float, float, float]],
     return _split_numpy(scalp_points, roots, groups_of, point_groups)
 
 
+def region_owners(scalp_points: Sequence[tuple[float, float, float]],
+                  roots: dict[int, tuple[float, float, float]],
+                  radii: dict[int, float],
+                  groups_of: dict[int, str],
+                  point_groups: Sequence[str]) -> list[list[int]]:
+    """Locks growing hair at each scalp point: every lock of the point's group whose footprint covers
+    it (distance to its root <= its radius, about half its root width), else the nearest lock of the
+    group, else none.
+
+    Stacked locks (Helen's fringe layers: roots 1-4 mm apart, under one scalp polygon) share the
+    patch they stand on instead of the nearest one taking it all; the HDA divides a shared patch's
+    density between its owners, so the strand count of the scalp does not change. Every lock of a
+    group that has points gets at least its nearest point. Lists are sorted by distance (nearest first).
+    """
+    if len(scalp_points) != len(point_groups):
+        raise ValueError(f"{len(scalp_points)} scalp points but {len(point_groups)} point groups")
+    by_group = _locks_by_group(roots, groups_of)
+    out: list[list[int]] = []
+    nearest_of: dict[int, tuple[float, int]] = {}   # lock -> (distance, point) of its nearest point
+    for i, (p, g) in enumerate(zip(scalp_points, point_groups)):
+        cands = []
+        for lid in by_group.get(g, ()):
+            d = _dist(p, roots[lid])
+            cands.append((d, lid))
+            if lid not in nearest_of or d < nearest_of[lid][0]:
+                nearest_of[lid] = (d, i)
+        inside = sorted((d, lid) for d, lid in cands if d <= max(radii.get(lid, 0.0), 0.0))
+        if inside:
+            out.append([lid for _, lid in inside])
+        elif cands:
+            out.append([min(cands)[1]])
+        else:
+            out.append([])
+    covered = {lid for owners in out for lid in owners}
+    for lid, (_d, i) in nearest_of.items():
+        if lid not in covered:
+            out[i].append(lid)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Publish
 # ---------------------------------------------------------------------------
@@ -296,8 +349,18 @@ def publish_paths(hip_dir: str, asset: str, version: str) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# Naming
+# Naming and colour
 # ---------------------------------------------------------------------------
+
+def lock_color(lock_id: int) -> tuple[float, float, float]:
+    """Colour of a lock when colouring by lock, the same in the panel and the viewport: hues spread by
+    the golden ratio, so neighbouring ids differ."""
+    import colorsys
+
+    hue = (lock_id * 0.618033988749895) % 1.0
+    return tuple(round(c, 4) for c in colorsys.hsv_to_rgb(hue, 0.55, 0.92))  # type: ignore[return-value]
+
+
 
 def lock_name(group_prefix: str, taken: Sequence[str]) -> str:
     """Next free name like "fringe_03" for a group prefix.

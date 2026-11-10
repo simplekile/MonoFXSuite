@@ -237,15 +237,9 @@ if (vertexprimindex(0, pointvertex(0, @ptnum)) == 0 && nprimitives(1) > 0) {
 }
 """
 
-VEX_REGION_POINTS = """// point lock_owner: the frozen split (by point number, or nearest when the scalp changed),
-// else a provisional nearest-root split until "Split regions" freezes one
+VEX_REGION_POINTS = """// provisional point lock_owner (nearest root) for scalps not split yet; the frozen split is per prim
 i@lock_owner = -1;
-f@area_cm2 = 0;
-int nf = npoints(1);
-if (nf > 0) {
-    int src = nf == @numpt ? @ptnum : nearpoint(1, @P);
-    i@lock_owner = point(1, "lock_owner", src);
-} else {
+if (npoints(1) == 0) {
     float best = 1e30;
     for (int pr = 0; pr < nprimitives(2); pr++) {
         int id = prim(2, "lock_id", pr);
@@ -256,22 +250,43 @@ if (nf > 0) {
 }
 """
 
-VEX_REGION_PRIMS = """// prim lock_owner by majority of its points (ties: lowest id), area in cm2, density of the lock
-int pts[] = primpoints(0, @primnum);
-int ids[], cnt[];
-foreach (int p; pts) {
-    int o = point(0, "lock_owner", p);
-    int at = find(ids, o);
-    if (at < 0) { append(ids, o); append(cnt, 1); } else cnt[at] += 1;
+VEX_REGION_PRIMS = """// prim lock_owners: the frozen split ("Chia vùng": one frozen point per scalp prim, its centroid,
+// by prim number, or the nearest centroid when the scalp changed), else the majority of the
+// provisional point owners. Stacked locks share a prim: share = number of owners, density = their
+// mean (each owner grows its density / share there, so the prim's strand count stays the same).
+int own[];
+int nf = npoints(2);
+if (nf > 0) {
+    vector c = 0;
+    int pp[] = primpoints(0, @primnum);
+    foreach (int p; pp) c += point(0, "P", p);
+    c /= max(len(pp), 1);
+    int src = nf == @numprim ? @primnum : nearpoint(2, c);
+    own = point(2, "lock_owners", src);
+} else {
+    int pts[] = primpoints(0, @primnum);
+    int ids[], cnt[];
+    foreach (int p; pts) {
+        int o = point(0, "lock_owner", p);
+        int at = find(ids, o);
+        if (at < 0) { append(ids, o); append(cnt, 1); } else cnt[at] += 1;
+    }
+    int best = -1, bc = 0;
+    for (int i = 0; i < len(ids); i++)
+        if (cnt[i] > bc || (cnt[i] == bc && ids[i] < best)) { best = ids[i]; bc = cnt[i]; }
+    if (best >= 0) append(own, best);
 }
-int best = -1, bc = 0;
-for (int i = 0; i < len(ids); i++)
-    if (cnt[i] > bc || (cnt[i] == bc && ids[i] < best)) { best = ids[i]; bc = cnt[i]; }
-i@lock_owner = best;
+i[]@lock_owners = own;
+i@lock_owner = len(own) > 0 ? own[0] : -1;
+i@share = len(own);
 float u = chf("../unit_cm");
 f@area_cm2 = primintrinsic(0, "measuredarea", @primnum) * u * u;
-int sp = best >= 0 ? findattribval(1, "prim", "lock_id", best) : -1;
-f@density = sp >= 0 ? prim(1, "density", sp) : 0.0;
+float dsum = 0;
+foreach (int o; own) {
+    int sp = findattribval(1, "prim", "lock_id", o);
+    if (sp >= 0) dsum += prim(1, "density", sp);
+}
+f@density = len(own) > 0 ? dsum / len(own) : 0.0;
 """
 
 VEX_PREVIEW = """// expected strands at full count and the hair_preview density factor
@@ -284,9 +299,9 @@ if (total * f > cap && total > 0) f = cap / total;
 f@factor = chi("../display_mode") == 2 ? f : 1.0;
 """
 
-VEX_REGION_CUT = """// only this lock's region, with the lock's density on its points
+VEX_REGION_CUT = """// only this lock's region (the prims it owns alone or shares)
 int id = prim(1, "lock_id", 0);
-if (i@lock_owner != id) removeprim(0, @primnum, 1);
+if (find(i[]@lock_owners, id) < 0) removeprim(0, @primnum, 1);
 """
 
 VEX_REGION_FRAME = """// region frame: centroid, principal axes on the scalp, half extents
@@ -318,7 +333,12 @@ v@rc = c; v@ra = ra; v@rb = rb; f@rea = ea; f@reb = eb;
 f@lock_density = prim(1, "density", 0);
 """
 
-VEX_REGION_DENSITY = """f@density = detail(0, "lock_density");
+VEX_REGION_DENSITY = """// the lock's density, divided where it shares the scalp with stacked locks
+int prs[] = pointprims(0, @ptnum);
+float s = 0;
+foreach (int pr; prs) s += prim(0, "share", pr);
+s = len(prs) > 0 ? s / len(prs) : 1.0;
+f@density = detail(0, "lock_density") / max(s, 1.0);
 """
 
 VEX_FIT = """// place the strand in the lock's measured cross-section, from its root on the scalp
@@ -477,12 +497,16 @@ def build_network(sub) -> None:
     guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0 @visible==0", grouptype=4)
     guides = _wrangle(sub, "guide_roots", VEX_GUIDE_ROOT, POINT, [guides_cut, in_scalp])
 
-    # ---- frozen regions ----
-    frozen = _node(sub, "python", "frozen_regions", [in_scalp])
+    # ---- frozen regions, on a finer scalp (bilinear: same shape and UVs) so footprints are not one prim ----
+    fine = _node(sub, "subdivide", "scalp_subdivide", [in_scalp])
+    fine.parm("algorithm").set("osdbilinear")
+    fine.parm("iterations").setExpression('ch("../region_subdiv")')
+    scalp_fine = _node(sub, "null", "SCALP_FINE", [fine])
+    frozen = _node(sub, "python", "frozen_regions", [scalp_fine])
     frozen.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_frozen_regions(hou.pwd())\n")
-    rpts = _wrangle(sub, "region_points", VEX_REGION_POINTS, POINT, [in_scalp, frozen, spines])
-    rprims = _wrangle(sub, "region_prims", VEX_REGION_PRIMS, PRIM, [rpts, spines])
+    rpts = _wrangle(sub, "region_points", VEX_REGION_POINTS, POINT, [scalp_fine, frozen, spines])
+    rprims = _wrangle(sub, "region_prims", VEX_REGION_PRIMS, PRIM, [rpts, spines, frozen])
     regions = _node(sub, "null", "SCALP_REGIONS", [rprims])
     preview = _wrangle(sub, "PREVIEW", VEX_PREVIEW, DETAIL, [regions])
 
@@ -514,7 +538,10 @@ def build_network(sub) -> None:
     # ---- clump, length, frizz ----
     clump_skin = _wrangle(sub, "clump_skin", "v@rest = @P;  // hairclump wants a rest skin\n", POINT,
                           [in_scalp])
-    clump = _node(sub, "hairclump::2.0", "clump", [end, clump_skin])
+    # hairgen's skinprim / skinprimuv index the per-lock region cut inside the loop, not this skin:
+    # looked up again on the clump skin from each strand's root (hairclump needs them valid).
+    skinref = _node(sub, "guideskinattriblookup", "strands_skinref", [end, clump_skin])
+    clump = _node(sub, "hairclump::2.0", "clump", [skinref, clump_skin])
     clump.parm("clumpsize").setExpression('ch("../clump_size")')
     clump.parm("tightness").set(1.0)  # x the strand's `tightness` = the lock's clump setting
     lf = _wrangle(sub, "length_frizz", VEX_LENGTH_FRIZZ, PRIM, [clump])
@@ -579,6 +606,10 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                               default_value=(config.PREVIEW_FRACTION,), min=0.0, max=1.0))
     adv.addParmTemplate(hou.IntParmTemplate("preview_max", "Preview max strands", 1,
                                             default_value=(config.PREVIEW_MAX_STRANDS,), min=0, max=100000))
+    adv.addParmTemplate(hou.IntParmTemplate("region_subdiv", "Region subdivisions", 1,
+                                            default_value=(config.REGION_SUBDIV,), min=0, max=4,
+                                            help="Bilinear subdivisions of the scalp before Chia vùng "
+                                                 "(x4 polygons each), so a lock's footprint covers several"))
     adv.addParmTemplate(hou.IntParmTemplate("spine_points", "Spine segments", 1, default_value=(24,),
                                             min=3, max=100, min_is_strict=True))
     adv.addParmTemplate(hou.FloatParmTemplate("root_tolerance", "Root tolerance", 1, default_value=(0.03,),
