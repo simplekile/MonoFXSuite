@@ -261,7 +261,7 @@ if (nf > 0) {
     int pp[] = primpoints(0, @primnum);
     foreach (int p; pp) c += point(0, "P", p);
     c /= max(len(pp), 1);
-    int src = nf == @numprim ? @primnum : nearpoint(2, c);
+    int src = nearpoint(2, c);   // by position, never by prim number: a re-exported scalp may reorder
     own = point(2, "lock_owners", src);
 } else {
     int pts[] = primpoints(0, @primnum);
@@ -330,13 +330,33 @@ for (int i = 0; i < n; i++) {
     ea = max(ea, abs(dot(d, ra))); eb = max(eb, abs(dot(d, rb)));
 }
 v@rc = c; v@ra = ra; v@rb = rb; f@rea = ea; f@reb = eb;
-f@lock_density = prim(1, "density", 0);
+// strands: density x the lock's share of the scalp, but at least density x the lock's own cross-section
+// (widest band of the first quarter, thickness >= 30 % of the width): locks whose roots converge on a
+// small patch (Helen's fringe) still get as many strands as their mesh shows.
+float dens = prim(1, "density", 0);
+float area = 0;
+for (int pr = 0; pr < nprimitives(0); pr++) {
+    float a = prim(0, "area_cm2", pr);   // typed: inside an int expression prim() would return int
+    int sh = prim(0, "share", pr);
+    area += a / max(sh, 1);
+}
+int sp[] = primpoints(1, 0);
+float w = 0, t = 0;
+for (int i = 0; i < max(1, len(sp) / 4); i++) {
+    w = max(w, point(1, "lock_width", sp[i]));
+    t = max(t, point(1, "lock_thick", sp[i]));
+}
+float u = chf("../unit_cm");
+float section = M_PI / 4 * (w * u) * (max(t, 0.3 * w) * u);
+f@region_cm2 = area;
+f@section_cm2 = section;
+f@lock_density = area > 0 ? dens * max(area, section) / area : 0.0;
 """
 
-VEX_REGION_DENSITY = """// the lock's density, divided where it shares the scalp with stacked locks
+VEX_REGION_DENSITY = """// the lock's density (with the cross-section floor), divided where it shares the scalp
 int prs[] = pointprims(0, @ptnum);
 float s = 0;
-foreach (int pr; prs) s += prim(0, "share", pr);
+foreach (int pr; prs) { int sh = prim(0, "share", pr); s += sh; }
 s = len(prs) > 0 ? s / len(prs) : 1.0;
 f@density = detail(0, "lock_density") / max(s, 1.0);
 """
@@ -373,6 +393,7 @@ i@clumpid = i@lock_id;
 f@tightness = prim(1, "clump", 0);
 f@length_mult = prim(1, "length_mult", 0);
 f@frizz = prim(1, "frizz", 0);
+i@visible = prim(1, "visible", 0);
 v@lock_cd = prim(1, "lock_cd", 0);
 v@group_cd = prim(1, "group_cd", 0);
 """
@@ -494,7 +515,8 @@ def build_network(sub) -> None:
     spines_locks = _node(sub, "null", "SPINES_LOCKS", [assign])
     settings = _wrangle(sub, "apply_settings", VEX_APPLY_SETTINGS, POINT, [spines_locks])
     spines = _node(sub, "null", "SPINES", [settings])
-    guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0 @visible==0", grouptype=4)
+    # hidden locks (the panel's eye) still grow hair and are published: visibility is display only
+    guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0", grouptype=4)
     guides = _wrangle(sub, "guide_roots", VEX_GUIDE_ROOT, POINT, [guides_cut, in_scalp])
 
     # ---- frozen regions, on a finer scalp (bilinear: same shape and UVs) so footprints are not one prim ----
@@ -544,6 +566,8 @@ def build_network(sub) -> None:
     clump = _node(sub, "hairclump::2.0", "clump", [skinref, clump_skin])
     clump.parm("clumpsize").setExpression('ch("../clump_size")')
     clump.parm("tightness").set(1.0)  # x the strand's `tightness` = the lock's clump setting
+    clump.parm("tightnessoverride").set("curveattrib")
+    clump.parm("tightnesscurveattrib").set("tightness")
     lf = _wrangle(sub, "length_frizz", VEX_LENGTH_FRIZZ, PRIM, [clump])
     hair_out = _wrangle(sub, "hair_attribs", VEX_HAIR_OUT, PRIM, [lf])
     hair = _node(sub, "null", "HAIR", [hair_out])
@@ -551,7 +575,7 @@ def build_network(sub) -> None:
     # ---- publish: the full hair, without display-only attributes ----
     # skinprim / skinprimuv refer to the per-lock region inside the loop, not the scalp: dropped
     pub_clean = _node(sub, "attribdelete", "publish_clean", [hair], primdel="lock_cd group_cd tightness "
-                      "length_mult frizz clumpid skinprim skinprimuv path",
+                      "length_mult frizz clumpid skinprim skinprimuv path visible",
                       ptdel="Cd tightness skinprim skinprimuv")
     pub = _node(sub, "usdexport", "PUBLISH_USD",[pub_clean])
     pub.parm("lopoutput").setExpression('chs("../publish_path")', language=hou.exprLanguage.Hscript)
@@ -565,8 +589,10 @@ def build_network(sub) -> None:
 
     # ---- display ----
     mesh_col = _wrangle(sub, "mesh_color", VEX_MESH_COLOR, PRIM, [pieces, spines])
-    guide_col = _wrangle(sub, "guide_color", VEX_COLOR_POINTS, POINT, [guides_cut])
-    hair_col = _wrangle(sub, "hair_color", VEX_COLOR_POINTS, POINT, [hair])
+    guides_vis = _node(sub, "blast", "guides_visible", [guides_cut], group="@visible==0", grouptype=4)
+    hair_vis = _node(sub, "blast", "hair_visible", [hair], group="@visible==0", grouptype=4)
+    guide_col = _wrangle(sub, "guide_color", VEX_COLOR_POINTS, POINT, [guides_vis])
+    hair_col = _wrangle(sub, "hair_color", VEX_COLOR_POINTS, POINT, [hair_vis])
     disp = _node(sub, "switch", "display", [mesh_col, guide_col, hair_col])
     disp.parm("input").setExpression('min(ch("../display_mode"), 2)')
     deform = _node(sub, "pointdeform", "deform", [disp, in_hair, in_anim])

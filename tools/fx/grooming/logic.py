@@ -287,6 +287,22 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
     return out
 
 
+def section_cm2(width: float, thick: float, unit_cm: float) -> float:
+    """Cross-section of a lock in cm² from its widest head band (scene units): an ellipse whose
+    thickness is at least 30 % of its width, so a flat ribbon still counts as a lock of hair."""
+    w = max(width, 0.0) * unit_cm
+    t = max(thick, config.SECTION_MIN_THICK_RATIO * max(width, 0.0)) * unit_cm
+    return math.pi / 4.0 * w * t
+
+
+def lock_strands(density: float, region_cm2: float, section: float) -> int:
+    """Strands of a lock at full count: density x its share of the scalp, at least density x its own
+    cross-section (locks whose roots converge on a small patch). Same rule as the HDA's region_frame."""
+    if region_cm2 <= 0.0:
+        return 0
+    return int(round(density * max(region_cm2, section)))
+
+
 # ---------------------------------------------------------------------------
 # Publish
 # ---------------------------------------------------------------------------
@@ -334,8 +350,11 @@ def publish_paths(hip_dir: str, asset: str, version: str) -> tuple[str, str]:
     spaces kept. Raises ValueError when `hip_dir` is not inside a `04_grooming` folder or `version`
     is not vNNN.
     """
-    if not _VERSION_RE.match(version or ""):
+    m = _VERSION_RE.match(version or "")
+    if not m:
         raise ValueError(f"publish version must look like v007, got {version!r}")
+    # one spelling per version, so "v7" or "V007" cannot slip past the overwrite check into a 2nd folder
+    version = _fmt_version(int(m.group(1)))
     raw = (hip_dir or "").replace("\\", "/")
     lead = "//" if raw.startswith("//") else ("/" if raw.startswith("/") else "")
     parts = [p for p in raw.split("/") if p]

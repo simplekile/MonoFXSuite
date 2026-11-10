@@ -367,8 +367,8 @@ else:
         from tools.fx.grooming import run
         run()
     except Exception as e:
-        import hou
-        hou.ui.displayMessage(str(e), severity=hou.severityType.Error)
+        import hou  # status bar, not a modal dialog: a dialog blocks Houdini and the MCP bridge
+        hou.ui.setStatusMessage("MONO Grooming: %s" % e, severity=hou.severityType.Error)
 ]]></script>
   </tool>
 

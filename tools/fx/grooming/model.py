@@ -77,6 +77,7 @@ class GroomData:
     locks: list[Lock] = field(default_factory=list)
     orphans: list[Orphan] = field(default_factory=list)
     regions_stale: bool = False  # set when locks change after the last region split
+    id_high: int = 0             # highest lock id ever given: deleting an orphan never frees its id
     schema: int = SCHEMA
 
     # ---- lookup ----
@@ -87,8 +88,14 @@ class GroomData:
         return next((lk for lk in self.locks if lk.id == lock_id), None)
 
     def next_lock_id(self) -> int:
-        used = [lk.id for lk in self.locks] + [o.id for o in self.orphans]
-        return max(used, default=0) + 1
+        """Never reuses an id, even of a deleted orphan: frozen regions and earlier publishes may still
+        name it."""
+        used = [lk.id for lk in self.locks] + [o.id for o in self.orphans] + [self.id_high]
+        return max(used) + 1
+
+    def note_ids(self) -> None:
+        """Raise `id_high` to the ids in use; called whenever locks are added."""
+        self.id_high = max([self.id_high] + [lk.id for lk in self.locks] + [o.id for o in self.orphans])
 
     # ---- settings ----
     def resolve(self, lock_id: int) -> dict[str, float]:
@@ -159,6 +166,7 @@ class GroomData:
                 for o in raw.get("orphans", [])
             ],
             regions_stale=bool(raw.get("regions_stale", False)),
+            id_high=int(raw.get("id_high", 0)),
             schema=SCHEMA,
         )
 

@@ -157,8 +157,19 @@
   Settings resolve built-in → `defaults` → group → lock.
 - A lock is spine + `lock_width` / `lock_thick` / `lock_twist` along `curveu`; the hair mesh is only an
   input. `lock_width` is the lock's width; Houdini's `width` stays the strand thickness.
-- Growth regions (`lock_owner` on the scalp) are frozen in the node and change only on "Chia vùng":
-  editing one lock never changes another lock's look without telling.
+- Growth regions are frozen in the node and change only on "Chia vùng": editing one lock never changes
+  another lock's look without telling. Rule (`logic.region_owners`): the scalp is subdivided bilinearly
+  (`region_subdiv`), each prim belongs to every lock whose footprint (0.5 x widest head width) covers its
+  centroid, else the nearest lock of its group; stacked locks share prims (`lock_owners`, `share`) and
+  divide the density. Nearest-root alone left 19/61 Helen fringe locks bare (roots 1-4 mm apart). The
+  frozen split is read back by position (`nearpoint`), never by prim number.
+- Strands per lock = density x max(its share of the scalp, its own cross-section) (`logic.lock_strands`,
+  same rule in the HDA's `region_frame`): fringe locks whose roots converge on one spot still get hair
+  matching their mesh. In VEX, type every `prim()` read used in arithmetic (`float a = prim(...)`):
+  inside an int expression it returns int and areas of 0.03 cm² became 0.
+- Hidden locks (the panel's eye) are display only: they still grow hair and are published.
+- Lock ids are never reused (`GroomData.id_high`): frozen regions and old publishes may still name them.
+  Detect stores roots unrounded, so an unchanged unnamed mesh re-matches "ok".
 - Spine and measure (`build_hda.py` `spine_build`): bands by distance along the mesh from the root (points
   nearest the scalp), not by projection on a straight axis, so bent or folded ribbons still give one
   cross-section per band; per band a 2D principal-axis fit in a parallel-transported frame gives width,
@@ -168,8 +179,15 @@
   measured cross-section. One hairclump for the whole groom, `clumpid` = `lock_id`, so clumps stay in a lock.
   The frozen split lives on the node's hidden geometry parm `regions` (not a stash SOP: inner nodes of a
   locked HDA cannot be set); Python SOPs inside the HDA call `grooming_adapter.cook_assign` / `cook_frozen_regions`.
-- Helen (t11): 61 locks, full hair 96 k strands in 2.4 s (47–56 s before). Nearest-root regions leave
-  19 stacked fringe locks without scalp: open question for the region rule.
+- hairgen's `skinprim` indexes the per-lock region cut inside the loop; strands get it again from
+  `guideskinattriblookup` on the clump skin, else hairclump errors. Per-lock clump reaches hairclump via
+  `tightnessoverride` = `curveattrib` (`tightness`).
+- Helen (sandbox t12): 61/61 locks with hair, 107 k strands, full cook 2.2 s, preview 1.75 s (47–56 s
+  before). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
+  Quitting Houdini with `hou.exit` from a Qt timer segfaults even in an empty session (fxhoudinimcp
+  loaded): not this tool; kill leftover test sessions after a GUI run.
+- Shots: Karma's hair procedural (Generate) does not reproduce clump/frizz, so publishes carry full
+  strands and shots Point Deform them (sandbox t02).
 - Names follow the department: `grooming` (`04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`,
   tool data in `vNNN/_grooming/`). Publish version defaults to the scene's `_vNNN` and never overwrites.
 

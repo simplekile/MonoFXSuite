@@ -412,8 +412,9 @@ class GroomController:
         return ok
 
     def reassign_orphan(self, orphan_id: int, lock_id: int) -> bool:
-        """An orphan's settings and name go to *lock_id* (usually a lock detect marked new), and the
-        orphan leaves the list. The lock keeps its id, so the geometry stays matched; its match is ok."""
+        """An orphan's settings go to *lock_id* (usually a lock detect marked new), and the orphan
+        leaves the list. The lock keeps its id and its name (the hair-mesh piece's name, which the next
+        Detect matches by), so the geometry stays matched; its match is ok."""
         holder: dict = {}
 
         def change(data: model.GroomData):
@@ -422,8 +423,6 @@ class GroomController:
             if orphan is None or lk is None:
                 return False
             lk.overrides = dict(orphan.overrides)
-            if orphan.name:
-                lk.name = orphan.name
             lk.match = "ok"
             data.orphans.remove(orphan)
             holder["text"] = f"{orphan.name or orphan.id} reassigned to lock {lk.id}"
@@ -548,8 +547,13 @@ class GroomController:
         self.view.show_properties(self.properties(data))
         lock_ids = self.lock_ids_of(data, self.selection)
         if kind in (SEL_LOCKS, SEL_GROUP):
-            self._viewport_ids = lock_ids  # what the viewport will report back: not a change
             self._run("Select", lambda: self.adapter.select_locks(self.node, lock_ids))
+            # Remember what the viewport reports now (hidden locks are not in its geometry), so the next
+            # poll does not take that subset for a new viewport selection and replace the panel's.
+            try:
+                self._viewport_ids = sorted(self.adapter.selected_lock_ids(self.node))
+            except Exception:
+                self._viewport_ids = lock_ids
 
     def select_locks(self, ids) -> None:
         self.select(SEL_LOCKS, tuple(ids))
@@ -572,6 +576,19 @@ class GroomController:
         self._node_lost = False
         if data.to_json() != self._last_json:
             self.refresh(data)
+        state = getattr(self.adapter, "display_state", None)  # undo or the HDA's own parms changed it
+        if state is not None:
+            try:
+                mode, color_by = state(self.node)
+            except Exception:
+                mode, color_by = self.display_mode, self.color_by
+            if (mode, color_by) != (self.display_mode, self.color_by):
+                recolor = color_by != self.color_by
+                self.display_mode, self.color_by = mode, color_by
+                self.view.set_display_state(mode, color_by)
+                if recolor:
+                    self.view.show_tree(self.tree_rows(data))
+                    self.view.set_selection(self.selection)
         try:
             ids = sorted(self.adapter.selected_lock_ids(self.node))
         except Exception:

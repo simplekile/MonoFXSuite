@@ -47,5 +47,6 @@ MATCH_UNCHANGED_TOL = 1e-5     # root and length within 1e-5 x length: the mesh 
 # Region split (logic.region_owners): a lock's footprint radius = this x its measured root width.
 REGION_FOOTPRINT = 0.5
 REGION_SUBDIV = 2              # bilinear subdivisions of the scalp before the split (x4 points each)
+SECTION_MIN_THICK_RATIO = 0.3  # cross-section floor of a lock: thickness counted as >= 30 % of its width
 
 LOCK_NAME_DIGITS = 2           # fringe_01

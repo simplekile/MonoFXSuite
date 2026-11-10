@@ -63,12 +63,14 @@ class FakeAdapter:
         data = self.read_data(node)
         data.regions_stale = True
         self.text = data.to_json()
+        self.writes.append("detect")   # the real adapter writes groom_data once (one undo step)
         return self.report
 
     def split_regions(self, node) -> None:
         data = self.read_data(node)
         data.regions_stale = False
         self.text = data.to_json()
+        self.writes.append("split")
 
     def set_display(self, node, mode, color_by, preview) -> None:
         self.display.append((mode, color_by, preview))
@@ -220,7 +222,10 @@ def test_confirm_and_reassign_orphan(env) -> None:
     c.reassign_orphan(9, 4)
     data = adapter.read_data(None)
     assert data.orphans == []
-    assert (data.lock(4).name, data.lock(4).overrides, data.lock(4).match) == ("back_old", {"frizz": 0.3}, "ok")
+    # the lock keeps its own (hair-mesh) name, so the next Detect still matches it by name
+    old_name = env[0].read_data(None).lock(4).name
+    assert (data.lock(4).overrides, data.lock(4).match) == ({"frizz": 0.3}, "ok")
+    assert data.lock(4).name != "back_old" and data.lock(4).name == old_name
     assert len(adapter.writes) == 2
     assert view.selection == (ctl.SEL_LOCKS, (4,))
     assert ctl.ORPHANS_ROW not in [r["kind"] for r in view.tree]

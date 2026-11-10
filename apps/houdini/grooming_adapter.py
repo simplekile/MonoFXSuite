@@ -178,8 +178,10 @@ def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_group
     stale = False
     for m in report.matches:
         piece, group = by_index[m.piece]
-        root = tuple(round(c, 6) for c in piece.root)
-        length = round(piece.length, 6)
+        # stored unrounded: match_locks' "unchanged" rule compares within 1e-5 x length, and rounding to
+        # 6 decimals would already exceed that for a 2 cm lock in a metre scene
+        root = tuple(float(c) for c in piece.root)
+        length = float(piece.length)
         lk = old.get(m.lock_id)
         if lk is not None and m.status != "new":
             if math.dist(lk.root, root) > 1e-5 or abs(lk.length - length) > 1e-5:
@@ -205,6 +207,7 @@ def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_group
             out.groups.append(model.Group(id=lk.group, name=lk.group, color=group_color(len(out.groups))))
             have.add(lk.group)
     out.regions_stale = out.regions_stale or stale
+    out.note_ids()
     return out
 
 
@@ -309,6 +312,9 @@ def find_nodes() -> list:
 def create_node(parent=None):
     """New node wired to a selected scalp + hair mesh when it can tell which is which, else unwired."""
     _require_hou()
+    if _node_type() is None:  # checked first: nothing is created when the HDA is missing
+        raise RuntimeError(f"{config.HDA_LABEL} ({config.HDA_TYPE}) is not installed: otls/mono_grooming.hdalc "
+                           "is missing from the MonoFX Suite folder")
     sel = [n for n in hou.selectedNodes() if n.type().category() == hou.sopNodeTypeCategory()]
     if parent is None:
         parent = sel[0].parent() if sel else None
@@ -365,12 +371,15 @@ def lock_infos(node) -> list[LockInfo]:
         widths = [p.floatAttribValue(config.ATTR_LOCK_WIDTH) for p in pts]
         thicks = [p.floatAttribValue(config.ATTR_LOCK_THICK) for p in pts]
         a = area.get(lid, 0.0)
+        head = max(1, len(pts) // 4)
+        section = logic.section_cm2(max(widths[:head], default=0.0), max(thicks[:head], default=0.0),
+                                    node.evalParm("unit_cm"))
         infos.append(LockInfo(
             id=lid, name=prim.stringAttribValue(config.ATTR_NAME), group=prim.stringAttribValue(config.ATTR_GROUP),
             root=tuple(prim.attribValue("root")), length=prim.floatAttribValue("length"),  # type: ignore[arg-type]
             width=sum(widths) / max(len(widths), 1), thick=sum(thicks) / max(len(thicks), 1),
             twist=pts[-1].floatAttribValue(config.ATTR_LOCK_TWIST) if pts else 0.0,
-            strands=int(round(prim.floatAttribValue("density") * a)), region_area_cm2=a,
+            strands=logic.lock_strands(prim.floatAttribValue("density"), a, section), region_area_cm2=a,
         ))
     return sorted(infos, key=lambda i: i.id)
 
@@ -420,8 +429,11 @@ def split_regions(node) -> None:
         if lid < 0:
             continue
         roots[lid] = tuple(prim.attribValue("root"))  # type: ignore[assignment]
+        # The root band of a lock is often tapered to almost nothing; its footprint follows the
+        # widest section of the first quarter of the spine instead.
         pts0 = prim.points()
-        width = pts0[0].floatAttribValue(config.ATTR_LOCK_WIDTH) if pts0 else 0.0
+        head = pts0[:max(1, len(pts0) // 4)]
+        width = max((p.floatAttribValue(config.ATTR_LOCK_WIDTH) for p in head), default=0.0)
         radii[lid] = config.REGION_FOOTPRINT * width
     has_group = scalp.findPointAttrib(config.ATTR_GROUP) is not None
     centroids: list[tuple[float, float, float]] = []
@@ -501,13 +513,20 @@ def select_locks(node, ids: Iterable[int]) -> None:
     viewer = _scene_viewer()
     if viewer is None:
         return
+    # Geometry selection exists only while the viewer shows the node's own network (inside the geo
+    # object); at /obj level Houdini refuses it, so the panel's selection simply is not mirrored there.
+    if viewer.pwd() != node.parent():
+        return
     want = set(ids)
     geo = node.geometry()
     if geo.findPrimAttrib(config.ATTR_LOCK_ID) is None:
         return
     prims = [p for p in geo.iterPrims() if p.intAttribValue(config.ATTR_LOCK_ID) in want]
     node.setCurrent(True, clear_all_selected=True)
-    viewer.setCurrentGeometrySelection(hou.geometryType.Primitives, (node,), (hou.Selection(prims),))
+    try:
+        viewer.setCurrentGeometrySelection(hou.geometryType.Primitives, (node,), (hou.Selection(prims),))
+    except hou.OperationFailed:  # the viewer is in a state that takes no geometry selection
+        pass
 
 
 def display_state(node) -> tuple[str, str]:
@@ -539,6 +558,7 @@ def publish(node, version: str | None = None) -> PublishResult:
         if not version:
             version, _note = logic.publish_version(os.path.splitext(scene)[0], _existing_versions(hip_dir, asset))
         usd, tool_dir = logic.publish_paths(hip_dir, asset, version)
+        version = os.path.basename(os.path.dirname(usd))  # the normalised spelling (v7 -> v007)
     except ValueError as exc:
         return PublishResult(False, "", version or "", f"Không publish được: {exc}")
     if os.path.exists(usd) or os.path.exists(tool_dir):

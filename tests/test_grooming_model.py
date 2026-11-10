@@ -76,3 +76,11 @@ def test_newer_schema_is_refused():
 def test_resolve_unknown_lock_raises():
     with pytest.raises(KeyError):
         _data().resolve(42)
+
+
+def test_deleted_orphan_id_is_never_given_again():
+    d = GroomData(locks=[Lock(id=1, name="a", group="g")], orphans=[Orphan(id=7, name="b", group="g")])
+    d.note_ids()
+    d.orphans = []                      # the panel deleted the orphan
+    assert d.next_lock_id() == 8        # 7 may still be named by frozen regions or old publishes
+    assert GroomData.from_json(d.to_json()).next_lock_id() == 8

@@ -159,3 +159,15 @@ def test_adapter_api_is_complete():
                  "split_regions", "set_display", "selected_lock_ids", "select_locks", "publish"):
         assert callable(getattr(ga, name))
     assert logic.LockInfo is ga.LockInfo
+
+
+def test_detect_twice_on_unchanged_unnamed_short_locks_is_ok():
+    """2 cm locks in a metre scene with float32-like roots: stored unrounded, so Detect again is ok."""
+    import random
+    rnd = random.Random(3)
+    pieces = [MeshPiece(index=i, name="", root=(rnd.uniform(-.1, .1), rnd.uniform(1.5, 1.7), rnd.uniform(-.1, .1)),
+                        length=rnd.uniform(0.01, 0.05), direction=(0.0, -1.0, 0.0)) for i in range(50)]
+    first = logic.match_locks(pieces, [], next_id=1)
+    data = GroomData.from_json(ga.apply_detect(GroomData(), pieces, ["g"] * 50, first).to_json())
+    again = logic.match_locks(pieces, data.locks, data.next_lock_id())
+    assert again.counts["ok"] == 50

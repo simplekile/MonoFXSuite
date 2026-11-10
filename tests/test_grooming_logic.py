@@ -358,3 +358,18 @@ def test_region_owners_every_lock_gets_a_point_and_groups_stay_apart():
 
 def test_region_owners_point_in_group_without_locks_has_none():
     assert logic.region_owners([(0, 0, 0)], {1: (0, 0, 0)}, {1: 1.0}, {1: "g"}, ["other"]) == [[]]
+
+
+def test_section_floor_counts_flat_ribbons_and_converging_locks():
+    # 2 cm wide flat ribbon (thickness 0) in metres: thickness counted as 0.6 cm
+    s = logic.section_cm2(0.02, 0.0, 100.0)
+    assert s == pytest.approx(3.14159 / 4 * 2.0 * 0.6, rel=1e-4)
+    assert logic.lock_strands(150.0, 0.01, s) == round(150 * s)    # tiny shared patch: floor wins
+    assert logic.lock_strands(150.0, 5.0, s) == 750                 # wide region: the scalp rule
+    assert logic.lock_strands(150.0, 0.0, s) == 0                   # no region, no hair
+
+
+def test_publish_paths_one_spelling_per_version():
+    a, _ = logic.publish_paths("D:/p/char_Helen/04_grooming/houdini/work", "char_Helen", "V7")
+    b, _ = logic.publish_paths("D:/p/char_Helen/04_grooming/houdini/work", "char_Helen", "v007")
+    assert a == b and "/publish/v007/" in a
