@@ -32,3 +32,14 @@ PREVIEW_MAX_STRANDS = 20_000
 DEPARTMENT_DIR = "04_grooming"
 PUBLISH_FILE_TEMPLATE = "{asset}_grooming_publish.usd"   # asset = "char_Helen"
 TOOL_DATA_DIR = "_grooming"
+
+# Re-import matching (logic.match_locks). Distances are fractions of the lock's length, so the rule is the
+# same for a 2 cm fringe lock and a 40 cm back lock, in any scene unit.
+MATCH_NAME_ROOT_TOL = 0.5      # same name, root moved <= 0.5 x length -> "ok"; farther -> "unsure"
+MATCH_ROOT_TOL = 0.25          # no name match: root moved <= 0.25 x length ...
+MATCH_ROOT_LENGTH_RATIO = 1.5  # ... and length within x1.5 either way -> "unsure"
+MATCH_SHAPE_ROOT_TOL = 1.0     # shape only: root moved <= 1 x length ...
+MATCH_SHAPE_LENGTH_RATIO = 1.1  # ... length within x1.1 ...
+MATCH_SHAPE_MIN_DOT = 0.9      # ... and direction within ~25 degrees (when the lock knows its direction)
+
+LOCK_NAME_DIGITS = 2           # fringe_01
