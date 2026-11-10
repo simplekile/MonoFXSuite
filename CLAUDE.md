@@ -159,6 +159,17 @@
   input. `lock_width` is the lock's width; Houdini's `width` stays the strand thickness.
 - Growth regions (`lock_owner` on the scalp) are frozen in the node and change only on "Chia vùng":
   editing one lock never changes another lock's look without telling.
+- Spine and measure (`build_hda.py` `spine_build`): bands by distance along the mesh from the root (points
+  nearest the scalp), not by projection on a straight axis, so bent or folded ribbons still give one
+  cross-section per band; per band a 2D principal-axis fit in a parallel-transported frame gives width,
+  thickness and twist (a near-round band keeps the previous axis). Lock ids reach the network by the
+  root Detect stored (`assign_pieces`), so Detect must run after the hair mesh changes.
+- hairgen only scatters roots on the lock's region (no guides); `fit_to_lock` places each strand in the
+  measured cross-section. One hairclump for the whole groom, `clumpid` = `lock_id`, so clumps stay in a lock.
+  The frozen split lives on the node's hidden geometry parm `regions` (not a stash SOP: inner nodes of a
+  locked HDA cannot be set); Python SOPs inside the HDA call `grooming_adapter.cook_assign` / `cook_frozen_regions`.
+- Helen (t11): 61 locks, full hair 96 k strands in 2.4 s (47–56 s before). Nearest-root regions leave
+  19 stacked fringe locks without scalp: open question for the region rule.
 - Names follow the department: `grooming` (`04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`,
   tool data in `vNNN/_grooming/`). Publish version defaults to the scene's `_vNNN` and never overwrites.
 
