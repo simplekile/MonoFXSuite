@@ -1,0 +1,111 @@
+# MONO Grooming v0.1 (spec for the build)
+
+The shared contract for everyone building v0.1. Discussion and rationale: the plan page
+(https://claude.ai/artifact/TWs7WFd7DrCmb3wtaq3CkP) and the walkthrough demo
+(https://claude.ai/artifact/7TyxPqNTkxuBvkp8P96WwK). Where this file and the page differ, this file wins
+for v0.1. Change it only through the lead session, so parallel work stays on one contract.
+
+## What v0.1 is
+
+One Houdini SOP HDA, **MONO Grooming** (`mono::grooming::0.1`), plus a Qt panel, that replaces the
+copy-pasted hairgen/hairclump network of `char_Helen_grooming_v007` (about 60 hairgen, 70 hairclump):
+
+1. Inputs: scalp mesh (with UV), hair mesh (one piece per lock, prim `name` when present), optional
+   animated hair mesh (same topology as the rest hair mesh).
+2. Detect locks: one lock per hair mesh piece, a stable `lock_id`, a name, a group from the region.
+3. Measure each lock: spine curve, width, thickness and twist along `curveu`.
+4. Split the scalp into growth regions (`lock_owner`), frozen until the user presses "Chia vùng".
+5. Hairgen per lock from its own region, then clump, length, frizz. One node network, not one per lock.
+6. Settings: defaults → group → lock, edited in the panel or on the HDA. Each edit is one undo step.
+7. Display: Mesh / Guide / Hair preview (10%, at most 20 000 strands) / Hair full; colour by lock or group.
+8. Optional deform by the animated hair mesh (Point Deform, as today), then cache per shot.
+9. Publish the asset groom to `04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`.
+
+Not in v0.1: drawing locks, control points dragged in the viewport, Guide Groom brush layer, masks,
+colour layers and melanin, Karma live preview, shot mode reading a publish, batch over shots,
+custom team effects, Unreal export, sim and body collision.
+
+## Code layout
+
+| Path | Owner | What |
+|---|---|---|
+| `tools/fx/grooming/model.py` | lead | Data model, JSON (de)serialise, settings resolution. No `hou`. |
+| `tools/fx/grooming/logic.py` | logic | Lock matching on re-import, region split, publish paths and version rule, lock naming. No `hou`. |
+| `tools/fx/grooming/config.py` | logic | Constants (attribute names, defaults, limits). No `hou`. |
+| `apps/houdini/grooming_adapter.py` | houdini | Everything that touches `hou`: build and read the node, run detect / split / publish, read cooked lock info. |
+| `tools/fx/grooming/build_hda.py` | houdini | Builds `otls/mono_grooming.hdalc` from code (run with hython), so the HDA is reviewable and rebuildable. |
+| `otls/mono_grooming.hdalc` | houdini | Built output. The suite root is the package `hpath`, so Houdini loads `otls/`. |
+| `tools/fx/grooming/ui.py`, `controller.py`, `__init__.py` | panel | Qt panel and its controller. The controller talks to the adapter only. |
+| `toolbar/MonoFX.shelf` (one new tool) | panel | Shelf tool "Grooming": finds the MONO Grooming node in the scene (selected first), else creates one, then opens the panel. |
+| `tests/test_grooming_*.py` | each owner | pytest, no Houdini. Houdini checks are hython scripts under the owner's sandbox test folder. |
+
+## Data model (single source of truth)
+
+Stored as JSON in a hidden multi-line string parm `groom_data` on the MONO Grooming node. A parm (not user
+data) so that every change is undoable, saved with the hip and dirties the cook. The panel never keeps its
+own copy beyond the current edit. `model.GroomData.to_json()` / `from_json()` own the format;
+`schema` is an int, bumped with a migration in `model.migrate()` whenever the shape changes.
+
+Settings keys (`model.SETTING_KEYS`): `density` (strands/cm²), `width_mult`, `thick_mult`, `twist_add`,
+`clump`, `length_mult`, `frizz`. Resolution for a lock: built-in defaults → `data.defaults` → its
+group's `overrides` → its own `overrides`. Measured values (width, thickness, twist, length) come from the
+geometry and are multiplied / added by the resolved settings; they are never written into the JSON.
+
+## Geometry contract
+
+| Where | Attribute | Type | Meaning |
+|---|---|---|---|
+| spine prims | `lock_id` | int | Stable id from the JSON |
+| spine prims | `name`, `group` | string | Lock name, group id |
+| spine points | `curveu` | float | 0 root → 1 tip |
+| spine points | `lock_width`, `lock_thick` | float | Measured cross-section (scene units) |
+| spine points | `lock_twist` | float | Measured twist (radians) |
+| scalp points | `lock_owner` | int | Lock id that grows hair here, -1 none |
+| scalp points | `density` | float | Strands/cm² after settings |
+| output strand prims | `lock_id`, `name`, `group`, `clump_id` | | For shading, selection, solo |
+| output strand points | `Cd` | vector | Display colour only |
+
+`lock_width` is the lock's width. Houdini's `width` stays the strand thickness for render. Never mix them.
+
+## Processing order (fixed)
+
+source hair mesh → spine and measure → (v0.2: redraw, transform, brush) → settings applied → region split
+(frozen) → hairgen per lock (For-Each by `lock_id`) → clump → length, frizz → display colour / preview cut
+→ deform by animated hair mesh (optional) → output.
+
+## Adapter API (the panel uses only this)
+
+`apps/houdini/grooming_adapter.py`, every function main-thread and `hou`-only. The panel's controller takes an
+object with these functions, so its tests run with a fake adapter.
+
+| Function | Returns / does |
+|---|---|
+| `find_nodes() -> list[hou.Node]` | MONO Grooming nodes in the scene, selected ones first |
+| `create_node(parent: hou.Node \| None = None) -> hou.Node` | New node wired to a selected scalp + hair mesh when it can tell which is which, else unwired |
+| `read_data(node) -> GroomData` / `write_data(node, data, label)` | Parse / store `groom_data`; the write is one undo step named `label` |
+| `lock_infos(node) -> list[LockInfo]` | From the cooked spines: `id, name, group, root, length, width, thick, twist, strands, region_area_cm2` |
+| `detect(node) -> DetectReport` | Detect locks from the hair mesh, match ids against the JSON (logic.match_locks), write the JSON. Counts of ok / unsure / new / orphaned |
+| `split_regions(node) -> None` | Recompute and freeze `lock_owner`, clear `regions_stale` |
+| `set_display(node, mode, color_by, preview)` | `mode` in mesh/guide/hair_preview/hair; `color_by` in lock/group |
+| `selected_lock_ids(node) -> list[int]` | Locks whose spines or strands are selected in the viewport (empty when none) |
+| `select_locks(node, ids)` | Select those locks in the viewport |
+| `publish(node, version: str \| None) -> PublishResult` | Writes the USD and `_grooming/`, refuses to overwrite; result has path, version, message |
+
+`LockInfo`, `DetectReport`, `PublishResult` are dataclasses in `tools/fx/grooming/logic.py` (no `hou`).
+
+## Rules every part follows
+
+- Region split is frozen: it is stored in the node (a stash) and changes only when the user presses
+  "Chia vùng". Adding, moving or deleting a lock never silently changes another lock's region; the panel
+  shows "regions out of date" instead.
+- Re-import keeps ids: match by name, then root position on the scalp, then shape. Unsure matches are
+  marked and need a confirm; locks that disappear go to `orphans` with their settings kept.
+- Publish never overwrites silently. Version default = the `_vNNN` of the scene name; when that version
+  already exists, or is lower than the newest publish, the panel proposes the next free version.
+  File name fixed: `char_<name>_grooming_publish.usd`; tool data goes to `vNNN/_grooming/`.
+- Nothing writes outside the scene's project (paths come from `$HIP`), and tests never write into
+  `D:/Dropbox/Job/...`. Houdini tests use the sandbox copy `E:/01 Dev/sandbox/claude/grooming/project_helen`
+  read-only; each part writes only under its own `E:/01 Dev/sandbox/claude/grooming/tests/<folder>/`.
+- No modal dialogs (they block Houdini and the MCP bridge): results go to the panel's status line.
+- Fonts in pixels and the text roles of `tools/fx/auto_material/ui.py` (`_font`, `ui._text`).
+- GUI checks only on the secondary monitor; prefer hython. One session drives a GUI Houdini at a time.

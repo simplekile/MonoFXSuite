@@ -1,0 +1,174 @@
+"""
+Data model of MONO Grooming: what the user set, stored as JSON in the node's `groom_data` parm.
+
+Measured lock shape (width, thickness, twist, length) lives on the geometry, not here; this module
+only holds settings, groups, ids and names, and how settings resolve for a lock. No `hou`.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+SCHEMA = 1
+
+# Built-in defaults: the bottom of the resolution chain (defaults -> data.defaults -> group -> lock).
+BUILTIN_DEFAULTS: dict[str, float] = {
+    "density": 150.0,     # strands per cm2
+    "width_mult": 1.0,    # x measured lock width
+    "thick_mult": 1.0,    # x measured lock thickness
+    "twist_add": 0.0,     # + measured twist, radians
+    "clump": 0.4,         # 0..1
+    "length_mult": 1.0,   # x measured length
+    "frizz": 0.0,         # 0..1
+}
+SETTING_KEYS: tuple[str, ...] = tuple(BUILTIN_DEFAULTS)
+
+
+def _clean_overrides(raw: dict[str, Any] | None) -> dict[str, float]:
+    """Keep only known keys with numeric values; unknown keys from a newer schema are dropped."""
+    out: dict[str, float] = {}
+    for k, v in (raw or {}).items():
+        if k in BUILTIN_DEFAULTS and isinstance(v, (int, float)) and not isinstance(v, bool):
+            out[k] = float(v)
+    return out
+
+
+@dataclass
+class Group:
+    id: str
+    name: str
+    color: tuple[float, float, float] = (0.6, 0.6, 0.6)
+    overrides: dict[str, float] = field(default_factory=dict)
+    visible: bool = True
+    display: str | None = None  # None = follow the node's display mode
+
+
+@dataclass
+class Lock:
+    id: int
+    name: str
+    group: str
+    source: str = "mesh"        # "mesh" (detected from the hair mesh); "drawn" arrives in v0.2
+    root: tuple[float, float, float] = (0.0, 0.0, 0.0)  # root position at detection, for re-import matching
+    length: float = 0.0          # measured length at detection, for re-import matching
+    overrides: dict[str, float] = field(default_factory=dict)
+    visible: bool = True
+    display: str | None = None
+    match: str = "ok"            # "ok" | "unsure" | "new" after a re-import
+
+
+@dataclass
+class Orphan:
+    """A lock that disappeared on re-import, kept with its settings until reassigned or deleted."""
+    id: int
+    name: str
+    group: str
+    overrides: dict[str, float] = field(default_factory=dict)
+
+
+@dataclass
+class GroomData:
+    asset: str = ""
+    defaults: dict[str, float] = field(default_factory=dict)
+    groups: list[Group] = field(default_factory=list)
+    locks: list[Lock] = field(default_factory=list)
+    orphans: list[Orphan] = field(default_factory=list)
+    regions_stale: bool = False  # set when locks change after the last region split
+    schema: int = SCHEMA
+
+    # ---- lookup ----
+    def group(self, group_id: str) -> Group | None:
+        return next((g for g in self.groups if g.id == group_id), None)
+
+    def lock(self, lock_id: int) -> Lock | None:
+        return next((lk for lk in self.locks if lk.id == lock_id), None)
+
+    def next_lock_id(self) -> int:
+        used = [lk.id for lk in self.locks] + [o.id for o in self.orphans]
+        return max(used, default=0) + 1
+
+    # ---- settings ----
+    def resolve(self, lock_id: int) -> dict[str, float]:
+        """Effective settings of a lock: built-ins, then data defaults, then its group, then itself."""
+        lk = self.lock(lock_id)
+        if lk is None:
+            raise KeyError(lock_id)
+        out = dict(BUILTIN_DEFAULTS)
+        out.update(self.defaults)
+        g = self.group(lk.group)
+        if g is not None:
+            out.update(g.overrides)
+        out.update(lk.overrides)
+        return out
+
+    def source_of(self, lock_id: int, key: str) -> str:
+        """Where a lock's value for `key` comes from: "lock", "group", "defaults" or "builtin"."""
+        lk = self.lock(lock_id)
+        if lk is None:
+            raise KeyError(lock_id)
+        if key in lk.overrides:
+            return "lock"
+        g = self.group(lk.group)
+        if g is not None and key in g.overrides:
+            return "group"
+        if key in self.defaults:
+            return "defaults"
+        return "builtin"
+
+    # ---- (de)serialise ----
+    def to_json(self) -> str:
+        return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True, indent=1)
+
+    @classmethod
+    def from_json(cls, text: str | None) -> "GroomData":
+        if not text or not text.strip():
+            return cls()
+        raw = migrate(json.loads(text))
+        return cls(
+            asset=str(raw.get("asset", "")),
+            defaults=_clean_overrides(raw.get("defaults")),
+            groups=[
+                Group(
+                    id=str(g["id"]), name=str(g.get("name", g["id"])),
+                    color=tuple(float(c) for c in g.get("color", (0.6, 0.6, 0.6)))[:3],  # type: ignore[arg-type]
+                    overrides=_clean_overrides(g.get("overrides")),
+                    visible=bool(g.get("visible", True)), display=g.get("display"),
+                )
+                for g in raw.get("groups", [])
+            ],
+            locks=[
+                Lock(
+                    id=int(lk["id"]), name=str(lk.get("name", "")), group=str(lk.get("group", "")),
+                    source=str(lk.get("source", "mesh")),
+                    root=tuple(float(c) for c in lk.get("root", (0.0, 0.0, 0.0)))[:3],  # type: ignore[arg-type]
+                    length=float(lk.get("length", 0.0)),
+                    overrides=_clean_overrides(lk.get("overrides")),
+                    visible=bool(lk.get("visible", True)), display=lk.get("display"),
+                    match=str(lk.get("match", "ok")),
+                )
+                for lk in raw.get("locks", [])
+            ],
+            orphans=[
+                Orphan(id=int(o["id"]), name=str(o.get("name", "")), group=str(o.get("group", "")),
+                       overrides=_clean_overrides(o.get("overrides")))
+                for o in raw.get("orphans", [])
+            ],
+            regions_stale=bool(raw.get("regions_stale", False)),
+            schema=SCHEMA,
+        )
+
+
+def migrate(raw: dict[str, Any]) -> dict[str, Any]:
+    """Bring older JSON up to SCHEMA. A newer schema than this code knows is refused, never guessed."""
+    version = int(raw.get("schema", 1))
+    if version > SCHEMA:
+        raise ValueError(f"groom_data schema {version} is newer than this tool ({SCHEMA}); update MonoFX Suite")
+    return raw
+
+
+__all__ = [
+    "SCHEMA", "BUILTIN_DEFAULTS", "SETTING_KEYS",
+    "Group", "Lock", "Orphan", "GroomData", "migrate",
+]

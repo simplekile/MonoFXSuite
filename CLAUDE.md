@@ -147,6 +147,21 @@
   textures in LOP, base-colour materials for other images, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
   drop handler and tests read prefs without Qt.
 
+## MONO Grooming (Houdini, `tools/fx/grooming/` + `apps/houdini/grooming_adapter.py`)
+
+- Contract for v0.1: `docs/plans/grooming_v0_1.md` (scope, data model, geometry attributes, processing
+  order, adapter API). One SOP HDA `mono::grooming::0.1` built from code by `tools/fx/grooming/build_hda.py`
+  into `otls/` (the suite root is the package `hpath`).
+- What the user set lives as JSON in the node's hidden `groom_data` parm (`model.GroomData`): a parm, so
+  edits are undoable and saved with the hip. Measured lock shape lives on the geometry, never in the JSON.
+  Settings resolve built-in → `defaults` → group → lock.
+- A lock is spine + `lock_width` / `lock_thick` / `lock_twist` along `curveu`; the hair mesh is only an
+  input. `lock_width` is the lock's width; Houdini's `width` stays the strand thickness.
+- Growth regions (`lock_owner` on the scalp) are frozen in the node and change only on "Chia vùng":
+  editing one lock never changes another lock's look without telling.
+- Names follow the department: `grooming` (`04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`,
+  tool data in `vNNN/_grooming/`). Publish version defaults to the scene's `_vNNN` and never overwrites.
+
 ## Release (`release.ps1`, skill `.claude/skills/release`)
 
 - Two steps. `release.ps1 prepare` on the branch going to main: clean tree, tests pass, notes under
