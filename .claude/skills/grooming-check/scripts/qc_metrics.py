@@ -128,6 +128,8 @@ LIMITS = {
     "other_mean": {"abs": 0.02, "ref_x": None, "why": "strand points sitting on another lock's mesh"},
     "uncovered": {"abs": 0.10, "ref_x": 1.5, "why": "hair mesh with no strand within 6 mm: bald, see-through"},
     "lock_uncovered_worst": {"abs": 0.35, "ref_x": None, "why": "the barest lock"},
+    "lock_width_ratio_worst": {"abs": None, "min": 0.7, "ref_x": None,
+                               "why": "a lock's hair much narrower than its mesh (collapsed, twisted)"},
     "lock_dmax_p95_worst_cm": {"abs": 3.0, "ref_x": None, "why": "the worst lock's far points"},
     "lock_kink_p95_worst_deg": {"abs": 50.0, "ref_x": None, "why": "the worst lock's corners"},
 }
@@ -208,6 +210,27 @@ def coverage(mesh, hair_node):
     return float(cov.mean()), per
 
 
+def width_ratios(hair_geo, mesh_geo, spine_geo):
+    """Per lock: the hair's spread over the mesh's along its 2nd principal axis (its width). Strands
+    fill a lock while mesh points sit on its surface, so a good lock is ~0.85-1.0; a lock whose hair
+    collapsed or twisted inside its mesh (Helen's crown caps) is far below."""
+    mp = np.array(mesh_geo.pointFloatAttribValues("P")).reshape(-1, 3)
+    mpc = np.array(mesh_geo.pointIntAttribValues("piece"))
+    hp = np.array(hair_geo.pointFloatAttribValues("P")).reshape(-1, 3)
+    counts = np.array([p.numVertices() for p in hair_geo.prims()])
+    hl = np.repeat(np.array(hair_geo.primIntAttribValues("lock_id")), counts)
+
+    def spread(x):
+        x = x - x.mean(0)
+        return np.sqrt(np.maximum(np.sort(np.linalg.eigvalsh(np.cov(x.T)))[::-1], 0))
+    out = {}
+    for p in spine_geo.prims():
+        m, h = mp[mpc == p.attribValue("piece")], hp[hl == p.attribValue("lock_id")]
+        if len(m) > 10 and len(h) > 10:
+            out[int(p.attribValue("lock_id"))] = float(spread(h)[1] / max(spread(m)[1], 1e-9))
+    return out
+
+
 def summary(m):
     ok = m["qc_len"] > 0
     pc = lambda a, q: float(np.percentile(a[ok], q)) if ok.any() else 0.0  # noqa: E731
@@ -248,7 +271,8 @@ def badness(r):
     return (r["kink_p95_deg"] / LIMITS["kink_p95_deg"]["abs"] + r["zigzag_p95"] / LIMITS["zigzag_p95"]["abs"]
             + r["dmax_p95_cm"] / LIMITS["dmax_p95_cm"]["abs"] + r["dtip_p95_cm"] / LIMITS["dtip_p95_cm"]["abs"]
             + r["maxseg_p95_cm"] / LIMITS["maxseg_p95_cm"]["abs"] + r["other_mean"] / LIMITS["other_mean"]["abs"]
-            + 4 * max(0.0, 0.9 - r.get("coverage", 1.0)) / 0.1)
+            + 4 * max(0.0, 0.9 - r.get("coverage", 1.0)) / 0.1
+            + 4 * max(0.0, 0.8 - r.get("width_ratio", 1.0)) / 0.1)
 
 
 def ref_txt(c):
@@ -314,13 +338,16 @@ def main():
     report["ours"]["coverage"] = cov_all
     piece_of = {int(p.attribValue("lock_id")): int(p.attribValue("piece")) for p in sg.prims()}
     locks = per_lock(ours, lock_names)
+    wr = width_ratios(hair.geometry(), node.node("pieces").geometry(), sg)
     for r in locks:
+        r["width_ratio"] = wr.get(r["lock_id"], 1.0)
         r["coverage"] = cov_piece.get(piece_of.get(r["lock_id"], -1), 0.0)
         r["badness"] = round(badness(r), 2)
     locks.sort(key=lambda r: -r["badness"])
     s = dict(report["ours"])
     s["lock_dmax_p95_worst_cm"] = max((r["dmax_p95_cm"] for r in locks), default=0.0)
     s["uncovered"] = 1 - report["ours"]["coverage"]
+    s["lock_width_ratio_worst"] = min((r["width_ratio"] for r in locks), default=1.0)
     s["lock_uncovered_worst"] = max((1 - r["coverage"] for r in locks), default=0.0)
     if ref is not None:
         report["ref"]["uncovered"] = 1 - report["ref"]["coverage"]
@@ -328,6 +355,11 @@ def main():
 
     checks = []
     for key, lim in LIMITS.items():
+        if lim.get("min") is not None:           # a floor, not a ceiling
+            val = s.get(key, 1.0)
+            checks.append({"check": key, "value": round(val, 4), "limit": lim["min"], "ref": None,
+                           "pass": val >= lim["min"], "why": lim["why"] + " (at least)"})
+            continue
         limit = lim["abs"]
         if ref is not None and lim["ref_x"] and key in report["ref"]:
             limit = max(limit, report["ref"][key] * lim["ref_x"]) if key != "other_mean" else limit
@@ -351,11 +383,11 @@ def main():
         lines.append(f"| {c['check']} | {c['value']:.3g} | {ref_txt(c)} "
                      f"| {c['limit']:.3g} | {'ok' if c['pass'] else '**FAIL**'} | {c['why']} |")
     lines += ["", "## Worst locks", "", "| lock | strands | kink p95 | zigzag p95 | seg p95 cm | far p95 cm "
-              "| tip p95 cm | on other lock | covered |", "|---|---|---|---|---|---|---|---|---|"]
+              "| tip p95 cm | on other lock | covered | width / mesh |", "|---|---|---|---|---|---|---|---|---|---|"]
     for r in locks[:8]:
         lines.append(f"| {r['name']} | {r['strands']} | {r['kink_p95_deg']:.1f} | {r['zigzag_p95']:.3f} "
                      f"| {r['maxseg_p95_cm']:.2f} | {r['dmax_p95_cm']:.2f} | {r['dtip_p95_cm']:.2f} "
-                     f"| {r['other_mean']:.1%} | {r['coverage']:.0%} |")
+                     f"| {r['other_mean']:.1%} | {r['coverage']:.0%} | {r['width_ratio']:.2f} |")
     lines += ["", "## Along the strand (root -> tip)", "", "| u | dist p50 cm | dist p95 cm | over 2 cm "
               "| angle p95 | bent > 60 |", "|---|---|---|---|---|---|"]
     for r in report["profile"]:

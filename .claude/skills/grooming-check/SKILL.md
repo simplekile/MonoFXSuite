@@ -53,6 +53,12 @@ VEX per camera (Kajiya-Kay highlights, darker roots, value variation per strand)
 strand that leaves its lock or turns the wrong way catches the highlight differently from its
 neighbours. Shadows were tried and hid the inside of the groom in black.
 
+**Per lock** (`QC_COMPARE=hair_base_01,hair_bang_10`, `group:hair_base` or `all`): one image per lock,
+`cmp_<lock>.png`, with its mesh, our hair and the reference's strands of that lock (each reference
+strand goes to the lock whose mesh is nearest most of it) side by side, front and side rows. About
+40 s a lock; whole-groom shots are skipped. This is how a lock-shaped problem shows: Helen's crown
+caps (wide, short) came out as narrow twisted ribbons while every other lock matched.
+
 Wait for "done" in `capture_log.txt`, then kill the Houdini it started (it often hangs on exit):
 only the process whose command line has `qc_capture`, never the fxhoudini MCP's.
 

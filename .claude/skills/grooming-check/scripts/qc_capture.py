@@ -25,6 +25,9 @@ HIP = os.environ["QC_HIP"]
 OUT = os.environ["QC_OUT"]
 REPORT = os.environ.get("QC_REPORT")
 REF = os.environ.get("QC_REF")
+# QC_COMPARE=hair_bang_01,hair_bang_02 or group:hair_bang or all: one image per lock, its mesh, our hair
+# and the reference's strands of that lock side by side (front and side rows); whole-groom shots skipped
+COMPARE = os.environ.get("QC_COMPARE", "")
 os.makedirs(OUT, exist_ok=True)
 _log = open(os.path.join(OUT, "capture_log.txt"), "w", encoding="utf-8")
 
@@ -173,6 +176,24 @@ def solo(names):
     ga.write_data(node, data, "qc solo")
 
 
+# A reference strand belongs to the lock whose mesh is nearest to most of 5 points along it (the
+# reference has no lock ids).
+VEX_REF_PIECE = r"""
+int pts[] = primpoints(0, @primnum);
+int n = len(pts);
+int votes[];
+for (int k = 0; k < 5; k++) {
+    int hp; vector uv;
+    xyzdist(1, point(0, "P", pts[int(rint((n - 1) * k / 4.0))]), hp, uv);
+    int pc = point(1, "piece", primpoint(1, hp, 0));
+    if (pc >= len(votes)) resize(votes, pc + 1);
+    votes[pc]++;
+}
+int best = -1, most = 0;
+for (int i = 0; i < len(votes); i++) if (votes[i] > most) { most = votes[i]; best = i; }
+i@qc_piece = best;
+"""
+
 STEPS = []
 
 
@@ -196,6 +217,7 @@ def s_open():
             if imp.parm(k):
                 imp.parm(k).set(v)
         S["ref"] = look_network(geo, imp, "ref")
+        S["ref_raw"] = imp
     pieces = geo.createNode("object_merge", "qc_pieces")
     pieces.parm("objpath1").set(node.path() + "/pieces")
     tpl = geo.createNode("blast", "qc_lock_mesh")       # the solo lock's own mesh, as a wire template
@@ -204,8 +226,32 @@ def s_open():
     tpl.parm("group").set("@piece!=-1")
     S["tpl"] = tpl
     S["mesh"] = look_mesh(geo, pieces, "mesh")
+    if COMPARE:
+        one_mesh = geo.createNode("blast", "qc_cmp_mesh")      # one lock's mesh
+        one_mesh.setInput(0, pieces)
+        one_mesh.parm("grouptype").set(3)
+        one_mesh.parm("group").set("@piece!=-1")
+        S["cmp_mesh_blast"], S["cmp_mesh"] = one_mesh, look_mesh(geo, one_mesh, "cmp_mesh")
+        one_ours = geo.createNode("blast", "qc_cmp_ours")     # one lock of the finished hair: no recook
+        one_ours.setInput(0, S["ours"])
+        one_ours.parm("grouptype").set(4)
+        one_ours.parm("group").set("@lock_id!=-1")
+        S["cmp_ours_blast"] = S["cmp_ours"] = one_ours
+        if REF:
+            own = geo.createNode("attribwrangle", "qc_ref_piece")  # each reference strand -> a lock
+            own.setInput(0, S["ref_raw"])
+            own.setInput(1, pieces)
+            own.parm("class").set(1)
+            own.parm("snippet").set(VEX_REF_PIECE)
+            one_ref = geo.createNode("blast", "qc_cmp_ref")
+            one_ref.setInput(0, own)
+            one_ref.parm("grouptype").set(4)
+            one_ref.parm("group").set("@qc_piece!=-1")
+            S["cmp_ref_blast"], S["cmp_ref"] = one_ref, look_network(geo, one_ref, "cmp_ref")
     S["piece_of"] = {p.attribValue("name"): int(p.attribValue("piece"))
                      for p in node.node("SPINES").geometry().prims()}
+    S["lock_of"] = {p.attribValue("name"): int(p.attribValue("lock_id"))
+                    for p in node.node("SPINES").geometry().prims()}
     S["ours"].setDisplayFlag(True)
     S["ours"].cook(force=True)
     scalp = geo.node("OUT_SCALP")
@@ -246,10 +292,106 @@ def add_views(prefix, which):
         STEPS.extend([_prep, _shot])
 
 
-add_views("", "ours")
-add_views("mesh_", "mesh")
-if REF:
-    add_views("ref_", "ref")
+if not COMPARE:
+    add_views("", "ours")
+    add_views("mesh_", "mesh")
+    if REF:
+        add_views("ref_", "ref")
+
+
+def compare_names():
+    names = sorted(S["piece_of"])
+    if COMPARE == "all":
+        return names
+    if COMPARE.startswith("group:"):
+        return [n for n in names if n.startswith(COMPARE[6:])]
+    return [n for n in COMPARE.split(",") if n in S["piece_of"]]
+
+
+CMP_VIEWS = ("threequarter", "left")
+CMP_COLS = ("mesh", "ours", "ref")
+
+
+def s_compare():
+    """Queue the per-lock steps once the scene is open (the lock list comes from the scene)."""
+    steps = []
+    for name in compare_names():
+        def _lock(name=name):
+            pc = S["piece_of"][name]
+            S["cmp_ours_blast"].parm("group").set(f"@lock_id!={S['lock_of'][name]}")
+            S["cmp_mesh_blast"].parm("group").set(f"@piece!={pc}")
+            if "cmp_ref_blast" in S:
+                S["cmp_ref_blast"].parm("group").set(f"@qc_piece!={pc}")
+            box = None
+            for col in ("cmp_mesh", "cmp_ours", "cmp_ref"):
+                if col in S:
+                    S[col].cook(force=True)
+                    b = S[col].geometry().boundingBox()
+                    if box is None:
+                        box = b
+                    elif S[col].geometry().points():
+                        box.enlargeToContain(b)
+            S["cmp_box"] = box
+        steps.append(_lock)
+        for view in CMP_VIEWS:
+            for col in CMP_COLS:
+                node_key = {"mesh": "cmp_mesh", "ours": "cmp_ours", "ref": "cmp_ref"}[col]
+
+                def _prep(view=view, node_key=node_key):
+                    if node_key in S:
+                        S[node_key].setDisplayFlag(True)
+                        set_view(view, S["cmp_box"])
+
+                def _shot(name=name, view=view, col=col, node_key=node_key):
+                    if node_key in S:
+                        grab(f"_part_{name}_{view}_{col}")
+
+                steps.extend([_prep, _shot])
+
+        def _stitch(name=name):
+            stitch(name)
+        steps.append(_stitch)
+    STEPS[_i[0]:_i[0]] = steps
+    log("compare", len(compare_names()), "locks")
+
+
+def stitch(name):
+    """3 columns (mesh, ours, reference) x 2 rows (views) from the parts, centre-cropped, labelled."""
+    from PySide6 import QtGui
+    parts = {}
+    for view in CMP_VIEWS:
+        for col in CMP_COLS:
+            f = os.path.join(OUT, f"_part_{name}_{view}_{col}.png")
+            if os.path.exists(f):
+                img = QtGui.QImage(f)
+                w, h = img.width(), img.height()
+                parts[(view, col)] = img.copy(int(w * 0.5 - h * 0.45), 0, int(h * 0.9), h).scaledToHeight(700)
+    if not parts:
+        return
+    cw = max(p.width() for p in parts.values())
+    sheet = QtGui.QImage(cw * len(CMP_COLS), 700 * len(CMP_VIEWS) + 40, QtGui.QImage.Format_RGB32)
+    sheet.fill(QtGui.QColor(40, 40, 40))
+    pt = QtGui.QPainter(sheet)
+    pt.setPen(QtGui.QColor(230, 230, 230))
+    f = pt.font(); f.setPixelSize(24); pt.setFont(f)
+    labels = {"mesh": "mesh", "ours": "MONO Grooming", "ref": "reference"}
+    for c, col in enumerate(CMP_COLS):
+        pt.drawText(c * cw + 12, 30, f"{name}  {labels[col]}" if c == 0 else labels[col])
+        for r, view in enumerate(CMP_VIEWS):
+            if (view, col) in parts:
+                pt.drawImage(c * cw, 40 + r * 700, parts[(view, col)])
+    pt.end()
+    sheet.save(os.path.join(OUT, f"cmp_{name}.png"))
+    for view in CMP_VIEWS:
+        for col in CMP_COLS:
+            try:
+                os.remove(os.path.join(OUT, f"_part_{name}_{view}_{col}.png"))
+            except OSError:
+                pass
+
+
+if COMPARE:
+    STEPS.append(s_compare)
 
 worst = [n for n in os.environ.get("QC_LOCKS", "").split(",") if n]
 if not worst and REPORT and os.path.exists(REPORT):
@@ -290,7 +432,7 @@ def _next():
     except Exception:  # noqa: BLE001
         log("ERROR", getattr(fn, "__name__", "?"), traceback.format_exc())
     if _i[0] < len(STEPS):
-        QtCore.QTimer.singleShot(3500, _next)
+        QtCore.QTimer.singleShot(2500, _next)
 
 
 QtCore.QTimer.singleShot(5000, _next)
