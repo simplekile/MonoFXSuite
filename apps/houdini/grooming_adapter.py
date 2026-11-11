@@ -371,9 +371,8 @@ def lock_infos(node) -> list[LockInfo]:
         widths = [p.floatAttribValue(config.ATTR_LOCK_WIDTH) for p in pts]
         thicks = [p.floatAttribValue(config.ATTR_LOCK_THICK) for p in pts]
         a = area.get(lid, 0.0)
-        head = max(1, len(pts) // 4)
-        section = logic.section_cm2(max(widths[:head], default=0.0), max(thicks[:head], default=0.0),
-                                    node.evalParm("unit_cm"))
+        # the widest band anywhere: same rule as the HDA's region_frame
+        section = logic.section_cm2(max(widths, default=0.0), max(thicks, default=0.0), node.evalParm("unit_cm"))
         infos.append(LockInfo(
             id=lid, name=prim.stringAttribValue(config.ATTR_NAME), group=prim.stringAttribValue(config.ATTR_GROUP),
             root=tuple(prim.attribValue("root")), length=prim.floatAttribValue("length"),  # type: ignore[arg-type]

@@ -191,15 +191,24 @@
   lookup for both made strands jump between them (zigzags). `xyzdist` + `primuv` on the faces (not the
   nearest point) gives a continuous offset; top and underside are blended by the strand's t.
   The piece in z replaces a per-lock blast that cost 73 ms a lock.
-- Strand shape: spines are smoothed along their length (`spine_smooth`, a wrangle: Attribute Blur pins
-  every point of an open curve); each strand's offset from its spine gets a median of 3 and a light blur
-  (`strand_smooth`); segments follow the lock's length (`strand_segment_cm`). A strand's place across
-  the lock is an even spread (`cross_spread`), not where its root fell in the region (that bunched
-  strands mid-lock), and its root is pulled under that spot (`root_pull`, else wide regions fan in).
-  `root_blend` (0.05 of the length) eases the root onto the scalp.
+- Strand shape: spines have 48 points, smoothed along their length (`spine_smooth`, a wrangle:
+  Attribute Blur pins every point of an open curve), which also writes the new `tangentu` (Resample's
+  is stale after the blur and turned the frame again). The frame is not blurred as vectors: a band's
+  principal axis has no sign and is near random on round bands (crown caps turned 145 deg between
+  points); it is an angle around the spine from a parallel-transported frame, doubled, unwrapped,
+  smoothed, rebuilt. `ps` (across) is stretched per piece to the mesh's real edges, interpolated along
+  the lock. Each strand: `fit_root` (per strand: s, t, root, root placement) then `fit_to_lock` (per
+  point; writing points from a prim wrangle was 2.5x slower); its offset from the spine gets a median
+  of 3 and a blur, and its first fifth is relaxed with a fading weight (`strand_smooth`). Segments:
+  at least 32, more on long locks (`strand_segment_cm`); 12 left curled short locks with 80 deg corners.
+  A strand's place across the lock is an even spread (`cross_spread`), not where its root fell in the
+  region (that bunched strands mid-lock), and its root is pulled under that spot (`root_pull`, else
+  wide regions fan in). Strand count uses the lock's widest band anywhere (the first quarter gave
+  long hair_back ribbons 800 strands: see-through). Scenes keep the parm values they saved
+  (`spine_points` 24 in older scenes): revert them to the defaults to get this result.
 - One hairclump for the whole groom, `clumpid` = `lock_id`, so clumps stay in a lock. The lock's clump
   setting drives hairclump's `blend` (per strand `clumpblend`): its tightness alone never switches
-  clumping off (tightness 0 still left 27 % of Helen's mesh bare). Default clump 0.3.
+  clumping off (tightness 0 still left 27 % of Helen's mesh bare). Default clump 0.2.
   The frozen split lives on the node's hidden geometry parm `regions` (not a stash SOP: inner nodes of a
   locked HDA cannot be set); Python SOPs inside the HDA call `grooming_adapter.cook_assign` / `cook_frozen_regions`.
 - hairgen's `skinprim` indexes the per-lock region cut inside the loop; strands get it again from
@@ -208,8 +217,9 @@
   for a static file, so the whole groom recooked every frame; now only the shot deform does (0.7 s/frame).
 - Inside the HDA every stage is a titled network box, one column each (`_layout_sections`): one
   `layoutChildren` over everything made a knot of crossing wires.
-- Helen (sandbox t12/t16): 61/61 locks with hair, 102 k strands, full cook 2.2 s, density edit 1.7 s,
-  detect 2.6 s, split 4 s, publish 1.9 s (47–56 s before regions were frozen). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
+- Helen (sandbox t12/t16/t18): 61/61 locks with hair, 116 k strands, 4 M points, hair check PASS (corner
+  p95 26 deg vs 43 for v006, mesh uncovered 7 % vs 3.5 %), full cook 5.3 s, density edit 5 s, shot frame 1 s,
+  detect 2.6 s, split 4 s, publish 5 s / 50 MB (47–56 s before regions were frozen). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
   Quitting Houdini with `hou.exit` from a Qt timer segfaults even in an empty session (fxhoudinimcp
   loaded): not this tool; kill leftover test sessions after a GUI run.
 - Shots: Karma's hair procedural (Generate) does not reproduce clump/frizz, so publishes carry full

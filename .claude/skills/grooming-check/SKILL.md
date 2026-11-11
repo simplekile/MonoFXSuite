@@ -21,6 +21,9 @@ hython .claude/skills/grooming-check/scripts/qc_metrics.py <suite> <scene.hiplc>
 
 `--fresh` empties the groom data and runs Detect and Split regions first: use it after a change to
 root detection, spines or regions, since a scene keeps what was detected with the old code.
+A scene also keeps the parm values it was saved with, so after changing an HDA default the old
+value still applies there: for Helen, rebuild the check scene with
+`tests/t17_check/t17_make.py <suite>` (reverts every parm, fresh Detect and Split).
 It measures the HDA's `HAIR` node at rest (the shot deform is ignored) against its own hair mesh and
 writes `qc_report.md` / `.json`:
 

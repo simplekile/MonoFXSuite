@@ -10,7 +10,8 @@ highlights for each view's camera, darker roots, per-strand value variation, no 
 leave the lock, zigzag or cross catch the highlight differently from their neighbours, so they stand out.
 
 Shots (PNG in QC_OUT): front, back, left, right, top, three-quarter, crown close-up; for the 4 worst
-locks of QC_REPORT a close-up alone (`lock_<name>_a/b`); with QC_REF the same 7 views of the reference
+locks of QC_REPORT (or QC_LOCKS=name,name) a close-up alone with the lock's mesh as a wire template
+(`lock_<name>_a/b`); with QC_REF the same 7 views of the reference
 (`ref_*`). A log in QC_OUT/capture_log.txt.
 """
 
@@ -164,6 +165,15 @@ def s_open():
             if imp.parm(k):
                 imp.parm(k).set(v)
         S["ref"] = look_network(geo, imp, "ref")
+    pieces = geo.createNode("object_merge", "qc_pieces")
+    pieces.parm("objpath1").set(node.path() + "/pieces")
+    tpl = geo.createNode("blast", "qc_lock_mesh")       # the solo lock's own mesh, as a wire template
+    tpl.setInput(0, pieces)
+    tpl.parm("grouptype").set(3)                         # points
+    tpl.parm("group").set("@piece!=-1")
+    S["tpl"] = tpl
+    S["piece_of"] = {p.attribValue("name"): int(p.attribValue("piece"))
+                     for p in node.node("SPINES").geometry().prims()}
     S["ours"].setDisplayFlag(True)
     S["ours"].cook(force=True)
     scalp = geo.node("OUT_SCALP")
@@ -208,8 +218,8 @@ add_views("", "ours")
 if REF:
     add_views("ref_", "ref")
 
-worst = []
-if REPORT and os.path.exists(REPORT):
+worst = [n for n in os.environ.get("QC_LOCKS", "").split(",") if n]
+if not worst and REPORT and os.path.exists(REPORT):
     with open(REPORT, encoding="utf-8") as fh:
         worst = [r["name"] for r in json.load(fh).get("worst_locks", [])[:4]]
 for name in worst:
@@ -217,6 +227,8 @@ for name in worst:
         def _prep(name=name, view=view, first=(i == 0)):
             if first:
                 solo({name})
+                S["tpl"].parm("group").set(f"@piece!={S['piece_of'].get(name, -1)}")
+                S["tpl"].setTemplateFlag(True)
             S["ours"].setDisplayFlag(True)
             S["ours"].cook(force=False)
             set_view(view, S["ours"].geometry().boundingBox())

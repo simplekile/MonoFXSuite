@@ -19,7 +19,7 @@ BUILTIN_DEFAULTS: dict[str, float] = {
     "width_mult": 1.0,    # x measured lock width
     "thick_mult": 1.0,    # x measured lock thickness
     "twist_add": 0.0,     # + measured twist, radians
-    "clump": 0.3,         # 0..1
+    "clump": 0.2,         # 0..1
     "length_mult": 1.0,   # x measured length
     "frizz": 0.0,         # 0..1
 }

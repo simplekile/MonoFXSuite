@@ -288,7 +288,7 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
 
 
 def section_cm2(width: float, thick: float, unit_cm: float) -> float:
-    """Cross-section of a lock in cm² from its widest head band (scene units): an ellipse whose
+    """Cross-section of a lock in cm² from its widest band (scene units): an ellipse whose
     thickness is at least 30 % of its width, so a flat ribbon still counts as a lock of hair."""
     w = max(width, 0.0) * unit_cm
     t = max(thick, config.SECTION_MIN_THICK_RATIO * max(width, 0.0)) * unit_cm
