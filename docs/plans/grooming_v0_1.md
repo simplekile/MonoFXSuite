@@ -143,7 +143,9 @@ Panel and network, after testing the Helen sandbox scene:
 
 - Sliders never take the mouse wheel: the wheel over the panel always scrolls the panel.
 - Hiding, or editing one lock or one group, recooks only that part, not the whole groom, in every
-  display mode (Mesh, Guide, Hair preview, Hair full). Hiding is display only and must be near instant.
+  display mode (Mesh, Guide, Hair preview, Hair full). A hidden lock or group is not cooked at all
+  for display (today it still grows hair and is only blasted at the end), so hiding is near instant
+  and makes the rest faster. Publish still cooks every lock, hidden or not.
 - Fonts and icons follow Houdini's UI size (its scale setting), plus a UI size setting of the panel's
   own. The current panel is too small to read comfortably.
 - Several characters in one shot: how each is groomed, deformed and cached (one MONO Grooming per
