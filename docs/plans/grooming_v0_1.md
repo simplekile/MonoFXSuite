@@ -141,11 +141,13 @@ try later (publish animated guides only, deform the rest strands at render time)
 
 Panel and network, after testing the Helen sandbox scene:
 
-- Mouse wheel over the panel must scroll it, never move a parm slider under the cursor (a slider
-  takes the wheel only while it has focus).
-- Hiding, or editing one lock or one group, recooks only that part, not the whole groom. Hiding is
-  display only and must be near instant.
-- Fonts and icons follow Houdini's UI size (its scale setting), not fixed pixels only.
+- Sliders never take the mouse wheel: the wheel over the panel always scrolls the panel.
+- Hiding, or editing one lock or one group, recooks only that part, not the whole groom, in every
+  display mode (Mesh, Guide, Hair preview, Hair full). Hiding is display only and must be near instant.
+- Fonts and icons follow Houdini's UI size (its scale setting), plus a UI size setting of the panel's
+  own. The current panel is too small to read comfortably.
+- Several characters in one shot: how each is groomed, deformed and cached (one MONO Grooming per
+  character, names and cache paths that cannot collide, caching them together or one by one).
 - Isolate: show one lock or group alone (and back).
 - Drag and drop to reorder in the layer tree, like Cinema 4D or Substance Painter: move locks
   between groups, change order.
