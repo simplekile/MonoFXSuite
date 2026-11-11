@@ -167,7 +167,31 @@
   same rule in the HDA's `region_frame`): fringe locks whose roots converge on one spot still get hair
   matching their mesh. In VEX, type every `prim()` read used in arithmetic (`float a = prim(...)`):
   inside an int expression it returns int and areas of 0.03 cm² became 0.
-- Hidden locks (the panel's eye) are display only: they still grow hair and are published.
+- Partial cook: each lock's hair is cooked once per state of what it reads and kept in a per-lock
+  cache (`grooming_adapter.LockCache`, on `sys` so a module reload keeps it). `lock_keys` (Python SOP,
+  hair modes only) digests per lock its spine and resolved settings, its region (`region_keys`, 9 sums
+  per lock from PREVIEW), its mesh piece (`surface_keys`), the loop's parms, display mode and preview
+  factor; colour and visibility are left out, so they recook nothing. Only locks that grow and miss go
+  through the For-Each (`to_cook`); `cache_store` keeps each, `hair_cache` merges every growing lock
+  (one copy: 4 M points in ~0.25 s, most of what a hide costs). Last 2 keys per lock and mode are
+  kept, so undo finds the previous hair. Hairclump, length, frizz run inside the loop on the lock's own
+  region (`clump_id` = lock_id x `CLUMP_ID_STRIDE` + its clump): a whole-groom node after the cache
+  made every edit pay for 116 k strands again. A capped preview factor snaps to 0.8^k steps (it is in
+  every key; cap / total moved with any density edit). Helen hair full: one lock edit 9.5 -> ~1 s,
+  hide 9.5 -> 0.3-0.4 s, isolate 0.03 s; a group edit still costs its locks (20 locks ~4.8 s).
+- Hidden locks (the lock's eye, or its group's: `Lock.shown`, the group wins and the lock keeps its own
+  state) and locks isolated out are not cooked for display at all; publish sets `cook_all` and cooks
+  every lock. Hidden locks keep their region (the provisional split ignores visibility), so hiding never
+  changes another lock's strands. Isolate (`set_isolate` / `isolate_ids`) is the hidden `isolate_ids`
+  parm, set with undo off and cleared by the HDA's OnLoaded: a temporary view, not restored with the
+  scene; isolated locks draw even with their eye off.
+- Per lock `root_flip` (root at the piece's other end) and `excluded` (no hair, not published, guide
+  and mesh stay) are in the model, kept through re-Detect (matching uses the measured root, SPINES_RAW),
+  set by `set_root_flip` / `set_excluded` (one undo step, marks regions stale; Chia vùng skips excluded
+  locks). A flip reverses the spine after `assign_locks` (`spine_flip`); the surface cloud stays on the
+  unflipped spine, so `fit_to_lock` reads it at 1 - u and the other thickness side.
+- Test scripts reload the suite's HDA with `force_use_assets=True` after loading a scene: a hip names
+  the library it was saved with (another session's worktree), and Houdini prefers the newest file.
 - Lock ids are never reused (`GroomData.id_high`): frozen regions and old publishes may still name them.
   Detect stores roots unrounded, so an unchanged unnamed mesh re-matches "ok".
 - Root end: the root of a ribbon is one END of it, never "every point near the scalp" (that took the
@@ -209,13 +233,15 @@
   wide regions fan in). Strand count uses the lock's widest band anywhere (the first quarter gave
   long hair_back ribbons 800 strands: see-through). Scenes keep the parm values they saved
   (`spine_points` 24 in older scenes): revert them to the defaults to get this result.
-- One hairclump for the whole groom, `clumpid` = `lock_id`, so clumps stay in a lock. The lock's clump
+- Hairclump runs per lock (inside the loop), `clumpid` = `lock_id` going in, so clumps stay in a lock. The lock's clump
   setting drives hairclump's `blend` (per strand `clumpblend`): its tightness alone never switches
   clumping off (tightness 0 still left 27 % of Helen's mesh bare). Default clump 0.2.
   The frozen split lives on the node's hidden geometry parm `regions` (not a stash SOP: inner nodes of a
   locked HDA cannot be set); Python SOPs inside the HDA call `grooming_adapter.cook_assign` / `cook_frozen_regions`.
-- hairgen's `skinprim` indexes the per-lock region cut inside the loop; strands get it again from
-  `guideskinattriblookup` on the clump skin, else hairclump errors.
+- hairgen's `skinprim` indexes the per-lock region cut inside the loop, which is also hairclump's skin
+  there (`v@rest` added), so no skin lookup is needed.
+- Strand display colour is a prim `Cd` looked up on the spines after the cache (116 k prims, not 4 M
+  points); the cached strands carry no colour.
 - The scalp and rest hair mesh are read at `rest_frame` (timeshift): a USD Import is time dependent even
   for a static file, so the whole groom recooked every frame; now only the shot deform does (0.7 s/frame).
 - Inside the HDA every stage is a titled network box, one column each (`_layout_sections`): one
@@ -225,6 +251,20 @@
   detect 2.6 s, split 4 s, publish 5 s / 50 MB (47–56 s before regions were frozen). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
   Quitting Houdini with `hou.exit` from a Qt timer segfaults even in an empty session (fxhoudinimcp
   loaded): not this tool; kill leftover test sessions after a GUI run.
+- Anim input (input 2) may be a USD Import left packed (one PackedUSD prim): inside, `unpackusd` to
+  gprims as packed prims, keep those whose name / path / last path part is a rest hair mesh prim name
+  (`rest_names`; "Hair" alone would take Helen's HairProxy eyebrows), unpack only them to polygons, no
+  primvars. Unpacking the whole character cost 0.1-0.3 s a frame; packed per frame on sh020: guide
+  0.06 s, mesh 0.10, preview 0.14 (unpacked 0.22 / 0.25 / 0.30). An unpacked input goes through as
+  before. The deform runs only when the anim has the rest mesh's point count (`ANIM_HAIR` `deform_ok`,
+  else a warning). Point Deform is split: `deform_capture` (mode capture, time independent, once) and
+  `deform` (mode deform); hair full is still ~1 s a frame, all of it the deform of 4 M points
+  (`maxpt` 100; 32 is 3x faster but moves some points 2.6 cm, so it stays).
+- While playing (`play_display`, default Hair preview): during playback the node draws
+  min(Display, While playing) through the hidden `display_eff` expression (every inner reference to the
+  mode reads it, the cache key too); the adapter's playbar callback (installed once by OnCreated /
+  OnLoaded, UI only) sets the hidden `playing`, undo off. Hair full playing: ~0.25 s a frame. Publish
+  clears `playing`.
 - Shots: Karma's hair procedural (Generate) does not reproduce clump/frizz, so publishes carry full
   strands and shots Point Deform them (sandbox t02).
 - Names follow the department: `grooming` (`04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`,

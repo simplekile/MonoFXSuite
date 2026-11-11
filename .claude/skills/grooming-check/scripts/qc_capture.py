@@ -203,6 +203,7 @@ def s_open():
         mw.setGeometry(SECOND.availableGeometry())
     hou.hda.installFile(SUITE + "/otls/mono_grooming.hdalc")
     hou.hipFile.load(HIP, suppress_save_prompt=True, ignore_load_warnings=True)
+    hou.hda.installFile(SUITE + "/otls/mono_grooming.hdalc", force_use_assets=True)  # not another checkout's
     from apps.houdini import grooming_adapter as ga
     S["ga"], S["node"] = ga, ga.find_nodes()[0]
     node = S["node"]

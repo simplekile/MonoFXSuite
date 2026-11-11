@@ -5,9 +5,15 @@ Build the MONO Grooming SOP HDA (`mono::grooming::0.1`) from code into `otls/mon
 
 The network follows the fixed processing order of docs/plans/grooming_v0_1.md:
 
-  hair mesh -> pieces -> spine + measure -> lock ids from the JSON -> settings -> frozen regions
-  -> For-Each lock_id { region, hairgen, fit to the lock } -> clump -> length, frizz -> display
+  hair mesh -> pieces -> spine + measure -> lock ids from the JSON (root flip) -> settings -> frozen
+  regions -> cache keys -> For-Each lock_id that grows and is not cached { region, hairgen, fit to the
+  lock, clump, length, frizz, store } -> every growing lock from the cache -> display
   -> point deform by input 3 (optional) -> output
+
+Partial cook: each lock's hair is cooked once per state of what it reads (`lock_keys`, a digest per
+lock) and kept in grooming_adapter.LockCache. Hidden locks (eye off, group hidden, isolated out) do
+not enter the loop; publish sets `cook_all`. So an edit recooks the locks it changes, hiding cooks
+nothing and showing a lock cooked before only merges it back.
 
 Spine and measure (`spine_build`): a lock is cut into `spine_points` bands by the distance from its
 root measured along the mesh surface (distancealonggeometry from the points nearest the scalp), not
@@ -309,6 +315,51 @@ v@lock_axis = qrotate(q, a);
 v@lock_minor = cross(t, v@lock_axis);
 """
 
+VEX_SPINE_FLIP = """// root_flip (the user's per-lock "root end"): the root is the piece's other end. The spine is
+// reversed in place: the bands were measured from the end Detect took, and seen from the other end they
+// are the same cross-sections in reverse order. Measured from the new root: curveu, twist; the tangent
+// turns round, so the minor axis (tangent x axis) does too. Detect still matches on the measured root
+// (SPINES_RAW), so a flipped lock keeps its id and its flip through re-Detect.
+if (i@root_flip == 0) return;
+int pts[] = primpoints(0, @primnum);
+int n = len(pts);
+if (n < 2) return;
+vector P[], A[], TG[]; float W[], TK[], TW[], U[];
+foreach (int p; pts) {
+    vector v = point(0, "P", p); append(P, v);
+    vector a = point(0, "lock_axis", p); append(A, a);
+    vector tg = point(0, "tangentu", p); append(TG, tg);
+    float w = point(0, "lock_width", p); append(W, w);
+    float tk = point(0, "lock_thick", p); append(TK, tk);
+    float tw = point(0, "lock_twist", p); append(TW, tw);
+    float u = point(0, "curveu", p); append(U, u);
+}
+for (int i = 0; i < n; i++) {
+    int j = n - 1 - i, p = pts[i];
+    setpointattrib(0, "P", p, P[j]);
+    setpointattrib(0, "lock_width", p, W[j]);
+    setpointattrib(0, "lock_thick", p, TK[j]);
+    setpointattrib(0, "lock_twist", p, TW[n - 1] - TW[j]);   // an angle around the reversed tangent
+    setpointattrib(0, "curveu", p, 1 - U[j]);
+    setpointattrib(0, "tangentu", p, -TG[j]);
+    setpointattrib(0, "lock_axis", p, A[j]);
+    setpointattrib(0, "lock_minor", p, normalize(cross(-TG[j], A[j])));
+}
+v@root = P[n - 1];
+v@direction = normalize(P[0] - P[n - 1]);
+"""
+
+VEX_LOCK_SHOWN = """// what the display draws (shown) and what grows hair (grows): the lock's eye with its group's
+// (visible, from groom_data), or exactly the isolated locks; every lock while publishing (cook_all).
+// Excluded locks keep their guide and mesh but grow no hair. Hidden locks are not cooked at all.
+int on = i@visible;
+string iso = chs("../isolate_ids");
+if (iso != "") on = find(split(iso), itoa(i@lock_id)) >= 0;
+if (chi("../cook_all")) on = 1;
+i@shown = on;
+i@grows = on && i@excluded == 0;
+"""
+
 VEX_GUIDE_ROOT = """// guide root on the scalp
 if (vertexprimindex(0, pointvertex(0, @ptnum)) == 0 && nprimitives(1) > 0) {
     int sp; vector suv;
@@ -317,13 +368,15 @@ if (vertexprimindex(0, pointvertex(0, @ptnum)) == 0 && nprimitives(1) > 0) {
 }
 """
 
-VEX_REGION_POINTS = """// provisional point lock_owner (nearest root) for scalps not split yet; the frozen split is per prim
+VEX_REGION_POINTS = """// provisional point lock_owner (nearest root) for scalps not split yet; the frozen split is per prim.
+// Hidden locks keep their region (hiding never changes another lock's hair); excluded ones take none.
 i@lock_owner = -1;
 if (npoints(1) == 0) {
     float best = 1e30;
     for (int pr = 0; pr < nprimitives(2); pr++) {
         int id = prim(2, "lock_id", pr);
-        if (id < 0 || prim(2, "visible", pr) == 0) continue;
+        int ex = prim(2, "excluded", pr);
+        if (id < 0 || ex) continue;
         float d = distance2(@P, point(2, "P", primpoint(2, pr, 0)));
         if (d < best) { best = d; i@lock_owner = id; }
     }
@@ -375,8 +428,54 @@ for (int pr = 0; pr < nprimitives(0); pr++) total += prim(0, "density", pr) * pr
 f@expected = total;
 float f = clamp(chf("../preview_fraction"), 0.0, 1.0);
 int cap = chi("../preview_max");
-if (total * f > cap && total > 0) f = cap / total;
-f@factor = chi("../display_mode") == 2 ? f : 1.0;
+// capped: snapped down to a step of %(step)s^k, since the factor is in every lock's cache key and an exact
+// cap / total changed with any density edit (grooming_adapter.preview_factor, the same rule)
+if (total * f > cap && total > 0) {
+    f = cap / total;
+    if (f > 0) f = pow(%(step)s, ceil(log(f) / log(%(step)s) - 1e-6));
+}
+f@factor = chi("../display_eff") == 2 ? f : 1.0;   // display_eff: the display mode, lighter while playing
+// fingerprints of each lock's region for the hair cache (adapter.cook_lock_keys): per lock id 9 floats
+// summing what the per-lock loop reads of its prims (count, area / share, share, centre, centre x a
+// weight by prim number, so a moved or swapped prim changes it)
+int mx = -1;
+for (int pr = 0; pr < nprimitives(0); pr++) {
+    int own[] = prim(0, "lock_owners", pr);
+    foreach (int o; own) mx = max(mx, o);
+}
+float rk[]; resize(rk, (mx + 1) * 9);
+for (int pr = 0; pr < nprimitives(0); pr++) {
+    int own[] = prim(0, "lock_owners", pr);
+    if (len(own) == 0) continue;
+    float a = prim(0, "area_cm2", pr);
+    int sh = prim(0, "share", pr);
+    vector c = primuv(0, "P", pr, {0.5, 0.5, 0});
+    float wq = 1 + (pr %% 13) * 0.37;
+    foreach (int o; own) {
+        int k = o * 9;
+        rk[k] += 1; rk[k + 1] += a / max(sh, 1); rk[k + 2] += sh;
+        rk[k + 3] += c.x; rk[k + 4] += c.y; rk[k + 5] += c.z;
+        rk[k + 6] += c.x * wq; rk[k + 7] += c.y * wq; rk[k + 8] += c.z * wq;
+    }
+}
+f[]@region_keys = rk;
+""" % {"step": config.PREVIEW_FACTOR_STEP}
+
+VEX_SURFACE_KEYS = """// fingerprints of each piece's lookup cloud for the hair cache: per piece 9 floats (count, cloud
+// position, ds, dt, position x a weight by point number)
+int np = npoints(0);
+int mx = -1;
+for (int i = 0; i < np; i++) mx = max(mx, point(0, "piece", i));
+float sk[]; resize(sk, (mx + 1) * 9);
+for (int i = 0; i < np; i++) {
+    int k = point(0, "piece", i) * 9;
+    vector p = point(0, "P", i);
+    float ds = point(0, "ds", i), dt = point(0, "dt", i);
+    float wq = 1 + (i % 11) * 0.29;
+    sk[k] += 1; sk[k + 1] += p.x; sk[k + 2] += p.y; sk[k + 3] += p.z; sk[k + 4] += ds; sk[k + 5] += dt;
+    sk[k + 6] += p.x * wq; sk[k + 7] += p.y * wq; sk[k + 8] += p.z * wq;
+}
+f[]@surface_keys = sk;
 """
 
 VEX_REGION_CUT = """// only this lock's region (the prims it owns alone or shares)
@@ -590,9 +689,16 @@ if (tm <= 0) tm = 1;
 float aw = chf("../surface_along_weight");
 float pz = prim(1, "piece", 0) * %(gap)s;
 float cm = 1.0 / max(chf("../unit_cm"), 1e-6);
+int fl = prim(1, "root_flip", 0);
 """
 
-_FIT_PLACE = """vector place(float uu; float ss; float tt; float aw; float pz; float wm; float tm; float cm) {
+_FIT_PLACE = """vector place(float uu; float ss; float tt; float aw; float pz; float wm; float tm; float cm; int fl) {
+    // a flipped lock (root_flip) runs its spine the other way; the cloud keeps the mesh's own along
+    // parameter and thickness side (from SPINES_RAW), so it is read at 1 - u, the other side, and the
+    // thickness offset turns with the reversed minor axis
+    float ul = fl ? 1 - uu : uu;
+    float tl = fl ? -tt : tt;
+    float sg = fl ? -1.0 : 1.0;
     vector uv = set(uu, 0, 0);
     vector c = primuv(1, "P", 0, uv);
     vector a = normalize(primuv(1, "lock_axis", 0, uv));
@@ -603,16 +709,16 @@ _FIT_PLACE = """vector place(float uu; float ss; float tt; float aw; float pz; f
     // the strand (the nearest POINT jumped from one mesh point to the next). Top side and underside
     // are looked up apart and blended by t, so a strand stays at one depth inside the lock.
     int ht, hb; vector uvt, uvb;
-    xyzdist(3, set(uu * aw, ss, pz), ht, uvt, %(gap)s * 0.5);
-    xyzdist(3, set(uu * aw, ss, pz + %(sheet)s), hb, uvb, %(gap)s * 0.5);
+    xyzdist(3, set(ul * aw, ss, pz), ht, uvt, %(gap)s * 0.5);
+    xyzdist(3, set(ul * aw, ss, pz + %(sheet)s), hb, uvb, %(gap)s * 0.5);
     if (ht < 0)                                         // no mesh for this piece: the ellipse
         return c + a * (ss * 0.5 * w) + m * (tt * 0.5 * th);
     float dst = primuv(3, "ds", ht, uvt), dtt = primuv(3, "dt", ht, uvt);
     float dsb = primuv(3, "ds", hb, uvb), dtb = primuv(3, "dt", hb, uvb);
-    float k = clamp((tt + 1) * 0.5, 0, 1);
+    float k = clamp((tl + 1) * 0.5, 0, 1);
     float ds = lerp(dsb, dst, k), dt = lerp(dtb, dtt, k);
     float extra = max(vol - abs(dtt - dtb), 0);         // a one-sided ribbon still gets some volume
-    return c + a * (ds * wm) + m * (dt * tm + tt * 0.5 * extra);
+    return c + a * (ds * wm) + m * (sg * dt * tm + tt * 0.5 * extra);
 }
 """
 
@@ -644,7 +750,7 @@ if (spread > 0) {
 
 """ + _FIT_PARAMS + _FIT_PLACE + """
 
-vector c0 = place(0.0, s, t, aw, pz, wm, tm, cm);
+vector c0 = place(0.0, s, t, aw, pz, wm, tm, cm, fl);
 // roots are scattered over the lock's whole scalp region, often much wider than the lock's own root:
 // pulled toward the mesh root at the same (s, t) and put back on the region, strands leave the scalp
 // like the mesh does instead of fanning in from all over the region
@@ -664,7 +770,7 @@ float u = nv > 1 ? float(vertexprimindex(0, pointvertex(0, @ptnum))) / (nv - 1) 
 float s = prim(0, "fit_s", pr), t = prim(0, "fit_t", pr);
 vector c0 = prim(0, "fit_c0", pr), root = prim(0, "fit_root", pr);
 """ + _FIT_PARAMS + _FIT_PLACE + """
-@P = (u <= 0 ? c0 : place(u, s, t, aw, pz, wm, tm, cm)) + (root - c0) * (1 - smooth(0, max(chf("../root_blend"), 1e-4), u));
+@P = (u <= 0 ? c0 : place(u, s, t, aw, pz, wm, tm, cm, fl)) +(root - c0) * (1 - smooth(0, max(chf("../root_blend"), 1e-4), u));
 """) % {"gap": PIECE_GAP, "sheet": SHEET_GAP}
 
 VEX_STRAND_SMOOTH = """// a surface lookup can land on a fold of the flattened mesh and throw one point off (Helen: 2-11 %
@@ -712,7 +818,8 @@ for (int k = 0; k < it * 2; k++) {
 for (int i = 1; i < n; i++) setpointattrib(0, "P", pts[i], P[i]);
 """
 
-VEX_STRAND_TAGS = """// lock attributes on every strand
+VEX_STRAND_TAGS = """// lock attributes on every strand (no display colour or visibility: those change without a recook,
+// so they are not in the lock's cache key; hair_color looks the colour up after the cache)
 i@lock_id = prim(1, "lock_id", 0);
 s@name = prim(1, "name", 0);
 s@group = prim(1, "group", 0);
@@ -720,9 +827,6 @@ i@clumpid = i@lock_id;
 f@clumpblend = prim(1, "clump", 0);   // the lock's clump drives hairclump's blend
 f@length_mult = prim(1, "length_mult", 0);
 f@frizz = prim(1, "frizz", 0);
-i@visible = prim(1, "visible", 0);
-v@lock_cd = prim(1, "lock_cd", 0);
-v@group_cd = prim(1, "group_cd", 0);
 """
 
 VEX_LENGTH_FRIZZ = """// length_mult (cut or extend along the strand), then frizz (noise across the strand, growing to the tip)
@@ -765,9 +869,10 @@ if (fr > 0) {
 for (int i = 0; i < n; i++) setpointattrib(0, "P", pts[i], P[i]);
 """
 
-VEX_HAIR_OUT = """// contract attributes on the strands
-i@clump_id = i@clumpid;
-"""
+VEX_HAIR_OUT = """// contract attributes on the strands. Clumped per lock, so hairclump's clump numbers restart in
+// every lock: clump_id = lock_id x CLUMP_ID_STRIDE + its clump, unique in the groom
+i@clump_id = i@lock_id * %d + i@clumpid;
+""" % config.CLUMP_ID_STRIDE
 
 VEX_COLOR_POINTS = """// display colour by lock or by group
 int pr = pointprims(0, @ptnum)[0];
@@ -775,14 +880,52 @@ vector c = chi("../color_by") == 0 ? prim(0, "lock_cd", pr) : prim(0, "group_cd"
 v@Cd = c;
 """
 
-VEX_MESH_COLOR = """// mesh display: lock of the piece from the spines, hidden locks removed
+VEX_HAIR_COLOR = """// strand display colour by lock or group, looked up on the spines: the cached strands carry no colour
+// (a colour change recooks no lock). Per strand (prim Cd): 116 k prims, not 4 M points.
+int sp = findattribval(1, "prim", "lock_id", i@lock_id);
+vector c = {0.25, 0.25, 0.25};
+if (sp >= 0) {
+    vector lc = prim(1, "lock_cd", sp), gc = prim(1, "group_cd", sp);
+    c = chi("../color_by") == 0 ? lc : gc;
+}
+v@Cd = c;
+"""
+
+VEX_MESH_COLOR = """// mesh display: lock of the piece from the spines, hidden (and isolated-out) locks removed
 int k = point(0, "piece", primpoint(0, @primnum, 0));
 int sp = findattribval(1, "prim", "piece", k);
-if (sp >= 0 && prim(1, "visible", sp) == 0) { removeprim(0, @primnum, 1); return; }
+int on = sp >= 0 ? prim(1, "shown", sp) : 1;
+if (on == 0) { removeprim(0, @primnum, 1); return; }
 i@lock_id = sp >= 0 ? prim(1, "lock_id", sp) : -1;
 vector c = {0.25, 0.25, 0.25};
 if (sp >= 0) c = chi("../color_by") == 0 ? prim(1, "lock_cd", sp) : prim(1, "group_cd", sp);
 v@Cd = c;
+"""
+
+VEX_REST_NAMES = """// prim names of the rest hair mesh (Geo_HairBang ...): which prims of a packed anim input are hair
+string names[];
+if (hasprimattrib(0, "name")) names = uniquevals(0, "prim", "name");
+s[]@rest_names = names;
+"""
+
+VEX_ANIM_KIND = """// a packed USD anim input (USD Import left packed) is unpacked here, hair prims only
+string t = nprimitives(0) > 0 ? primintrinsic(0, "typename", 0) : "";
+i@packed = t == "PackedUSD";
+"""
+
+VEX_ANIM_KEEP = """// keep the gprims named like a rest hair mesh prim (by name, path, or the path's last part): matching
+// "Hair" would also take Helen's HairProxy_grp/Geo_Eyebrows
+string nm[] = detail(1, "rest_names");
+string path = s@path, name = s@name;
+string parts[] = split(path, "/");
+string leaf = len(parts) > 0 ? parts[-1] : "";
+if (find(nm, name) < 0 && find(nm, path) < 0 && find(nm, leaf) < 0) removeprim(0, @primnum, 1);
+"""
+
+VEX_ANIM_CHECK = """// deform only with the rest mesh's points: another count would move the wrong points
+i@deform_ok = npoints(0) == npoints(1) && npoints(0) > 0;
+if (!i@deform_ok && npoints(0) > 0)
+    warning("Anim hair mesh: %d points, rest hair mesh %d: no deform", npoints(0), npoints(1));
 """
 
 # ---------------------------------------------------------------------------
@@ -873,12 +1016,14 @@ def build_network(sub) -> None:
     assign = _node(sub, "python", "assign_locks", [raw])
     assign.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_assign(hou.pwd())\n")
-    spines_locks = _node(sub, "null", "SPINES_LOCKS", [assign])
+    flip = _wrangle(sub, "spine_flip", VEX_SPINE_FLIP, PRIM, [assign])
+    spines_locks = _node(sub, "null", "SPINES_LOCKS", [flip])
     settings = _wrangle(sub, "apply_settings", VEX_APPLY_SETTINGS, POINT, [spines_locks])
     spines = _node(sub, "null", "SPINES", [settings])
-    # hidden locks (the panel's eye) still grow hair and are published: visibility is display only
+    # hidden locks (the panel's eye) are not cooked for display; publish (cook_all) cooks every lock
     guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0", grouptype=4)
-    roots = _wrangle(sub, "guide_roots", VEX_GUIDE_ROOT, POINT, [guides_cut, in_scalp])
+    shown = _wrangle(sub, "lock_shown", VEX_LOCK_SHOWN, PRIM, [guides_cut])
+    roots = _wrangle(sub, "guide_roots", VEX_GUIDE_ROOT, POINT, [shown, in_scalp])
     guides = _wrangle(sub, "guide_length", 'f@lock_len = primintrinsic(0, "measuredperimeter", @primnum);\n',
                       PRIM, [roots])
     section("Locks and settings (groom_data)")
@@ -897,8 +1042,19 @@ def build_network(sub) -> None:
     preview = _wrangle(sub, "PREVIEW", VEX_PREVIEW, DETAIL, [regions])
     section("Frozen regions")
 
+    # ---- hair cache: only locks that grow and are not cached go through the loop ----
+    # Every lock's hair is cooked once per state of its inputs and kept (grooming_adapter.LockCache):
+    # an edit of one lock recooks that lock, hiding cooks nothing, showing a cached lock merges it back.
+    # Clump, length and frizz run per lock inside the loop, so no whole-groom node is left to recook.
+    skeys = _wrangle(sub, "surface_keys", VEX_SURFACE_KEYS, DETAIL, [surface])
+    keys = _node(sub, "python", "lock_keys", [guides, preview, skeys])
+    keys.parm("python").set("from apps.houdini import grooming_adapter\n"
+                            "grooming_adapter.cook_lock_keys(hou.pwd())\n")
+    to_cook = _node(sub, "blast", "to_cook", [keys], group="@grows==0 @cached==1", grouptype=4)
+    section("Hair cache keys")
+
     # ---- hairgen per lock ----
-    begin = _node(sub, "block_begin", "foreach_begin", [guides], method=1, blockpath="../foreach_end")
+    begin = _node(sub, "block_begin", "foreach_begin", [to_cook], method=1, blockpath="../foreach_end")
     scalp_in = _node(sub, "block_begin", "foreach_scalp", [regions], method=3, blockpath="../foreach_end")
     cut = _wrangle(sub, "region_cut", VEX_REGION_CUT, PRIM, [scalp_in, begin])
     frame = _wrangle(sub, "region_frame", VEX_REGION_FRAME, DETAIL, [cut, begin])
@@ -920,21 +1076,11 @@ def build_network(sub) -> None:
     fit = _wrangle(sub, "fit_to_lock", VEX_FIT, POINT, [fit_root, begin, frame, surface])
     sm_strand = _wrangle(sub, "strand_smooth", VEX_STRAND_SMOOTH, PRIM, [fit, begin])
     tags = _wrangle(sub, "strand_tags", VEX_STRAND_TAGS, PRIM, [sm_strand, begin])
-    nothing = _node(sub, "add", "no_strands")
-    has_region = _node(sub, "switch", "has_region", [nothing, tags])
-    has_region.parm("input").setExpression('if(nprims("../region_cut") > 0, 1, 0)')
-    end = _node(sub, "block_end", "foreach_end", [has_region], itermethod=1, method=1, useattrib=1,
-                attrib="lock_id", blockpath="../foreach_begin", templatepath="../foreach_begin")
-    end.parm("class").set(0)
-    section("Hair per lock (for each lock_id)")
-
-    # ---- clump, length, frizz ----
+    # clump on the lock's own region: hairgen's skinprim / skinprimuv index this region cut, so they
+    # are valid on it as they are (one hairclump over the whole scalp needed them looked up again)
     clump_skin = _wrangle(sub, "clump_skin", "v@rest = @P;  // hairclump wants a rest skin\n", POINT,
-                          [in_scalp])
-    # hairgen's skinprim / skinprimuv index the per-lock region cut inside the loop, not this skin:
-    # looked up again on the clump skin from each strand's root (hairclump needs them valid).
-    skinref = _node(sub, "guideskinattriblookup", "strands_skinref", [end, clump_skin])
-    clump = _node(sub, "hairclump::2.0", "clump", [skinref, clump_skin])
+                          [rdens])
+    clump = _node(sub, "hairclump::2.0", "clump", [tags, clump_skin])
     clump.parm("clumpsize").setExpression('ch("../clump_size")')
     # the lock's clump setting is hairclump's blend (per strand `clumpblend`): its tightness alone does not
     # switch clumping off (tightness 0 still left 27 % of Helen's mesh bare, blend 0 left 10 %)
@@ -944,13 +1090,28 @@ def build_network(sub) -> None:
     clump.parm("blendcurveattrib").set("clumpblend")
     lf = _wrangle(sub, "length_frizz", VEX_LENGTH_FRIZZ, PRIM, [clump])
     hair_out = _wrangle(sub, "hair_attribs", VEX_HAIR_OUT, PRIM, [lf])
-    hair = _node(sub, "null", "HAIR", [hair_out])
-    section("Clump, length, frizz")
+    nothing = _node(sub, "add", "no_strands")
+    has_region = _node(sub, "switch", "has_region", [nothing, hair_out])
+    has_region.parm("input").setExpression('if(nprims("../region_cut") > 0, 1, 0)')
+    store = _node(sub, "python", "cache_store", [has_region, begin])
+    store.parm("python").set("from apps.houdini import grooming_adapter\n"
+                             "grooming_adapter.cook_cache_store(hou.pwd())\n")
+    end = _node(sub, "block_end", "foreach_end", [store], itermethod=1, method=1, useattrib=1,
+                attrib="lock_id", blockpath="../foreach_begin", templatepath="../foreach_begin")
+    end.parm("class").set(0)
+    section("Hair per lock (for each lock_id): hairgen, fit, clump, length, frizz")
+
+    # ---- every lock that grows, from the cache ----
+    merged = _node(sub, "python", "hair_cache", [end, keys])
+    merged.parm("python").set("from apps.houdini import grooming_adapter\n"
+                              "grooming_adapter.cook_hair_cache(hou.pwd())\n")
+    hair = _node(sub, "null", "HAIR", [merged])
+    section("Hair from the cache")
 
     # ---- publish: the full hair, without display-only attributes ----
     # skinprim / skinprimuv refer to the per-lock region inside the loop, not the scalp: dropped
     pub_clean = _node(sub, "attribdelete", "publish_clean", [hair], primdel="lock_cd group_cd tightness clumpblend fit_s fit_t fit_c0 fit_root "
-                      "length_mult frizz clumpid skinprim skinprimuv path visible",
+                      "length_mult frizz clumpid skinprim skinprimuv path visible Cd",
                       ptdel="Cd tightness skinprim skinprimuv")
     pub = _node(sub, "usdexport", "PUBLISH_USD",[pub_clean])
     pub.parm("lopoutput").setExpression('chs("../publish_path")', language=hou.exprLanguage.Hscript)
@@ -964,22 +1125,42 @@ def build_network(sub) -> None:
     section("Publish")
 
     # ---- display ----
-    mesh_col = _wrangle(sub, "mesh_color", VEX_MESH_COLOR, PRIM, [pieces, spines])
-    guides_vis = _node(sub, "blast", "guides_visible", [guides_cut], group="@visible==0", grouptype=4)
-    hair_vis = _node(sub, "blast", "hair_visible", [hair], group="@visible==0", grouptype=4)
+    mesh_col = _wrangle(sub, "mesh_color", VEX_MESH_COLOR, PRIM, [pieces, shown])
+    guides_vis = _node(sub, "blast", "guides_visible", [shown], group="@shown==0", grouptype=4)
     guide_col = _wrangle(sub, "guide_color", VEX_COLOR_POINTS, POINT, [guides_vis])
-    hair_col = _wrangle(sub, "hair_color", VEX_COLOR_POINTS, POINT, [hair_vis])
+    hair_col = _wrangle(sub, "hair_color", VEX_HAIR_COLOR, PRIM, [hair, spines])
     disp = _node(sub, "switch", "display", [mesh_col, guide_col, hair_col])
-    disp.parm("input").setExpression('min(ch("../display_mode"), 2)')
-    deform = _node(sub, "pointdeform", "deform", [disp, in_hair, in_anim])
-    deform.parm("radius").setExpression('ch("../deform_radius")')
+    disp.parm("input").setExpression('min(ch("../display_eff"), 2)')
+    section("Display")
+
+    # ---- shot deform: the animated hair mesh, from a packed USD import too ----
+    # A USD Import unpacked to polygons costs 0.1-0.3 s a frame for the whole character (627 k points on
+    # Helen, the hair is 196 k); packed it is 0.001 s. A packed USD input is unpacked here to its gprims
+    # as packed prims, only those named like the rest hair mesh's prims are kept, and only they become
+    # polygons, points only (no primvars). An unpacked input goes through as it is.
+    rest_names = _wrangle(sub, "rest_names", VEX_REST_NAMES, DETAIL, [in_hair])
+    anim_kind = _wrangle(sub, "anim_kind", VEX_ANIM_KIND, DETAIL, [in_anim])
+    gprims = _node(sub, "unpackusd", "anim_gprims", [anim_kind], output="packedprims",
+                   unpacktraversal="std:boundables")
+    keep = _wrangle(sub, "anim_keep_hair", VEX_ANIM_KEEP, PRIM, [gprims, rest_names])
+    polys = _node(sub, "unpackusd", "anim_unpack", [keep], output="polygons", unpacktraversal="std:boundables",
+                  importprimvars="", addpathattrib=0, addfilepathattrib=0, addnameattrib=0, detailattributes=0)
+    pick = _node(sub, "switch", "anim_packed", [in_anim, polys])
+    pick.parm("input").setExpression('detail("../anim_kind", "packed", 0)')
+    anim_hair = _wrangle(sub, "ANIM_HAIR", VEX_ANIM_CHECK, DETAIL, [pick, in_hair])
+    # capture once at rest (inputs 1-2 are time independent), then only the deform runs per frame
+    capture = _node(sub, "pointdeform", "deform_capture", [disp, in_hair], mode="capture")
+    deform = _node(sub, "pointdeform", "deform", [capture, in_hair, anim_hair], mode="deform")
+    for pd in (capture, deform):
+        pd.parm("radius").setExpression('ch("../deform_radius")')
     use_deform = _node(sub, "switch", "use_deform", [disp, deform])
-    use_deform.parm("input").setExpression('if(strcmp(opinputpath("..", 2), "") == 0, 0, 1)')
+    use_deform.parm("input").setExpression(
+        'if(strcmp(opinputpath("..", 2), "") == 0, 0, detail("../ANIM_HAIR", "deform_ok", 0))')
     out = _node(sub, "null", "OUT", [use_deform])
     output = _node(sub, "output", "output0", [out])
     output.setDisplayFlag(True)
     output.setRenderFlag(True)
-    section("Display and shot deform")
+    section("Shot deform")
     _layout_sections(sub, sections)
 
 
@@ -1010,6 +1191,21 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     ptg.append(hou.MenuParmTemplate(
         "display_mode", "Display", menu_items=config.DISPLAY_MODES,
         menu_labels=("Mesh", "Guide", "Hair preview", "Hair full"), default_value=2))
+    ptg.append(hou.MenuParmTemplate(
+        "play_display", "While playing", menu_items=config.PLAY_DISPLAY,
+        menu_labels=("Same as Display", "Guide", "Hair preview"), default_value=2,
+        help="Lighter display while the timeline plays (hair full deforms 4 M points, ~1 s a frame on "
+             "Helen); back to Display on stop. Never heavier than Display"))
+    # what the network draws: Display, or While playing during playback (`playing`, set by the
+    # adapter's playbar callback with undo off)
+    eff = hou.IntParmTemplate("display_eff", "Display in use", 1, default_expression=(
+        'if(ch("playing") && ch("play_display") > 0, min(ch("display_mode"), ch("play_display")), '
+        'ch("display_mode"))',), default_expression_language=(hou.scriptLanguage.Hscript,))
+    eff.hide(True)
+    ptg.append(eff)
+    playing = hou.ToggleParmTemplate("playing", "Playing", default_value=False)
+    playing.hide(True)
+    ptg.append(playing)
     ptg.append(hou.MenuParmTemplate("color_by", "Colour by", menu_items=config.COLOR_BY,
                                     menu_labels=("Lock", "Group"), default_value=0))
     detect = hou.ButtonParmTemplate("detect", "Detect", script_callback=cb.format("detect"),
@@ -1104,7 +1300,22 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     path = hou.StringParmTemplate("publish_path", "Publish path", 1)
     path.hide(True)
     ptg.append(path)
+    # display state the adapter sets with undo off (set_isolate) or while publishing: never a groom edit
+    iso = hou.StringParmTemplate("isolate_ids", "Isolated locks", 1)
+    iso.hide(True)
+    ptg.append(iso)
+    cook_all = hou.ToggleParmTemplate("cook_all", "Cook every lock", default_value=False)
+    cook_all.hide(True)
+    ptg.append(cook_all)
     return ptg
+
+
+ON_LOADED = """from apps.houdini import grooming_adapter
+grooming_adapter.on_loaded(kwargs["node"])
+"""
+ON_CREATED = """from apps.houdini import grooming_adapter
+grooming_adapter.install_playbar_callback()
+"""
 
 
 def build(out_path: str = DEFAULT_OUT) -> str:
@@ -1129,6 +1340,10 @@ def build(out_path: str = DEFAULT_OUT) -> str:
     definition.setParmTemplateGroup(_parm_templates())
     definition.setIcon("SOP_hairgen")
     definition.setComment("MONO Grooming v0.1, built by tools/fx/grooming/build_hda.py")
+    definition.addSection("OnLoaded", ON_LOADED)
+    definition.setExtraFileOption("OnLoaded/IsPython", True)
+    definition.addSection("OnCreated", ON_CREATED)
+    definition.setExtraFileOption("OnCreated/IsPython", True)
     definition.save(out_path, hda, create_backup=False)
     geo.destroy()
 
