@@ -116,6 +116,7 @@ SELECTED = "#273352"      # the accent at 24 % over PANE, opaque: Houdini paints
 DIM = "#62626c"           # names of hidden rows: still readable, clearly off
 FAINT = "#4a4a53"         # an eye decided by something else (a hidden group, isolate), not by this row
 WARN = STATUS_COLORS[STATUS_PINNED]
+EDITING = "#facc15"       # "editing" on the rows the settings change (the viewport shows them in colour)
 STATUS_TEXT = {"unsure": WARN, "new": STATUS_COLORS[STATUS_NEW]}
 STATUS_HELP = {
     "edited": "● has its own settings",
@@ -519,6 +520,8 @@ class _StatusDelegate(QStyledItemDelegate):
         cy = option.rect.center().y()
         dim = row.get("dimmed")
         parts: list[tuple[str, str]] = []
+        if row.get("kind") in (SEL_LOCKS, SEL_GROUP) and self._tree.is_editing(index):
+            parts.append(("editing", EDITING))
         for badge in ("new", "unsure"):
             if badge in row.get("badges", []):
                 parts.append((badge, STATUS_TEXT[badge]))
@@ -611,6 +614,11 @@ class _LayerTree(QTreeWidget):
                 event.accept()
                 return
         super().mousePressEvent(event)
+
+    def is_editing(self, index) -> bool:
+        """The row is selected: what the settings edit (a group's locks do not repeat it: 20 "editing" in a
+        column read as noise; the viewport shows them in colour)."""
+        return self.selectionModel().isSelected(index.siblingAtColumn(COL_NAME))
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
         """Double-click a lock or group: draw it as strands (the first click selected it). On the eye
@@ -904,6 +912,12 @@ class GroomingUI(QWidget):
         leave = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         leave.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         leave.activated.connect(lambda: self._fire("escape"))
+        # with the panel focused Houdini's own Ctrl+Z never runs: the panel asks Houdini to undo
+        # (a focused text field keeps its own undo)
+        for seq, event in (("Ctrl+Z", "undo"), ("Ctrl+Shift+Z", "redo"), ("Ctrl+Y", "redo")):
+            sc = QShortcut(QKeySequence(seq), self)
+            sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            sc.activated.connect(lambda e=event: self._fire(e))
         self._apply_size(refresh=False)
 
     # =====================================================================
@@ -1193,11 +1207,19 @@ class GroomingUI(QWidget):
         select(kind, ids), set_value(key, value), reset_value(key), set_visible(kind, ids, on),
         set_row_display(kind, ids, mode), set_group_color(gid, rgb), confirm(ids),
         reassign_orphan(orphan_id, lock_id), delete_orphan(orphan_id), detect(), split_regions(),
-        set_display(mode, color_by), publish(version), isolate(), isolate_off(), escape(), strands(),
+        set_display(mode, color_by), publish(version), isolate(), isolate_off(), escape(), strands(), undo(), redo(),
         can_drop(dragged, target, where) -> plan | reason, drop(dragged, target, where),
         poll(), refresh(), dock()
         """
         self._callbacks[event] = callback
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        self._fire("shown")
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        self._fire("hidden")   # the viewport draws every lock in its colour again
 
     def _fire(self, event: str, *args) -> None:
         cb = self._callbacks.get(event)

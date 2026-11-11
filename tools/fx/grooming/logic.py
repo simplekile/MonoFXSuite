@@ -295,6 +295,18 @@ def section_cm2(width: float, thick: float, unit_cm: float) -> float:
     return math.pi / 4.0 * w * t
 
 
+def drag_factor(expected_strands: float, budget: int | None = None) -> float:
+    """Strand fraction a slider drag grows the dragged locks at: 1 (their real count) up to `budget`
+    strands, else budget / expected snapped down to a step of PREVIEW_FACTOR_STEP (0.8^k): the factor is
+    in each lock's cache key, so ticks of a drag reuse the strands of a value already seen."""
+    budget = config.DRAG_STRAND_BUDGET if budget is None else budget
+    if expected_strands <= budget or expected_strands <= 0:
+        return 1.0
+    f = budget / float(expected_strands)
+    step = config.PREVIEW_FACTOR_STEP
+    return step ** math.ceil(math.log(f) / math.log(step) - 1e-6)
+
+
 def lock_strands(density: float, region_cm2: float, section: float) -> int:
     """Strands of a lock at full count: density x its share of the scalp, at least density x its own
     cross-section (locks whose roots converge on a small patch). Same rule as the HDA's region_frame."""

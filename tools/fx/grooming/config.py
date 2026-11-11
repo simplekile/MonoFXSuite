@@ -30,6 +30,15 @@ PREVIEW_FRACTION = 0.10
 PREVIEW_MAX_STRANDS = 20_000
 PREVIEW_FACTOR_STEP = 0.8      # a capped preview factor snaps down to 0.8^k (it is in every lock's cache key)
 STRANDS_MAX = 20              # locks drawn as strands at most (Enter / double-click): 20 is ~1.9 M points
+# A slider drag grows the dragged locks at their real strand count, with fewer points a strand (a drag
+# tick on one Helen lock: 0.14 s, its largest 0.36 s); past this many strands (a group) a fraction of
+# them, snapped to PREVIEW_FACTOR_STEP, and the panel says which fraction
+DRAG_STRAND_BUDGET = 10_000
+DRAG_SEGMENTS = 12
+# Focus (the panel's selection): the selected locks keep their colour, the others are drawn see-through
+GHOST_ALPHA = 0.04            # per strand: a lock is thousands of strands deep, 0.12 added up to opaque
+GHOST_TINT = (0.30, 0.31, 0.35)
+GHOST_MIX = 0.5               # how far the others' colour goes to GHOST_TINT
 CLUMP_ID_STRIDE = 100_000      # clump_id = lock_id x this + hairclump's clump: clumped per lock, unique per groom
 
 # Publish layout (department name "grooming").

@@ -207,11 +207,22 @@
     unpacks (the user asked: a selection of the whole groom would be 4 M points again). Their packed
     prim stays, empty, so prim number = place among the packed prims for every lock; their strands come
     after. Helen GUI: Enter 0.05 s, a group of 20 0.2 s, an edit +0.01-0.03 s. Rejected (t29/t30):
-    one geo object per lock, since with dependencies every edit recooks all 61 (3.2-3.5 s).
-  - The output's prim numbers change with strands and isolate, and an edit changes how many strands a
-    lock drawn as strands has: the controller selects the panel's locks again by lock id after each
-    (`_sync_viewport`), with undo off in `select_locks` (Houdini records a viewport selection, and
-    Ctrl+Z undid that instead of the edit).
+    one geo object per lock, since with dependencies every edit recooks all 61 (3.2-3.5 s). Every lock
+    as strands all the time (t33, GUI): an edit 0.71-0.78 s vs 0.44 packed, a hide 0.31 vs 0.06 s.
+  - Focus, not Houdini's selection highlight (the user: the highlight paints the lock over; the others
+    should go x-ray): the panel's selection is the hidden parm `focus_ids` (`set_focus`, by lock id,
+    undo off, cleared by OnLoaded and when the panel hides). Locks in focus keep their colour, the
+    others get `GHOST_TINT` and `GHOST_ALPHA`: a copy per lock inside its packed prim (cached, like the
+    colour), `_vex_ghost` on the mesh, guide and unpacked strands. The viewport draws Alpha inside
+    packed geometry only (t35: Alpha on unpacked curves or on the packed prim is ignored) and adds it up
+    over the thousands of strands in a lock: 0.12 read as opaque, 0.04 as x-ray. Ghosts in front of
+    the lock still cover it (they write depth). set_focus clears this node's viewport selection, so a
+    pick in the viewport becomes the panel's selection and focus. A focus change: ~0.01 s, the first
+    0.03 s. The tree says "editing" (yellow) on the selected rows only; a group's locks do not repeat it.
+  - Undo keeps working with the panel focused: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are panel shortcuts that
+    call `hou.undos.performUndo` / `performRedo` (`adapter.undo`): Houdini's own hotkeys never see keys
+    sent to the panel. `select_locks` (adapters without focus) runs with undo off: Houdini records a
+    viewport selection, and Ctrl+Z undid that instead of the edit.
   - The panel's poll runs from Houdini's idle loop (`controller._when_idle`, hdefereval): Houdini
     handles Qt events mid-cook, and the poll asking the viewer for its selection on a node being cooked
     (Anim on, ~1.4 s) failed the cook with "Infinite recursion in evaluation". `needsToCook()` cannot
@@ -220,10 +231,14 @@
     strand (116 k) made each selection and every poll lag.
   - `lock_infos` reads the scalp areas in bulk, and the panel re-reads it only when settings, regions
     or flags change (`_infos_key`: not eyes, displays, order). It cost 2 s, then 0.12 s, on every edit.
-  - A slider drag writes each tick with no undo step (`write_data_live`, at most every 120 ms), the
-    dragged locks grow at the preview fraction (`set_drag_preview`, hidden parm `preview_ids` read by
-    `lock_keys` into a per-lock `strand_factor` that hairgen reads); the release puts the pre-drag data
-    back without undo and writes the final value: one undo step, full hair once.
+  - A slider drag writes each tick with no undo step (`write_data_live`, at most every 120 ms); the
+    dragged locks (`set_drag_preview`, hidden parm `preview_ids`, read by `lock_keys`) grow at their
+    real strand count with `DRAG_SEGMENTS` points a strand (cache mode "drag", hairgen's segments read
+    `drag_seg`): the preview fraction (a tenth) did not show what the density would look like. Past
+    `DRAG_STRAND_BUDGET` strands (a group) at `logic.drag_factor` of them (hidden parm `drag_factor`,
+    0.8^k steps), and the panel says "showing 1 in N strands". The release puts the pre-drag data back
+    without undo and writes the final value: one undo step, full hair once. A tick on one Helen lock
+    (3-5 k strands): cook 0.21-0.23 s, a frame 0.29-0.35 s (preview fraction was 0.07-0.09 s).
   - The "popup that flashes on every change" was the panel's own Reset button: a setting row showed it
     before adding it to its layout, so for a moment it was a window of its own, on every rebuild of the
     settings, and it took the mouse from the slider being dragged (`test_rebuilding_the_settings_shows_no_window_of_its_own`).
@@ -232,7 +247,8 @@
     follows a drag itself (a 15 ms timer reads the cursor and the system's button state,
     `_left_button_down`), so a window popping up mid-drag no longer ends it; the poll skips while a
     slider is down (a rebuild under the mouse ends it).
-  - GUI Helen, hair full: select 0.025 s, hide / show 0.08 s, a drag tick 0.07-0.09 s, release 0.35 s.
+  - GUI Helen, hair full: select (focus) 0.06-0.13 s, hide / show 0.08 s, a drag tick ~0.3 s, release
+    0.35 s, Ctrl+Z 0.03-0.04 s.
 - Per-lock Display: `assign_locks` writes `row_display` (the lock's own Display, else its group's, -1 =
   the node's); `lock_shown` turns it into `disp` (lighter while playing, full hair while publishing) and
   `grows` (only preview and hair grow). `lock_keys` gives each lock its `strand_factor` (preview or
@@ -348,6 +364,7 @@
   actions never use the check icon (it reads as a ticked option): Confirm match is `badge-check`.
 - A hidden group dims its row and its locks ("hidden by group"; their own eye kept). Isolate (I, Esc) is
   `adapter.set_isolate(node, ids | None)` / `isolate_ids(node)`: a view state, never in `groom_data`.
+  I on other locks while isolated isolates them at once; I on the same locks shows everything.
   Drag and drop: the controller's `plan_drop` decides on every mouse move (refusals say why: Defaults,
   onto itself, group into group, locks with a group); Qt never moves items, the drop is one write.
   Tree order = order of `GroomData.groups` / `.locks` (`move_locks`, `move_group`). Locks moved to another

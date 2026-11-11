@@ -64,8 +64,18 @@ class FakeAdapter:
     def set_shot_deform(self, node, on) -> None:
         self.deform = (self.deform[0], bool(on))
 
-    def set_drag_preview(self, node, ids) -> None:
+    def set_drag_preview(self, node, ids, factor=1.0) -> None:
         self.light = sorted(ids) if ids else None
+        self.drag_factor = factor
+
+    # Houdini's undo, from the panel's Ctrl+Z
+    undo_labels: list = []
+
+    def undo(self, node, redo=False) -> str:
+        if not self.undo_labels:
+            return ""
+        self.undone = ("redo" if redo else "undo", self.undo_labels[0])
+        return self.undo_labels.pop(0)
 
     def write_data_live(self, node, data: GroomData) -> None:   # no undo step
         self.text = data.to_json()
@@ -562,6 +572,80 @@ def test_shot_deform_toggle_turns_the_anim_off_for_fast_edits(env) -> None:
     assert "edits are fast" in view.messages[-1][0]
 
 
+def test_isolate_another_lock_while_isolated_switches_to_it(env) -> None:
+    adapter, view, c = env
+    c.select_locks([1, 2])
+    c.toggle_isolate()
+    assert adapter.isolated == [1, 2]
+    c.select_locks([3])
+    assert c.toggle_isolate()                     # no need to show everything first
+    assert adapter.isolated == [3] and view.isolate.startswith("Isolated: back_01")
+    assert c.toggle_isolate()                     # the same lock again: everything shown
+    assert adapter.isolated is None
+
+
+def test_focus_replaces_the_viewport_highlight(env, monkeypatch) -> None:
+    """With focus the panel's selection keeps its colour in the viewport and the other locks go
+    see-through; Houdini's selection highlight (which painted the lock over) is never set, and a pick
+    in the viewport becomes the panel's selection and the focus."""
+    adapter, view, c = env
+    calls = []
+
+    def set_focus(node, ids):
+        calls.append(sorted(ids) if ids else None)
+        adapter.viewport = []                      # the real one clears Houdini's highlight
+
+    monkeypatch.setattr(adapter, "set_focus", set_focus, raising=False)
+    c.select_locks([2])
+    assert calls[-1] == [2] and adapter.selected == []
+    c.select_group("back")
+    assert calls[-1] == [3, 4]
+    c.select("none")
+    assert calls[-1] is None                       # nothing selected: every lock in its colour
+    adapter.viewport = [1]                         # a pick in the viewport
+    c.poll()
+    assert c.selection == ("locks", (1,)) and calls[-1] == [1] and adapter.viewport == []
+    c.poll()                                       # the cleared highlight is no new pick
+    assert c.selection == ("locks", (1,))
+    c.focus_off()
+    assert calls[-1] is None
+
+
+def test_undo_from_the_panel_runs_houdinis_undo_and_shows_it(env) -> None:
+    adapter, view, c = env
+    adapter.undo_labels = ["Grooming: Density on fringe_01"]
+    assert c.undo()
+    assert adapter.undone == ("undo", "Grooming: Density on fringe_01")
+    assert view.messages[-1][0] == "Undone: Grooming: Density on fringe_01"
+    assert not c.undo(redo=True) and view.messages[-1][0] == "Nothing to redo"
+
+
+def test_a_drag_shows_the_real_strand_count_up_to_the_budget(env, monkeypatch) -> None:
+    adapter, view, c = env
+    adapter.deform = (True, False)
+    c.select_locks([1])                            # 1000 strands (FakeAdapter.lock_infos)
+    c.preview_value("clump", 0.5)
+    assert adapter.light == [1] and adapter.drag_factor == 1.0
+    c.set_value("clump", 0.5)
+    monkeypatch.setattr(ctl.config, "DRAG_STRAND_BUDGET", 1500)
+    monkeypatch.setattr(ctl.logic.config, "DRAG_STRAND_BUDGET", 1500)
+    c.select_group("back")                         # 2 x 1000 strands, over the budget
+    c.preview_value("clump", 0.6)
+    assert adapter.drag_factor < 1.0 and "showing 1 in" in view.messages[-1][0]
+    c.set_value("clump", 0.6)
+    c.select_locks([1])
+    c.preview_value("density", 300.0)              # density 150 -> 300 doubles its strands: 2000
+    assert adapter.drag_factor < 1.0
+
+
+def test_drag_factor_snaps_to_steps() -> None:
+    from tools.fx.grooming import logic
+    assert logic.drag_factor(5000, 10000) == 1.0
+    f = logic.drag_factor(30000, 10000)
+    assert f <= 1 / 3 and abs(f - 0.8 ** 5) < 1e-9
+    assert logic.drag_factor(30500, 10000) == f    # a nearby count reuses the same factor (cache key)
+
+
 def test_isolate_without_adapter_support_says_so(env) -> None:
     adapter, view, c = env
     del FakeAdapter.set_isolate
@@ -951,6 +1035,26 @@ def test_enter_and_double_click_draw_strands_double_click_on_the_eye_is_two_clic
     app.processEvents()
     assert adapter.read_data(adapter.node).lock(1).visible               # hidden, then shown again
     assert adapter.strands == [3, 4]                                     # the eye draws no strands
+    ui.close()
+
+
+def test_ctrl_z_in_the_panel_undoes_and_rows_being_edited_say_so(app, prefs) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    adapter, ui, c = _panel(app)
+    adapter.undo_labels = ["Grooming: Clump on back_01"]
+    ui._tree.setFocus()
+    QTest.keyClick(ui._tree, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
+    assert adapter.undone == ("undo", "Grooming: Clump on back_01")
+    c.select_group("back")
+    ui.set_selection(c.selection)
+    app.processEvents()
+    tree = ui._tree
+    index = tree.indexFromItem
+    assert tree.is_editing(index(ui._rows[(ctl.SEL_GROUP, "back")]))
+    assert not tree.is_editing(index(ui._rows[(ctl.SEL_LOCKS, 3)]))   # its locks: no repeat
+    assert not tree.is_editing(index(ui._rows[(ctl.SEL_LOCKS, 1)]))
     ui.close()
 
 

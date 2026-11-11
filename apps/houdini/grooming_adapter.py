@@ -46,6 +46,8 @@ PARM_PUBLISH_VERSION = "publish_version"
 PARM_ISOLATE = "isolate_ids"         # hidden: locks shown alone ("" = none); display only, never undone
 PARM_DRAG_PREVIEW = "preview_ids"    # hidden: locks a slider is dragging, grown light; display only
 PARM_STRANDS = "strand_ids"          # hidden: locks drawn as strands, not packed (Enter / double-click)
+PARM_FOCUS = "focus_ids"             # hidden: the panel's selection; the other locks are drawn see-through
+PARM_DRAG_FACTOR = "drag_factor"     # hidden: strand fraction of the locks a slider drags (1 = real count)
 PARM_COOK_ALL = "cook_all"           # hidden: 1 while publishing: every lock, hidden or isolated out
 PARM_DISPLAY_EFF = "display_eff"     # hidden expression: the mode drawn (Display, or While playing)
 PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playbar callback, undo off)
@@ -54,7 +56,7 @@ PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playb
 # already carries): left out of the cache key, so changing them recooks no lock.
 _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
                    PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_STRANDS,
-                   PARM_COOK_ALL,
+                   PARM_FOCUS, PARM_DRAG_FACTOR, PARM_COOK_ALL,
                    "shot_deform", "deform_active", "anim_wired",   # per lock: do_capture; deform_radius stays
                    PARM_DISPLAY_EFF, PARM_PLAYING, "play_display",
                    "rest_frame", "detect", "split_regions", "publish"}
@@ -464,6 +466,19 @@ def write_data(node, data: model.GroomData, label: str) -> None:
         node.parm(config.DATA_PARM).set(data.to_json())
 
 
+def undo(node, redo: bool = False) -> str:
+    """Houdini's undo (or redo) of the last step, from the panel: with the panel focused, Ctrl+Z never
+    reaches Houdini's hotkeys. Returns the step's label, "" when there was none."""
+    labels = hou.undos.redoLabels() if redo else hou.undos.undoLabels()
+    if not labels:
+        return ""
+    if redo:
+        hou.undos.performRedo()
+    else:
+        hou.undos.performUndo()
+    return labels[0]
+
+
 def write_data_live(node, data: model.GroomData) -> None:
     """Store `groom_data` with no undo step: the ticks of a slider drag. The drag's release writes the
     final value with write_data, after putting the value from before the drag back, so one undo returns
@@ -628,15 +643,48 @@ def set_shot_deform(node, on: bool) -> None:
             p.set(int(bool(on)))
 
 
-def set_drag_preview(node, lock_ids: Sequence[int] | None) -> None:
-    """While a slider drags: these locks grow at the preview fraction (the rest keep their display), so
-    each tick regrows a tenth of their strands. None clears it (the release grows them in full). No undo
-    step, never saved (OnLoaded clears it), never during publish."""
+def set_drag_preview(node, lock_ids: Sequence[int] | None, factor: float = 1.0) -> None:
+    """While a slider drags: these locks grow at `factor` of their strands (1: their real count,
+    `logic.drag_factor`) with DRAG_SEGMENTS points a strand; the rest keep their display. None clears it
+    (the release grows them in full). No undo step, never saved (OnLoaded clears it), never during
+    publish. A node built before drag_factor grows them at the preview fraction."""
     p = node.parm(PARM_DRAG_PREVIEW)
     if p is None:
         return
     with hou.undos.disabler():
         p.set(format_isolate(lock_ids))
+        f = node.parm(PARM_DRAG_FACTOR)
+        if f is not None and abs(f.eval() - float(factor)) > 1e-9:
+            f.set(float(factor))
+
+
+def set_focus(node, lock_ids: Sequence[int] | None) -> None:
+    """The panel's selection: those locks keep their colour, the others are drawn see-through and grey
+    (None: every lock in its colour). It replaces Houdini's selection highlight, which painted the
+    selected lock over in one colour: the viewport selection of this node is cleared. A view state:
+    no undo step, never saved (OnLoaded clears it), no lock recooks."""
+    p = node.parm(PARM_FOCUS)
+    if p is None:
+        return
+    text = format_isolate(lock_ids)
+    with hou.undos.disabler():
+        if p.eval() != text:
+            p.set(text)
+        viewer = _scene_viewer()
+        try:
+            sel = viewer.currentGeometrySelection() if viewer is not None else None
+            if sel is not None and node in sel.nodes() and any(s.selectionString(node.geometry())
+                                                               for s in sel.selections()):
+                viewer.setCurrentGeometrySelection(hou.geometryType.Primitives, (node,), (
+                    hou.Selection(hou.geometryType.Primitives),))
+        except hou.Error:
+            pass   # no active selector (a view state): nothing is highlighted there
+
+
+def focus_ids(node) -> list[int]:
+    """The locks in focus, [] when every lock is drawn in its colour."""
+    p = node.parm(PARM_FOCUS)
+    return parse_isolate(p.eval()) if p is not None else []
 
 
 def set_strands(node, lock_ids: Sequence[int] | None) -> None:
@@ -928,7 +976,8 @@ def on_loaded(node) -> None:
     """HDA OnLoaded: isolate is a temporary view, so a scene saved while isolated opens showing all;
     a scene saved while playing opens at its Display."""
     with hou.undos.disabler():
-        for name, empty in ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_STRANDS, ""), (PARM_PLAYING, 0)):
+        for name, empty in ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_STRANDS, ""), (PARM_FOCUS, ""),
+                            (PARM_PLAYING, 0)):
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)
@@ -1018,6 +1067,9 @@ def cook_lock_keys(sop) -> None:
     deforming = bool(top.evalParm("deform_active")) if top.parm("deform_active") is not None else False
     dragged = set(parse_isolate(top.evalParm(PARM_DRAG_PREVIEW))) \
         if top.parm(PARM_DRAG_PREVIEW) is not None and not top.evalParm(PARM_COOK_ALL) else set()
+    # dragged locks: their real count (or the panel's fraction) with fewer points a strand; a node
+    # built before drag_factor: the preview fraction
+    drag_f = top.evalParm(PARM_DRAG_FACTOR) if top.parm(PARM_DRAG_FACTOR) is not None else light
     rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
     sk = surface.floatListAttribValue("surface_keys") if surface.findGlobalAttrib("surface_keys") else ()
     # the mode is per lock (its `disp`, lock_shown): only its strand factor reaches the hair, so the
@@ -1029,7 +1081,7 @@ def cook_lock_keys(sop) -> None:
                for a in pattrs]
     rattrs = sorted((a for a in geo.primAttribs() if a.name() not in _KEY_SKIP_ATTRIBS), key=lambda a: a.name())
     for name, default in (("cache_key", ""), ("cache_mode", ""), ("cached", 0), ("strand_factor", 1.0),
-                          ("do_capture", 0)):
+                          ("do_capture", 0), ("drag_seg", 0)):
         if geo.findPrimAttrib(name) is None:
             geo.addAttrib(hou.attribType.Prim, name, default)
     cache = hair_cache()
@@ -1039,7 +1091,7 @@ def cook_lock_keys(sop) -> None:
     sid = top.sessionId()
     has_disp = geo.findPrimAttrib("disp") is not None
     preview_mode = config.DISPLAY_MODES.index("hair_preview")
-    keys, flags, factors, modes, captures = [], [], [], [], []
+    keys, flags, factors, modes, captures, drags = [], [], [], [], [], []
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
         disp = prim.intAttribValue("disp") if has_disp else config.DISPLAY_MODES.index(mode) \
@@ -1047,12 +1099,15 @@ def cook_lock_keys(sop) -> None:
         # hairgen's density x this (strand_factor): the preview fraction for a lock shown as preview or
         # being dragged, else full; publishing is always full
         f = light if disp == preview_mode else 1.0
-        if lid in dragged:
-            f = min(f, light)
+        drag = lid in dragged and not publishing
+        if drag:
+            f = min(f, drag_f)
         if publishing:
             f = 1.0
         factors.append(f)
-        lock_mode = "hair" if f >= 1.0 else "hair_preview"
+        drags.append(int(drag))
+        # a dragged lock's strands are coarser (DRAG_SEGMENTS): kept apart from its full hair
+        lock_mode = "drag" if drag else "hair" if f >= 1.0 else "hair_preview"
         modes.append(lock_mode)
         cap = int(wired and (deforming or f >= 1.0))   # publish (full) reuses these; it drops the capture
         captures.append(cap)
@@ -1064,6 +1119,7 @@ def cook_lock_keys(sop) -> None:
         parts.append(tuple(sk[piece * 9:piece * 9 + 9]) if piece >= 0 else ())
         parts.append(f)
         parts.append(cap)
+        parts.append(int(drag))
         key = lock_key(parts)
         keys.append(key)
         flags.append(int(cache.has(sid, lid, lock_mode, key)))
@@ -1071,6 +1127,7 @@ def cook_lock_keys(sop) -> None:
     geo.setPrimStringAttribValues("cache_mode", modes)
     geo.setPrimFloatAttribValues("strand_factor", factors)
     geo.setPrimIntAttribValues("do_capture", captures)
+    geo.setPrimIntAttribValues("drag_seg", drags)
     geo.setPrimIntAttribValues("cached", flags)
 
 
@@ -1136,6 +1193,7 @@ def cook_hair_packed(sop) -> None:
     cache = hair_cache()
     sid = sop.parent().sessionId()
     strands = set(strand_ids(sop.parent()))
+    focus = set(focus_ids(sop.parent()))
     empty = hou.Geometry().freeze(read_only=True) if strands else None
     unpacked = []
     for lid, name, g, sp in _cached_hair(sop, with_prim=True):
@@ -1153,9 +1211,26 @@ def cook_hair_packed(sop) -> None:
             coloured = tinted.freeze(read_only=True)
             cache.put(sid, lid, mode, key, coloured)
         prim = geo.createPacked("PackedGeometry")
-        if lid in strands:
+        if lid in strands:   # hair_packed_color gives them their colour, or the see-through grey
             prim.setEmbeddedGeometry(empty)
             unpacked.append(coloured)
+        elif focus and lid not in focus:
+            # out of focus: see-through grey, a copy made once per colour and kept like the coloured one
+            gkey = key + "|ghost"
+            ghost = cache.get(sid, lid, mode, gkey)
+            if ghost is None:
+                m = config.GHOST_MIX
+                gcd = tuple(c * (1 - m) + t * m for c, t in zip(cd, config.GHOST_TINT))
+                tinted = hou.Geometry()
+                tinted.merge(g)
+                tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
+                tinted.addAttrib(hou.attribType.Prim, "Alpha", 1.0)
+                n = len(tinted.iterPrims())
+                tinted.setPrimFloatAttribValues("Cd", gcd * n)
+                tinted.setPrimFloatAttribValues("Alpha", (config.GHOST_ALPHA,) * n)
+                ghost = tinted.freeze(read_only=True)
+                cache.put(sid, lid, mode, gkey, ghost)
+            prim.setEmbeddedGeometry(ghost)
         else:
             prim.setEmbeddedGeometry(coloured)
         prim.setAttribValue(lid_attr, lid)
@@ -1176,6 +1251,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "set_isolate", "isolate_ids", "set_strands", "strand_ids", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "set_focus", "focus_ids", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]

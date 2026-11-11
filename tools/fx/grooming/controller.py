@@ -117,6 +117,7 @@ class GroomController:
         self._drag_preview = True             # dragged locks grow light (adapter.set_drag_preview)
         self._drag_origin_new = False
         self._drag_warned = False
+        self._drag_factor: float | None = None   # the strand fraction a drag shows (logic.drag_factor)
         if node is not None:
             self.set_node(node)
 
@@ -124,6 +125,7 @@ class GroomController:
     # Node and reading
     # ------------------------------------------------------------------
     def set_node(self, node: Any) -> None:
+        self.focus_off()
         self.node = node
         self._node_lost = False
         self.selection = (SEL_NONE, ())
@@ -207,9 +209,10 @@ class GroomController:
         self.view.set_isolate(self.isolate_text(data))
         if hasattr(self.view, "set_strands"):
             self.view.set_strands(self.strands_text(data))
-        if self.strands:
+        if self.strands and not hasattr(self.adapter, "set_focus"):
             # an edit changes how many strands a lock drawn as strands has, so the prim numbers the
             # viewport selection holds now point past them: select the locks again by their lock ids
+            # (focus goes by lock id and needs nothing)
             self._sync_viewport(data)
         if self._publish_armed is not None and self._publish_armed != self._unseen(data):
             self._publish_armed = None  # what was hidden changed: the warning no longer says what is true
@@ -453,25 +456,51 @@ class GroomController:
                 return False
             for lv in levels:
                 lv[key] = float(value)
-            # While dragging, the locks being changed regrow as the preview (a tenth of the strands), like
-            # XGen's interactive mode: a full regrow of one lock takes ~0.2-0.35 s, and past ~0.3 s Houdini
-            # flashes its cook-interrupt button. The release restores the data from before the drag, so the
-            # locks' own display comes back and they grow in full once.
+            # While dragging, the locks being changed regrow at their real strand count with fewer points a
+            # strand (a tick on one Helen lock ~0.14 s); a selection of more than DRAG_STRAND_BUDGET strands
+            # (a group) at a fraction of them, which the panel says. The release restores the data from
+            # before the drag, so the locks' own display comes back and they grow in full once.
             first = self._drag_origin_new
             self._drag_origin_new = False
             light = getattr(self.adapter, "set_drag_preview", None)
-            if first and self._drag_preview and light is not None:
-                light(self.node, self.lock_ids_of(data, self.selection))
+            if self._drag_preview and light is not None:
+                ids = self.lock_ids_of(data, self.selection)
+                factor = logic.drag_factor(self._drag_strands(data, ids, key, float(value)))
+                if first or factor != self._drag_factor:
+                    self._drag_factor = factor
+                    try:
+                        light(self.node, ids, factor)
+                    except TypeError:   # an adapter from before the drag factor
+                        light(self.node, ids)
+                    self.view.set_message("" if factor >= 1.0 else
+                                          f"Dragging {len(ids)} locks: showing 1 in {round(1 / factor)} strands "
+                                          "until you let go")
             live(self.node, data)
         except Exception as e:
             self.view.set_message(f"{SETTING_LABELS.get(key, key)} failed: {e}", error=True)
             return False
         return True
 
+    def _drag_strands(self, data: model.GroomData, ids: list[int], key: str, value: float) -> float:
+        """Strands the dragged locks have at this tick's value (a density drag changes their count)."""
+        total = 0.0
+        for i in ids:
+            info = self._infos.get(i)
+            if info is None:
+                continue
+            n = float(info.strands)
+            if key == "density":
+                base = (model.GroomData.from_json(self._drag_origin).resolve(i) if self._drag_origin
+                        else data.resolve(i)).get("density", 0.0)
+                n = n * value / base if base > 0 else n
+            total += n
+        return total
+
     def _end_drag(self) -> None:
         """Put back the data from before a drag (no undo step), so the release's write is the only step."""
         origin, self._drag_origin = self._drag_origin, None
         self._drag_warned = False
+        self._drag_factor = None
         light = getattr(self.adapter, "set_drag_preview", None)
         if origin is not None and light is not None and self.node is not None:
             light(self.node, None)          # the release grows them in full
@@ -761,11 +790,12 @@ class GroomController:
         return f"Isolated: {_names(names)}"
 
     def toggle_isolate(self) -> bool:
-        """Isolate the selected locks or group; a second press (or isolate_off) shows everything again."""
-        if self.isolated is not None:
-            return self.isolate_off()
+        """Isolate the selected locks or group; while isolated, other locks selected are isolated in their
+        place (no need to show everything first), the same locks again show everything."""
         data = self.data()
         ids = self.lock_ids_of(data, self.selection)
+        if self.isolated is not None and (not ids or sorted(ids) == sorted(self.isolated)):
+            return self.isolate_off()
         if not ids:
             self.view.set_message("Isolate: select a lock or a group first")
             return False
@@ -780,6 +810,31 @@ class GroomController:
         """Esc / the banner's button: back to every lock shown and every lock packed."""
         done = self.strands_off()
         return self.isolate_off() or done
+
+    def focus_off(self) -> None:
+        """The panel closes or changes node: every lock in its colour again."""
+        focus = getattr(self.adapter, "set_focus", None)
+        if focus is not None and self.node is not None:
+            try:
+                focus(self.node, None)
+            except Exception:
+                pass
+
+    def undo(self, redo: bool = False) -> bool:
+        """Ctrl+Z / Ctrl+Shift+Z (Ctrl+Y) in the panel: Houdini's undo or redo, then the panel follows."""
+        call = getattr(self.adapter, "undo", None)
+        if call is None or self.node is None:
+            return False
+        self._end_drag()
+        label = self._run("Redo" if redo else "Undo", lambda: call(self.node, redo))
+        if label is None:   # failed: _run said why
+            return False
+        if not label:
+            self.view.set_message("Nothing to redo" if redo else "Nothing to undo")
+            return False
+        self.refresh()
+        self.view.set_message(f"{'Redone' if redo else 'Undone'}: {label}")
+        return True
 
     def _set_isolate(self, ids: list[int] | None) -> bool:
         call = getattr(self.adapter, "set_isolate", None)
@@ -1017,12 +1072,19 @@ class GroomController:
             except Exception:
                 pass
         self.view.show_properties(self.properties(data))
-        if kind in (SEL_LOCKS, SEL_GROUP):
-            self._sync_viewport(data)
+        if kind in (SEL_LOCKS, SEL_GROUP) or hasattr(self.adapter, "set_focus"):
+            self._sync_viewport(data)   # nothing selected: every lock in its colour again
 
     def _sync_viewport(self, data: model.GroomData | None = None) -> None:
-        """Select the panel's locks in the viewport, by the node's geometry as it is now."""
+        """Show the panel's selection in the viewport: the selected locks keep their colour and the others
+        go see-through (adapter.set_focus, by lock id, which also clears Houdini's selection highlight that
+        painted the lock over). An adapter without focus selects the locks' prims instead."""
         lock_ids = self.lock_ids_of(data or self._data or self.data(), self.selection)
+        focus = getattr(self.adapter, "set_focus", None)
+        if focus is not None:
+            self._run("Focus", lambda: focus(self.node, lock_ids or None))
+            self._viewport_ids = []
+            return
         if not lock_ids:
             return
         self._run("Select", lambda: self.adapter.select_locks(self.node, lock_ids))
@@ -1091,6 +1153,8 @@ class GroomController:
             self.selection = (SEL_LOCKS, tuple(known))
             self.view.set_selection(self.selection)
             self.view.show_properties(self.properties(data))
+        if known and hasattr(self.adapter, "set_focus"):
+            self._sync_viewport(data)   # a pick in the viewport: focus instead of Houdini's highlight
 
 
 # ----------------------------------------------------------------------
@@ -1118,6 +1182,10 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("isolate", controller.toggle_isolate)
     ui.on("isolate_off", controller.isolate_off)
     ui.on("escape", controller.escape)
+    ui.on("undo", controller.undo)
+    ui.on("hidden", controller.focus_off)
+    ui.on("shown", lambda: controller._sync_viewport() if controller.node is not None else None)
+    ui.on("redo", lambda: controller.undo(redo=True))
     ui.on("strands", controller.toggle_strands)
     ui.on("set_root_flip", controller.set_root_flip)
     ui.on("set_shot_deform", controller.set_shot_deform)

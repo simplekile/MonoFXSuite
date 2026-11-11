@@ -898,6 +898,30 @@ if (sp >= 0) {
 v@Cd = c;
 """
 
+VEX_FOCUS = """// the panel's selection (focus_ids): the other locks are drawn see-through (ghost_* wrangles)
+string toks[] = split(chs("../focus_ids"));
+int ids[];
+foreach (string t; toks) append(ids, atoi(t));
+i[]@focus = ids;
+"""
+
+
+def _vex_ghost(focus_input: int, lock_id: str, cls: str) -> str:
+    """Out of focus: the colour towards a grey and see-through. Alpha is added only then, so with nothing
+    in focus the geometry carries no Alpha (the viewport draws no transparency pass)."""
+    tint = "{%s, %s, %s}" % config.GHOST_TINT
+    return """
+// focus: the panel's selection keeps its colour, the other locks are see-through grey
+int fo[] = detail(%(i)d, "focus");
+if (len(fo) > 0 && find(fo, %(lid)s) < 0) {
+    v@Cd = lerp(v@Cd, %(tint)s, %(mix)s);
+    add%(cls)sattrib(0, "Alpha", 1.0);
+    set%(cls)sattrib(0, "Alpha", @%(num)s, %(alpha)s);
+}
+""" % {"i": focus_input, "lid": lock_id, "tint": tint, "mix": config.GHOST_MIX, "cls": cls,
+       "num": "primnum" if cls == "prim" else "ptnum", "alpha": config.GHOST_ALPHA}
+
+
 VEX_DISPLAY_MODES = """// which displays the shown locks use (disp: 0 mesh, 1 guide, 2 preview, 3 hair)
 int m[] = {0, 0, 0, 0};
 for (int i = 0; i < nprimitives(0); i++) {
@@ -1082,9 +1106,11 @@ def build_network(sub) -> None:
     hairgen = _node(sub, "hairgen::2.0", "hairgen", [rdens], useguides=0, growunguided=1,
                     useinitdirattrib=0, unguidedlength=0.01)
     # segments by the lock's length (24 on a 90 cm lock made 4 cm straight runs across its curves)
+    # a lock a slider is dragging: DRAG_SEGMENTS (its real strand count, coarser, while the drag lasts)
     hairgen.parm("unguidedsegments").setExpression(
+        'if(prim("../foreach_begin", 0, "drag_seg", 0), %d, '
         'max(32, ceil(prim("../foreach_begin", 0, "lock_len", 0) * ch("../unit_cm") '
-        '/ max(ch("../strand_segment_cm"), 0.1)))')
+        '/ max(ch("../strand_segment_cm"), 0.1))))' % config.DRAG_SEGMENTS)
     hairgen.parm("densityoverride").set(1)  # skin attribute "density" (strands/cm2) x the parm
     hairgen.parm("density").setExpression(
         'pow(ch("../unit_cm"), 2) * prim("../foreach_begin", 0, "strand_factor", 0)')
@@ -1155,14 +1181,19 @@ def build_network(sub) -> None:
     # cooked on each edit once the parts were merged, though no lock was shown as mesh
     modes = _wrangle(sub, "display_modes", VEX_DISPLAY_MODES, DETAIL, [shown])
     nothing_shown = _node(sub, "add", "nothing_shown")
-    mesh_col0 = _wrangle(sub, "mesh_color", VEX_MESH_COLOR, PRIM, [pieces, shown])
+    focus = _wrangle(sub, "focus", VEX_FOCUS, DETAIL, [nothing_shown])
+    mesh_col0 = _wrangle(sub, "mesh_color", VEX_MESH_COLOR + _vex_ghost(2, "i@lock_id", "prim"), PRIM,
+                         [pieces, shown, focus])
     mesh_col = _node(sub, "switch", "mesh_in_use", [nothing_shown, mesh_col0])
     mesh_col.parm("input").setExpression('detail("../display_modes", "any_mesh", 0)')
     guides_vis = _node(sub, "blast", "guides_visible", [shown], group="@shown==0 @disp!=1", grouptype=4)
-    guide_col0 = _wrangle(sub, "guide_color", VEX_COLOR_POINTS, POINT, [guides_vis])
+    guide_col0 = _wrangle(sub, "guide_color", VEX_COLOR_POINTS +
+                          _vex_ghost(1, 'prim(0, "lock_id", pointprims(0, @ptnum)[0])', "point"), POINT,
+                          [guides_vis, focus])
     guide_col = _node(sub, "switch", "guide_in_use", [nothing_shown, guide_col0])
     guide_col.parm("input").setExpression('detail("../display_modes", "any_guide", 0)')
-    hair_col = _wrangle(sub, "hair_color", VEX_HAIR_COLOR, PRIM, [hair, spines])
+    hair_col = _wrangle(sub, "hair_color", VEX_HAIR_COLOR + _vex_ghost(2, "i@lock_id", "prim"), PRIM,
+                        [hair, spines, focus])
     # each lock in its own display (its row's Display, else the node's): mesh, guide and hair side by
     # side in one output, so the parts are merged, not switched on the node's mode
     disp = _node(sub, "merge", "display", [mesh_col, guide_col, hair_col])
@@ -1173,7 +1204,10 @@ def build_network(sub) -> None:
     packed = _node(sub, "python", "hair_packed", [end, keys])
     packed.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_hair_packed(hou.pwd())\n")
-    packed_col = _wrangle(sub, "hair_packed_color", VEX_HAIR_COLOR, PRIM, [packed, spines])
+    # packed prims carry their colour inside (cook_hair_packed, see-through ones too); this colours the
+    # locks drawn as strands
+    packed_col = _wrangle(sub, "hair_packed_color", VEX_HAIR_COLOR + _vex_ghost(2, "i@lock_id", "prim"),
+                          PRIM, [packed, spines, focus])
     disp_fast = _node(sub, "merge", "display_fast", [mesh_col, guide_col, packed_col])
     section("Display")
 
@@ -1372,6 +1406,12 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     strands = hou.StringParmTemplate("strand_ids", "Locks drawn as strands", 1)
     strands.hide(True)
     ptg.append(strands)
+    focus = hou.StringParmTemplate("focus_ids", "Locks in focus (the others see-through)", 1)
+    focus.hide(True)
+    ptg.append(focus)
+    drag_f = hou.FloatParmTemplate("drag_factor", "Strand fraction of dragged locks", 1, default_value=(1.0,))
+    drag_f.hide(True)
+    ptg.append(drag_f)
     cook_all = hou.ToggleParmTemplate("cook_all", "Cook every lock", default_value=False)
     cook_all.hide(True)
     ptg.append(cook_all)
