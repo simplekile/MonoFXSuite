@@ -440,6 +440,10 @@ class _StatusDelegate(QStyledItemDelegate):
                 parts.append((badge, STATUS_TEXT[badge]))
         if row.get("display"):
             parts.append((SHORT_DISPLAY.get(row["display"], row["display"]), TEXT_LABEL))
+        if row.get("root_flip"):                 # per-lock choices: neutral words, not status colours
+            parts.append(("flipped", TEXT_LABEL))
+        if row.get("excluded"):
+            parts.append(("no hair", TEXT_LABEL))
         for text, color in parts:
             w = metrics.horizontalAdvance(text)
             c = QColor(color)
@@ -1052,11 +1056,10 @@ class GroomingUI(QWidget):
         name = row["name"]
         if kind in (SEL_DEFAULTS, ORPHANS_ROW, SEL_GROUP) and row.get("meta"):
             item.setToolTip(COL_NAME, row["meta"])
-        if kind == SEL_LOCKS:                      # the per-lock choices show on the row, quietly
-            notes = (["no hair"] if row.get("excluded") else []) + (["root flipped"] if row.get("root_flip") else [])
+        if kind == SEL_LOCKS:                      # the per-lock choices: words in the status column
+            notes = (["no hair"] if row.get("excluded") else []) + (["root at the other end"] if row.get("root_flip") else [])
             if notes:
-                name = f"{name}  ·  {', '.join(notes)}"
-                item.setToolTip(COL_NAME, "Right click to change: " + ", ".join(notes))
+                item.setToolTip(COL_NAME, ", ".join(notes).capitalize() + ". Right click to change")
             if row.get("excluded"):
                 row["dimmed"] = True
                 item.setData(COL_NAME, ROLE_ROW, row)

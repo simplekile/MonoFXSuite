@@ -189,7 +189,14 @@
   and mesh stay) are in the model, kept through re-Detect (matching uses the measured root, SPINES_RAW),
   set by `set_root_flip` / `set_excluded` (one undo step, marks regions stale; Chia vùng skips excluded
   locks). A flip reverses the spine after `assign_locks` (`spine_flip`); the surface cloud stays on the
-  unflipped spine, so `fit_to_lock` reads it at 1 - u and the other thickness side.
+  unflipped spine, so `fit_to_lock` reads it at 1 - u and the other thickness side. In the panel: the
+  lock row's right-click menu ("Root at the other end", "Leave out of the hair", several locks at once);
+  the row says "flipped" / "no hair" in its status column (neutral colour, the name is never shortened)
+  and an excluded lock is dimmed.
+- Every panel edit refreshes `lock_infos`; it reads the scalp areas with bulk calls
+  (`primIntListAttribValues`, `primFloatAttribValues`): one `attribValue` per scalp prim (24k on Helen)
+  made each edit cost 2 s on top of the cook. GUI Helen, hair full: hide / show a group 0.3-0.7 s,
+  isolate 0.2 s, root flip 0.8 s, exclude 0.6 s, one lock's density 2.7 s (0.85 s in hython).
 - Test scripts reload the suite's HDA with `force_use_assets=True` after loading a scene: a hip names
   the library it was saved with (another session's worktree), and Houdini prefers the newest file.
 - Lock ids are never reused (`GroomData.id_high`): frozen regions and old publishes may still name them.
