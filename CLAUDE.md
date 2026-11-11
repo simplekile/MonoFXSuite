@@ -216,7 +216,10 @@
     others get `GHOST_TINT` and `GHOST_ALPHA`: a copy per lock inside its packed prim (cached, like the
     colour), `_vex_ghost` on the mesh, guide and unpacked strands. The viewport draws Alpha inside
     packed geometry only (t35: Alpha on unpacked curves or on the packed prim is ignored) and adds it up
-    over the thousands of strands in a lock: 0.12 read as opaque, 0.04 as x-ray. Ghosts in front of
+    over the thousands of strands in a lock. The user found 0.04-0.12 too see-through (t40): the strength is
+    the hidden parm `xray_opacity` (`set_xray_opacity`, undo off, in the ghost copy's cache key), set by the
+    panel from the artist's choice (`config.XRAY_LEVELS` Light 0.08 / Medium 0.15 default / Strong 0.25 /
+    Solid 0.4, saved in the panel prefs as `xray`). Ghosts in front of
     the lock still cover it (they write depth). set_focus clears this node's viewport selection, so a
     pick in the viewport becomes the panel's selection and focus. A focus change: ~0.01 s, the first
     0.03 s. Only drawn locks take focus (`controller._drawn`): a selection hidden by its eye or outside
@@ -360,13 +363,14 @@
   and bars `PANE`, settings on the window colour); one accent (Publish, selection, drop target), status
   colours only for unsure / new / regions out of date / errors. Sizes go through `ui.Sz`: Houdini's UI scale
   (`hou.ui.scaledSize`) x the panel's own UI size (top bar, `%APPDATA%/MonoFXSuite/grooming_prefs.json`);
-  type roles 22/16/16/15/14/13 px at 1. Style rules are prefixed `QWidget#GroomingWindow` (Houdini's own
+  type roles 22/16/16/15/14/13 px at 1. Font sizes Small 0.8 / Medium 0.9 (default: the user's old Small) /
+  Large 1.0 / Larger / Largest / Huge, pref `font_size`; an old `ui_size` moves by value (`_UI_SIZE_RENAMED`). Style rules are prefixed `QWidget#GroomingWindow` (Houdini's own
   sheet wins over a bare `QLabel[role]`), and the tree's rows, branches and selection have opaque colours:
   Houdini's style paints item views grey under transparent ones. A setting is one row (name, slider, value,
   source as plain text, Reset only when set at this level); several locks that differ show "mixed"; a
   drag writes once on release (one undo step). Sliders and combos ignore the wheel, so it scrolls the panel.
   Measured values in cm (`adapter.unit_cm(node)` when there, else the node's `unit_cm` parm).
-- Panel layout (2026-11-12 redesign): top bar (node, asset, UI size `Aa`, Dock), then a view bar (Display,
+- Panel layout (2026-11-12 redesign): top bar (node, asset, Settings ⚙: Font size and X-ray, saved per user; Dock), then a view bar (Display,
   Color by, Deform, Isolate: viewing never sits next to an action that writes), the tree (filter, a Confirm
   all line while locks are new / to check, banner, rows), the settings (title, subtitle with what the
   viewport does with the selection, toggles Strands / Isolate / Hidden / Flip root / Exclude in a `_WrapRow`

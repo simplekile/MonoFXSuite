@@ -48,6 +48,7 @@ PARM_DRAG_PREVIEW = "preview_ids"    # hidden: locks a slider is dragging, grown
 PARM_STRANDS = "strand_ids"          # hidden: locks drawn as strands, not packed (Enter / double-click)
 PARM_FOCUS = "focus_ids"             # hidden: the panel's selection; the other locks are drawn see-through
 PARM_DRAG_FACTOR = "drag_factor"     # hidden: strand fraction of the locks a slider drags (1 = real count)
+PARM_XRAY = "xray_opacity"           # hidden: alpha per strand of the locks out of focus (the panel's X-ray)
 PARM_COOK_ALL = "cook_all"           # hidden: 1 while publishing: every lock, hidden or isolated out
 PARM_DISPLAY_EFF = "display_eff"     # hidden expression: the mode drawn (Display, or While playing)
 PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playbar callback, undo off)
@@ -56,7 +57,7 @@ PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playb
 # already carries): left out of the cache key, so changing them recooks no lock.
 _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
                    PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_STRANDS,
-                   PARM_FOCUS, PARM_DRAG_FACTOR, PARM_COOK_ALL,
+                   PARM_FOCUS, PARM_DRAG_FACTOR, PARM_COOK_ALL, PARM_XRAY,
                    "shot_deform", "deform_active", "anim_wired",   # per lock: do_capture; deform_radius stays
                    PARM_DISPLAY_EFF, PARM_PLAYING, "play_display",
                    "rest_frame", "detect", "split_regions", "publish"}
@@ -661,6 +662,21 @@ def set_drag_preview(node, lock_ids: Sequence[int] | None, factor: float = 1.0) 
             f.set(float(factor))
 
 
+def xray_opacity(node) -> float:
+    """Alpha per strand of the locks out of focus (config.GHOST_ALPHA on an HDA without the parm)."""
+    p = node.parm(PARM_XRAY)
+    return float(p.eval()) if p is not None else config.GHOST_ALPHA
+
+
+def set_xray_opacity(node, alpha: float) -> None:
+    """The panel's X-ray strength: a view choice, no undo step, no lock regrows (a ghost copy per lock and
+    alpha is made once and kept)."""
+    p = node.parm(PARM_XRAY)
+    if p is not None and abs(p.eval() - float(alpha)) > 1e-6:
+        with hou.undos.disabler():
+            p.set(float(alpha))
+
+
 def set_focus(node, lock_ids: Sequence[int] | None) -> None:
     """The panel's selection: those locks keep their colour, the others are drawn see-through and grey
     (None: every lock in its colour). It replaces Houdini's selection highlight, which painted the
@@ -1209,6 +1225,7 @@ def cook_hair_packed(sop) -> None:
     sid = sop.parent().sessionId()
     strands = set(strand_ids(sop.parent()))
     focus = set(focus_ids(sop.parent()))
+    alpha = round(xray_opacity(sop.parent()), 4)
     empty = hou.Geometry().freeze(read_only=True) if strands else None
     unpacked = []
     for lid, name, g, sp in _cached_hair(sop, with_prim=True):
@@ -1231,7 +1248,7 @@ def cook_hair_packed(sop) -> None:
             unpacked.append(coloured)
         elif focus and lid not in focus:
             # out of focus: see-through grey, a copy made once per colour and kept like the coloured one
-            gkey = key + "|ghost"
+            gkey = f"{key}|ghost|{alpha}"
             ghost = cache.get(sid, lid, mode, gkey)
             if ghost is None:
                 m = config.GHOST_MIX
@@ -1242,7 +1259,7 @@ def cook_hair_packed(sop) -> None:
                 tinted.addAttrib(hou.attribType.Prim, "Alpha", 1.0)
                 n = len(tinted.iterPrims())
                 tinted.setPrimFloatAttribValues("Cd", gcd * n)
-                tinted.setPrimFloatAttribValues("Alpha", (config.GHOST_ALPHA,) * n)
+                tinted.setPrimFloatAttribValues("Alpha", (alpha,) * n)
                 ghost = tinted.freeze(read_only=True)
                 cache.put(sid, lid, mode, gkey, ghost)
             prim.setEmbeddedGeometry(ghost)
@@ -1266,6 +1283,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "cook_display", "set_focus", "focus_ids", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]

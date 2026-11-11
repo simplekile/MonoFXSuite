@@ -916,10 +916,10 @@ int fo[] = detail(%(i)d, "focus");
 if (len(fo) > 0 && find(fo, %(lid)s) < 0) {
     v@Cd = lerp(v@Cd, %(tint)s, %(mix)s);
     add%(cls)sattrib(0, "Alpha", 1.0);
-    set%(cls)sattrib(0, "Alpha", @%(num)s, %(alpha)s);
+    set%(cls)sattrib(0, "Alpha", @%(num)s, chf("../xray_opacity"));
 }
 """ % {"i": focus_input, "lid": lock_id, "tint": tint, "mix": config.GHOST_MIX, "cls": cls,
-       "num": "primnum" if cls == "prim" else "ptnum", "alpha": config.GHOST_ALPHA}
+       "num": "primnum" if cls == "prim" else "ptnum"}
 
 
 VEX_DISPLAY_MODES = """// which displays the shown locks use (disp: 0 mesh, 1 guide, 2 preview, 3 hair)
@@ -1410,6 +1410,10 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     focus = hou.StringParmTemplate("focus_ids", "Locks in focus (the others see-through)", 1)
     focus.hide(True)
     ptg.append(focus)
+    xray = hou.FloatParmTemplate("xray_opacity", "X-ray opacity per strand of locks out of focus", 1,
+                                 default_value=(config.GHOST_ALPHA,), min=0.0, max=1.0)
+    xray.hide(True)
+    ptg.append(xray)
     drag_f = hou.FloatParmTemplate("drag_factor", "Strand fraction of dragged locks", 1, default_value=(1.0,))
     drag_f.hide(True)
     ptg.append(drag_f)

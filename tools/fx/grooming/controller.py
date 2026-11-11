@@ -175,6 +175,17 @@ class GroomController:
         if hasattr(self.view, "set_deform_state"):
             self.view.set_deform_state(*self.deform_state())
         self.refresh_publish_version()
+        level = getattr(self.view, "xray_level", None)
+        if level is not None:
+            self.set_xray(level())
+
+    def set_xray(self, level: str) -> bool:
+        """X-ray strength of the locks out of focus (the artist's own choice, kept by the panel)."""
+        call = getattr(self.adapter, "set_xray_opacity", None)
+        alpha = config.XRAY_LEVELS.get(level)
+        if call is None or alpha is None or self.node is None:
+            return False
+        return self._run("X-ray", lambda: call(self.node, alpha) or True) is not None
 
     def data(self) -> model.GroomData:
         return self.adapter.read_data(self.node)
@@ -1374,6 +1385,7 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("redo", lambda: controller.undo(redo=True))
     ui.on("strands", controller.toggle_strands)
     ui.on("confirm_all", controller.confirm_all)
+    ui.on("set_xray", controller.set_xray)
     ui.on("set_strands_of", controller.set_strands_of)
     ui.on("set_root_flip", controller.set_root_flip)
     ui.on("set_shot_deform", controller.set_shot_deform)

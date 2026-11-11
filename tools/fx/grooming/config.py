@@ -36,7 +36,11 @@ STRANDS_MAX = 20              # locks drawn as strands at most (Enter / double-c
 DRAG_STRAND_BUDGET = 10_000
 DRAG_SEGMENTS = 12
 # Focus (the panel's selection): the selected locks keep their colour, the others are drawn see-through
-GHOST_ALPHA = 0.04            # per strand: a lock is thousands of strands deep, 0.12 added up to opaque
+GHOST_ALPHA = 0.15            # per strand: a lock is thousands of strands deep, so it adds up; 0.04-0.12
+                              # read as too faint to place a lock against its neighbours (the user, t40)
+# X-ray strength the artist picks in the view bar (alpha per strand of the locks out of focus)
+XRAY_LEVELS: dict[str, float] = {"Light": 0.08, "Medium": 0.15, "Strong": 0.25, "Solid": 0.4}
+XRAY_DEFAULT = "Medium"
 GHOST_TINT = (0.30, 0.31, 0.35)
 GHOST_MIX = 0.5               # how far the others' colour goes to GHOST_TINT
 CLUMP_ID_STRIDE = 100_000      # clump_id = lock_id x this + hairclump's clump: clumped per lock, unique per groom

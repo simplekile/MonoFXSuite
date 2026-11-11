@@ -1248,16 +1248,33 @@ def test_panel_filter_review_line_narrow_layout_and_fading_message(app, prefs) -
 
 def test_ui_size_scales_fonts_and_is_saved(app, prefs) -> None:
     adapter, ui, c = _panel(app)
-    normal = ui.z.px(15)
-    ui.set_ui_size("Larger")
-    assert ui.z.px(15) == round(15 * 1.3) > normal
-    assert prefs.load_prefs()["ui_size"] == "Larger"
+    assert ui._ui_size == "Medium" and abs(ui.z.scale - 0.9) < 1e-9     # the old Small is the default
+    medium = ui.z.px(15)
+    ui.set_ui_size("Largest")
+    assert ui.z.px(15) == round(15 * 1.3) > medium
+    assert prefs.load_prefs()["font_size"] == "Largest"
     assert f"font-size: {ui.z.px(15)}px" in ui.styleSheet()
     ui.close()
     from tools.fx.grooming.ui import GroomingUI
     again = GroomingUI()
-    assert again._ui_size == "Larger"
+    assert again._ui_size == "Largest"
     again.close()
+    prefs.save_prefs({"ui_size": "Small"})                            # saved under the old names
+    old = GroomingUI()
+    assert old._ui_size == "Medium"
+    old.close()
+
+
+def test_settings_menu_holds_font_size_and_xray(app, prefs) -> None:
+    adapter, ui, c = _panel(app)
+    sent = []
+    adapter.set_xray_opacity = lambda node, alpha: sent.append(alpha)
+    xray = ui._settings_menus["xray"]
+    next(a for a in xray.actions() if a.text() == "Strong").trigger()
+    assert sent[-1] == ctl.config.XRAY_LEVELS["Strong"] and prefs.load_prefs()["xray"] == "Strong"
+    next(a for a in ui._settings_menus["font"].actions() if a.text() == "Large").trigger()
+    assert ui._ui_size == "Large"
+    ui.close()
 
 
 def test_tree_drop_places_map_to_the_controller(app, prefs) -> None:

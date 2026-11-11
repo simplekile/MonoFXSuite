@@ -2,7 +2,7 @@
 MONO Grooming panel — one window, floating or docked in a Houdini pane.
 
 Zones, each on its own surface with a line between them:
-  top bar      the node, its asset, UI size (Aa), Dock; under it the view bar: what the viewport draws
+  top bar      the node, its asset, Settings (font size, X-ray strength), Dock; under it the view bar: what the viewport draws
                (Display, Color by, Deform, Isolate). Viewing never sits next to an action that writes.
   left         the layer tree (All locks › group › lock, Missing locks): swatch, name, status, packed /
                strands, eye (the two icons show on hover, on the selection, or when not the default);
@@ -112,6 +112,13 @@ LUCIDE.update({
     "badge-check": '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>',
     "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     "play": '<polygon points="6 3 20 12 6 21 6 3"/>',
+    "settings": '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0'
+                ' 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0'
+                ' 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2'
+                ' 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2'
+                ' 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2'
+                ' 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>'
+                '<circle cx="12" cy="12" r="3"/>',
     "move-3d": '<path d="M5 3v16h16"/><path d="m5 19 6-6"/><path d="m2 6 3-3 3 3"/><path d="m18 16 3 3-3 3"/>',
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     "flip-vertical": '<path d="M21 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v3"/><path d="M21 16v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3"/>'
@@ -171,8 +178,14 @@ SLIDER_STEPS = 1000
 # ---------------------------------------------------------------------------
 # Size: Houdini's UI scale x the panel's own size
 # ---------------------------------------------------------------------------
-UI_SIZES: dict[str, float] = {"Small": 0.9, "Normal": 1.0, "Large": 1.15, "Larger": 1.3, "Largest": 1.5}
-DEFAULT_UI_SIZE = "Normal"
+# Font size of the panel on top of Houdini's own scale. Medium (the default) is what was called Small:
+# the user found Normal too big; prefs saved under the old names move by value (_UI_SIZE_RENAMED).
+UI_SIZES: dict[str, float] = {"Small": 0.8, "Medium": 0.9, "Large": 1.0, "Larger": 1.15, "Largest": 1.3,
+                              "Huge": 1.5}
+DEFAULT_UI_SIZE = "Medium"
+_UI_SIZE_RENAMED = {"Small": "Medium", "Normal": "Large", "Large": "Larger", "Larger": "Largest",
+                    "Largest": "Huge"}
+PREF_UI_SIZE = "font_size"   # the old "ui_size" held the old names
 PREFS_PATH = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), "MonoFXSuite",
                           "grooming_prefs.json")
 
@@ -1049,7 +1062,8 @@ class GroomingUI(QWidget):
         self._props: dict = {}
         self._timer: QTimer | None = None
         self._icons: list[tuple[Any, str, str, int]] = []  # (button, icon, colour, px at size 1)
-        self._ui_size = load_prefs().get("ui_size", DEFAULT_UI_SIZE)
+        prefs = load_prefs()
+        self._ui_size = prefs.get(PREF_UI_SIZE) or _UI_SIZE_RENAMED.get(prefs.get("ui_size", ""), DEFAULT_UI_SIZE)
         if self._ui_size not in UI_SIZES:
             self._ui_size = DEFAULT_UI_SIZE
         self.z = Sz(houdini_scale() * UI_SIZES[self._ui_size])
@@ -1127,17 +1141,30 @@ class GroomingUI(QWidget):
         if refresh:
             self._fire("refresh")
 
+    def xray_level(self) -> str:
+        return self._xray_level
+
+    def set_xray_level(self, name: str) -> None:
+        """X-ray strength, saved for this user and sent to the node."""
+        if name not in config.XRAY_LEVELS:
+            return
+        self._xray_level = name
+        prefs = load_prefs()
+        prefs["xray"] = name
+        save_prefs(prefs)
+        self._fire("set_xray", name)
+
     def set_ui_size(self, name: str) -> None:
         """The panel's own UI size (on top of Houdini's scale), saved for this user."""
         if name not in UI_SIZES:
             return
         self._ui_size = name
         prefs = load_prefs()
-        prefs["ui_size"] = name
+        prefs[PREF_UI_SIZE] = name
         save_prefs(prefs)
         self.z = Sz(houdini_scale() * UI_SIZES[name])
         self._apply_size()
-        self._size_btn.setToolTip(f"UI size: {name} (on top of Houdini's own scale, saved for you)")
+
 
     def _icon(self, widget, name: str, color: str = TEXT_LABEL, size: int = 16):
         self._icons.append((widget, name, color, size))
@@ -1171,19 +1198,31 @@ class GroomingUI(QWidget):
         self._asset_label = _label("", "meta")
         self._asset_label.setToolTip("Asset mode: the groom of the asset, published to 04_grooming")
         lay.addWidget(self._asset_label)
-        self._size_btn = QToolButton()
-        self._size_btn.setProperty("flat", True)
-        self._size_btn.setToolTip(f"UI size: {self._ui_size} (on top of Houdini's own scale, saved for you)")
-        self._size_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self._icon(self._size_btn, "type")
-        menu = QMenu(self._size_btn)
+        # Settings: the artist's own choices, saved per user (font size, X-ray strength)
+        self._xray_level = load_prefs().get("xray", config.XRAY_DEFAULT)
+        if self._xray_level not in config.XRAY_LEVELS:
+            self._xray_level = config.XRAY_DEFAULT
+        self._settings_btn = QToolButton()
+        self._settings_btn.setProperty("flat", True)
+        self._settings_btn.setToolTip("Settings: font size, X-ray strength (saved for you)")
+        self._settings_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._icon(self._settings_btn, "settings")
+        menu = QMenu(self._settings_btn)
+        fonts = menu.addMenu("Font size")
         for name in UI_SIZES:
-            act = menu.addAction(name)
+            act = fonts.addAction(name)
             act.setCheckable(True)
             act.triggered.connect(lambda _c=False, n=name: self.set_ui_size(n))
-        menu.aboutToShow.connect(lambda: [a.setChecked(a.text() == self._ui_size) for a in menu.actions()])
-        self._size_btn.setMenu(menu)
-        lay.addWidget(self._size_btn)
+        fonts.aboutToShow.connect(lambda: [a.setChecked(a.text() == self._ui_size) for a in fonts.actions()])
+        xray = menu.addMenu("X-ray (locks not being edited)")
+        for name, alpha in config.XRAY_LEVELS.items():
+            act = xray.addAction(name)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _c=False, n=name: self.set_xray_level(n))
+        xray.aboutToShow.connect(lambda: [a.setChecked(a.text() == self._xray_level) for a in xray.actions()])
+        self._settings_btn.setMenu(menu)
+        self._settings_menus = {"font": fonts, "xray": xray}
+        lay.addWidget(self._settings_btn)
         self._dock_btn = QPushButton("  Dock")
         self._icon(self._dock_btn, "panel-right")
         self._dock_btn.setToolTip("Put the panel in a Houdini pane tab (drag the tab out to float it again)")
