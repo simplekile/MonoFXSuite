@@ -170,3 +170,55 @@ Panel and network, after testing the Helen sandbox scene:
   - Measured values are raw scene units (Width 0.0466): show cm.
   - Colours: one accent for the main action (Publish) and the selection; status colours only for
     status; the rest neutral.
+
+## Edge cases for the backlog (proposed answer, or OPEN when it needs the user)
+
+Hide, isolate, partial recook
+- A hidden lock shares scalp prims with a visible one (stacked fringe locks): the visible lock keeps
+  its share of the density; hiding never changes another lock's strand count.
+- Every lock hidden: the node outputs empty geometry with a status note; deform and cache accept it.
+- Group hidden, one of its locks switched on: the group wins, the lock's eye shows "hidden by group"
+  (greyed), its own state is kept for when the group is shown (C4D-style).
+- Isolate is a temporary view: not saved with the hip, not undoable, cleared by Esc or a second
+  click; hidden states underneath stay as they were. Publish while isolated warns like hidden locks.
+- Partial recook means a cache per lock, keyed by its inputs (mesh piece, region, resolved settings,
+  display mode). Editing a group recooks that group's locks; a default edit recooks all; the clump
+  (one hairclump for the whole groom) must work per lock too, or every edit still pays for it.
+- Showing a lock that was never cooked costs one lock's cook, not the groom's.
+- Slider drag: one undo step per drag, the lock recooks on release (or on idle), not on every tick.
+
+Reorder and move (drag and drop)
+- Order in the tree is stored in the groom data and changes nothing in the hair.
+- Moving a lock to another group: its own overrides stay; values it took from the old group now come
+  from the new one, and the panel says which changed. Regions may depend on the group (nearest lock
+  of its group): mark regions out of date, never re-split silently.
+- Dropping on Defaults, on itself, a group into a group (no nesting in v0.1), several locks at once,
+  a drop while a cook runs: refused or queued with a status note, never half applied.
+
+Detect and the hair mesh
+- A lock split into two pieces, two merged into one, a piece renamed, duplicate or missing names:
+  match rules give "unsure" and ask; settings follow the confirmed match.
+- Piece with no thickness (single-sided card), closed tube, open ribbon, very low-res (fixed:
+  measure_samples), very short, very long: all measured; the check covers each kind.
+- Piece touching the scalp at both ends (a loop, hair tied back) or at none (an accessory, a floating
+  strand): OPEN: root at the nearer end with a warning, or excluded from hair?
+- Scalp without UV, scaled or moved objects, scenes not in metres (`unit_cm`): detect warns.
+- Animated hair mesh with another point count or order than the rest mesh: refuse the deform with a
+  message, never deform with the wrong points.
+
+Publish and caches
+- Publish always writes the full hair (not the preview, not the deformed shot pose, hidden and
+  isolated locks included, with the warning), whatever the panel shows.
+- Version already published, scene name without a version, path not writable, disk full: say so in
+  the panel, nothing half written (write to a temp name, rename at the end).
+- Several characters in a shot: one node per character; cache paths carry the character (and an
+  instance number when the same asset appears twice), so two Helens never write one file. Caching
+  one, several or all; one failing does not stop or corrupt the others; frame ranges per character.
+  OPEN: same asset twice in a shot with different grooms (variants)?
+
+Panel
+- Long names, 200+ locks, a narrow docked panel, Houdini UI scale 0.75-2 plus the panel's own size.
+- Node deleted, HDA missing, the hip opened read-only, two panels on one node: the panel shows the
+  state and disables what cannot work; nothing raises into a Python error box.
+- Several locks selected with different values: the field shows "mixed"; an edit sets all of them.
+- Lock colours (colour by lock) must not reuse the status colours (new, edited, stale, error).
