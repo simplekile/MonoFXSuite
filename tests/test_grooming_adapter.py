@@ -149,6 +149,16 @@ def test_lock_display_attribs_resolve_settings_and_visibility():
     assert out["root_flip"] == [0, 0, 0] and out["excluded"] == [0, 0, 0]
 
 
+def test_lock_display_attribs_row_display_lock_wins_over_group():
+    # each row's own Display reaches the HDA (it was stored but never read): lock, else group, else -1
+    data = GroomData(groups=[Group(id="g", name="G", display="guide"), Group(id="h", name="H")],
+                     locks=[Lock(id=1, name="a", group="g"), Lock(id=2, name="b", group="g", display="mesh"),
+                            Lock(id=3, name="c", group="h"), Lock(id=4, name="d", group="h", display="hair_preview")])
+    out = ga.lock_display_attribs(data, [1, 2, 3, 4, -1])
+    modes = list(config.DISPLAY_MODES)
+    assert out["row_display"] == [modes.index("guide"), modes.index("mesh"), -1, modes.index("hair_preview"), -1]
+
+
 def test_preview_factor_capped_snaps_to_steps_so_small_edits_keep_it():
     # the factor is in every lock's cache key: a 1 % density edit must not change it (no full recook)
     assert ga.preview_factor(1_000_000) == ga.preview_factor(1_010_000)

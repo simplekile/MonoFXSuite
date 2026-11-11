@@ -58,7 +58,7 @@ _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, 
                    "rest_frame", "detect", "split_regions", "publish"}
 # Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
 _KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_match", "cached", "cache_key",
-                     "cache_mode"}
+                     "cache_mode", "disp", "row_display"}   # a lock's display reaches its key as its factor
 _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 CACHE_NET_VERSION = "partial-1"      # bump when the per-lock network changes what it makes
@@ -319,7 +319,8 @@ def lock_display_attribs(data: model.GroomData, lock_ids: Sequence[int]) -> dict
     """Per spine prim (lock id or -1): name, group, colours, visibility and every resolved setting.
     What the in-network "assign" Python SOP writes, kept here so it is testable."""
     out: dict[str, list] = {k: [] for k in ("name", "group", "lock_cd", "group_cd", "visible",
-                                           "lock_match", "root_flip", "excluded", *model.SETTING_KEYS)}
+                                           "lock_match", "root_flip", "excluded", "row_display",
+                                           *model.SETTING_KEYS)}
     for lid in lock_ids:
         lk = data.lock(lid) if lid >= 0 else None
         g = data.group(lk.group) if lk is not None else None
@@ -332,6 +333,9 @@ def lock_display_attribs(data: model.GroomData, lock_ids: Sequence[int]) -> dict
         out["lock_match"].append(lk.match if lk else "undetected")
         out["root_flip"].append(int(lk is not None and lk.root_flip))
         out["excluded"].append(int(lk is not None and lk.excluded))
+        # the row's own Display (lock, else its group), as an index of DISPLAY_MODES; -1 = the node's
+        own = (lk.display if lk is not None else None) or (g.display if g is not None else None)
+        out["row_display"].append(config.DISPLAY_MODES.index(own) if own in config.DISPLAY_MODES else -1)
         for k in model.SETTING_KEYS:
             out[k].append(float(settings[k]))
     return out
@@ -849,7 +853,7 @@ def cook_assign(sop) -> None:
     for key in ("lock_cd", "group_cd"):
         geo.addAttrib(hou.attribType.Prim, key, (0.0, 0.0, 0.0))
         geo.setPrimFloatAttribValues(key, [c for rgb in attrs[key] for c in rgb])
-    for key, default in (("visible", 1), ("root_flip", 0), ("excluded", 0)):
+    for key, default in (("visible", 1), ("root_flip", 0), ("excluded", 0), ("row_display", -1)):
         geo.addAttrib(hou.attribType.Prim, key, default)
         geo.setPrimIntAttribValues(key, attrs[key])
     for key in model.SETTING_KEYS:
@@ -949,11 +953,14 @@ def cook_lock_keys(sop) -> None:
     mode = str(top.evalParm(PARM_DISPLAY_EFF))
     factor = preview.attribValue("factor") if preview.findGlobalAttrib("factor") else 1.0
     light = preview.attribValue("preview_factor") if preview.findGlobalAttrib("preview_factor") else factor
+    publishing = bool(top.evalParm(PARM_COOK_ALL))
     dragged = set(parse_isolate(top.evalParm(PARM_DRAG_PREVIEW))) \
         if top.parm(PARM_DRAG_PREVIEW) is not None and not top.evalParm(PARM_COOK_ALL) else set()
     rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
     sk = surface.floatListAttribValue("surface_keys") if surface.findGlobalAttrib("surface_keys") else ()
-    shared = lock_key([CACHE_NET_VERSION, mode, factor, _definition_stamp(top), _key_parms(top)])
+    # the mode is per lock (its `disp`, lock_shown): only its strand factor reaches the hair, so the
+    # node's mode is not in the key and a lock keeps its cache when the node's Display changes
+    shared = lock_key([CACHE_NET_VERSION, _definition_stamp(top), _key_parms(top)])
 
     pattrs = [a for a in geo.pointAttribs() if a.dataType() == hou.attribData.Float]
     parrays = [np.frombuffer(geo.pointFloatAttribValuesAsString(a.name()), dtype=np.float32).reshape(-1, a.size())
@@ -967,11 +974,23 @@ def cook_lock_keys(sop) -> None:
         if hou.nodeBySessionId(nid) is None:
             cache.drop_node(nid)
     sid = top.sessionId()
-    keys, flags, factors = [], [], []
+    has_disp = geo.findPrimAttrib("disp") is not None
+    preview_mode = config.DISPLAY_MODES.index("hair_preview")
+    keys, flags, factors, modes = [], [], [], []
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
-        f = min(light, factor) if lid in dragged else factor   # hairgen's density x this (strand_factor)
+        disp = prim.intAttribValue("disp") if has_disp else config.DISPLAY_MODES.index(mode) \
+            if mode in config.DISPLAY_MODES else len(config.DISPLAY_MODES) - 1
+        # hairgen's density x this (strand_factor): the preview fraction for a lock shown as preview or
+        # being dragged, else full; publishing is always full
+        f = light if disp == preview_mode else 1.0
+        if lid in dragged:
+            f = min(f, light)
+        if publishing:
+            f = 1.0
         factors.append(f)
+        lock_mode = "hair" if f >= 1.0 else "hair_preview"
+        modes.append(lock_mode)
         piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
         idx = [p.number() for p in prim.points()]
         parts: list[Any] = [shared, [(a.name(), prim.attribValue(a)) for a in rattrs]]
@@ -981,9 +1000,9 @@ def cook_lock_keys(sop) -> None:
         parts.append(f)
         key = lock_key(parts)
         keys.append(key)
-        flags.append(int(cache.has(sid, lid, mode, key)))
+        flags.append(int(cache.has(sid, lid, lock_mode, key)))
     geo.setPrimStringAttribValues("cache_key", keys)
-    geo.setPrimStringAttribValues("cache_mode", [mode] * len(keys))
+    geo.setPrimStringAttribValues("cache_mode", modes)
     geo.setPrimFloatAttribValues("strand_factor", factors)
     geo.setPrimIntAttribValues("cached", flags)
 
@@ -1002,8 +1021,9 @@ def cook_cache_store(sop) -> None:
     geo.clear()
 
 
-def _cached_hair(sop):
-    """(lock id, name, frozen strands) of every lock that grows, from the cache; input 1 = keyed spines."""
+def _cached_hair(sop, with_prim: bool = False):
+    """(lock id, name, frozen strands) of every lock that grows, from the cache; input 1 = keyed spines.
+    with_prim: (lock id, name, frozen strands, its keyed spine prim)."""
     keyed = sop.inputs()[1].geometry()
     cache = hair_cache()
     sid = sop.parent().sessionId()
@@ -1018,7 +1038,8 @@ def _cached_hair(sop):
         if g is None:
             missing += 1
         else:
-            yield lid, (p.stringAttribValue(config.ATTR_NAME) if named else ""), g
+            name = p.stringAttribValue(config.ATTR_NAME) if named else ""
+            yield (lid, name, g, p) if with_prim else (lid, name, g)
     if missing:
         sop.addWarning(f"{missing} lọn chưa có tóc trong cache: đổi Display rồi đổi lại để nấu lại")
 
@@ -1041,9 +1062,25 @@ def cook_hair_packed(sop) -> None:
     geo.clear()
     lid_attr = geo.addAttrib(hou.attribType.Prim, config.ATTR_LOCK_ID, -1)
     name_attr = geo.addAttrib(hou.attribType.Prim, config.ATTR_NAME, "")
-    for lid, name, g in _cached_hair(sop):
+    by_group = int(sop.parent().evalParm("color_by")) == 1
+    cache = hair_cache()
+    sid = sop.parent().sessionId()
+    for lid, name, g, sp in _cached_hair(sop, with_prim=True):
+        # The viewport does not tint embedded geometry with the packed prim's Cd (it drew Helen white):
+        # the colour goes inside, on a copy of the lock's strands made once per colour and kept in the
+        # cache, so a colour change copies, an edit copies one lock, and nothing regrows.
+        cd = tuple(round(c, 4) for c in sp.attribValue("group_cd" if by_group else "lock_cd"))
+        mode, key = sp.stringAttribValue("cache_mode") + "#cd", f"{sp.stringAttribValue('cache_key')}|{cd}"
+        coloured = cache.get(sid, lid, mode, key)
+        if coloured is None:
+            tinted = hou.Geometry()
+            tinted.merge(g)
+            tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
+            tinted.setPrimFloatAttribValues("Cd", cd * len(tinted.iterPrims()))
+            coloured = tinted.freeze(read_only=True)
+            cache.put(sid, lid, mode, key, coloured)
         prim = geo.createPacked("PackedGeometry")
-        prim.setEmbeddedGeometry(g)
+        prim.setEmbeddedGeometry(coloured)
         prim.setAttribValue(lid_attr, lid)
         prim.setAttribValue(name_attr, name)
 

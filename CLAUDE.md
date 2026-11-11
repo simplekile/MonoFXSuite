@@ -209,6 +209,16 @@
     back without undo and writes the final value: one undo step, full hair once. Houdini flashes its
     cook-interrupt button for any cook over ~0.3 s: the "popup" artists saw on every change.
   - GUI Helen, hair full: select 0.025 s, hide / show 0.08 s, a drag tick 0.07-0.09 s, release 0.35 s.
+- Per-lock Display: `assign_locks` writes `row_display` (the lock's own Display, else its group's, -1 =
+  the node's); `lock_shown` turns it into `disp` (lighter while playing, full hair while publishing) and
+  `grows` (only preview and hair grow). `lock_keys` gives each lock its `strand_factor` (preview or
+  full; the node's mode is not in the key, so a lock keeps its cache when the node's Display changes).
+  The display merges mesh, guide and packed hair (switches `mesh_in_use` / `guide_in_use` skip a branch
+  no lock uses: colouring 196 k mesh polygons on every edit doubled the cost). The packed hair carries
+  its colour inside (a copy per lock and colour, in the hair cache): the viewport ignores a packed
+  prim's Cd and drew the groom white.
+- GUI timings swing with machine load (the same profile ran 1.6-1.9x slower with other apps at 60 %
+  CPU): compare against an action whose code did not change (select) before calling a regression.
 - Test scripts reload the suite's HDA with `force_use_assets=True` after loading a scene: a hip names
   the library it was saved with (another session's worktree), and Houdini prefers the newest file.
 - Lock ids are never reused (`GroomData.id_high`): frozen regions and old publishes may still name them.

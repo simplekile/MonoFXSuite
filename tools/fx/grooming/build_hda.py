@@ -356,8 +356,14 @@ int on = i@visible;
 string iso = chs("../isolate_ids");
 if (iso != "") on = find(split(iso), itoa(i@lock_id)) >= 0;
 if (chi("../cook_all")) on = 1;
+// the lock's display: its own (or its group's) Display, else the node's; lighter while playing like
+// the node's (display_eff); full hair while publishing
+int m = i@row_display >= 0 ? i@row_display : chi("../display_eff");
+if (chi("../playing") && chi("../play_display") > 0) m = min(m, chi("../play_display"));
+if (chi("../cook_all")) m = 3;
+i@disp = m;
 i@shown = on;
-i@grows = on && i@excluded == 0;
+i@grows = on && i@excluded == 0 && m >= 2;   // only preview and hair grow strands
 """
 
 VEX_GUIDE_ROOT = """// guide root on the scalp
@@ -892,11 +898,22 @@ if (sp >= 0) {
 v@Cd = c;
 """
 
+VEX_DISPLAY_MODES = """// which displays the shown locks use (disp: 0 mesh, 1 guide, 2 preview, 3 hair)
+int m[] = {0, 0, 0, 0};
+for (int i = 0; i < nprimitives(0); i++) {
+    int d = prim(0, "disp", i), on = prim(0, "shown", i);
+    if (on && d >= 0 && d < 4) m[d] = 1;
+}
+i@any_mesh = m[0];
+i@any_guide = m[1];
+"""
+
 VEX_MESH_COLOR = """// mesh display: lock of the piece from the spines, hidden (and isolated-out) locks removed
 int k = point(0, "piece", primpoint(0, @primnum, 0));
 int sp = findattribval(1, "prim", "piece", k);
 int on = sp >= 0 ? prim(1, "shown", sp) : 1;
-if (on == 0) { removeprim(0, @primnum, 1); return; }
+int m = sp >= 0 ? prim(1, "disp", sp) : chi("../display_eff");
+if (on == 0 || m != 0) { removeprim(0, @primnum, 1); return; }   // only the locks shown as mesh
 i@lock_id = sp >= 0 ? prim(1, "lock_id", sp) : -1;
 vector c = {0.25, 0.25, 0.25};
 if (sp >= 0) c = chi("../color_by") == 0 ? prim(1, "lock_cd", sp) : prim(1, "group_cd", sp);
@@ -1126,12 +1143,21 @@ def build_network(sub) -> None:
     section("Publish")
 
     # ---- display ----
-    mesh_col = _wrangle(sub, "mesh_color", VEX_MESH_COLOR, PRIM, [pieces, shown])
-    guides_vis = _node(sub, "blast", "guides_visible", [shown], group="@shown==0", grouptype=4)
-    guide_col = _wrangle(sub, "guide_color", VEX_COLOR_POINTS, POINT, [guides_vis])
+    # which displays are in use at all: the mesh branch colours every mesh polygon (196 k on Helen) and
+    # cooked on each edit once the parts were merged, though no lock was shown as mesh
+    modes = _wrangle(sub, "display_modes", VEX_DISPLAY_MODES, DETAIL, [shown])
+    nothing_shown = _node(sub, "add", "nothing_shown")
+    mesh_col0 = _wrangle(sub, "mesh_color", VEX_MESH_COLOR, PRIM, [pieces, shown])
+    mesh_col = _node(sub, "switch", "mesh_in_use", [nothing_shown, mesh_col0])
+    mesh_col.parm("input").setExpression('detail("../display_modes", "any_mesh", 0)')
+    guides_vis = _node(sub, "blast", "guides_visible", [shown], group="@shown==0 @disp!=1", grouptype=4)
+    guide_col0 = _wrangle(sub, "guide_color", VEX_COLOR_POINTS, POINT, [guides_vis])
+    guide_col = _node(sub, "switch", "guide_in_use", [nothing_shown, guide_col0])
+    guide_col.parm("input").setExpression('detail("../display_modes", "any_guide", 0)')
     hair_col = _wrangle(sub, "hair_color", VEX_HAIR_COLOR, PRIM, [hair, spines])
-    disp = _node(sub, "switch", "display", [mesh_col, guide_col, hair_col])
-    disp.parm("input").setExpression('min(ch("../display_eff"), 2)')
+    # each lock in its own display (its row's Display, else the node's): mesh, guide and hair side by
+    # side in one output, so the parts are merged, not switched on the node's mode
+    disp = _node(sub, "merge", "display", [mesh_col, guide_col, hair_col])
     # What the viewport shows when there is no shot deform: the hair as one packed prim per lock
     # (cook_hair_packed), coloured per packed prim. An edit or a hide then changes one or no packed prim
     # and the viewport keeps the others; the merged strands above are for publish and the deform only.
@@ -1139,8 +1165,7 @@ def build_network(sub) -> None:
     packed.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_hair_packed(hou.pwd())\n")
     packed_col = _wrangle(sub, "hair_packed_color", VEX_HAIR_COLOR, PRIM, [packed, spines])
-    disp_fast = _node(sub, "switch", "display_fast", [mesh_col, guide_col, packed_col])
-    disp_fast.parm("input").setExpression('min(ch("../display_eff"), 2)')
+    disp_fast = _node(sub, "merge", "display_fast", [mesh_col, guide_col, packed_col])
     section("Display")
 
     # ---- shot deform: the animated hair mesh, from a packed USD import too ----

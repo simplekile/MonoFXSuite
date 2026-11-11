@@ -162,9 +162,9 @@ Panel and network, after testing the Helen sandbox scene:
   between groups, change order.
 - A lock does not yet follow its group's display (hiding a group should hide its locks).
 - A hidden group is drawn dimmed in the panel, its row and every lock inside it.
-- Bug found 2026-11-12: the per-row Display (right click › Display on a lock or group) is stored in
-  `groom_data` but the HDA never reads it: the node's Display mode applies to every lock. Either make
-  the HDA honour it per lock (mixed modes in one output) or remove the menu.
+- Fixed 2026-11-12: the per-row Display (right click › Display on a lock or group) was stored in
+  `groom_data` but never read by the HDA. Each lock now shows in its own mode (lock, else group, else
+  the node's), mesh, guide and hair side by side; publish is always full hair.
 - The release of a slider drag regrows the dragged locks in full once (~0.35 s on Helen), so Houdini's
   cook-interrupt button still flashes once there; the ticks before it no longer do.
 - UI pass for long working days (artist in it for hours, every action quick). Clear separators,
