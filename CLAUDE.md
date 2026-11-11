@@ -378,6 +378,12 @@
   given the column its new width yet. The packed / strands and eye icons are painted by `_IconDelegate`
   (`ROLE_ICON`, `ROLE_QUIET`): the default state (packed, shown by its own eye) only on the hovered or a
   selected row, any other state always. The first Detect marks no lock "new" (every row would say it).
+- Inheritance in the panel: the defaults level is the tree's root group **All locks** (`ALL_LOCKS`), the
+  groups sit inside it (the data still keeps `defaults` apart; only the view nests). A setting's source
+  column names the level an inherited value comes from: the group by its name, All locks, or "tool
+  default" (`model.BUILTIN_DEFAULTS`). On All locks or a group a last column says whether the levels
+  below follow ("all follow") or how many set their own ("2 set own", tooltip names them; narrow: "↓2"),
+  and an edit there says who keeps their own value (`controller._below`).
 - Names as Houdini uses them (checked against SideFX's Hair Generate / Hair Clump pages): Thickness and
   `width` are one strand's, so the lock's cross-section is "Lock width" / "Lock thickness" (settings and
   measured); the scalp is "skin" (Skin area); Clump drives Hair Clump's Blend (tooltip); Guides; Hair /

@@ -811,7 +811,9 @@ def test_panel_smoke(app, prefs) -> None:
     c.set_node(adapter.node)
     ui.show()
     app.processEvents()
-    assert ui._tree.topLevelItemCount() == 4
+    assert ui._tree.topLevelItemCount() == 2             # All locks (holding the groups), Missing locks
+    root = ui._rows[(ctl.SEL_DEFAULTS, "")]
+    assert root.text(0) == "All locks" and root.childCount() == 2 and root.isExpanded()
     # Selecting a lock row in the tree selects it in the viewport and shows its settings
     ui._rows[(ctl.SEL_LOCKS, 2)].setSelected(True)
     assert adapter.selected[-1] == [2]
@@ -885,7 +887,7 @@ def test_rows_show_mixed_reset_only_when_set_here_and_drag_is_one_write(app, pre
     app.processEvents()
     rows = {r.key: r for r in ui._props_widget.findChildren(_SettingRow)}
     assert not rows["clump"].reset.isHidden() and rows["clump"].source.text() == ""
-    assert rows["density"].source.text() == "built-in"
+    assert "Inherited from tool default" in rows["density"].source.toolTip()
     # A drag: many value changes while the handle is down, one write on release
     slider = rows["frizz"].slider
     slider.setSliderDown(True)
@@ -1153,6 +1155,37 @@ def test_properties_say_what_the_viewport_does_with_the_selection(env) -> None:
     overview = dict(view.props["overview"])
     assert overview["Locks"] == "4" and overview["To check"] == "2" and overview["Missing locks"] == "1"
     assert view.props["shortcuts"]
+
+
+def test_source_names_the_level_it_inherits_from(env) -> None:
+    adapter, view, c = env
+    c.select_group("fringe")
+    c.set_value("clump", 0.5)
+    c.select_locks([1])
+    rows = {r["key"]: r for r in view.props["settings"]}
+    assert rows["clump"]["source_name"] == "Fringe"           # the group's name
+    assert rows["density"]["source_name"] == "tool default"
+    c.select(ctl.SEL_DEFAULTS)
+    c.set_value("frizz", 0.1)
+    c.select_locks([1])
+    assert {r["key"]: r for r in view.props["settings"]}["frizz"]["source_name"] == "All locks"
+    assert view.tree[0]["name"] == "All locks" and "edited" in view.tree[0]["badges"]
+
+
+def test_parent_levels_say_whether_the_levels_below_follow(env) -> None:
+    """On All locks or a group each setting says which levels below set their own value: an edit there
+    does not reach them, and the message says so."""
+    adapter, view, c = env
+    c.select(ctl.SEL_DEFAULTS)
+    rows = {r["key"]: r for r in view.props["settings"]}
+    assert rows["clump"]["below"]["locks"] == ["fringe_02"]          # fringe_02 sets its own clump
+    assert rows["density"]["below"] == {"groups": [], "locks": [], "total": 6}
+    c.set_value("clump", 0.4)
+    assert "fringe_02 keep their own" in view.messages[-1][0]
+    c.select_group("back")
+    assert {r["key"]: r for r in view.props["settings"]}["clump"]["below"]["locks"] == []
+    c.select_locks([1])
+    assert view.props["settings"][0]["below"] is None                 # nothing below a lock
 
 
 def test_confirm_all_clears_new_and_to_check(env) -> None:

@@ -4,7 +4,7 @@ MONO Grooming panel — one window, floating or docked in a Houdini pane.
 Zones, each on its own surface with a line between them:
   top bar      the node, its asset, UI size (Aa), Dock; under it the view bar: what the viewport draws
                (Display, Color by, Deform, Isolate). Viewing never sits next to an action that writes.
-  left         the layer tree (Defaults, group › lock, Missing locks): swatch, name, status, packed /
+  left         the layer tree (All locks › group › lock, Missing locks): swatch, name, status, packed /
                strands, eye (the two icons show on hover, on the selection, or when not the default);
                a filter, Confirm all while locks are new or to check; drag to reorder or regroup
   right (main) the selection: title, what the viewport does with it, its actions (Strands, Isolate,
@@ -33,7 +33,7 @@ import sys
 from typing import Any, Callable
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -88,6 +88,7 @@ from tools.fx.grooming.controller import (
     DROP_BELOW,
     DROP_ON,
     ORPHANS_ROW,
+    ALL_LOCKS,
     SEL_DEFAULTS,
     SEL_GROUP,
     SEL_LOCKS,
@@ -141,7 +142,7 @@ STATUS_HELP = {
     "new": "new: Detect locks found this piece of the hair mesh for the first time",
 }
 STATUS_WORD = {"unsure": "check match", "new": "new"}   # the data says "unsure"
-SOURCE_LABELS = {"group": "group", "defaults": "defaults", "builtin": "built-in", "mixed": "mixed"}
+SOURCE_LABELS = {"group": "group", "defaults": "All locks", "builtin": "tool default", "mixed": "mixed"}
 SHORT_DISPLAY = {"mesh": "Mesh", "guide": "Guides", "hair_preview": "Preview", "hair": "Hair"}
 
 # Group colours offered in the swatch menu (no colour dialog: it would be modal)
@@ -910,13 +911,13 @@ class _SettingRow(QWidget):
         own = bool(s["resettable"])
         lay = QHBoxLayout(self)
         lay.setContentsMargins(z.px(4), z.px(5), z.px(2), z.px(5))
-        lay.setSpacing(z.px(10))
+        lay.setSpacing(z.px(6 if compact else 10))
 
         unit = f'&nbsp;<span style="color:{TEXT_META}; font-size:{z.px(13)}px;">{s["unit"]}</span>' \
             if s["unit"] else ""
         name = _label(f'{s["label"]}{unit}', "body")
         name.setTextFormat(Qt.TextFormat.RichText)
-        name.setFixedWidth(z.px(118 if compact else 150))   # compact: a narrow docked panel
+        name.setFixedWidth(z.px(108 if compact else 150))   # compact: a narrow docked panel
         if s.get("tip"):
             name.setToolTip(s["tip"])
         lay.addWidget(name)
@@ -940,11 +941,38 @@ class _SettingRow(QWidget):
         lay.addWidget(self.field)
 
         source = s["source"]
-        self.source = _label("" if own and source != "mixed" else SOURCE_LABELS.get(source, source), "small")
-        self.source.setFixedWidth(z.px(52 if compact else 62))
-        self.source.setToolTip("Where this value comes from: lock › group › defaults › built-in. A value set"
-                               " here shows bold, with Reset")
+        name_of = s.get("source_name") or SOURCE_LABELS.get(source, source)
+        width = z.px(64 if compact else 92)
+        shown = "" if own and source != "mixed" else name_of
+        self.source = _label(QFontMetrics(z.font("small")).elidedText(shown, Qt.TextElideMode.ElideRight, width),
+                             "small")
+        self.source.setFixedWidth(width)
+        self.source.setToolTip(("Inherited from " + name_of + ". " if shown and source != "mixed" else "")
+                               + "Each value comes from the lock, else its group, else All locks, else the"
+                               " tool's own default. A value set here shows bold, with Reset")
         lay.addWidget(self.source)
+
+        # All locks / a group: do the levels below follow this value, or set their own?
+        below = s.get("below")
+        self.below = None
+        if below is not None:
+            own_below = below["groups"] + below["locks"]
+            if own_below:
+                text = f"↓{len(own_below)}" if compact else f"{len(own_below)} set own"
+                parts = ([f"groups: {', '.join(below['groups'])}"] if below["groups"] else []) + \
+                        ([f"locks: {', '.join(below['locks'][:12])}" + (" …" if len(below["locks"]) > 12 else "")]
+                         if below["locks"] else [])
+                tip = (f"{len(own_below)} below set their own value, so a change here does not reach them"
+                       f" ({'; '.join(parts)}). Select them and Reset to follow again")
+                color = WARN
+            else:
+                text = "" if compact else "all follow"
+                tip = f"Every one of the {below['total']} below takes this value (none sets its own)"
+                color = TEXT_LABEL
+            self.below = _label(text, "small", color)
+            self.below.setFixedWidth(z.px(26 if compact else 74))
+            self.below.setToolTip(tip)
+            lay.addWidget(self.below)
 
         self.reset = QToolButton()
         self.reset.setProperty("flat", True)
@@ -1017,6 +1045,7 @@ class GroomingUI(QWidget):
         self._filling = False
         self._rows: dict[tuple, QTreeWidgetItem] = {}
         self._tree_rows: list[dict] = []
+        self._collapsed: set = set()     # rows the user closed (All locks opens unless closed)
         self._props: dict = {}
         self._timer: QTimer | None = None
         self._icons: list[tuple[Any, str, str, int]] = []  # (button, icon, colour, px at size 1)
@@ -1517,19 +1546,27 @@ class GroomingUI(QWidget):
         self._filling = True
         self._tree_rows = rows
         expanded = {key for key, item in self._rows.items() if item.isExpanded()}
+        self._collapsed = {key for key, item in self._rows.items() if not item.isExpanded()}
         first = not self._rows
         scroll = self._tree.verticalScrollBar().value()
         self._tree.clear()
         self._rows = {}
         locks = 0
+        root = None   # All locks: the defaults, and the level every group inherits from, so it holds them
         for row in rows:
             item = self._make_item(row)
-            self._tree.addTopLevelItem(item)
+            if row["kind"] == SEL_DEFAULTS:
+                root = item
+                self._tree.addTopLevelItem(item)
+            elif row["kind"] == SEL_GROUP and root is not None:
+                root.addChild(item)
+            else:
+                self._tree.addTopLevelItem(item)
             for child in row.get("children", []):
                 item.addChild(self._make_item(child, parent=row))
                 locks += child["kind"] == SEL_LOCKS
             key = (row["kind"], row["id"])
-            item.setExpanded(first or key in expanded)
+            item.setExpanded(first or key in expanded or row["kind"] == SEL_DEFAULTS and key not in self._collapsed)
         groups = sum(r["kind"] == SEL_GROUP for r in rows)
         self._count_label.setText(f"{locks} locks · {groups} groups")
         self._apply_filter()
@@ -1545,24 +1582,29 @@ class GroomingUI(QWidget):
         def match(row: dict) -> bool:
             return bool(word(row)) if word else text in row.get("name", "").lower()
 
+        def walk(item) -> bool:
+            """Show or hide the item's children; whether any shows."""
+            row = item.data(COL_NAME, ROLE_ROW) or {}
+            if row.get("kind") in (SEL_LOCKS, SEL_ORPHAN):
+                return match(row)
+            own = row.get("kind") == SEL_GROUP and not word and match(row)
+            shown = False
+            for k in range(item.childCount()):
+                child = item.child(k)
+                hit = True if not text else (own or walk(child))
+                if not text:
+                    walk(child)
+                child.setHidden(not hit)
+                shown = shown or hit
+            if text and shown:
+                item.setExpanded(True)
+            return shown or own
+
         for i in range(self._tree.topLevelItemCount()):
             top = self._tree.topLevelItem(i)
-            row = top.data(COL_NAME, ROLE_ROW) or {}
+            top.setHidden(bool(text) and not walk(top))
             if not text:
-                top.setHidden(False)
-                for k in range(top.childCount()):
-                    top.child(k).setHidden(False)
-                continue
-            own = match(row) and row.get("kind") == SEL_GROUP and not word
-            shown = 0
-            for k in range(top.childCount()):
-                child = top.child(k)
-                hit = own or match(child.data(COL_NAME, ROLE_ROW) or {})
-                child.setHidden(not hit)
-                shown += hit
-            top.setHidden(not (shown or own or (word is None and row.get("kind") == SEL_DEFAULTS and not text)))
-            if shown:
-                top.setExpanded(True)
+                walk(top)
 
     def set_review(self, new: int, to_check: int) -> None:
         """New and to-check locks: one line with Confirm all (none: hidden)."""
@@ -1704,9 +1746,10 @@ class GroomingUI(QWidget):
             head = QHBoxLayout()
             head.addWidget(_label("SETTINGS", "caps"))
             head.addStretch(1)
-            own = {"lock": "this lock", "group": "this group", "defaults": "defaults"}.get(props.get("own", ""), "")
+            own = {"lock": "this lock", "group": "this group", "defaults": ALL_LOCKS}.get(props.get("own", ""), "")
             if own and not self._narrow:   # narrow: the source column's tooltip says it
-                head.addWidget(_label("bold = set here · grey = inherited", "small"))
+                below = "" if props.get("own") == "lock" else " · last column: levels below"
+                head.addWidget(_label(f"bold = set here · grey = inherited{below}", "small"))
             holder = QWidget()
             holder.setLayout(head)
             head.setContentsMargins(z.px(4), 0, 0, z.px(4))

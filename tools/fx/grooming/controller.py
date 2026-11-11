@@ -67,6 +67,10 @@ COLOR_BY_LABELS: dict[str, str] = {"lock": "Lock", "group": "Group"}
 # Match states as the panel words them ("unsure" is the data's word)
 MATCH_LABELS: dict[str, str] = {"unsure": "check match", "new": "new", "ok": "ok"}
 
+# The defaults level is the tree's root group: every group sits inside it
+ALL_LOCKS = "All locks"
+SOURCE_NAMES: dict[str, str] = {"defaults": ALL_LOCKS, "builtin": "tool default", "mixed": "mixed"}
+
 # Keys of the panel, listed while nothing is selected
 SHORTCUTS: tuple[tuple[str, str], ...] = (
     ("I", "Isolate the selection (again: show all)"),
@@ -282,10 +286,12 @@ class GroomController:
         return lock_color(lock.id)
 
     def tree_rows(self, data: model.GroomData) -> list[dict]:
-        """Defaults, then group › lock rows, then Orphans. Locks of a group the data does not list
-        still get a row (named by the group id), so no lock is out of sight."""
-        rows: list[dict] = [{"kind": SEL_DEFAULTS, "id": "", "name": "Defaults", "badges": [],
-                             "meta": "all locks"}]
+        """All locks (the defaults: the view shows the groups inside it), then group › lock rows, then
+        Missing locks. Locks of a group the data does not list still get a row (named by the group id),
+        so no lock is out of sight."""
+        rows: list[dict] = [{"kind": SEL_DEFAULTS, "id": "", "name": ALL_LOCKS, "badges":
+                             ["edited"] if data.defaults else [],
+                             "meta": "Settings every lock takes, unless its group or the lock sets its own"}]
         isolated = set(self.isolated) if self.isolated else None
         strands = set(self.strands or ())
         for gid in self._group_order(data):
@@ -388,12 +394,13 @@ class GroomController:
             value, source, mixed = self._value_and_source(data, key)
             settings.append({
                 "key": key, "label": SETTING_LABELS[key], "unit": SETTING_UNITS.get(key, ""),
-                "value": value, "source": source, "mixed": mixed, "range": SETTING_RANGES[key],
+                "value": value, "source": source, "source_name": self._source_name(data, source),
+                "below": self._below(data, key), "mixed": mixed, "range": SETTING_RANGES[key],
                 "resettable": any(key in lv for lv in levels), "scale": SETTING_SCALE.get(key, 1.0),
                 "tip": SETTING_TIPS.get(key, ""),
             })
         if kind == SEL_DEFAULTS:
-            title, subtitle = "Defaults", f"{len(data.locks)} locks · a group or lock can override each value"
+            title, subtitle = ALL_LOCKS, f"{len(data.locks)} locks · a group or a lock can set its own value"
             infos = list(self._infos.values())
         elif kind == SEL_GROUP:
             g = data.group(ids[0])
@@ -416,6 +423,35 @@ class GroomController:
             subtitle += f" · {state['note']}"
         return {"kind": kind, "title": title, "subtitle": subtitle, "own": own, "state": state,
                 "settings": settings, "measured": self._measured(kind, infos)}
+
+    def _below(self, data: model.GroomData, key: str) -> dict | None:
+        """On All locks or a group: the levels below that set their own *key* (so an edit here does not
+        reach them), or none (every one follows). None for a lock: nothing is below it."""
+        kind, ids = self.selection
+        if kind == SEL_DEFAULTS:
+            groups = [g.name or g.id for g in data.groups if key in g.overrides]
+            locks = [lk.name or f"lock {lk.id}" for lk in data.locks if key in lk.overrides]
+            total = len(data.groups) + len(data.locks)
+        elif kind == SEL_GROUP:
+            groups = []
+            members = [lk for lk in data.locks if lk.group == ids[0]]
+            locks = [lk.name or f"lock {lk.id}" for lk in members if key in lk.overrides]
+            total = len(members)
+        else:
+            return None
+        return {"groups": groups, "locks": locks, "total": total}
+
+    def _source_name(self, data: model.GroomData, source: str) -> str:
+        """Where an inherited value comes from, as the tree names it: the group's name, All locks, or
+        the tool's own default."""
+        if source == "group":
+            kind, ids = self.selection
+            gids = {ids[0]} if kind == SEL_GROUP else {lk.group for lk in (data.lock(i) for i in ids) if lk}
+            if len(gids) == 1:
+                g = data.group(next(iter(gids)))
+                return (g.name if g else next(iter(gids))) or "group"
+            return "groups"
+        return SOURCE_NAMES.get(source, source)
 
     def _state(self, data: model.GroomData, kind: str, ids) -> dict:
         """What the viewport does with the selection, for the properties' action row and its subtitle:
@@ -514,7 +550,7 @@ class GroomController:
     def _selection_name(self, data: model.GroomData) -> str:
         kind, ids = self.selection
         if kind == SEL_DEFAULTS:
-            return "defaults"
+            return ALL_LOCKS
         if kind == SEL_GROUP:
             g = data.group(ids[0])
             return (g.name if g else ids[0]) or "no group"
@@ -619,7 +655,10 @@ class GroomController:
         if ok:
             shown = float(value) * SETTING_SCALE.get(key, 1.0)
             degrees = "°" if key == "twist_add" else ""
-            self.view.set_message(f"{SETTING_LABELS[key]} = {_fmt(shown)}{degrees} on {holder['name']}")
+            below = self._below(self.data(), key)
+            keep = (below["groups"] + below["locks"]) if below else []
+            note = (f" · {_names(keep)} keep their own (Reset there to follow)" if keep else "")
+            self.view.set_message(f"{SETTING_LABELS[key]} = {_fmt(shown)}{degrees} on {holder['name']}{note}")
         return ok
 
     def reset_value(self, key: str) -> bool:
@@ -1081,7 +1120,7 @@ class GroomController:
                 before = None
             elif tkind == SEL_DEFAULTS:
                 if where == DROP_ABOVE:
-                    return "Defaults stay first"
+                    return f"{ALL_LOCKS} stays first"
                 before = order[0] if order else None
             elif tkind == SEL_GROUP:
                 if tid == gid:
@@ -1102,7 +1141,7 @@ class GroomController:
         if tkind is None:
             return "Drop locks into a group"
         if tkind == SEL_DEFAULTS:
-            return "Defaults holds settings, not locks"
+            return f"{ALL_LOCKS} holds the groups: drop the locks into a group"
         if tkind in (SEL_ORPHAN, ORPHANS_ROW):
             return "Missing locks are no longer in the hair mesh: drop into a group"
         if tkind == SEL_GROUP:
