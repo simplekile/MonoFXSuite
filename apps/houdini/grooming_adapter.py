@@ -53,7 +53,7 @@ PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playb
 # already carries): left out of the cache key, so changing them recooks no lock.
 _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
                    PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_COOK_ALL,
-                   "deform_radius",
+                   "shot_deform", "deform_active", "anim_wired",   # per lock: do_capture; deform_radius stays
                    PARM_DISPLAY_EFF, PARM_PLAYING, "play_display",
                    "rest_frame", "detect", "split_regions", "publish"}
 # Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
@@ -611,6 +611,21 @@ def isolate_ids(node) -> list[int]:
     return parse_isolate(node.evalParm(PARM_ISOLATE))
 
 
+def deform_state(node) -> tuple[bool, bool]:
+    """(an animated hair mesh is wired in, Shot deform is on)."""
+    wired = len(node.inputs()) > 2 and node.inputs()[2] is not None
+    p = node.parm("shot_deform")
+    return wired, bool(p.eval()) if p is not None else True
+
+
+def set_shot_deform(node, on: bool) -> None:
+    """Shot deform on / off: a view choice saved with the scene, no undo step."""
+    p = node.parm("shot_deform")
+    if p is not None:
+        with hou.undos.disabler():
+            p.set(int(bool(on)))
+
+
 def set_drag_preview(node, lock_ids: Sequence[int] | None) -> None:
     """While a slider drags: these locks grow at the preview fraction (the rest keep their display), so
     each tick regrows a tenth of their strands. None clears it (the release grows them in full). No undo
@@ -954,6 +969,8 @@ def cook_lock_keys(sop) -> None:
     factor = preview.attribValue("factor") if preview.findGlobalAttrib("factor") else 1.0
     light = preview.attribValue("preview_factor") if preview.findGlobalAttrib("preview_factor") else factor
     publishing = bool(top.evalParm(PARM_COOK_ALL))
+    wired = bool(top.evalParm("anim_wired")) if top.parm("anim_wired") is not None else False
+    deforming = bool(top.evalParm("deform_active")) if top.parm("deform_active") is not None else False
     dragged = set(parse_isolate(top.evalParm(PARM_DRAG_PREVIEW))) \
         if top.parm(PARM_DRAG_PREVIEW) is not None and not top.evalParm(PARM_COOK_ALL) else set()
     rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
@@ -966,7 +983,8 @@ def cook_lock_keys(sop) -> None:
     parrays = [np.frombuffer(geo.pointFloatAttribValuesAsString(a.name()), dtype=np.float32).reshape(-1, a.size())
                for a in pattrs]
     rattrs = sorted((a for a in geo.primAttribs() if a.name() not in _KEY_SKIP_ATTRIBS), key=lambda a: a.name())
-    for name, default in (("cache_key", ""), ("cache_mode", ""), ("cached", 0), ("strand_factor", 1.0)):
+    for name, default in (("cache_key", ""), ("cache_mode", ""), ("cached", 0), ("strand_factor", 1.0),
+                          ("do_capture", 0)):
         if geo.findPrimAttrib(name) is None:
             geo.addAttrib(hou.attribType.Prim, name, default)
     cache = hair_cache()
@@ -976,7 +994,7 @@ def cook_lock_keys(sop) -> None:
     sid = top.sessionId()
     has_disp = geo.findPrimAttrib("disp") is not None
     preview_mode = config.DISPLAY_MODES.index("hair_preview")
-    keys, flags, factors, modes = [], [], [], []
+    keys, flags, factors, modes, captures = [], [], [], [], []
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
         disp = prim.intAttribValue("disp") if has_disp else config.DISPLAY_MODES.index(mode) \
@@ -991,6 +1009,8 @@ def cook_lock_keys(sop) -> None:
         factors.append(f)
         lock_mode = "hair" if f >= 1.0 else "hair_preview"
         modes.append(lock_mode)
+        cap = int(wired and (deforming or f >= 1.0))   # publish (full) reuses these; it drops the capture
+        captures.append(cap)
         piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
         idx = [p.number() for p in prim.points()]
         parts: list[Any] = [shared, [(a.name(), prim.attribValue(a)) for a in rattrs]]
@@ -998,12 +1018,14 @@ def cook_lock_keys(sop) -> None:
         parts.append(tuple(rk[lid * 9:lid * 9 + 9]) if lid >= 0 else ())
         parts.append(tuple(sk[piece * 9:piece * 9 + 9]) if piece >= 0 else ())
         parts.append(f)
+        parts.append(cap)
         key = lock_key(parts)
         keys.append(key)
         flags.append(int(cache.has(sid, lid, lock_mode, key)))
     geo.setPrimStringAttribValues("cache_key", keys)
     geo.setPrimStringAttribValues("cache_mode", modes)
     geo.setPrimFloatAttribValues("strand_factor", factors)
+    geo.setPrimIntAttribValues("do_capture", captures)
     geo.setPrimIntAttribValues("cached", flags)
 
 
@@ -1097,5 +1119,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "set_isolate", "isolate_ids", "set_drag_preview", "set_root_flip", "set_excluded",
+    "set_isolate", "isolate_ids", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "set_excluded",
 ]

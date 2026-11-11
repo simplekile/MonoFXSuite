@@ -1111,7 +1111,15 @@ def build_network(sub) -> None:
     nothing = _node(sub, "add", "no_strands")
     has_region = _node(sub, "switch", "has_region", [nothing, hair_out])
     has_region.parm("input").setExpression('if(nprims("../region_cut") > 0, 1, 0)')
-    store = _node(sub, "python", "cache_store", [has_region, begin])
+    # with the shot deform on, each lock is captured to the rest hair mesh here, once, and kept with its
+    # strands: a capture of all 4 M points (and the merge it waits for) cost 3-9 s on every hide or show
+    lock_capture = _node(sub, "pointdeform", "lock_capture", [has_region, in_hair], mode="capture")
+    lock_capture.parm("radius").setExpression('ch("../deform_radius")')
+    captured = _node(sub, "switch", "captured", [has_region, lock_capture])
+    # per lock (lock_keys): always with Shot deform on; with it off, full-hair locks only, so turning it on
+    # recooks nothing, while a preview lock or a drag tick skips the capture (~0.3 s a lock)
+    captured.parm("input").setExpression('prim("../foreach_begin", 0, "do_capture", 0)')
+    store = _node(sub, "python", "cache_store", [captured, begin])
     store.parm("python").set("from apps.houdini import grooming_adapter\n"
                              "grooming_adapter.cook_cache_store(hou.pwd())\n")
     end = _node(sub, "block_end", "foreach_end", [store], itermethod=1, method=1, useattrib=1,
@@ -1130,7 +1138,7 @@ def build_network(sub) -> None:
     # skinprim / skinprimuv refer to the per-lock region inside the loop, not the scalp: dropped
     pub_clean = _node(sub, "attribdelete", "publish_clean", [hair], primdel="lock_cd group_cd tightness clumpblend fit_s fit_t fit_c0 fit_root "
                       "length_mult frizz clumpid skinprim skinprimuv path visible Cd",
-                      ptdel="Cd tightness skinprim skinprimuv")
+                      ptdel="Cd tightness skinprim skinprimuv pCaptPts pCaptWeights")
     pub = _node(sub, "usdexport", "PUBLISH_USD",[pub_clean])
     pub.parm("lopoutput").setExpression('chs("../publish_path")', language=hou.exprLanguage.Hscript)
     pub.parm("pathprefix").set("/groom")
@@ -1183,14 +1191,20 @@ def build_network(sub) -> None:
     pick = _node(sub, "switch", "anim_packed", [in_anim, polys])
     pick.parm("input").setExpression('detail("../anim_kind", "packed", 0)')
     anim_hair = _wrangle(sub, "ANIM_HAIR", VEX_ANIM_CHECK, DETAIL, [pick, in_hair])
-    # capture once at rest (inputs 1-2 are time independent), then only the deform runs per frame
-    capture = _node(sub, "pointdeform", "deform_capture", [disp, in_hair], mode="capture")
-    deform = _node(sub, "pointdeform", "deform", [capture, in_hair, anim_hair], mode="deform")
-    for pd in (capture, deform):
-        pd.parm("radius").setExpression('ch("../deform_radius")')
-    use_deform = _node(sub, "switch", "use_deform", [disp_fast, deform])
-    use_deform.parm("input").setExpression(
-        'if(strcmp(opinputpath("..", 2), "") == 0, 0, detail("../ANIM_HAIR", "deform_ok", 0))')
+    # Hair strands come captured from the cache (lock_capture); only the mesh and guide parts are captured
+    # here (small, and only when some lock shows them). Then only the deform runs per frame and per edit.
+    mesh_guide = _node(sub, "merge", "mesh_guide", [mesh_col, guide_col])
+    capture = _node(sub, "pointdeform", "deform_capture", [mesh_guide, in_hair], mode="capture")
+    capture.parm("radius").setExpression('ch("../deform_radius")')
+    to_deform = _node(sub, "merge", "to_deform", [capture, hair_col])
+    deform = _node(sub, "pointdeform", "deform", [to_deform, in_hair, anim_hair], mode="deform")
+    deform.parm("radius").setExpression('ch("../deform_radius")')
+    # two switches: an hscript if() evaluates both sides, so one expression read ANIM_HAIR (unpacking the
+    # anim USD) on every frame even with Shot deform off
+    deform_ok = _node(sub, "switch", "deform_ok", [disp_fast, deform])
+    deform_ok.parm("input").setExpression('detail("../ANIM_HAIR", "deform_ok", 0)')
+    use_deform = _node(sub, "switch", "use_deform", [disp_fast, deform_ok])
+    use_deform.parm("input").setExpression('ch("../deform_active")')
     out = _node(sub, "null", "OUT", [use_deform])
     output = _node(sub, "output", "output0", [out])
     output.setDisplayFlag(True)
@@ -1322,6 +1336,18 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                               min=0.0, max=0.05))
     adv.addParmTemplate(hou.FloatParmTemplate("frizz_freq", "Frizz frequency", 1, default_value=(8.0,),
                                               min=0.0, max=50.0))
+    adv.addParmTemplate(hou.ToggleParmTemplate(
+        "shot_deform", "Shot deform", default_value=True,
+        help="Off: the hair stays at rest even with an animated hair mesh wired in (grooming is fast: an edit"
+             " does not deform 4 M points). On: it follows the animation"))
+    wired = hou.IntParmTemplate("anim_wired", "Animated hair mesh wired in", 1, default_expression=(
+        'strcmp(opinputpath(".", 2), "") != 0',), default_expression_language=(hou.scriptLanguage.Hscript,))
+    wired.hide(True)
+    adv.addParmTemplate(wired)
+    active = hou.IntParmTemplate("deform_active", "Deform in use", 1, default_expression=(
+        'ch("shot_deform") && ch("anim_wired")',), default_expression_language=(hou.scriptLanguage.Hscript,))
+    active.hide(True)
+    adv.addParmTemplate(active)
     adv.addParmTemplate(hou.FloatParmTemplate("deform_radius", "Deform radius", 1, default_value=(0.02,),
                                               min=0.0, max=1.0))
     ptg.append(adv)

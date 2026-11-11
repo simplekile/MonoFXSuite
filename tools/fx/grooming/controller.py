@@ -136,6 +136,8 @@ class GroomController:
                 pass
         self.refresh()
         self.view.set_display_state(self.display_mode, self.color_by)
+        if hasattr(self.view, "set_deform_state"):
+            self.view.set_deform_state(*self.deform_state())
         self.refresh_publish_version()
 
     def data(self) -> model.GroomData:
@@ -633,6 +635,28 @@ class GroomController:
             self.view.set_selection(self.selection)
         return True
 
+    def deform_state(self) -> tuple[bool, bool]:
+        """(an animated hair mesh is wired in, Shot deform on); (False, False) with an older adapter."""
+        read = getattr(self.adapter, "deform_state", None)
+        if read is None or self.node is None:
+            return False, False
+        try:
+            return tuple(read(self.node))  # type: ignore[return-value]
+        except Exception:
+            return False, False
+
+    def set_shot_deform(self, on: bool) -> bool:
+        """Follow the animation or stay at rest. Off while grooming: an edit then costs no deform."""
+        call = getattr(self.adapter, "set_shot_deform", None)
+        if call is None or self.node is None:
+            return False
+        if self._run("Shot deform", lambda: call(self.node, bool(on)) or True) is None:
+            return False
+        self.view.set_deform_state(*self.deform_state())
+        self.view.set_message("Shot deform on: the hair follows the animation (each edit deforms it again)"
+                              if on else "Shot deform off: the hair stays at rest, edits are fast")
+        return True
+
     def refresh_publish_version(self) -> str:
         """Prefill the publish version from logic.publish_version, when the adapter can say what the
         scene is called and what is already published (`publish_context`); else empty = adapter default."""
@@ -1000,6 +1024,7 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("isolate", controller.toggle_isolate)
     ui.on("isolate_off", controller.isolate_off)
     ui.on("set_root_flip", controller.set_root_flip)
+    ui.on("set_shot_deform", controller.set_shot_deform)
     ui.on("set_excluded", controller.set_excluded)
     ui.on("can_drop", controller.plan_drop)
     ui.on("drop", controller.drop)

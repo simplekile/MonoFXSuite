@@ -95,6 +95,7 @@ LUCIDE.update({
     "focus": '<circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
     "type": '<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>',
     "badge-check": '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>',
+    "play": '<polygon points="6 3 20 12 6 21 6 3"/>',
     "triangle-alert": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
 })
 LUCIDE.setdefault("chevron-right", '<path d="m9 18 6-6-6-6"/>')
@@ -973,6 +974,17 @@ class GroomingUI(QWidget):
         self._color_combo.currentIndexChanged.connect(
             lambda _i: None if self._filling else self._fire("set_display", None, self._color_combo.currentData()))
         lay.addWidget(self._color_combo)
+        self._deform_btn = QToolButton()
+        self._deform_btn.setProperty("flat", True)
+        self._deform_btn.setCheckable(True)
+        self._deform_btn.setText("  Anim")
+        self._deform_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._icon(self._deform_btn, "play", TEXT_LABEL, 15)
+        self._deform_btn.setToolTip("Shot deform: the hair follows the animated hair mesh wired into the node."
+                                    " Off while grooming: every edit would deform 4 M points (~1 s)")
+        self._deform_btn.clicked.connect(lambda on: self._fire("set_shot_deform", on))
+        self._deform_btn.setVisible(False)
+        lay.addWidget(self._deform_btn)
         lay.addSpacing(10)
         lay.addWidget(_line(vertical=True))
         lay.addSpacing(10)
@@ -1267,6 +1279,12 @@ class GroomingUI(QWidget):
         self._color_combo.setCurrentIndex(max(0, self._color_combo.findData(color_by)))
         self._filling = False
         self._mode_label.setText(f"{DISPLAY_LABELS.get(mode, mode)} · colour by {color_by}")
+
+    def set_deform_state(self, wired: bool, on: bool) -> None:
+        """The Anim toggle: shown only when an animated hair mesh is wired in."""
+        self._deform_btn.setVisible(bool(wired))
+        self._deform_btn.setChecked(bool(on))
+        self._recolor_icon(self._deform_btn, ACCENT if on else TEXT_LABEL)
 
     def set_publish_version(self, version: str, note: str) -> None:
         self._version_edit.setText(version)

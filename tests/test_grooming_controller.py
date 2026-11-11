@@ -56,6 +56,14 @@ class FakeAdapter:
         self.text = data.to_json()
         self.writes.append(label)
 
+    deform = (True, True)
+
+    def deform_state(self, node):
+        return self.deform
+
+    def set_shot_deform(self, node, on) -> None:
+        self.deform = (self.deform[0], bool(on))
+
     def set_drag_preview(self, node, ids) -> None:
         self.light = sorted(ids) if ids else None
 
@@ -155,6 +163,10 @@ class RecordingView:
 
     isolate = ""
     publish_warning = ""
+    deform_state = None
+
+    def set_deform_state(self, wired, on):
+        self.deform_state = (wired, on)
 
     def set_isolate(self, text):
         self.isolate = text
@@ -429,6 +441,14 @@ def test_slider_drag_follows_live_and_is_one_undo_step(env) -> None:
     assert adapter.read_data(adapter.node).lock(1).overrides["density"] == 300.0
     assert before != 300.0
     assert adapter.light is None                                                   # full again after
+
+
+def test_shot_deform_toggle_turns_the_anim_off_for_fast_edits(env) -> None:
+    adapter, view, c = env
+    assert c.deform_state() == (True, True)
+    assert c.set_shot_deform(False)
+    assert adapter.deform == (True, False) and view.deform_state == (True, False)
+    assert "edits are fast" in view.messages[-1][0]
 
 
 def test_isolate_without_adapter_support_says_so(env) -> None:

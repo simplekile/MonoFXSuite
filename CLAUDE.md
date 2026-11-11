@@ -217,6 +217,17 @@
   no lock uses: colouring 196 k mesh polygons on every edit doubled the cost). The packed hair carries
   its colour inside (a copy per lock and colour, in the hair cache): the viewport ignores a packed
   prim's Cd and drew the groom white.
+- Shot deform: toggle `shot_deform` (panel: the Anim button, shown when an animated hair mesh is wired;
+  no undo step). Hidden `anim_wired` / `deform_active`. With it on, every edit deforms all 4 M points
+  (~1.2 s): Houdini's cook-interrupt button then flashes on every action, so grooming is done with it
+  off (edits 0.1 s). Each lock is captured to the rest hair mesh inside the per-lock loop and cached
+  with its strands (`lock_capture`, per-lock `do_capture` in the key: always with deform on, full-hair
+  locks only with it off, so turning it on regrows nothing and drag ticks skip the ~0.3 s capture);
+  capturing the merged 4 M points cost 3-9 s per hide or show. Only mesh / guide parts are captured at
+  display time. Two switches (`use_deform`, `deform_ok`): one hscript if() evaluated both sides and
+  unpacked the anim USD on every frame with the deform off. Publish strips `pCaptPts` / `pCaptWeights`.
+  Test scenes that keep the anim wired (`T24_ANIM=on|off` in t24) show what artists feel; earlier
+  measurements had unwired it and missed all of this.
 - GUI timings swing with machine load (the same profile ran 1.6-1.9x slower with other apps at 60 %
   CPU): compare against an action whose code did not change (select) before calling a regression.
 - Test scripts reload the suite's HDA with `force_use_assets=True` after loading a scene: a hip names
