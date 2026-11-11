@@ -84,3 +84,19 @@ def test_deleted_orphan_id_is_never_given_again():
     d.orphans = []                      # the panel deleted the orphan
     assert d.next_lock_id() == 8        # 7 may still be named by frozen regions or old publishes
     assert GroomData.from_json(d.to_json()).next_lock_id() == 8
+
+
+def test_tree_order_moves_locks_and_groups_and_survives_json() -> None:
+    from tools.fx.grooming.model import GroomData, Group, Lock
+
+    data = GroomData(groups=[Group("a", "A"), Group("b", "B")],
+                     locks=[Lock(1, "a1", "a"), Lock(2, "a2", "a"), Lock(3, "b1", "b"), Lock(4, "b2", "b")])
+    data.move_locks([4, 1], "a", before=2)  # keeps their own order: 1 before 4
+    assert [(lk.id, lk.group) for lk in data.locks] == [(1, "a"), (4, "a"), (2, "a"), (3, "b")]
+    data.move_locks([2], "b")  # no before: the end of the group
+    assert [lk.id for lk in data.locks if lk.group == "b"] == [3, 2]
+    data.move_group("b", before="a")
+    assert [g.id for g in data.groups] == ["b", "a"]
+    again = GroomData.from_json(data.to_json())
+    assert [lk.id for lk in again.locks] == [lk.id for lk in data.locks]
+    assert [g.id for g in again.groups] == ["b", "a"]

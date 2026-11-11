@@ -125,6 +125,30 @@ class GroomData:
             return "defaults"
         return "builtin"
 
+    # ---- tree order: the order of `groups` and of `locks` (within a group); changes nothing in the hair ----
+    def move_locks(self, ids, group: str, before: int | None = None) -> None:
+        """Put locks *ids* (keeping their order) into *group*, before lock *before* of that group, or at
+        the group's end when *before* is None or not in it."""
+        wanted = set(ids)
+        moving = [lk for lk in self.locks if lk.id in wanted]
+        rest = [lk for lk in self.locks if lk.id not in wanted]
+        for lk in moving:
+            lk.group = group
+        at = next((i for i, lk in enumerate(rest) if lk.id == before and lk.group == group), None)
+        if at is None:
+            members = [i for i, lk in enumerate(rest) if lk.group == group]
+            at = members[-1] + 1 if members else len(rest)
+        self.locks = rest[:at] + moving + rest[at:]
+
+    def move_group(self, group_id: str, before: str | None = None) -> None:
+        """Put group *group_id* before group *before* (None or unknown = last)."""
+        g = self.group(group_id)
+        if g is None:
+            raise KeyError(group_id)
+        rest = [x for x in self.groups if x.id != group_id]
+        at = next((i for i, x in enumerate(rest) if x.id == before), len(rest))
+        self.groups = rest[:at] + [g] + rest[at:]
+
     # ---- (de)serialise ----
     def to_json(self) -> str:
         return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True, indent=1)
