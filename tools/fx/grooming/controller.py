@@ -222,6 +222,7 @@ class GroomController:
                 # The group wins: a shown lock of a hidden group is hidden, its own state kept for later
                 "hidden_by_group": not group_visible,
                 "isolated_out": isolated is not None and lk.id not in isolated,
+                "isolated_in": isolated is not None and lk.id in isolated,
                 "root_flip": lk.root_flip, "excluded": lk.excluded,
                 "badges": (["edited"] if lk.overrides else []) + ([lk.match] if lk.match in ("unsure", "new") else []),
             } for lk in locks]
@@ -235,6 +236,7 @@ class GroomController:
                 "color": tuple(g.color) if g else (0.6, 0.6, 0.6),
                 "visible": group_visible, "display": g.display if g else None,
                 "isolated_out": isolated is not None and not any(lk.id in isolated for lk in locks),
+                "isolated_in": isolated is not None and any(lk.id in isolated for lk in locks),
                 "badges": badges, "meta": f"{len(locks)} lock{'s' if len(locks) != 1 else ''}",
                 "children": children,
             })

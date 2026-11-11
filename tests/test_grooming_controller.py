@@ -615,6 +615,27 @@ def test_rows_show_mixed_reset_only_when_set_here_and_drag_is_one_write(app, pre
     ui.close()
 
 
+def test_eye_shape_says_drawn_tone_says_why(app, prefs) -> None:
+    """Open eye = drawn, crossed = not drawn; the tooltip says the row's own eye and who decided."""
+    adapter, ui, c = _panel(app)
+    eye = lambda lid: ui._rows[(ctl.SEL_LOCKS, lid)].toolTip(2)  # noqa: E731
+    assert eye(1).startswith("Shown")
+    c.set_visible(ctl.SEL_LOCKS, [3], False)
+    app.processEvents()
+    assert eye(3).startswith("Hidden: click")
+    c.set_visible(ctl.SEL_GROUP, ["fringe"], False)
+    app.processEvents()
+    assert eye(1) == "Hidden by its group (its own eye: shown). Click to change its own eye"
+    c.set_visible(ctl.SEL_GROUP, ["fringe"], True)
+    c.select_locks([3])
+    c.toggle_isolate()                     # isolate a lock whose own eye is off: it is drawn
+    app.processEvents()
+    assert eye(3).startswith("Drawn: isolated (its own eye: hidden)")
+    assert eye(1).startswith("Not drawn while isolating (its own eye: shown)")
+    assert ui._isolate_btn.isChecked()
+    ui.close()
+
+
 def test_hidden_group_dims_its_rows_and_publish_warns_in_the_panel(app, prefs) -> None:
     from tools.fx.grooming.ui import DIM, ROLE_ROW, COL_NAME
 

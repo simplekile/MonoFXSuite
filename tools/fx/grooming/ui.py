@@ -94,6 +94,7 @@ LUCIDE.update({
     "monitor": '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
     "focus": '<circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
     "type": '<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>',
+    "badge-check": '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>',
     "triangle-alert": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
 })
 LUCIDE.setdefault("chevron-right", '<path d="m9 18 6-6-6-6"/>')
@@ -106,6 +107,7 @@ SEPARATOR = "#2e2e36"
 ROW_LINE = "#1d1d22"
 SELECTED = "#273352"      # the accent at 24 % over PANE, opaque: Houdini paints the tree's own background
 DIM = "#62626c"           # names of hidden rows: still readable, clearly off
+FAINT = "#4a4a53"         # an eye decided by something else (a hidden group, isolate), not by this row
 WARN = STATUS_COLORS[STATUS_PINNED]
 STATUS_TEXT = {"unsure": WARN, "new": STATUS_COLORS[STATUS_NEW]}
 STATUS_HELP = {
@@ -778,6 +780,13 @@ class GroomingUI(QWidget):
         widget.setIcon(_lucide_icon(name, self.z.px(size), color))
         return widget
 
+    def _recolor_icon(self, widget, color: str) -> None:
+        """A registered icon in another colour, kept when the UI size changes."""
+        for i, (w, name, _c, size) in enumerate(self._icons):
+            if w is widget:
+                self._icons[i] = (w, name, color, size)
+                widget.setIcon(_lucide_icon(name, self.z.px(size), color))
+
     # =====================================================================
     # Build
     # =====================================================================
@@ -1085,14 +1094,23 @@ class GroomingUI(QWidget):
             help_lines.append(f"Shows {DISPLAY_LABELS[row['display']]} (its own display; right click › Display)")
         item.setToolTip(COL_STATUS, "\n".join(help_lines))
         if kind in (SEL_GROUP, SEL_LOCKS):
+            # The eye's shape says what the viewport draws (open = drawn, crossed = not drawn); its tone says
+            # why: normal = this row's own eye, faint = its group or isolate decided, accent = drawn because
+            # it is isolated. A click always changes the row's own eye; the tooltip says what that is.
             visible = row.get("visible", True)
-            if by_group:
-                icon, color = ("eye" if visible else "eye-off"), "#4a4a53"
-                tip = (f"Hidden by its group{' (its own eye: shown)' if visible else ' (its own eye: hidden too)'}."
-                       " Click to change its own eye")
+            own = "its own eye: shown" if visible else "its own eye: hidden"
+            if row.get("isolated_in"):
+                icon, color = "eye", ACCENT
+                tip = f"Drawn: isolated ({own}). Click to change its own eye"
+            elif row.get("isolated_out"):
+                icon, color = "eye-off", FAINT
+                tip = f"Not drawn while isolating ({own}). Click to change its own eye"
+            elif by_group:
+                icon, color = "eye-off", FAINT
+                tip = f"Hidden by its group ({own}). Click to change its own eye"
             else:
-                icon, color = ("eye", TEXT_LABEL) if visible else ("eye-off", DIM)
-                tip = "Hide" if visible else "Show"
+                icon, color = ("eye", TEXT_LABEL) if visible else ("eye-off", TEXT_LABEL)
+                tip = "Shown: click to hide" if visible else "Hidden: click to show"
             item.setIcon(COL_EYE, _fixed_icon(icon, z.px(16), color))
             item.setToolTip(COL_EYE, tip)
             if by_group:
@@ -1238,6 +1256,8 @@ class GroomingUI(QWidget):
         self._banner_label.setText(text)
         self._banner.setVisible(bool(text))
         self._isolate_btn.setChecked(bool(text))
+        # on: the icon takes the accent too, not only the background (the tint alone was easy to miss)
+        self._recolor_icon(self._isolate_btn, ACCENT if text else TEXT_LABEL)
 
     def set_publish_warning(self, text: str) -> None:
         """Next to Publish: hidden or isolated locks. The button turns amber and says the next click goes on."""
@@ -1325,7 +1345,7 @@ class GroomingUI(QWidget):
             unsure = [r["id"] for r in self._selected_rows() if r["kind"] == SEL_LOCKS
                       and ({"unsure", "new"} & set(r["badges"]))] or \
                      ([row["id"]] if {"unsure", "new"} & set(row["badges"]) else [])
-            act = menu.addAction(_lucide_icon("check", z.px(15)), "Confirm match")
+            act = menu.addAction(_lucide_icon("badge-check", z.px(15)), "Confirm match")  # not "check": reads as ticked
             act.setEnabled(bool(unsure))
             act.triggered.connect(lambda: self._fire("confirm", unsure))
             menu.addSeparator()

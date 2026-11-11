@@ -284,6 +284,12 @@
   source as plain text, Reset only when set at this level); several locks that differ show "mixed"; a
   drag writes once on release (one undo step). Sliders and combos ignore the wheel, so it scrolls the panel.
   Measured values in cm (`adapter.unit_cm(node)` when there, else the node's `unit_cm` parm).
+- The eye: its shape says what the viewport draws (open = drawn, crossed = not drawn), its tone says why
+  (normal = the row's own eye, faint `FAINT` = its group or isolate decided, accent = drawn because
+  isolated); a click always toggles the row's own eye and the tooltip says it. Before, a lock under a
+  hidden group showed an open eye and an isolated lock with its eye off a crossed one, while the viewport
+  did the opposite. The isolate button turns its icon accent when on, not only its background; menu
+  actions never use the check icon (it reads as a ticked option): Confirm match is `badge-check`.
 - A hidden group dims its row and its locks ("hidden by group"; their own eye kept). Isolate (I, Esc) is
   `adapter.set_isolate(node, ids | None)` / `isolate_ids(node)`: a view state, never in `groom_data`.
   Drag and drop: the controller's `plan_drop` decides on every mouse move (refusals say why: Defaults,
