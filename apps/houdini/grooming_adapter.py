@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import datetime as _dt
 import getpass
+import hashlib
 import json
 import math
 import os
 import re
+import sys
 from typing import Any, Iterable, Sequence
 
 try:
@@ -41,6 +43,19 @@ PARM_COLOR_BY = "color_by"
 PARM_PREVIEW = "preview_fraction"
 PARM_PUBLISH_PATH = "publish_path"   # hidden, read by PUBLISH_USD
 PARM_PUBLISH_VERSION = "publish_version"
+PARM_ISOLATE = "isolate_ids"         # hidden: locks shown alone ("" = none); display only, never undone
+PARM_COOK_ALL = "cook_all"           # hidden: 1 while publishing: every lock, hidden or isolated out
+
+# Parms whose value never reaches the per-lock hair cook (display, publish, deform, what the geometry
+# already carries): left out of the cache key, so changing them recooks no lock.
+_KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
+                   PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_COOK_ALL, "deform_radius",
+                   "rest_frame", "detect", "split_regions", "publish"}
+# Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
+_KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_match", "cached", "cache_key",
+                     "cache_mode"}
+_CACHE_ATTR = "_mono_grooming_hair_cache"
+CACHE_NET_VERSION = "partial-1"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -95,11 +110,93 @@ def asset_from_scene(scene_name: str) -> str:
 
 def preview_factor(expected_strands: float, fraction: float = config.PREVIEW_FRACTION,
                    max_strands: int = config.PREVIEW_MAX_STRANDS) -> float:
-    """Density factor for "hair_preview": `fraction` of the strands, at most `max_strands` of them."""
+    """Density factor for "hair_preview": `fraction` of the strands, at most `max_strands` of them.
+
+    Capped factors snap down to a step of PREVIEW_FACTOR_STEP (0.8^k), the same as the HDA's PREVIEW:
+    the factor is part of every lock's cache key, and an exact cap / total moved with any density edit
+    and recooked every lock."""
     f = max(0.0, min(1.0, float(fraction)))
     if expected_strands > 0 and expected_strands * f > max_strands:
         f = max_strands / float(expected_strands)
+        if f > 0:
+            step = config.PREVIEW_FACTOR_STEP
+            f = step ** math.ceil(math.log(f) / math.log(step) - 1e-6)
     return f
+
+
+def parse_isolate(text: str | None) -> list[int]:
+    """Lock ids of the `isolate_ids` parm ("3 17 20"); empty = nothing isolated."""
+    out = []
+    for tok in (text or "").replace(",", " ").split():
+        try:
+            out.append(int(tok))
+        except ValueError:
+            continue
+    return sorted(set(out))
+
+
+def format_isolate(lock_ids: Iterable[int] | None) -> str:
+    return " ".join(str(i) for i in sorted(set(int(i) for i in (lock_ids or ()))))
+
+
+def lock_key(parts: Iterable[Any]) -> str:
+    """Cache key of one lock's hair: a digest of everything its per-lock cook reads."""
+    h = hashlib.blake2b(digest_size=16)
+    for p in parts:
+        h.update(p if isinstance(p, (bytes, bytearray, memoryview)) else repr(p).encode("utf-8"))
+        h.update(b"\x00")
+    return h.hexdigest()
+
+
+class LockCache:
+    """Hair of each lock, cooked once per input state (`lock_key`), per MONO Grooming node and display
+    mode. Pure Python: the values are whatever the adapter stores (frozen hou.Geometry in Houdini).
+
+    Per (node, lock, mode) the last KEEP keys are kept, most recently used last: an undo of an edit goes
+    back to the previous key and finds it. Entries of the key in use are never dropped by a store of
+    another lock, so what `lock_keys` saw as cached is still there when `hair_cache` merges it."""
+
+    KEEP = 2
+
+    def __init__(self) -> None:
+        self._d: dict[tuple[int, int, str], dict[str, Any]] = {}
+
+    def has(self, node_id: int, lock_id: int, mode: str, key: str) -> bool:
+        return key in self._d.get((node_id, lock_id, mode), {})
+
+    def get(self, node_id: int, lock_id: int, mode: str, key: str) -> Any:
+        slot = self._d.get((node_id, lock_id, mode))
+        if slot is None or key not in slot:
+            return None
+        slot[key] = slot.pop(key)  # most recently used last
+        return slot[key]
+
+    def put(self, node_id: int, lock_id: int, mode: str, key: str, value: Any) -> None:
+        slot = self._d.setdefault((node_id, lock_id, mode), {})
+        slot.pop(key, None)
+        slot[key] = value
+        while len(slot) > self.KEEP:
+            del slot[next(iter(slot))]
+
+    def nodes(self) -> set[int]:
+        return {k[0] for k in self._d}
+
+    def drop_node(self, node_id: int) -> None:
+        for k in [k for k in self._d if k[0] == node_id]:
+            del self._d[k]
+
+    def __len__(self) -> int:
+        return sum(len(s) for s in self._d.values())
+
+
+def hair_cache() -> LockCache:
+    """The session's one LockCache. Kept on `sys`, not in this module: reloading the adapter (or
+    hou.session code) must not lose it while lock_keys still says a lock is cached."""
+    cache = getattr(sys, _CACHE_ATTR, None)
+    if cache is None:
+        cache = LockCache()
+        setattr(sys, _CACHE_ATTR, cache)
+    return cache
 
 
 def classify_inputs(cands: Sequence[tuple[str, int]]) -> tuple[int, int] | None:
@@ -198,7 +295,8 @@ def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_group
         stale = True
     for lid in report.orphaned:
         lk = old[lid]
-        out.orphans.append(model.Orphan(id=lk.id, name=lk.name, group=lk.group, overrides=dict(lk.overrides)))
+        out.orphans.append(model.Orphan(id=lk.id, name=lk.name, group=lk.group, overrides=dict(lk.overrides),
+                                        root_flip=lk.root_flip, excluded=lk.excluded))
         stale = True
     out.locks = sorted(locks, key=lambda lk: lk.id)
     have = {g.id for g in out.groups}
@@ -215,7 +313,7 @@ def lock_display_attribs(data: model.GroomData, lock_ids: Sequence[int]) -> dict
     """Per spine prim (lock id or -1): name, group, colours, visibility and every resolved setting.
     What the in-network "assign" Python SOP writes, kept here so it is testable."""
     out: dict[str, list] = {k: [] for k in ("name", "group", "lock_cd", "group_cd", "visible",
-                                           "lock_match", *model.SETTING_KEYS)}
+                                           "lock_match", "root_flip", "excluded", *model.SETTING_KEYS)}
     for lid in lock_ids:
         lk = data.lock(lid) if lid >= 0 else None
         g = data.group(lk.group) if lk is not None else None
@@ -224,8 +322,10 @@ def lock_display_attribs(data: model.GroomData, lock_ids: Sequence[int]) -> dict
         out["group"].append(lk.group if lk else "")
         out["lock_cd"].append(lock_color(lid))
         out["group_cd"].append(tuple(g.color) if g else UNDETECTED_COLOR)
-        out["visible"].append(int(lk is not None and lk.visible and (g is None or g.visible)))
+        out["visible"].append(int(lk is not None and lk.shown(g)))
         out["lock_match"].append(lk.match if lk else "undetected")
+        out["root_flip"].append(int(lk is not None and lk.root_flip))
+        out["excluded"].append(int(lk is not None and lk.excluded))
         for k in model.SETTING_KEYS:
             out[k].append(float(settings[k]))
     return out
@@ -423,9 +523,10 @@ def split_regions(node) -> None:
     scalp = _cooked(node, NODE_SCALP_FINE)
     roots: dict[int, tuple[float, float, float]] = {}
     radii: dict[int, float] = {}
+    excluded = {lk.id for lk in data.locks if lk.excluded}   # grows no hair: takes no scalp from another lock
     for prim in spines.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
-        if lid < 0:
+        if lid < 0 or lid in excluded:
             continue
         roots[lid] = tuple(prim.attribValue("root"))  # type: ignore[assignment]
         # The root band of a lock is often tapered to almost nothing, so the footprint takes the widest
@@ -477,6 +578,47 @@ def set_display(node, mode: str, color_by: str, preview: float = config.PREVIEW_
         node.parm(PARM_DISPLAY).set(config.DISPLAY_MODES.index(mode))
         node.parm(PARM_COLOR_BY).set(config.COLOR_BY.index(color_by))
         node.parm(PARM_PREVIEW).set(float(preview))
+
+
+def set_isolate(node, lock_ids: Sequence[int] | None) -> None:
+    """Show only `lock_ids` (None or empty: back to every shown lock). A temporary view: no undo step,
+    cleared when the scene is loaded again (the HDA's OnLoaded), the eyes underneath stay as they are.
+    Only those locks cook; isolated locks are drawn even when their eye is off."""
+    with hou.undos.disabler():
+        node.parm(PARM_ISOLATE).set(format_isolate(lock_ids))
+
+
+def isolate_ids(node) -> list[int]:
+    """The isolated locks, [] when nothing is isolated."""
+    return parse_isolate(node.evalParm(PARM_ISOLATE))
+
+
+def _set_lock_flag(node, lock_ids: Iterable[int], field_name: str, value: bool, label: str) -> int:
+    data = read_data(node)
+    want = set(int(i) for i in lock_ids)
+    changed = 0
+    for lk in data.locks:
+        if lk.id in want and getattr(lk, field_name) != bool(value):
+            setattr(lk, field_name, bool(value))
+            changed += 1
+    if changed:
+        # the lock's root moves, or it stops taking scalp: regions are out of date, never re-split silently
+        data.regions_stale = True
+        write_data(node, data, UNDO_PREFIX + label)
+    return changed
+
+
+def set_root_flip(node, lock_ids: Iterable[int], flip: bool) -> int:
+    """Root at the mesh piece's other end (`flip`) or back at the end nearer the scalp, for these locks.
+    One undo step; kept through re-Detect; marks regions out of date. Returns how many locks changed."""
+    return _set_lock_flag(node, lock_ids, "root_flip", flip, "Đổi đầu gốc" if flip else "Gốc mặc định")
+
+
+def set_excluded(node, lock_ids: Iterable[int], excluded: bool) -> int:
+    """Leave these locks out of the hair (no strands, not published) or take them back. Mesh and guide
+    still show them. One undo step; kept through re-Detect; marks regions out of date (Chia vùng gives
+    their scalp to the other locks). Returns how many locks changed."""
+    return _set_lock_flag(node, lock_ids, "excluded", excluded, "Bỏ khỏi tóc" if excluded else "Mọc tóc lại")
 
 
 def _scene_viewer():
@@ -575,11 +717,13 @@ def publish(node, version: str | None = None) -> PublishResult:
         with hou.undos.disabler():  # export settings are not an edit of the groom
             node.parm(PARM_PUBLISH_PATH).set(usd)
             node.parm(PARM_DISPLAY).set(config.DISPLAY_MODES.index("hair"))
+            node.parm(PARM_COOK_ALL).set(1)   # hidden and isolated-out locks too (the display skips them)
             try:
                 hair = _cooked(node, NODE_HAIR)
                 strands = len(hair.iterPrims())
                 exporter.parm("execute").pressButton()
             finally:
+                node.parm(PARM_COOK_ALL).set(0)
                 node.parm(PARM_DISPLAY).set(old_mode)
                 node.parm(PARM_PUBLISH_PATH).set("")
         errors = exporter.errors()
@@ -647,14 +791,132 @@ def cook_assign(sop) -> None:
     for key in ("lock_cd", "group_cd"):
         geo.addAttrib(hou.attribType.Prim, key, (0.0, 0.0, 0.0))
         geo.setPrimFloatAttribValues(key, [c for rgb in attrs[key] for c in rgb])
-    geo.addAttrib(hou.attribType.Prim, "visible", 1)
-    geo.setPrimIntAttribValues("visible", attrs["visible"])
+    for key, default in (("visible", 1), ("root_flip", 0), ("excluded", 0)):
+        geo.addAttrib(hou.attribType.Prim, key, default)
+        geo.setPrimIntAttribValues(key, attrs[key])
     for key in model.SETTING_KEYS:
         geo.addAttrib(hou.attribType.Prim, key, 0.0)
         geo.setPrimFloatAttribValues(key, attrs[key])
     missing = ids.count(-1)
     if missing:
         sop.addWarning(f"{missing} lọn chưa có trong dữ liệu: bấm Detect")
+
+
+def on_loaded(node) -> None:
+    """HDA OnLoaded: isolate is a temporary view, so a scene saved while isolated opens showing all."""
+    p = node.parm(PARM_ISOLATE)
+    if p is not None and p.eval():
+        with hou.undos.disabler():
+            p.set("")
+
+
+def _definition_stamp(top) -> str:
+    try:
+        d = top.type().definition()
+        return f"{d.libraryFilePath()}@{d.modificationTime()}" if d is not None else ""
+    except hou.Error:
+        return ""
+
+
+def _key_parms(top) -> list[tuple[str, str]]:
+    out = []
+    for p in top.parms():
+        name = p.name()
+        if name in _KEY_SKIP_PARMS:
+            continue
+        try:
+            out.append((name, p.evalAsString()))
+        except hou.Error:
+            continue
+    return out
+
+
+def cook_lock_keys(sop) -> None:
+    """Python SOP "lock_keys", hair modes only: per spine `cache_key` (a digest of everything the
+    per-lock hair loop reads for that lock: its spine and settings, its region, its mesh piece, the
+    parms the loop uses, the display mode and preview factor) and `cached` (its hair is in the cache).
+
+    Inputs: 0 the shown spines (`grows`), 1 PREVIEW (detail `factor`, `region_keys`: per lock id 9
+    floats summing its region prims), 2 SURFACE_KEYS (detail `surface_keys`: per piece 9 floats of its
+    lookup cloud)."""
+    import numpy as np
+
+    top = sop.parent()
+    geo = sop.geometry()
+    ins = sop.inputs()
+    preview = ins[1].geometry()
+    surface = ins[2].geometry()
+    mode = str(top.evalParm(PARM_DISPLAY))
+    factor = preview.attribValue("factor") if preview.findGlobalAttrib("factor") else 1.0
+    rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
+    sk = surface.floatListAttribValue("surface_keys") if surface.findGlobalAttrib("surface_keys") else ()
+    shared = lock_key([CACHE_NET_VERSION, mode, factor, _definition_stamp(top), _key_parms(top)])
+
+    pattrs = [a for a in geo.pointAttribs() if a.dataType() == hou.attribData.Float]
+    parrays = [np.frombuffer(geo.pointFloatAttribValuesAsString(a.name()), dtype=np.float32).reshape(-1, a.size())
+               for a in pattrs]
+    rattrs = sorted((a for a in geo.primAttribs() if a.name() not in _KEY_SKIP_ATTRIBS), key=lambda a: a.name())
+    for name, default in (("cache_key", ""), ("cache_mode", ""), ("cached", 0)):
+        if geo.findPrimAttrib(name) is None:
+            geo.addAttrib(hou.attribType.Prim, name, default)
+    cache = hair_cache()
+    for nid in cache.nodes():           # nodes deleted, or from a scene loaded before
+        if hou.nodeBySessionId(nid) is None:
+            cache.drop_node(nid)
+    sid = top.sessionId()
+    keys, flags = [], []
+    for prim in geo.iterPrims():
+        lid = prim.intAttribValue(config.ATTR_LOCK_ID)
+        piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
+        idx = [p.number() for p in prim.points()]
+        parts: list[Any] = [shared, [(a.name(), prim.attribValue(a)) for a in rattrs]]
+        parts.extend(arr[idx].tobytes() for arr in parrays)
+        parts.append(tuple(rk[lid * 9:lid * 9 + 9]) if lid >= 0 else ())
+        parts.append(tuple(sk[piece * 9:piece * 9 + 9]) if piece >= 0 else ())
+        key = lock_key(parts)
+        keys.append(key)
+        flags.append(int(cache.has(sid, lid, mode, key)))
+    geo.setPrimStringAttribValues("cache_key", keys)
+    geo.setPrimStringAttribValues("cache_mode", [mode] * len(keys))
+    geo.setPrimIntAttribValues("cached", flags)
+
+
+def cook_cache_store(sop) -> None:
+    """Python SOP "cache_store", last node of the per-lock loop: keep this lock's strands under its
+    key, then output nothing (the merge is hair_cache's, so the strands are copied once)."""
+    geo = sop.geometry()
+    spine = sop.inputs()[1].geometry()
+    prims = spine.prims()
+    if prims:
+        p = prims[0]
+        hair_cache().put(sop.parent().sessionId(), p.intAttribValue(config.ATTR_LOCK_ID),
+                         p.stringAttribValue("cache_mode"), p.stringAttribValue("cache_key"),
+                         geo.freeze(read_only=True))
+    geo.clear()
+
+
+def cook_hair_cache(sop) -> None:
+    """Python SOP "hair_cache": the strands of every lock that grows (shown, not excluded; every lock
+    while publishing), from the cache. Input 0 is the per-lock loop (it stored the missing ones),
+    input 1 the keyed spines."""
+    geo = sop.geometry()
+    geo.clear()
+    keyed = sop.inputs()[1].geometry()
+    cache = hair_cache()
+    sid = sop.parent().sessionId()
+    missing = 0
+    grows = keyed.findPrimAttrib("grows") is not None
+    for p in keyed.iterPrims():
+        if grows and p.intAttribValue("grows") == 0:
+            continue
+        g = cache.get(sid, p.intAttribValue(config.ATTR_LOCK_ID), p.stringAttribValue("cache_mode"),
+                      p.stringAttribValue("cache_key"))
+        if g is None:
+            missing += 1
+        else:
+            geo.merge(g)
+    if missing:
+        sop.addWarning(f"{missing} lọn chưa có tóc trong cache: đổi Display rồi đổi lại để nấu lại")
 
 
 def cook_frozen_regions(sop) -> None:
@@ -669,4 +931,5 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
+    "set_isolate", "isolate_ids", "set_root_flip", "set_excluded",
 ]

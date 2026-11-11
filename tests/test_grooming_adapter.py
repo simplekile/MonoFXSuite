@@ -42,7 +42,8 @@ def test_asset_from_scene():
 
 def test_preview_factor_is_fraction_capped_by_max_strands():
     assert ga.preview_factor(10_000) == pytest.approx(config.PREVIEW_FRACTION)
-    assert ga.preview_factor(1_000_000) == pytest.approx(config.PREVIEW_MAX_STRANDS / 1_000_000)
+    capped = ga.preview_factor(1_000_000)
+    assert capped <= config.PREVIEW_MAX_STRANDS / 1_000_000 < capped / config.PREVIEW_FACTOR_STEP
     assert ga.preview_factor(0) == pytest.approx(config.PREVIEW_FRACTION)
     assert ga.preview_factor(100, fraction=3.0) == 1.0
 
@@ -145,6 +146,70 @@ def test_lock_display_attribs_resolve_settings_and_visibility():
     assert out["group_cd"][0] == (1.0, 0.0, 0.0)
     assert out["lock_cd"][2] == ga.UNDETECTED_COLOR
     assert out["lock_match"] == ["ok", "ok", "undetected"]
+    assert out["root_flip"] == [0, 0, 0] and out["excluded"] == [0, 0, 0]
+
+
+def test_preview_factor_capped_snaps_to_steps_so_small_edits_keep_it():
+    # the factor is in every lock's cache key: a 1 % density edit must not change it (no full recook)
+    assert ga.preview_factor(1_000_000) == ga.preview_factor(1_010_000)
+    assert ga.preview_factor(1_000_000) > ga.preview_factor(2_000_000)
+
+
+def test_lock_display_attribs_flip_exclude_and_hidden_group_keeps_lock_state():
+    data = GroomData(groups=[Group(id="g", name="G", visible=False)],
+                     locks=[Lock(id=1, name="a", group="g", root_flip=True, excluded=True)])
+    out = ga.lock_display_attribs(data, [1])
+    assert out["root_flip"] == [1] and out["excluded"] == [1] and out["visible"] == [0]
+    assert data.lock(1).visible is True          # the lock's own eye is kept under the hidden group
+
+
+def test_apply_detect_keeps_root_flip_and_exclude(lock_names):
+    data = GroomData(locks=[Lock(id=1, name="a", group="g", root=(0.0, 0.0, 0.0), length=0.2,
+                                 root_flip=True, excluded=True)])
+    rep = DetectReport(matches=[Match(0, 1, "ok")])
+    out = ga.apply_detect(data, [_piece(0, name="a")], ["g"], rep)
+    assert out.lock(1).root_flip and out.lock(1).excluded
+    gone = ga.apply_detect(data, [], [], DetectReport(orphaned=[1]))
+    assert gone.orphans[0].root_flip and gone.orphans[0].excluded
+
+
+def test_isolate_parse_and_format():
+    assert ga.parse_isolate("") == [] and ga.parse_isolate(None) == []
+    assert ga.parse_isolate("3 17,3 x 20") == [3, 17, 20]
+    assert ga.format_isolate([20, 3, 3]) == "3 20" and ga.format_isolate(None) == ""
+
+
+def test_lock_key_changes_with_any_part():
+    k = ga.lock_key(["a", 1.0, b"\x00\x01"])
+    assert k == ga.lock_key(["a", 1.0, b"\x00\x01"])
+    assert k != ga.lock_key(["a", 1.0000001, b"\x00\x01"]) and k != ga.lock_key(["a", 1.0, b"\x00\x02"])
+
+
+def test_lock_cache_keeps_last_two_keys_per_lock_and_mode():
+    c = ga.LockCache()
+    c.put(7, 1, "3", "k1", "g1")
+    c.put(7, 1, "3", "k2", "g2")
+    c.put(7, 2, "3", "k1", "other lock")
+    c.put(7, 1, "2", "k1", "preview")
+    assert c.has(7, 1, "3", "k1") and c.get(7, 1, "3", "k2") == "g2"
+    assert c.get(7, 1, "3", "k1") == "g1"          # undo back to k1: found, now most recent
+    c.put(7, 1, "3", "k3", "g3")                   # drops the least recently used: k2
+    assert not c.has(7, 1, "3", "k2") and c.has(7, 1, "3", "k1") and c.has(7, 1, "3", "k3")
+    assert c.get(7, 2, "3", "k1") == "other lock" and c.get(7, 1, "2", "k1") == "preview"
+    assert c.get(7, 9, "3", "k1") is None
+    c.drop_node(7)
+    assert len(c) == 0 and c.nodes() == set()
+
+
+def test_hair_cache_survives_adapter_reload():
+    import importlib
+    c = ga.hair_cache()
+    c.put(-1, 1, "3", "k", "g")
+    try:
+        importlib.reload(ga)
+        assert ga.hair_cache().get(-1, 1, "3", "k") == "g"
+    finally:
+        ga.hair_cache().drop_node(-1)
 
 
 def test_publish_record_fields():
@@ -156,7 +221,8 @@ def test_publish_record_fields():
 
 def test_adapter_api_is_complete():
     for name in ("find_nodes", "create_node", "read_data", "write_data", "lock_infos", "detect",
-                 "split_regions", "set_display", "selected_lock_ids", "select_locks", "publish"):
+                 "split_regions", "set_display", "selected_lock_ids", "select_locks", "publish",
+                 "set_isolate", "isolate_ids", "set_root_flip", "set_excluded"):
         assert callable(getattr(ga, name))
     assert logic.LockInfo is ga.LockInfo
 

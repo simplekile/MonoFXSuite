@@ -64,15 +64,16 @@ geometry and are multiplied / added by the resolved settings; they are never wri
 | scalp prims | `lock_owner`, `share` | int | First owner (-1 none), number of owners |
 | scalp prims | `density` | float | Mean strands/cm² of the owners (each grows its density / share here) |
 | output strand prims | `lock_id`, `name`, `group`, `clump_id` | | For shading, selection, solo |
-| output strand points | `Cd` | vector | Display colour only |
+| output strands | `Cd` | vector | Display colour only (a prim attribute since the partial cook: 116 k prims, not 4 M points) |
 
 `lock_width` is the lock's width. Houdini's `width` stays the strand thickness for render. Never mix them.
 
 ## Processing order (fixed)
 
 source hair mesh → spine and measure → (v0.2: redraw, transform, brush) → settings applied → region split
-(frozen) → hairgen per lock (For-Each by `lock_id`) → clump → length, frizz → display colour / preview cut
-→ deform by animated hair mesh (optional) → output.
+(frozen) → cache key per lock → hairgen, clump, length, frizz per lock (For-Each by `lock_id`, only the
+locks that grow and are not cached) → every growing lock from the cache → display colour → deform by
+animated hair mesh (optional) → output.
 
 ## Adapter API (the panel uses only this)
 
@@ -93,6 +94,9 @@ object with these functions, so its tests run with a fake adapter.
 | `publish(node, version: str \| None) -> PublishResult` | Writes the USD and `_grooming/`, refuses to overwrite; result has path, version, message |
 | `publish_context(node) -> (scene_name, existing_versions)` | For the panel's version field (`logic.publish_version`) |
 | `display_state(node) -> (mode, color_by)` | The node's display parms, shown when the panel opens |
+| `set_isolate(node, lock_ids: list[int] \| None)` / `isolate_ids(node) -> list[int]` | Show only those locks (None / [] = all shown ones). No undo step, not restored with the scene |
+| `set_root_flip(node, lock_ids, flip) -> int` | Root at the piece's other end, one undo step, regions stale; returns locks changed |
+| `set_excluded(node, lock_ids, excluded) -> int` | No hair for those locks (guide, mesh stay), one undo step, regions stale |
 
 Lock colours come from `logic.lock_color`, so the panel and the viewport agree.
 
@@ -203,7 +207,8 @@ Detect and the hair mesh
 - Piece touching the scalp at both ends (a loop, hair tied back) or at none (an accessory, a floating
   strand): Detect takes the nearer end and flags the lock; the user decides per lock: flip which end
   is the root, exclude the piece from hair, or (later, with drawn locks) give it a guide of their own.
-  Not there yet: a per-lock "root end" (flip) and "exclude" in the panel, both kept through re-Detect.
+  Done in the model and the HDA (`Lock.root_flip`, `Lock.excluded`, adapter `set_root_flip` /
+  `set_excluded`), kept through re-Detect; the panel buttons are the panel's.
 - Scalp without UV, scaled or moved objects, scenes not in metres (`unit_cm`): detect warns.
 - Animated hair mesh with another point count or order than the rest mesh: refuse the deform with a
   message, never deform with the wrong points.
@@ -228,3 +233,26 @@ Panel
   state and disables what cannot work; nothing raises into a Python error box.
 - Several locks selected with different values: the field shows "mixed"; an edit sets all of them.
 - Lock colours (colour by lock) must not reuse the status colours (new, edited, stale, error).
+
+## Partial cook (decided 2026-11-11, session 011)
+
+- Each lock's hair (hairgen, fit, clump, length, frizz) is cooked once per state of its inputs and kept
+  per lock in the adapter's `LockCache` (memory only, per node and display mode, last 2 keys a lock so
+  undo finds the previous hair). The key (`lock_keys`) digests the lock's spine with its resolved
+  settings, its frozen region (sums per lock computed in PREVIEW), its mesh piece's lookup cloud, the
+  loop's parms, the display mode and the preview factor. Colour, visibility and isolate are not in it.
+- Only locks that grow (shown and not excluded, or every lock while publishing: `cook_all`) and miss
+  the cache go through the For-Each; `hair_cache` merges every growing lock. An edit of one lock recooks
+  that lock; a group edit its locks; a default or an Advanced parm every lock.
+- Hairclump runs per lock on the lock's own region. Clumps never crossed locks (`clumpid` = lock),
+  so the look is the same; `clump_id` = lock_id x 100 000 + the lock's clump keeps ids unique.
+- Preview: a capped factor snaps down to 0.8^k, so a density edit does not move it (it is in every key).
+- Visibility: a lock is shown when its eye and its group's are on; the group wins, the lock keeps its
+  own state. Hidden locks keep their region (also in the provisional split), so hiding never changes
+  another lock. Isolated locks show even with the eye off; isolate is a hidden parm set with undo off,
+  cleared on load (OnLoaded).
+- Excluded locks keep guide and mesh, grow no hair, are not published; Chia vùng gives their scalp to
+  the others. A root flip reverses the spine after the lock ids are known (Detect matches on the
+  measured root, so the flag survives re-Detect); the lookup cloud stays on the measured spine.
+- Measured on Helen (hython, t20): see the session report; hair full one-lock edit 9.5 s -> about 1 s,
+  hide 9.5 s -> about 0.3 s, isolate 0.03 s.

@@ -84,3 +84,20 @@ def test_deleted_orphan_id_is_never_given_again():
     d.orphans = []                      # the panel deleted the orphan
     assert d.next_lock_id() == 8        # 7 may still be named by frozen regions or old publishes
     assert GroomData.from_json(d.to_json()).next_lock_id() == 8
+
+
+def test_root_flip_excluded_round_trip_and_old_json_defaults():
+    data = GroomData(groups=[Group(id="g", name="G", visible=False)],
+                     locks=[Lock(id=1, name="a", group="g", root_flip=True, excluded=True)],
+                     orphans=[Orphan(id=2, name="b", group="g", root_flip=True)])
+    back = GroomData.from_json(data.to_json())
+    assert back.lock(1).root_flip and back.lock(1).excluded and back.orphans[0].root_flip
+    old = GroomData.from_json('{"schema": 1, "locks": [{"id": 1, "name": "a", "group": "g"}]}')
+    assert old.lock(1).root_flip is False and old.lock(1).excluded is False
+
+
+def test_shown_follows_lock_and_group_eyes():
+    data = GroomData(groups=[Group(id="g", name="G"), Group(id="h", name="H", visible=False)],
+                     locks=[Lock(id=1, name="a", group="g"), Lock(id=2, name="b", group="g", visible=False),
+                            Lock(id=3, name="c", group="h"), Lock(id=4, name="d", group="none")])
+    assert [data.shown(i) for i in (1, 2, 3, 4, 99)] == [True, False, False, True, False]

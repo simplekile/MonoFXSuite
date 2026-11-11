@@ -288,8 +288,13 @@ def main():
     os.makedirs(OUT, exist_ok=True)
     hou.hda.installFile(SUITE + "/otls/mono_grooming.hdalc")
     hou.hipFile.load(HIP, suppress_save_prompt=True, ignore_load_warnings=True)
+    # the scene may name another checkout's library, newer on disk: this suite's is the one checked
+    hou.hda.installFile(SUITE + "/otls/mono_grooming.hdalc", force_use_assets=True)
     from apps.houdini import grooming_adapter as ga
     node = ga.find_nodes()[0]
+    if node.parm("cook_all") is not None:   # hidden and isolated-out locks are not cooked for display
+        with hou.undos.disabler():
+            node.parm("cook_all").set(1)
     geo = node.parent()
     if FRESH:
         node.parm("groom_data").set("")

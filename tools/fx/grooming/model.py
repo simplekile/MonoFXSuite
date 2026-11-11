@@ -55,9 +55,15 @@ class Lock:
     length: float = 0.0          # measured length at detection, for re-import matching
     direction: tuple[float, float, float] | None = None  # unit root -> tip at detection, for shape matching
     overrides: dict[str, float] = field(default_factory=dict)
-    visible: bool = True
+    visible: bool = True         # its own eye; a hidden group hides it too (`shown`), this is kept
     display: str | None = None
     match: str = "ok"            # "ok" | "unsure" | "new" after a re-import
+    root_flip: bool = False      # the root is the mesh piece's other end (Detect takes the one nearer the scalp)
+    excluded: bool = False       # the piece grows no hair (an accessory, a floating strand); guide and mesh stay
+
+    def shown(self, group: "Group | None") -> bool:
+        """Drawn in the viewport: its own eye and its group's (the group wins, the lock's own state stays)."""
+        return self.visible and (group is None or group.visible)
 
 
 @dataclass
@@ -67,6 +73,8 @@ class Orphan:
     name: str
     group: str
     overrides: dict[str, float] = field(default_factory=dict)
+    root_flip: bool = False
+    excluded: bool = False
 
 
 @dataclass
@@ -86,6 +94,11 @@ class GroomData:
 
     def lock(self, lock_id: int) -> Lock | None:
         return next((lk for lk in self.locks if lk.id == lock_id), None)
+
+    def shown(self, lock_id: int) -> bool:
+        """The lock is drawn: neither it nor its group is hidden."""
+        lk = self.lock(lock_id)
+        return lk is not None and lk.shown(self.group(lk.group))
 
     def next_lock_id(self) -> int:
         """Never reuses an id, even of a deleted orphan: frozen regions and earlier publishes may still
@@ -157,12 +170,14 @@ class GroomData:
                     overrides=_clean_overrides(lk.get("overrides")),
                     visible=bool(lk.get("visible", True)), display=lk.get("display"),
                     match=str(lk.get("match", "ok")),
+                    root_flip=bool(lk.get("root_flip", False)), excluded=bool(lk.get("excluded", False)),
                 )
                 for lk in raw.get("locks", [])
             ],
             orphans=[
                 Orphan(id=int(o["id"]), name=str(o.get("name", "")), group=str(o.get("group", "")),
-                       overrides=_clean_overrides(o.get("overrides")))
+                       overrides=_clean_overrides(o.get("overrides")),
+                       root_flip=bool(o.get("root_flip", False)), excluded=bool(o.get("excluded", False)))
                 for o in raw.get("orphans", [])
             ],
             regions_stale=bool(raw.get("regions_stale", False)),
