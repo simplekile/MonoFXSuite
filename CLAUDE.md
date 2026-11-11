@@ -201,8 +201,9 @@
     strands there, not from the node's output.
   - The viewport draws a packed lock as a flat band of one width: Houdini ignores curve width inside
     any packed prim (Pack SOP fragments, packed disk too; "shade open curves" changes nothing). Strands
-    (Enter or double-click on a row, right-click › Show strands; Esc back): those locks are drawn
-    unpacked, each strand thinning to its tip. A view state like isolate (hidden parm `strand_ids`,
+    (the row's packed / strands icon beside the eye, Enter or double-click, right-click › Show strands:
+    each adds or removes those locks, the selection when the row is in it; Esc packs all): those locks are
+    drawn unpacked, each strand thinning to its tip. A view state like isolate (hidden parm `strand_ids`,
     undo off, cleared by OnLoaded, at most `config.STRANDS_MAX` = 20 locks); selecting alone never
     unpacks (the user asked: a selection of the whole groom would be 4 M points again). Their packed
     prim stays, empty, so prim number = place among the packed prims for every lock; their strands come
@@ -220,7 +221,12 @@
     pick in the viewport becomes the panel's selection and focus. A focus change: ~0.01 s, the first
     0.03 s. Only drawn locks take focus (`controller._drawn`): a selection hidden by its eye or outside
     the isolate would ghost every drawn lock, so then nothing is ghosted and the message says why; eyes
-    refocus on every refresh. The tree says "editing" (yellow) on the selected rows only; a group's locks do not repeat it.
+    refocus on every refresh. No "editing" word in the tree (the user: the packed / strands icon says more).
+  - Loading: every change through the controller (`_run`, `_edit`) runs in `_busy`: the panel's loading
+    line ("Cooking: …", a moving bar) is armed for `BUSY_DELAY_MS` (150), and the node is cooked there
+    (`adapter.cook_display`), not on the viewport's next draw. Houdini handles Qt events mid-cook, so the
+    line shows during a long cook (t37: a group density edit of 4.3 s showed it at 0.17 s) and never
+    for a quick one. A first click on a lock makes the ghost copies of the others once (~0.1 s).
   - Undo keeps working with the panel focused: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are panel shortcuts that
     call `hou.undos.performUndo` / `performRedo` (`adapter.undo`): Houdini's own hotkeys never see keys
     sent to the panel. `select_locks` (adapters without focus) runs with undo off: Houdini records a

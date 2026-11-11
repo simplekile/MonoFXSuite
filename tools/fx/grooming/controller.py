@@ -14,6 +14,8 @@ What the controller calls on its view (ui.GroomingUI, or a fake in tests):
 
 from __future__ import annotations
 
+import contextlib
+
 import math
 from typing import Any, Callable
 
@@ -257,6 +259,7 @@ class GroomController:
         rows: list[dict] = [{"kind": SEL_DEFAULTS, "id": "", "name": "Defaults", "badges": [],
                              "meta": "all locks"}]
         isolated = set(self.isolated) if self.isolated else None
+        strands = set(self.strands or ())
         for gid in self._group_order(data):
             g = data.group(gid)
             group_visible = g.visible if g else True
@@ -268,7 +271,7 @@ class GroomController:
                 "hidden_by_group": not group_visible,
                 "isolated_out": isolated is not None and lk.id not in isolated,
                 "isolated_in": isolated is not None and lk.id in isolated,
-                "root_flip": lk.root_flip, "excluded": lk.excluded,
+                "root_flip": lk.root_flip, "excluded": lk.excluded, "strands": lk.id in strands,
                 "badges": (["edited"] if lk.overrides else []) + ([lk.match] if lk.match in ("unsure", "new") else []),
             } for lk in locks]
             badges = ["edited"] if g and g.overrides else []
@@ -282,6 +285,7 @@ class GroomController:
                 "visible": group_visible, "display": g.display if g else None,
                 "isolated_out": isolated is not None and not any(lk.id in isolated for lk in locks),
                 "isolated_in": isolated is not None and any(lk.id in isolated for lk in locks),
+                "strands": bool(locks) and all(lk.id in strands for lk in locks),
                 "badges": badges, "meta": f"{len(locks)} lock{'s' if len(locks) != 1 else ''}",
                 "children": children,
             })
@@ -408,7 +412,8 @@ class GroomController:
             data = self.data()
             if change(data) is False:
                 return False
-            self.adapter.write_data(self.node, data, label)
+            with self._busy(label):
+                self.adapter.write_data(self.node, data, label)
         except Exception as e:
             self.view.set_message(f"{label} failed: {e}", error=True)
             return False
@@ -654,10 +659,28 @@ class GroomController:
         if self.node is None:
             return None
         try:
-            return call()
+            with self._busy(what):
+                return call()
         except Exception as e:
             self.view.set_message(f"{what} failed: {e}", error=True)
             return None
+
+    @contextlib.contextmanager
+    def _busy(self, what: str):
+        """A change and the cook it causes, with the panel's loading line: the view shows it only when
+        the work outlasts a moment (Houdini handles Qt events mid-cook). The node is cooked here, not
+        when the viewport next draws, so the line covers the wait the user feels."""
+        busy = getattr(self.view, "set_busy", None)
+        if busy is not None:
+            busy(what.removeprefix("Grooming: "))
+        try:
+            yield
+            cook = getattr(self.adapter, "cook_display", None)
+            if cook is not None and self.node is not None:
+                cook(self.node)
+        finally:
+            if busy is not None:
+                busy(None)
 
     def detect(self) -> logic.DetectReport | None:
         report = self._run("Detect", lambda: self.adapter.detect(self.node))
@@ -865,24 +888,31 @@ class GroomController:
         return f"Strands: {_names(names)}" if names else ""
 
     def toggle_strands(self) -> bool:
-        """Draw the selected locks (or the group's) as strands; again on the same locks: packed again."""
+        """Enter / double-click: the selected locks (or the group's) as strands, or packed again when
+        they all are already; other locks drawn as strands stay so."""
         data = self.data()
         ids = self.lock_ids_of(data, self.selection)
         if not ids:
-            if self.strands:
-                return self.strands_off()
             self.view.set_message("Strands: select a lock or a group first")
             return False
-        if self.strands == tuple(ids):
-            return self.strands_off()
-        if len(ids) > config.STRANDS_MAX:
-            self.view.set_message(f"Strands: {len(ids)} locks selected; at most {config.STRANDS_MAX} at a time "
-                                  "(more makes every edit slow again)")
-            return False
-        if self.deform_state() == (True, True):
+        return self.set_strands_of(SEL_LOCKS, ids, not set(ids) <= set(self.strands or ()))
+
+    def set_strands_of(self, kind: str, ids, on: bool) -> bool:
+        """The row's packed / strands icon (on its selection when it is part of it): these locks, or
+        the groups' locks, drawn as strands (on) or packed again (off)."""
+        data = self.data()
+        lock_ids = (self.lock_ids_of(data, (SEL_GROUP, tuple(ids))) if kind == SEL_GROUP
+                    else [int(i) for i in ids])
+        now = set(self.strands or ())
+        want = sorted(now | set(lock_ids)) if on else sorted(now - set(lock_ids))
+        if on and self.deform_state() == (True, True):
             self.view.set_message("Anim is on: every lock already shows its strands")
             return False
-        return self._set_strands(ids)
+        if len(want) > config.STRANDS_MAX:
+            self.view.set_message(f"Strands: at most {config.STRANDS_MAX} locks at a time ({len(want)} asked; "
+                                  "more makes every edit slow again). Esc packs them all")
+            return False
+        return self._set_strands(want or None)
 
     def strands_off(self) -> bool:
         if not self.strands:
@@ -1209,6 +1239,7 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("shown", lambda: controller._sync_viewport() if controller.node is not None else None)
     ui.on("redo", lambda: controller.undo(redo=True))
     ui.on("strands", controller.toggle_strands)
+    ui.on("set_strands_of", controller.set_strands_of)
     ui.on("set_root_flip", controller.set_root_flip)
     ui.on("set_shot_deform", controller.set_shot_deform)
     ui.on("set_excluded", controller.set_excluded)

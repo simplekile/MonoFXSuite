@@ -453,8 +453,30 @@ def test_selecting_never_draws_strands_enter_does_and_again_packs(env) -> None:
     assert adapter.strands is None and view.strands == ""
     c.toggle_strands()
     c.select_locks([3])
-    assert c.toggle_strands()                           # other locks: they replace the first ones
+    assert c.toggle_strands()                           # other locks: added, the first ones stay
+    assert adapter.strands == [1, 2, 3]
+    assert c.set_strands_of(ctl.SEL_LOCKS, [1], False)  # a row's icon: that lock packed again
+    assert adapter.strands == [2, 3]
+    rows = {r["id"]: r for g in c.tree_rows(c.data()) for r in [g] + g.get("children", [])}
+    assert rows[2]["strands"] and not rows[1]["strands"]
+    assert not rows["fringe"]["strands"]                # a group: only when all its locks are
+    assert c.set_strands_of(ctl.SEL_GROUP, ["fringe"], True)
+    assert adapter.strands == [1, 2, 3]
+    assert c.set_strands_of(ctl.SEL_GROUP, ["fringe"], False)
     assert adapter.strands == [3]
+    assert c.set_strands_of(ctl.SEL_LOCKS, [3], False) and adapter.strands is None
+
+
+def test_a_change_and_its_cook_show_the_loading_line(env) -> None:
+    adapter, view, c = env
+    seen = []
+    view.set_busy = lambda what: seen.append(what)
+    adapter.cook_display = lambda node: seen.append("cook")
+    c.select_locks([1])
+    c.set_value("clump", 0.4)
+    assert seen[-3:] == ["Clump on fringe_01", "cook", None]         # cooked inside, the line cleared after
+    c.toggle_isolate()
+    assert seen[seen.index("Isolate") + 1] == "cook" and seen[-1] is None
 
 
 def test_strands_refuse_too_many_locks_and_anim_on(env) -> None:
@@ -967,7 +989,7 @@ def test_eye_click_on_a_selected_row_hides_the_whole_selection(app, prefs) -> No
 def test_eye_shape_says_drawn_tone_says_why(app, prefs) -> None:
     """Open eye = drawn, crossed = not drawn; the tooltip says the row's own eye and who decided."""
     adapter, ui, c = _panel(app)
-    eye = lambda lid: ui._rows[(ctl.SEL_LOCKS, lid)].toolTip(2)  # noqa: E731
+    eye = lambda lid: ui._rows[(ctl.SEL_LOCKS, lid)].toolTip(3)  # noqa: E731
     assert eye(1).startswith("Shown")
     c.set_visible(ctl.SEL_LOCKS, [3], False)
     app.processEvents()
@@ -994,7 +1016,7 @@ def test_hidden_group_dims_its_rows_and_publish_warns_in_the_panel(app, prefs) -
     lock = ui._rows[(ctl.SEL_LOCKS, 1)]
     assert lock.data(COL_NAME, ROLE_ROW)["dimmed"]
     assert lock.foreground(COL_NAME).color().name() == DIM
-    assert "group" in lock.toolTip(2)  # the eye column
+    assert "group" in lock.toolTip(3)  # the eye column
     assert not ui._rows[(ctl.SEL_LOCKS, 3)].data(COL_NAME, ROLE_ROW)["dimmed"]
     ui._publish_btn.click()
     assert "2 hidden locks" in ui.publish_warning() and "anyway" in ui._publish_btn.text()
@@ -1061,23 +1083,41 @@ def test_enter_and_double_click_draw_strands_double_click_on_the_eye_is_two_clic
     ui.close()
 
 
-def test_ctrl_z_in_the_panel_undoes_and_rows_being_edited_say_so(app, prefs) -> None:
-    from PySide6.QtCore import Qt
+def test_ctrl_z_in_the_panel_and_the_packed_strands_icon(app, prefs) -> None:
+    from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
+    from tools.fx.grooming.ui import COL_STRANDS
 
     adapter, ui, c = _panel(app)
     adapter.undo_labels = ["Grooming: Clump on back_01"]
     ui._tree.setFocus()
     QTest.keyClick(ui._tree, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert adapter.undone == ("undo", "Grooming: Clump on back_01")
-    c.select_group("back")
-    ui.set_selection(c.selection)
-    app.processEvents()
+    adapter.deform = (True, False)
+    ui.show()
     tree = ui._tree
-    index = tree.indexFromItem
-    assert tree.is_editing(index(ui._rows[(ctl.SEL_GROUP, "back")]))
-    assert not tree.is_editing(index(ui._rows[(ctl.SEL_LOCKS, 3)]))   # its locks: no repeat
-    assert not tree.is_editing(index(ui._rows[(ctl.SEL_LOCKS, 1)]))
+
+    def click_icon(key):
+        rect = tree.visualItemRect(ui._rows[key])
+        h = tree.header()
+        x = h.sectionViewportPosition(COL_STRANDS) + h.sectionSize(COL_STRANDS) // 2
+        QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                         QPoint(x, rect.center().y()))
+        app.processEvents()
+
+    assert "Packed" in ui._rows[(ctl.SEL_LOCKS, 1)].toolTip(COL_STRANDS)
+    click_icon((ctl.SEL_LOCKS, 1))
+    assert adapter.strands == [1] and "strands" in ui._rows[(ctl.SEL_LOCKS, 1)].toolTip(COL_STRANDS)
+    click_icon((ctl.SEL_GROUP, "back"))                  # a group's icon: all its locks
+    assert adapter.strands == [1, 3, 4]
+    click_icon((ctl.SEL_LOCKS, 1))
+    assert adapter.strands == [3, 4]
+    ui.set_busy("Clump")                                  # the loading line waits a moment
+    assert not ui.is_busy()
+    QTest.qWait(ui.BUSY_DELAY_MS + 100)
+    assert ui.is_busy() and "Clump" in ui._busy_label.text()
+    ui.set_busy(None)
+    assert not ui.is_busy()
     ui.close()
 
 

@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMenu,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSizePolicy,
@@ -102,6 +103,9 @@ LUCIDE.update({
     "badge-check": '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>',
     "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     "play": '<polygon points="6 3 20 12 6 21 6 3"/>',
+    "package": '<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0'
+               ' 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><polyline points="3.29 7 12 12 20.71 7"/>'
+               '<path d="m7.5 4.27 9 5.15"/>',
     "triangle-alert": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
 })
 LUCIDE.setdefault("chevron-right", '<path d="m9 18 6-6-6-6"/>')
@@ -116,7 +120,6 @@ SELECTED = "#273352"      # the accent at 24 % over PANE, opaque: Houdini paints
 DIM = "#62626c"           # names of hidden rows: still readable, clearly off
 FAINT = "#4a4a53"         # an eye decided by something else (a hidden group, isolate), not by this row
 WARN = STATUS_COLORS[STATUS_PINNED]
-EDITING = "#facc15"       # "editing" on the rows the settings change (the viewport shows them in colour)
 STATUS_TEXT = {"unsure": WARN, "new": STATUS_COLORS[STATUS_NEW]}
 STATUS_HELP = {
     "edited": "● has its own settings",
@@ -132,7 +135,7 @@ SWATCHES: tuple[tuple[float, float, float], ...] = (
     (0.38, 0.62, 0.95), (0.62, 0.52, 0.95), (0.88, 0.50, 0.80), (0.70, 0.70, 0.72), (0.55, 0.45, 0.38),
 )
 
-COL_NAME, COL_STATUS, COL_EYE = range(3)
+COL_NAME, COL_STATUS, COL_STRANDS, COL_EYE = range(4)
 ROLE_ROW = Qt.ItemDataRole.UserRole + 1
 SLIDER_STEPS = 1000
 
@@ -520,8 +523,6 @@ class _StatusDelegate(QStyledItemDelegate):
         cy = option.rect.center().y()
         dim = row.get("dimmed")
         parts: list[tuple[str, str]] = []
-        if row.get("kind") in (SEL_LOCKS, SEL_GROUP) and self._tree.is_editing(index):
-            parts.append(("editing", EDITING))
         for badge in ("new", "unsure"):
             if badge in row.get("badges", []):
                 parts.append((badge, STATUS_TEXT[badge]))
@@ -601,34 +602,32 @@ class _LayerTree(QTreeWidget):
         return plan, target, where
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        """An eye click acts on the selection it is part of: handled here, before Qt's press replaces a
-        multi-selection with the clicked row alone."""
+        """An eye or packed / strands click acts on the selection it is part of: handled here, before
+        Qt's press replaces a multi-selection with the clicked row alone."""
         pos = event.position().toPoint()
         item = self.itemAt(pos)
-        if item is not None and event.button() == Qt.MouseButton.LeftButton \
-                and self.columnAt(pos.x()) == COL_EYE:
+        column = self.columnAt(pos.x())
+        if item is not None and event.button() == Qt.MouseButton.LeftButton and column in (COL_EYE, COL_STRANDS):
             row = item.data(COL_NAME, ROLE_ROW)
             if row and row["kind"] in (SEL_GROUP, SEL_LOCKS):
                 kind, ids = self._ui._targets(row)
-                self._ui._fire("set_visible", kind, ids, not row.get("visible", True))
+                if column == COL_EYE:
+                    self._ui._fire("set_visible", kind, ids, not row.get("visible", True))
+                else:
+                    self._ui._fire("set_strands_of", kind, ids, not row.get("strands", False))
                 event.accept()
                 return
         super().mousePressEvent(event)
 
-    def is_editing(self, index) -> bool:
-        """The row is selected: what the settings edit (a group's locks do not repeat it: 20 "editing" in a
-        column read as noise; the viewport shows them in colour)."""
-        return self.selectionModel().isSelected(index.siblingAtColumn(COL_NAME))
-
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
-        """Double-click a lock or group: draw it as strands (the first click selected it). On the eye
-        it is a second click: the eye toggles back."""
+        """Double-click a lock or group: strands / packed (the first click selected it). On the eye or the
+        packed / strands icon it is a second click: it toggles back."""
         pos = event.position().toPoint()
         item = self.itemAt(pos)
         if item is None or event.button() != Qt.MouseButton.LeftButton:
             super().mouseDoubleClickEvent(event)
             return
-        if self.columnAt(pos.x()) == COL_EYE:
+        if self.columnAt(pos.x()) in (COL_EYE, COL_STRANDS):
             self.mousePressEvent(event)
             return
         row = item.data(COL_NAME, ROLE_ROW)
@@ -948,7 +947,7 @@ class GroomingUI(QWidget):
         self._tree.setAlternatingRowColors(False)
         self._tree.viewport().setStyleSheet(f"background-color: {PANE};")
         header = self._tree.header()
-        for col, width in ((COL_STATUS, 92), (COL_EYE, 36)):
+        for col, width in ((COL_STATUS, 92), (COL_STRANDS, 30), (COL_EYE, 36)):
             header.resizeSection(col, z.px(width))
         self._tree_pane.setMinimumWidth(z.px(300))
         self._body.setSizes([z.px(400), z.px(640)])
@@ -1067,7 +1066,7 @@ class GroomingUI(QWidget):
         lay.addWidget(self._banner)
 
         tree = _LayerTree(self)
-        tree.setColumnCount(3)
+        tree.setColumnCount(4)
         tree.setHeaderHidden(True)
         tree.setUniformRowHeights(True)
         # Lock names share their group's prefix (hair_back_01, hair_back_02 ...): cut them in the middle so
@@ -1083,7 +1082,7 @@ class GroomingUI(QWidget):
         header = tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(COL_NAME, header.ResizeMode.Stretch)
-        for col in (COL_STATUS, COL_EYE):
+        for col in (COL_STATUS, COL_STRANDS, COL_EYE):
             header.setSectionResizeMode(col, header.ResizeMode.Fixed)
         self._tree = tree
         lay.addWidget(tree, stretch=1)
@@ -1113,6 +1112,27 @@ class GroomingUI(QWidget):
         outer = QVBoxLayout(bar)
         outer.setContentsMargins(14, 8, 14, 10)
         outer.setSpacing(8)
+        # Loading: what is being cooked and a moving bar, shown only when the cook outlasts BUSY_DELAY_MS
+        # (Houdini handles Qt events mid-cook, so the timer fires and the bar moves during the cook)
+        self._busy = QWidget()
+        busy_lay = QHBoxLayout(self._busy)
+        busy_lay.setContentsMargins(0, 0, 0, 0)
+        busy_lay.setSpacing(10)
+        self._busy_label = _label("", "meta", TEXT_PRIMARY)
+        busy_lay.addWidget(self._busy_label)
+        self._busy_bar = QProgressBar()
+        self._busy_bar.setRange(0, 0)
+        self._busy_bar.setTextVisible(False)
+        self._busy_bar.setFixedHeight(4)
+        self._busy_bar.setStyleSheet(f"QProgressBar {{ background: {BG_RAISED}; border: none; border-radius: 1px; }}"
+                                     f" QProgressBar::chunk {{ background: {ACCENT}; border-radius: 1px; }}")
+        busy_lay.addWidget(self._busy_bar, stretch=1)
+        self._busy.setVisible(False)
+        self._busy_text = ""
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setSingleShot(True)
+        self._busy_timer.timeout.connect(self._show_busy)
+        outer.addWidget(self._busy)
         self._message_label = _label("", "meta")
         self._message_label.setWordWrap(True)
         self._message_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -1332,6 +1352,14 @@ class GroomingUI(QWidget):
                 tip = "Shown: click to hide" if visible else "Hidden: click to show"
             item.setIcon(COL_EYE, _fixed_icon(icon, z.px(16), color))
             item.setToolTip(COL_EYE, tip)
+            # Packed (a flat band, quiet) or drawn as its strands, each thinning to its tip (accent)
+            if row.get("strands"):
+                item.setIcon(COL_STRANDS, _fixed_icon("waves", z.px(16), ACCENT))
+                item.setToolTip(COL_STRANDS, "Drawn as strands: click, double-click or Enter to pack it again")
+            else:
+                item.setIcon(COL_STRANDS, _fixed_icon("package", z.px(15), DIM))
+                item.setToolTip(COL_STRANDS, "Packed (drawn as a flat band): click, double-click or Enter to draw "
+                                             "its strands")
             if by_group:
                 item.setToolTip(COL_NAME, "Hidden by its group")
         self._rows[(kind, row["id"])] = item
@@ -1456,6 +1484,26 @@ class GroomingUI(QWidget):
 
     def message(self) -> str:
         return self._message_label.text()
+
+    BUSY_DELAY_MS = 150
+
+    def set_busy(self, what: str | None) -> None:
+        """A change is being made and cooked (None: done). The line shows only past BUSY_DELAY_MS, so a
+        quick change draws nothing."""
+        if what:
+            self._busy_text = f"Cooking: {what}…"
+            self._busy_timer.start(self.BUSY_DELAY_MS)
+        else:
+            self._busy_timer.stop()
+            self._busy.setVisible(False)
+
+    def _show_busy(self) -> None:
+        self._busy_label.setText(self._busy_text)
+        self._busy.setVisible(True)
+        self._busy.repaint()
+
+    def is_busy(self) -> bool:
+        return self._busy.isVisible()
 
     def set_regions_stale(self, stale: bool) -> None:
         self._stale.setVisible(stale)

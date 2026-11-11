@@ -700,6 +700,16 @@ def set_strands(node, lock_ids: Sequence[int] | None) -> None:
         p.set(format_isolate(ids))
 
 
+def cook_display(node) -> None:
+    """Cook the node now when the viewport draws it, so the panel's loading line covers the wait (the
+    viewport would cook it on its next draw anyway). A cook error stays on the node."""
+    try:
+        if node.isDisplayFlagSet() and node.parent().isDisplayFlagSet():
+            node.cook()
+    except hou.OperationFailed:
+        pass
+
+
 def strand_ids(node) -> list[int]:
     """The locks drawn as strands, [] when every lock is packed."""
     p = node.parm(PARM_STRANDS)
@@ -1253,6 +1263,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "set_focus", "focus_ids", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "cook_display", "set_focus", "focus_ids", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]
