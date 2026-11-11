@@ -104,6 +104,7 @@ LUCIDE.setdefault("check", '<path d="M20 6 9 17l-5-5"/>')
 PANE = "#17171b"
 SEPARATOR = "#2e2e36"
 ROW_LINE = "#1d1d22"
+SELECTED = "#273352"      # the accent at 24 % over PANE, opaque: Houdini paints the tree's own background
 DIM = "#62626c"           # names of hidden rows: still readable, clearly off
 WARN = STATUS_COLORS[STATUS_PINNED]
 STATUS_TEXT = {"unsure": WARN, "new": STATUS_COLORS[STATUS_NEW]}
@@ -134,19 +135,19 @@ PREFS_PATH = os.path.join(os.environ.get("APPDATA") or os.path.expanduser("~"), 
                           "grooming_prefs.json")
 
 # Type roles, px at size 1. Bigger than Auto Material's (an artist sits in this panel for hours):
-#   title  21/600 primary   the selection's name
-#   name   15/600 primary   group rows, values set here, the node
-#   body   15/400 primary   lock rows, setting names, buttons
-#   meta   14/400 label     subtitle, inherited values, where they come from, the result line
-#   small  13/400 label     units, measured labels
-#   caps   12/600 label     section headers (+1px spacing)
+#   title  22/600 primary   the selection's name
+#   name   16/600 primary   group rows, values set here, the node
+#   body   16/400 primary   lock rows, setting names, buttons
+#   meta   15/400 label     subtitle, the result line
+#   small  14/400 label     units, where an inherited value comes from, measured labels
+#   caps   13/600 label     section headers (+1px spacing)
 TYPE: dict[str, tuple[int, int, str]] = {
-    "title": (21, 600, TEXT_PRIMARY),
-    "name": (15, 600, TEXT_PRIMARY),
-    "body": (15, 400, TEXT_PRIMARY),
-    "meta": (14, 400, TEXT_LABEL),
-    "small": (13, 400, TEXT_LABEL),
-    "caps": (12, 600, TEXT_LABEL),
+    "title": (22, 600, TEXT_PRIMARY),
+    "name": (16, 600, TEXT_PRIMARY),
+    "body": (16, 400, TEXT_PRIMARY),
+    "meta": (15, 400, TEXT_LABEL),
+    "small": (14, 400, TEXT_LABEL),
+    "caps": (13, 600, TEXT_LABEL),
 }
 
 
@@ -221,24 +222,24 @@ def _sheet(z: Sz) -> str:
     check = _image("check", p(14), TEXT_PRIMARY)
     return f"""
     QWidget#GroomingWindow {{ background: {BG_APP}; color: {TEXT_PRIMARY}; }}
-    QWidget#GroomingWindow QWidget {{ font-size: {p(15)}px; }}
+    QWidget#GroomingWindow QWidget {{ font-size: {p(16)}px; }}
     QWidget#TopBar, QWidget#TreePane, QWidget#ActionBar {{ background: {PANE}; }}
     QWidget#PropsPane {{ background: {BG_APP}; }}
     QFrame[line="true"] {{ background: {SEPARATOR}; border: none; }}
     QLabel {{ color: {TEXT_PRIMARY}; background: transparent; }}
-    QLabel[role="title"] {{ {t["title"]} }}
-    QLabel[role="name"] {{ {t["name"]} }}
-    QLabel[role="body"] {{ {t["body"]} }}
-    QLabel[role="meta"] {{ {t["meta"]} }}
-    QLabel[role="small"] {{ {t["small"]} }}
-    QLabel[role="caps"] {{ {t["caps"]} }}
+    QWidget#GroomingWindow QLabel[role="title"] {{ {t["title"]} }}
+    QWidget#GroomingWindow QLabel[role="name"] {{ {t["name"]} }}
+    QWidget#GroomingWindow QLabel[role="body"] {{ {t["body"]} }}
+    QWidget#GroomingWindow QLabel[role="meta"] {{ {t["meta"]} }}
+    QWidget#GroomingWindow QLabel[role="small"] {{ {t["small"]} }}
+    QWidget#GroomingWindow QLabel[role="caps"] {{ {t["caps"]} }}
     QToolTip {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE}; padding: {p(6)}px;
                 font-size: {p(14)}px; }}
     QSplitter::handle {{ background: {SEPARATOR}; }}
 
     QPushButton, QToolButton {{
         background: transparent; color: {TEXT_PRIMARY}; border: 1px solid #34343c; border-radius: {p(7)}px;
-        padding: {p(6)}px {p(12)}px; font-size: {p(15)}px;
+        padding: {p(6)}px {p(12)}px; font-size: {p(16)}px;
     }}
     QPushButton:hover, QToolButton:hover {{ background: {BG_HOVER}; border-color: #44444e; }}
     QPushButton:disabled, QToolButton:disabled {{ color: {TEXT_META}; border-color: {LINE}; }}
@@ -254,7 +255,7 @@ def _sheet(z: Sz) -> str:
 
     QLineEdit {{
         padding: {p(4)}px {p(7)}px; border: 1px solid #2e2e36; border-radius: {p(6)}px; background: {BG_RAISED};
-        color: {TEXT_PRIMARY}; font-size: {p(15)}px; selection-background-color: {_rgba(ACCENT, 0.4)};
+        color: {TEXT_PRIMARY}; font-size: {p(16)}px; selection-background-color: {_rgba(ACCENT, 0.4)};
     }}
     QLineEdit:focus {{ border: 1px solid {ACCENT}; }}
     QLineEdit[inherited="true"] {{ color: {TEXT_LABEL}; }}
@@ -262,18 +263,18 @@ def _sheet(z: Sz) -> str:
 
     QComboBox {{
         padding: {p(5)}px {p(28)}px {p(5)}px {p(10)}px; border: 1px solid #34343c; border-radius: {p(7)}px;
-        background: transparent; color: {TEXT_PRIMARY}; font-size: {p(15)}px;
+        background: transparent; color: {TEXT_PRIMARY}; font-size: {p(16)}px;
     }}
     QComboBox:hover {{ background: {BG_HOVER}; }}
     QComboBox::drop-down {{ border: none; width: {p(24)}px; subcontrol-position: center right; }}
     QComboBox::down-arrow {{ image: url("{chevron}"); width: {p(14)}px; height: {p(14)}px; }}
     QComboBox QAbstractItemView {{
         background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE}; outline: none;
-        selection-background-color: {_rgba(ACCENT, 0.22)}; padding: {p(4)}px; font-size: {p(15)}px;
+        selection-background-color: {_rgba(ACCENT, 0.22)}; padding: {p(4)}px; font-size: {p(16)}px;
     }}
 
     QMenu {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid #34343c; padding: {p(4)}px; }}
-    QMenu::item {{ padding: {p(7)}px {p(18)}px {p(7)}px {p(30)}px; font-size: {p(15)}px; }}
+    QMenu::item {{ padding: {p(7)}px {p(18)}px {p(7)}px {p(30)}px; font-size: {p(16)}px; }}
     QMenu::item:selected {{ background: {_rgba(ACCENT, 0.22)}; }}
     QMenu::item:disabled {{ color: {TEXT_META}; }}
     QMenu::icon {{ padding-left: {p(8)}px; }}
@@ -296,14 +297,15 @@ def _sheet(z: Sz) -> str:
     QWidget#Measured {{ background: {PANE}; border: 1px solid {LINE}; border-radius: {p(8)}px; }}
     QWidget#Banner {{ background: {BG_RAISED}; border: 1px solid #34343c; border-radius: {p(7)}px; }}
 
-    QTreeWidget {{ background: transparent; border: none; outline: none; color: {TEXT_PRIMARY};
-                   font-size: {p(15)}px; }}
-    QTreeWidget::item {{ height: {p(34)}px; border: none; padding-left: {p(2)}px; }}
+    QWidget#GroomingWindow QTreeWidget {{ background: {PANE}; border: none; outline: none; color: {TEXT_PRIMARY};
+                   font-size: {p(16)}px; }}
+    QWidget#GroomingWindow QTreeWidget {{ alternate-background-color: {PANE}; }}
+    QTreeWidget::item {{ height: {p(36)}px; border: none; padding-left: {p(2)}px; background: {PANE}; }}
     QTreeWidget::item:hover {{ background: {BG_HOVER}; }}
-    QTreeWidget::item:selected {{ background: {_rgba(ACCENT, 0.24)}; color: {TEXT_PRIMARY}; }}
-    QTreeWidget::branch {{ background: transparent; }}
+    QTreeWidget::item:selected {{ background: {SELECTED}; color: {TEXT_PRIMARY}; }}
+    QTreeWidget::branch {{ background: {PANE}; }}
     QTreeWidget::branch:hover {{ background: {BG_HOVER}; }}
-    QTreeWidget::branch:selected {{ background: {_rgba(ACCENT, 0.24)}; }}
+    QTreeWidget::branch:selected {{ background: {SELECTED}; }}
     QTreeWidget::branch:has-children:closed {{ image: url("{_image("chevron-right", p(14), TEXT_LABEL)}"); }}
     QTreeWidget::branch:has-children:open {{ image: url("{_image("chevron-down", p(14), TEXT_LABEL)}"); }}
 
@@ -336,6 +338,16 @@ def _line(vertical: bool = False) -> QFrame:
     return line
 
 
+def _fixed_icon(name: str, size: int, color: str) -> QIcon:
+    """A Lucide icon that keeps its colour on a selected row (Qt would tint the Selected mode)."""
+    icon = QIcon()
+    for scale in (1.0, 2.0):
+        pm = _lucide_pixmap(name, size, color, scale)
+        icon.addPixmap(pm, QIcon.Mode.Normal)
+        icon.addPixmap(pm, QIcon.Mode.Selected)
+    return icon
+
+
 def _swatch(color: tuple[float, float, float] | None, size: int, alpha: float = 1.0) -> QIcon:
     pm = QPixmap(size * 2, size * 2)
     pm.fill(Qt.GlobalColor.transparent)
@@ -349,7 +361,9 @@ def _swatch(color: tuple[float, float, float] | None, size: int, alpha: float = 
         p.drawRoundedRect(QRect(3, 3, size * 2 - 6, size * 2 - 6), size * 0.45, size * 0.45)
         p.end()
     pm.setDevicePixelRatio(2.0)
-    return QIcon(pm)
+    icon = QIcon(pm)
+    icon.addPixmap(pm, QIcon.Mode.Selected)
+    return icon
 
 
 _hda_icon_cache: dict[int, QPixmap] = {}
@@ -723,6 +737,16 @@ class GroomingUI(QWidget):
         self._tree.z = z
         self._tree.setIndentation(z.px(18))
         self._tree.setIconSize(QSize(z.px(14), z.px(14)))
+        # Houdini's own style sheet paints item views in its grey: the tree's surface is set on the widget
+        self._tree.setStyleSheet(f"QTreeWidget {{ background-color: {PANE}; }}")
+        for widget in (self._tree, self._tree.viewport()):
+            palette = widget.palette()
+            for role in (palette.ColorRole.Base, palette.ColorRole.AlternateBase, palette.ColorRole.Window):
+                palette.setColor(role, QColor(PANE))
+            widget.setPalette(palette)
+            widget.setAutoFillBackground(True)
+        self._tree.setAlternatingRowColors(False)
+        self._tree.viewport().setStyleSheet(f"background-color: {PANE};")
         header = self._tree.header()
         for col, width in ((COL_STATUS, 92), (COL_EYE, 36)):
             header.resizeSection(col, z.px(width))
@@ -1058,7 +1082,7 @@ class GroomingUI(QWidget):
             else:
                 icon, color = ("eye", TEXT_LABEL) if visible else ("eye-off", DIM)
                 tip = "Hide" if visible else "Show"
-            item.setIcon(COL_EYE, _lucide_icon(icon, z.px(16), color))
+            item.setIcon(COL_EYE, _fixed_icon(icon, z.px(16), color))
             item.setToolTip(COL_EYE, tip)
             if by_group:
                 item.setToolTip(COL_NAME, "Hidden by its group")

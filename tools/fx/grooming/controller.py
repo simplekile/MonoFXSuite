@@ -322,8 +322,10 @@ class GroomController:
         else:
             locks = [data.lock(i) for i in ids]
             title = locks[0].name if len(locks) == 1 else f"{len(locks)} locks"
-            g = data.group(locks[0].group)
-            subtitle = "Lock" + (f" · {g.name if g else locks[0].group}" if len(locks) == 1 else "")
+            groups = sorted({lk.group for lk in locks})
+            g = data.group(groups[0])
+            in_group = (g.name if g else groups[0]) if len(groups) == 1 else f"{len(groups)} groups"
+            subtitle = ("Lock · " if len(locks) == 1 else "Locks · ") + in_group
             if len(locks) == 1 and locks[0].match != "ok":
                 subtitle += f" · {locks[0].match} match"
             infos = [self._infos[i] for i in ids if i in self._infos]
@@ -810,6 +812,11 @@ class GroomController:
             ids = [i for i in ids if data.lock(i) is not None]
         self.selection = (kind, tuple(ids)) if ids or kind == SEL_DEFAULTS else (SEL_NONE, ())
         kind = self.selection[0]
+        if any(i not in self._infos for i in self.lock_ids_of(data, self.selection)):
+            try:  # the panel opened before the node cooked: measure now
+                self._infos = {info.id: info for info in self.adapter.lock_infos(self.node)}
+            except Exception:
+                pass
         self.view.show_properties(self.properties(data))
         lock_ids = self.lock_ids_of(data, self.selection)
         if kind in (SEL_LOCKS, SEL_GROUP):
@@ -842,6 +849,13 @@ class GroomController:
         self._node_lost = False
         if data.to_json() != self._last_json or self._read_isolate() != self.isolated:
             self.refresh(data)
+        elif data.locks and not self._infos:  # opened before the first cook: measure once it has cooked
+            try:
+                self._infos = {info.id: info for info in self.adapter.lock_infos(self.node)}
+            except Exception:
+                self._infos = {}
+            if self._infos and self.selection[0] != SEL_NONE:
+                self.view.show_properties(self.properties(data))
         state = getattr(self.adapter, "display_state", None)  # undo or the HDA's own parms changed it
         if state is not None:
             try:

@@ -227,6 +227,24 @@
   loaded): not this tool; kill leftover test sessions after a GUI run.
 - Shots: Karma's hair procedural (Generate) does not reproduce clump/frizz, so publishes carry full
   strands and shots Point Deform them (sandbox t02).
+- Panel (`ui.py` view, `controller.py` logic): three zones on their own surfaces with a line between (tree
+  and bars `PANE`, settings on the window colour); one accent (Publish, selection, drop target), status
+  colours only for unsure / new / regions out of date / errors. Sizes go through `ui.Sz`: Houdini's UI scale
+  (`hou.ui.scaledSize`) x the panel's own UI size (top bar, `%APPDATA%/MonoFXSuite/grooming_prefs.json`);
+  type roles 22/16/16/15/14/13 px at 1. Style rules are prefixed `QWidget#GroomingWindow` (Houdini's own
+  sheet wins over a bare `QLabel[role]`), and the tree's rows, branches and selection have opaque colours:
+  Houdini's style paints item views grey under transparent ones. A setting is one row (name, slider, value,
+  source as plain text, Reset only when set at this level); several locks that differ show "mixed"; a
+  drag writes once on release (one undo step). Sliders and combos ignore the wheel, so it scrolls the panel.
+  Measured values in cm (`adapter.unit_cm(node)` when there, else the node's `unit_cm` parm).
+- A hidden group dims its row and its locks ("hidden by group"; their own eye kept). Isolate (I, Esc) is
+  `adapter.set_isolate(node, ids | None)` / `isolate_ids(node)`: a view state, never in `groom_data`.
+  Drag and drop: the controller's `plan_drop` decides on every mouse move (refusals say why: Defaults,
+  onto itself, group into group, locks with a group); Qt never moves items, the drop is one write.
+  Tree order = order of `GroomData.groups` / `.locks` (`move_locks`, `move_group`). Locks moved to another
+  group keep their overrides; the message lists values that now come from the new group, and regions
+  are marked out of date. Publish with hidden locks or while isolated: the first click only warns next to
+  the button (names, count), a second click with the same locks hidden publishes everything.
 - Names follow the department: `grooming` (`04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`,
   tool data in `vNNN/_grooming/`). Publish version defaults to the scene's `_vNNN` and never overwrites.
 

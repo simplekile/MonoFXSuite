@@ -93,6 +93,8 @@ object with these functions, so its tests run with a fake adapter.
 | `publish(node, version: str \| None) -> PublishResult` | Writes the USD and `_grooming/`, refuses to overwrite; result has path, version, message |
 | `publish_context(node) -> (scene_name, existing_versions)` | For the panel's version field (`logic.publish_version`) |
 | `display_state(node) -> (mode, color_by)` | The node's display parms, shown when the panel opens |
+| `set_isolate(node, lock_ids \| None)` / `isolate_ids(node)` | Show those locks alone (None = all); a view state, not saved, not undoable |
+| `unit_cm(node) -> float` (optional) | cm per scene unit for the panel's measured values; else the node's `unit_cm` parm |
 
 Lock colours come from `logic.lock_color`, so the panel and the viewport agree.
 
@@ -170,6 +172,22 @@ Panel and network, after testing the Helen sandbox scene:
   - Measured values are raw scene units (Width 0.0466): show cm.
   - Colours: one accent for the main action (Publish) and the selection; status colours only for
     status; the rest neutral.
+
+## Panel pass (2026-11-11, branch claude/grooming-panel-v2-d1d5c0)
+
+Done in the panel (the HDA side, partial recook and hidden-not-cooked, is session 009's):
+- Zones: top bar / layer tree / settings / action bar on their own surfaces with a line between.
+  Settings are the main zone (window colour); title 22 px, measured shape as stat cells in cm at the top,
+  then one compact row per setting. The tree lost its badge chips and its "Mesh / auto" column: ● edited
+  (neutral), "unsure" / "new" in status colour, a row's own display mode only when it has one (click it or
+  right click › Display).
+- Size: Houdini's UI scale x the panel's UI size (Small 0.9 … Largest 1.5, saved per user). Checked in a GUI
+  Houdini at scale 1.0 and 1.5 (`HOUDINI_UISCALE=100/150`), sandbox `tests/t21_panel_v2`.
+- Wheel, hidden group, isolate, drag and drop, mixed, one undo per drag, publish warning: as the edge cases
+  below propose. A drop on a group row: top fifth = end of the group above, middle = end of this group,
+  bottom fifth of an open group = first in it. Groups move between groups only.
+- Display / Colour menus: the arrow is an image (Houdini drew Qt's border-triangle as a square); checked
+  menu items show a check image, unchecked none.
 
 ## Edge cases for the backlog (proposed answer, or OPEN when it needs the user)
 
