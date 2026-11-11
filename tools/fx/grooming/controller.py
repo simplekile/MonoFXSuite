@@ -9,11 +9,12 @@ it imports `apps.houdini.grooming_adapter` and the Qt panel only then.
 What the controller calls on its view (ui.GroomingUI, or a fake in tests):
   show_node(path, asset), show_tree(rows), set_selection(selection), show_properties(props),
   set_message(text, error=False), set_regions_stale(stale), set_display_state(mode, color_by),
-  set_publish_version(version, note)
+  set_publish_version(version, note), set_isolate(text), set_publish_warning(text)
 """
 
 from __future__ import annotations
 
+import math
 from typing import Any, Callable
 
 from tools.fx.grooming import config, logic, model
@@ -52,6 +53,12 @@ SEL_NONE, SEL_DEFAULTS, SEL_GROUP, SEL_LOCKS, SEL_ORPHAN = "none", "defaults", "
 
 ORPHANS_ROW = "__orphans__"
 
+# Drop positions in the tree (the view maps Qt's indicator to these)
+DROP_ABOVE, DROP_BELOW, DROP_ON = "above", "below", "on"
+
+# Scene units -> cm when neither the adapter nor the node says (scenes in metres)
+DEFAULT_UNIT_CM = 100.0
+
 
 def lock_color(lock_id: int) -> tuple[float, float, float]:
     """Colour of a lock when colouring by lock: logic.lock_color, the viewport's colour too."""
@@ -75,6 +82,17 @@ def _fmt(value: float) -> str:
     return f"{value:.3g}" if abs(value) < 1000 else f"{value:,.0f}"
 
 
+def _cm(value: float) -> str:
+    """A length in cm: one decimal from 10 cm, two below (a 4 mm fringe lock still reads)."""
+    return f"{value:.1f} cm" if abs(value) >= 10 else f"{value:.2f} cm"
+
+
+def _names(names: list[str], most: int = 3) -> str:
+    """'a, b, c' or 'a, b, c +4'."""
+    shown = ", ".join(names[:most])
+    return shown + (f" +{len(names) - most}" if len(names) > most else "")
+
+
 class GroomController:
     """The panel's actions on one node. *view* gets what to show (see the module docstring)."""
 
@@ -89,6 +107,10 @@ class GroomController:
         self._viewport_ids: list[int] = []
         self._infos: dict[int, logic.LockInfo] = {}
         self._node_lost = False
+        self._data: model.GroomData | None = None   # last data shown: drag feedback reads it, never writes
+        self.isolated: tuple[int, ...] | None = None  # lock ids shown alone in the viewport; None = all
+        self._publish_armed: tuple | None = None      # what the publish warning named; a 2nd click goes on
+        self.unit_cm = DEFAULT_UNIT_CM
         if node is not None:
             self.set_node(node)
 
@@ -100,6 +122,8 @@ class GroomController:
         self._node_lost = False
         self.selection = (SEL_NONE, ())
         self._viewport_ids = []
+        self._publish_armed = None
+        self.unit_cm = self._read_unit_cm()
         state = getattr(self.adapter, "display_state", None)  # optional: the node's own display parms
         if state is not None:
             try:
@@ -113,6 +137,29 @@ class GroomController:
     def data(self) -> model.GroomData:
         return self.adapter.read_data(self.node)
 
+    def _read_unit_cm(self) -> float:
+        """cm per scene unit: `adapter.unit_cm(node)` when it has it, else the node's `unit_cm` parm."""
+        for read in (getattr(self.adapter, "unit_cm", None), lambda n: n.evalParm("unit_cm")):
+            if read is None:
+                continue
+            try:
+                value = float(read(self.node))
+            except Exception:
+                continue
+            if value > 0:
+                return value
+        return DEFAULT_UNIT_CM
+
+    def _read_isolate(self) -> tuple[int, ...] | None:
+        read = getattr(self.adapter, "isolate_ids", None)  # session 009's adapter; absent = never isolated
+        if read is None or self.node is None:
+            return None
+        try:
+            ids = read(self.node)
+        except Exception:
+            return None
+        return tuple(sorted(ids)) if ids else None
+
     def node_path(self) -> str:
         path = getattr(self.node, "path", None)
         return path() if callable(path) else str(self.node or "")
@@ -123,6 +170,8 @@ class GroomController:
             return
         data = data or self.data()
         self._last_json = data.to_json()
+        self._data = data
+        self.isolated = self._read_isolate()
         try:
             self._infos = {info.id: info for info in self.adapter.lock_infos(self.node)}
         except Exception:
@@ -133,6 +182,10 @@ class GroomController:
         self.view.set_selection(self.selection)
         self.view.show_properties(self.properties(data))
         self.view.set_regions_stale(data.regions_stale)
+        self.view.set_isolate(self.isolate_text(data))
+        if self._publish_armed is not None and self._publish_armed != self._unseen(data):
+            self._publish_armed = None  # what was hidden changed: the warning no longer says what is true
+            self.view.set_publish_warning("")
 
     def _drop_gone_selection(self, data: model.GroomData) -> None:
         kind, ids = self.selection
@@ -158,14 +211,17 @@ class GroomController:
         still get a row (named by the group id), so no lock is out of sight."""
         rows: list[dict] = [{"kind": SEL_DEFAULTS, "id": "", "name": "Defaults", "badges": [],
                              "meta": "all locks"}]
-        group_ids = [g.id for g in data.groups]
-        group_ids += sorted({lk.group for lk in data.locks} - set(group_ids))
-        for gid in group_ids:
+        isolated = set(self.isolated) if self.isolated else None
+        for gid in self._group_order(data):
             g = data.group(gid)
+            group_visible = g.visible if g else True
             locks = [lk for lk in data.locks if lk.group == gid]
             children = [{
                 "kind": SEL_LOCKS, "id": lk.id, "name": lk.name or f"lock {lk.id}",
                 "color": self.row_color(data, lk), "visible": lk.visible, "display": lk.display,
+                # The group wins: a shown lock of a hidden group is hidden, its own state kept for later
+                "hidden_by_group": not group_visible,
+                "isolated_out": isolated is not None and lk.id not in isolated,
                 "badges": (["edited"] if lk.overrides else []) + ([lk.match] if lk.match in ("unsure", "new") else []),
             } for lk in locks]
             badges = ["edited"] if g and g.overrides else []
@@ -176,7 +232,8 @@ class GroomController:
             rows.append({
                 "kind": SEL_GROUP, "id": gid, "name": (g.name if g else gid) or "(no group)",
                 "color": tuple(g.color) if g else (0.6, 0.6, 0.6),
-                "visible": g.visible if g else True, "display": g.display if g else None,
+                "visible": group_visible, "display": g.display if g else None,
+                "isolated_out": isolated is not None and not any(lk.id in isolated for lk in locks),
                 "badges": badges, "meta": f"{len(locks)} lock{'s' if len(locks) != 1 else ''}",
                 "children": children,
             })
@@ -190,6 +247,12 @@ class GroomController:
             })
         return rows
 
+    @staticmethod
+    def _group_order(data: model.GroomData) -> list[str]:
+        """Groups as the tree shows them: the data's order, then groups only the locks name."""
+        group_ids = [g.id for g in data.groups]
+        return group_ids + sorted({lk.group for lk in data.locks} - set(group_ids))
+
     def _own_level(self, data: model.GroomData) -> tuple[str, list[dict[str, float]]]:
         """(source name of the selection's own level, the override dicts an edit writes into)."""
         kind, ids = self.selection
@@ -201,26 +264,28 @@ class GroomController:
             return "lock", [lk.overrides for lk in (data.lock(i) for i in ids) if lk is not None]
         return "", []
 
-    def _value_and_source(self, data: model.GroomData, key: str) -> tuple[float, str]:
+    def _value_and_source(self, data: model.GroomData, key: str) -> tuple[float, str, bool]:
+        """(value, where it comes from, whether the selected locks differ). Several locks whose values
+        differ show "mixed" (the value given is the first lock's, for the slider); sources that differ
+        give the source "mixed"."""
         kind, ids = self.selection
         if kind == SEL_DEFAULTS:
             if key in data.defaults:
-                return data.defaults[key], "defaults"
-            return model.BUILTIN_DEFAULTS[key], "builtin"
+                return data.defaults[key], "defaults", False
+            return model.BUILTIN_DEFAULTS[key], "builtin", False
         if kind == SEL_GROUP:
             g = data.group(ids[0])
             if g is not None and key in g.overrides:
-                return g.overrides[key], "group"
+                return g.overrides[key], "group", False
             if key in data.defaults:
-                return data.defaults[key], "defaults"
-            return model.BUILTIN_DEFAULTS[key], "builtin"
+                return data.defaults[key], "defaults", False
+            return model.BUILTIN_DEFAULTS[key], "builtin", False
         values = [(data.resolve(i)[key], data.source_of(i, key)) for i in ids if data.lock(i) is not None]
         value, source = values[0]
-        if any(v != value for v, _s in values[1:]):
-            return value, "mixed"
+        mixed = any(v != value for v, _s in values[1:])
         if any(s != source for _v, s in values[1:]):
-            return value, "mixed"
-        return value, source
+            source = "mixed"
+        return value, source, mixed
 
     def properties(self, data: model.GroomData | None = None) -> dict:
         """What the properties column shows for the selection: a title, a slider per setting (value,
@@ -239,10 +304,10 @@ class GroomController:
         own, levels = self._own_level(data)
         settings = []
         for key in model.SETTING_KEYS:
-            value, source = self._value_and_source(data, key)
+            value, source, mixed = self._value_and_source(data, key)
             settings.append({
                 "key": key, "label": SETTING_LABELS[key], "unit": SETTING_UNITS.get(key, ""),
-                "value": value, "source": source, "range": SETTING_RANGES[key],
+                "value": value, "source": source, "mixed": mixed, "range": SETTING_RANGES[key],
                 "resettable": any(key in lv for lv in levels),
             })
         if kind == SEL_DEFAULTS:
@@ -257,27 +322,31 @@ class GroomController:
         else:
             locks = [data.lock(i) for i in ids]
             title = locks[0].name if len(locks) == 1 else f"{len(locks)} locks"
-            g = data.group(locks[0].group)
-            subtitle = "Lock" + (f" · {g.name if g else locks[0].group}" if len(locks) == 1 else "")
+            groups = sorted({lk.group for lk in locks})
+            g = data.group(groups[0])
+            in_group = (g.name if g else groups[0]) if len(groups) == 1 else f"{len(groups)} groups"
+            subtitle = ("Lock · " if len(locks) == 1 else "Locks · ") + in_group
             if len(locks) == 1 and locks[0].match != "ok":
                 subtitle += f" · {locks[0].match} match"
             infos = [self._infos[i] for i in ids if i in self._infos]
         return {"kind": kind, "title": title, "subtitle": subtitle, "own": own,
                 "settings": settings, "measured": self._measured(kind, infos)}
 
-    @staticmethod
-    def _measured(kind: str, infos: list[logic.LockInfo]) -> list[tuple[str, str]]:
+    def _measured(self, kind: str, infos: list[logic.LockInfo]) -> list[tuple[str, str]]:
+        """Measured shape in cm (scene units x `unit_cm`), twist in degrees."""
         if not infos:
             return [("Measured", "not cooked yet")]
+        u = self.unit_cm
         if len(infos) == 1 and kind == SEL_LOCKS:
             i = infos[0]
-            return [("Width", _fmt(i.width)), ("Thickness", _fmt(i.thick)), ("Twist", f"{_fmt(i.twist)} rad"),
-                    ("Length", _fmt(i.length)), ("Strands", f"{i.strands:,}"),
+            return [("Width", _cm(i.width * u)), ("Thickness", _cm(i.thick * u)), ("Length", _cm(i.length * u)),
+                    ("Twist", f"{math.degrees(i.twist):.0f}°"), ("Strands", f"{i.strands:,}"),
                     ("Region", f"{_fmt(i.region_area_cm2)} cm²")]
         n = len(infos)
-        return [("Width (mean)", _fmt(sum(i.width for i in infos) / n)),
-                ("Thickness (mean)", _fmt(sum(i.thick for i in infos) / n)),
-                ("Length (mean)", _fmt(sum(i.length for i in infos) / n)),
+        return [("Width, mean", _cm(sum(i.width for i in infos) / n * u)),
+                ("Thickness, mean", _cm(sum(i.thick for i in infos) / n * u)),
+                ("Length, mean", _cm(sum(i.length for i in infos) / n * u)),
+                ("Locks", f"{n}"),
                 ("Strands", f"{sum(i.strands for i in infos):,}"),
                 ("Region", f"{_fmt(sum(i.region_area_cm2 for i in infos))} cm²")]
 
@@ -514,7 +583,41 @@ class GroomController:
         self.view.set_publish_version(version, note)
         return version
 
+    def _unseen(self, data: model.GroomData) -> tuple:
+        """(hidden lock names, isolated or not): what Publish warns about. A lock is hidden by its own
+        eye or by its group's."""
+        hidden_groups = {g.id for g in data.groups if not g.visible}
+        hidden = tuple(lk.name or f"lock {lk.id}" for lk in data.locks
+                       if not lk.visible or lk.group in hidden_groups)
+        return hidden, self.isolated is not None
+
+    def publish_warning(self, data: model.GroomData) -> str:
+        """What the panel says next to Publish before it goes on, or "" when every lock is shown."""
+        hidden, isolated = self._unseen(data)
+        parts = []
+        if hidden:
+            parts.append(f"{len(hidden)} hidden lock{'s' if len(hidden) != 1 else ''} ({_names(list(hidden))})")
+        if isolated:
+            parts.append(f"isolated on {len(self.isolated or ())} lock{'s' if len(self.isolated or ()) != 1 else ''}")
+        if not parts:
+            return ""
+        return " · ".join(parts) + ": Publish writes every lock anyway. Click again to publish"
+
     def publish(self, version: str | None) -> logic.PublishResult | None:
+        """Publish always writes every lock. When some are hidden or the view is isolated, the first click
+        only says so next to the button (no dialog: it would block Houdini); a second click with the same
+        locks hidden publishes."""
+        if self.node is None:
+            return None
+        data = self.data()
+        unseen = self._unseen(data)
+        warning = self.publish_warning(data)
+        if warning and self._publish_armed != unseen:
+            self._publish_armed = unseen
+            self.view.set_publish_warning(warning)
+            return None
+        self._publish_armed = None
+        self.view.set_publish_warning("")
         version = (version or "").strip() or None
         result = self._run("Publish", lambda: self.adapter.publish(self.node, version))
         if result is None:
@@ -525,6 +628,171 @@ class GroomController:
         else:
             self.view.set_message(f"Not published: {result.message}", error=True)
         return result
+
+    # ------------------------------------------------------------------
+    # Isolate: a view state of the adapter (not saved, not undoable); hidden states stay as they are
+    # ------------------------------------------------------------------
+    def isolate_text(self, data: model.GroomData | None = None) -> str:
+        """'' when not isolated, else what is shown alone."""
+        if self.isolated is None:
+            return ""
+        data = data or self._data or self.data()
+        names = [lk.name or f"lock {lk.id}" for lk in data.locks if lk.id in set(self.isolated)]
+        groups = {lk.group for lk in data.locks if lk.id in set(self.isolated)}
+        if len(groups) == 1 and all(lk.id in self.isolated for lk in data.locks if lk.group in groups):
+            gid = next(iter(groups))
+            g = data.group(gid)
+            return f"Isolated: {(g.name if g else gid) or gid} · {len(names)} lock{'s' if len(names) != 1 else ''}"
+        return f"Isolated: {_names(names)}"
+
+    def toggle_isolate(self) -> bool:
+        """Isolate the selected locks or group; a second press (or isolate_off) shows everything again."""
+        if self.isolated is not None:
+            return self.isolate_off()
+        data = self.data()
+        ids = self.lock_ids_of(data, self.selection)
+        if not ids:
+            self.view.set_message("Isolate: select a lock or a group first")
+            return False
+        return self._set_isolate(ids)
+
+    def isolate_off(self) -> bool:
+        if self.isolated is None:
+            return False
+        return self._set_isolate(None)
+
+    def _set_isolate(self, ids: list[int] | None) -> bool:
+        call = getattr(self.adapter, "set_isolate", None)
+        if call is None:
+            self.view.set_message("Isolate needs a newer MONO Grooming adapter", error=True)
+            return False
+        if self._run("Isolate", lambda: call(self.node, ids) or True) is None:
+            return False
+        self.refresh()
+        self.view.set_message(self.isolate_text() or "Showing every lock again")
+        return True
+
+    # ------------------------------------------------------------------
+    # Drag and drop in the tree: order, and locks into another group
+    # ------------------------------------------------------------------
+    def plan_drop(self, dragged, target, where: str) -> dict | str:
+        """What dropping the rows *dragged* ([(kind, id)]) at *target* ((kind, id), None = below the last
+        row) *where* (above / below / on) does: {"locks": ids, "group": gid, "before": id | None} or
+        {"group_id": gid, "before": gid | None}, or the reason it is refused. Reads the last data shown,
+        so the view can ask on every mouse move."""
+        data = self._data
+        if data is None:
+            return "Nothing to move"
+        kinds = {k for k, _i in dragged}
+        if not dragged or kinds - {SEL_LOCKS, SEL_GROUP}:
+            return "Only locks and groups move"
+        if kinds == {SEL_LOCKS, SEL_GROUP}:
+            return "Drag locks or one group, not both"
+        order = self._group_order(data)
+        tkind, tid = target if target is not None else (None, None)
+        if kinds == {SEL_GROUP}:
+            if len(dragged) != 1:
+                return "Drag one group at a time"
+            gid = dragged[0][1]
+            if tkind is None:
+                before = None
+            elif tkind == SEL_DEFAULTS:
+                if where == DROP_ABOVE:
+                    return "Defaults stay first"
+                before = order[0] if order else None
+            elif tkind == SEL_GROUP:
+                if tid == gid:
+                    return "A group cannot go onto itself"
+                if where == DROP_ON:
+                    return "Groups do not nest"
+                at = order.index(tid) + (1 if where == DROP_BELOW else 0)
+                before = order[at] if at < len(order) else None
+            elif tkind == SEL_LOCKS:
+                return "Groups do not nest: drop it between groups"
+            else:  # Orphans
+                before = None
+            rest = [g for g in order if g != gid]
+            if (rest.index(before) if before in rest else len(rest)) == order.index(gid):
+                return "Already there"
+            return {"group_id": gid, "before": before}
+        ids = [i for _k, i in dragged]
+        if tkind is None:
+            return "Drop locks into a group"
+        if tkind == SEL_DEFAULTS:
+            return "Defaults holds settings, not locks"
+        if tkind in (SEL_ORPHAN, ORPHANS_ROW):
+            return "Orphans are locks gone from the hair mesh: drop into a group"
+        if tkind == SEL_GROUP:
+            group, before = tid, None
+            if where == DROP_BELOW:  # just under the group's own row: first in it
+                first = next((lk.id for lk in data.locks if lk.group == tid and lk.id not in ids), None)
+                before = first
+            elif where == DROP_ABOVE:  # above a group's row: the end of the group before it
+                at = order.index(tid)
+                if at == 0:
+                    return "Drop locks into a group"
+                group = order[at - 1]
+        else:
+            lk = data.lock(tid)
+            if lk is None:
+                return "Nothing to move"
+            if tid in ids:
+                return "A lock cannot go onto itself"
+            group = lk.group
+            members = [m.id for m in data.locks if m.group == group and m.id not in ids]
+            at = members.index(tid) + (0 if where == DROP_ABOVE else 1)
+            before = members[at] if at < len(members) else None
+        trial = model.GroomData.from_json(data.to_json())
+        trial.move_locks(ids, group, before)
+        if [(lk.id, lk.group) for lk in trial.locks] == [(lk.id, lk.group) for lk in data.locks]:
+            return "Already there"
+        return {"locks": ids, "group": group, "before": before}
+
+    def drop(self, dragged, target, where: str) -> bool:
+        """Apply a drop (one undo step). Locks moved to another group keep their own settings; values they
+        took from the old group now come from the new one, and the message says which changed. Regions
+        may depend on the group, so they are marked out of date, never split again silently."""
+        plan = self.plan_drop(dragged, target, where)
+        if isinstance(plan, str):
+            if plan != "Already there":
+                self.view.set_message(f"Not moved: {plan}")
+            return False
+        holder: dict = {}
+
+        def change(data: model.GroomData):
+            if "group_id" in plan:
+                self._ensure_group(data, plan["group_id"])
+                data.move_group(plan["group_id"], plan["before"])
+                holder["text"] = f"Moved group {plan['group_id']}"
+                return None
+            ids, gid = plan["locks"], plan["group"]
+            before = {i: data.resolve(i) for i in ids}
+            changed_group = any(data.lock(i).group != gid for i in ids)
+            self._ensure_group(data, gid)
+            data.move_locks(ids, gid, plan["before"])
+            g = data.group(gid)
+            where_to = (g.name if g else gid) or gid
+            text = f"Moved {self._count(SEL_LOCKS, ids)} to {where_to}" if changed_group else \
+                f"Reordered {self._count(SEL_LOCKS, ids)}"
+            if changed_group:
+                data.regions_stale = True
+                diffs = []
+                for key in model.SETTING_KEYS:
+                    olds = {before[i][key] for i in ids}
+                    new = {data.resolve(i)[key] for i in ids}
+                    if olds != new:
+                        was = _fmt(next(iter(olds))) if len(olds) == 1 else "mixed"
+                        now = _fmt(next(iter(new))) if len(new) == 1 else "mixed"
+                        diffs.append(f"{SETTING_LABELS[key]} {was} → {now}")
+                text += (" · from the new group: " + ", ".join(diffs)) if diffs else " · settings unchanged"
+                text += " · regions out of date"
+            holder["text"] = text
+
+        what = "group" if "group_id" in plan else self._count(SEL_LOCKS, plan["locks"])
+        ok = self._edit(f"Grooming: move {what}", change)
+        if ok:
+            self.view.set_message(holder["text"])
+        return ok
 
     # ------------------------------------------------------------------
     # Selection, both ways
@@ -544,6 +812,11 @@ class GroomController:
             ids = [i for i in ids if data.lock(i) is not None]
         self.selection = (kind, tuple(ids)) if ids or kind == SEL_DEFAULTS else (SEL_NONE, ())
         kind = self.selection[0]
+        if any(i not in self._infos for i in self.lock_ids_of(data, self.selection)):
+            try:  # the panel opened before the node cooked: measure now
+                self._infos = {info.id: info for info in self.adapter.lock_infos(self.node)}
+            except Exception:
+                pass
         self.view.show_properties(self.properties(data))
         lock_ids = self.lock_ids_of(data, self.selection)
         if kind in (SEL_LOCKS, SEL_GROUP):
@@ -574,8 +847,15 @@ class GroomController:
                 self.view.set_message(f"{self.node_path() or 'The node'} can no longer be read: {e}", error=True)
             return
         self._node_lost = False
-        if data.to_json() != self._last_json:
+        if data.to_json() != self._last_json or self._read_isolate() != self.isolated:
             self.refresh(data)
+        elif data.locks and not self._infos:  # opened before the first cook: measure once it has cooked
+            try:
+                self._infos = {info.id: info for info in self.adapter.lock_infos(self.node)}
+            except Exception:
+                self._infos = {}
+            if self._infos and self.selection[0] != SEL_NONE:
+                self.view.show_properties(self.properties(data))
         state = getattr(self.adapter, "display_state", None)  # undo or the HDA's own parms changed it
         if state is not None:
             try:
@@ -624,6 +904,10 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("split_regions", controller.split_regions)
     ui.on("set_display", controller.set_display)
     ui.on("publish", controller.publish)
+    ui.on("isolate", controller.toggle_isolate)
+    ui.on("isolate_off", controller.isolate_off)
+    ui.on("can_drop", controller.plan_drop)
+    ui.on("drop", controller.drop)
     ui.on("poll", controller.poll)
     ui.on("refresh", controller.refresh)
 

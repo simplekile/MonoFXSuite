@@ -85,6 +85,15 @@ class FakeAdapter:
         self.published_version = version
         return self.publish_result
 
+    # session 009's isolate: a view state, not in groom_data
+    isolated = None
+
+    def set_isolate(self, node, ids) -> None:
+        self.isolated = sorted(ids) if ids else None
+
+    def isolate_ids(self, node):
+        return self.isolated
+
 
 class RecordingView:
     def __init__(self) -> None:
@@ -118,6 +127,15 @@ class RecordingView:
 
     def set_publish_version(self, version, note):
         self.version = (version, note)
+
+    isolate = ""
+    publish_warning = ""
+
+    def set_isolate(self, text):
+        self.isolate = text
+
+    def set_publish_warning(self, text):
+        self.publish_warning = text
 
 
 @pytest.fixture
@@ -315,6 +333,142 @@ def test_shelf_node_prefers_found_then_creates() -> None:
     assert ctl._shelf_node(adapter) is created
 
 
+def test_several_locks_with_different_values_show_mixed(env) -> None:
+    _adapter, view, c = env
+    c.select_locks([1, 2])
+    clump = _setting(view, "clump")
+    assert clump["mixed"] and clump["source"] == "mixed"
+    assert not _setting(view, "density")["mixed"]
+    c.set_value("clump", 0.4)  # an edit sets all of them
+    assert not _setting(view, "clump")["mixed"]
+
+
+def test_measured_values_are_in_cm(env) -> None:
+    _adapter, view, c = env
+    c.unit_cm = 100.0  # scene in metres; FakeAdapter widths are 1.5 units
+    c.select_locks([1])
+    measured = dict(view.props["measured"])
+    assert measured["Width"] == "150.0 cm" and measured["Length"] == "1000.0 cm"
+    assert measured["Twist"].endswith("°")
+
+
+def test_hidden_group_dims_its_locks_and_keeps_their_state(env) -> None:
+    adapter, view, c = env
+    c.set_visible(ctl.SEL_GROUP, ["fringe"], False)
+    fringe = view.tree[1]
+    assert fringe["visible"] is False
+    assert all(ch["hidden_by_group"] and ch["visible"] for ch in fringe["children"])
+    assert not any(ch["hidden_by_group"] for ch in view.tree[2]["children"])
+    c.set_visible(ctl.SEL_GROUP, ["fringe"], True)
+    assert adapter.read_data(None).lock(1).visible  # own state untouched
+
+
+def test_isolate_selection_and_back(env) -> None:
+    adapter, view, c = env
+    c.toggle_isolate()  # nothing selected
+    assert adapter.isolated is None and "select" in view.messages[-1][0]
+    c.select_group("fringe")
+    c.toggle_isolate()
+    assert adapter.isolated == [1, 2]
+    assert view.isolate.startswith("Isolated: Fringe")
+    assert [ch["isolated_out"] for ch in view.tree[2]["children"]] == [True, True]
+    assert adapter.writes == []  # a view state: no groom_data write, no undo step
+    c.isolate_off()
+    assert adapter.isolated is None and view.isolate == ""
+    c.isolate_off()  # Esc when not isolated: nothing
+
+
+def test_isolate_without_adapter_support_says_so(env) -> None:
+    adapter, view, c = env
+    del FakeAdapter.set_isolate
+    try:
+        c.select_locks([1])
+        assert not c.toggle_isolate()
+        assert view.messages[-1][1]
+    finally:
+        FakeAdapter.set_isolate = lambda self, node, ids: setattr(self, "isolated", sorted(ids) if ids else None)
+
+
+def test_publish_warns_about_hidden_and_isolated_then_second_click_goes(env) -> None:
+    adapter, view, c = env
+    adapter.published_version = "untouched"
+    c.set_visible(ctl.SEL_LOCKS, [3], False)
+    c.set_visible(ctl.SEL_GROUP, ["fringe"], False)
+    assert c.publish("v008") is None
+    assert adapter.published_version == "untouched"
+    assert "3 hidden locks" in view.publish_warning and "back_01" in view.publish_warning
+    assert c.publish("v008") is not None  # second click with the same hidden locks
+    assert adapter.published_version == "v008" and view.publish_warning == ""
+    # A change in what is hidden asks again
+    c.set_visible(ctl.SEL_LOCKS, [4], False)
+    adapter.published_version = "untouched"
+    c.publish("v009")
+    assert adapter.published_version == "untouched"
+    c.set_visible(ctl.SEL_LOCKS, [3, 4], True)  # the warning goes when what it named changes
+    assert view.publish_warning == ""
+    c.set_visible(ctl.SEL_GROUP, ["fringe"], True)
+    c.select_locks([1])
+    c.toggle_isolate()
+    c.publish("v009")
+    assert adapter.published_version == "untouched" and "isolated" in view.publish_warning
+
+
+def test_nothing_hidden_publishes_at_once(env) -> None:
+    adapter, view, c = env
+    c.publish("v008")
+    assert adapter.published_version == "v008" and view.publish_warning == ""
+
+
+def test_drop_reorders_and_moves_locks_between_groups(env) -> None:
+    adapter, view, c = env
+    L, G = ctl.SEL_LOCKS, ctl.SEL_GROUP
+    # reorder inside a group: fringe_02 above fringe_01
+    assert c.drop([(L, 2)], (L, 1), ctl.DROP_ABOVE)
+    data = adapter.read_data(None)
+    assert [lk.id for lk in data.locks if lk.group == "fringe"] == [2, 1]
+    assert not data.regions_stale and "Reordered" in view.messages[-1][0]
+    # two locks into Back, which sets clump 0.5: fringe_01 takes it, fringe_02 keeps its own 0.8
+    c.select_group("back")
+    c.set_value("clump", 0.5)
+    c.select_locks([1, 2])
+    writes = len(adapter.writes)
+    assert c.drop([(L, 1), (L, 2)], (G, "back"), ctl.DROP_ON)
+    assert len(adapter.writes) == writes + 1  # one undo step
+    data = adapter.read_data(None)
+    assert [lk.id for lk in data.locks if lk.group == "back"] == [3, 4, 2, 1]
+    assert data.resolve(2)["clump"] == 0.8 and data.resolve(1)["clump"] == 0.5
+    assert data.regions_stale
+    text = view.messages[-1][0]
+    assert "Moved 2 locks to Back" in text and "Clump" in text and "regions out of date" in text
+    assert view.selection == (L, (1, 2))
+    # just below a group row: first in it
+    assert c.drop([(L, 4)], (G, "fringe"), ctl.DROP_BELOW)
+    assert adapter.read_data(None).lock(4).group == "fringe"
+
+
+def test_drop_moves_groups_and_refuses_what_makes_no_sense(env) -> None:
+    adapter, view, c = env
+    L, G, D = ctl.SEL_LOCKS, ctl.SEL_GROUP, ctl.SEL_DEFAULTS
+    assert c.drop([(G, "back")], (G, "fringe"), ctl.DROP_ABOVE)
+    assert [g.id for g in adapter.read_data(None).groups] == ["back", "fringe"]
+    writes = len(adapter.writes)
+    refused = {
+        "defaults": c.plan_drop([(L, 1)], (D, ""), ctl.DROP_ON),
+        "itself": c.plan_drop([(L, 1)], (L, 1), ctl.DROP_ON),
+        "group into group": c.plan_drop([(G, "back")], (G, "fringe"), ctl.DROP_ON),
+        "group onto a lock": c.plan_drop([(G, "back")], (L, 1), ctl.DROP_BELOW),
+        "group onto itself": c.plan_drop([(G, "back")], (G, "back"), ctl.DROP_BELOW),
+        "mixed drag": c.plan_drop([(G, "back"), (L, 1)], (G, "fringe"), ctl.DROP_ON),
+        "orphan": c.plan_drop([(ctl.SEL_ORPHAN, 9)], (G, "fringe"), ctl.DROP_ON),
+        "into orphans": c.plan_drop([(L, 1)], (ctl.ORPHANS_ROW, ctl.ORPHANS_ROW), ctl.DROP_ON),
+        "above defaults": c.plan_drop([(G, "back")], (D, ""), ctl.DROP_ABOVE),
+    }
+    assert all(isinstance(r, str) for r in refused.values()), refused
+    assert not c.drop([(L, 1)], (D, ""), ctl.DROP_ON)
+    assert "Not moved" in view.messages[-1][0]
+    assert len(adapter.writes) == writes  # never half applied
+
+
 # ---------------------------------------------------------------------------
 # The Qt panel, offscreen
 # ---------------------------------------------------------------------------
@@ -327,7 +481,14 @@ def app():
     return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
 
 
-def test_panel_smoke(app) -> None:
+@pytest.fixture
+def prefs(tmp_path, monkeypatch):
+    from tools.fx.grooming import ui as ui_mod
+    monkeypatch.setattr(ui_mod, "PREFS_PATH", str(tmp_path / "grooming_prefs.json"))
+    return ui_mod
+
+
+def test_panel_smoke(app, prefs) -> None:
     from tools.fx.grooming.ui import GroomingUI
 
     adapter = FakeAdapter()
@@ -356,4 +517,134 @@ def test_panel_smoke(app) -> None:
     assert "already exists" in ui.message()
     ui.set_regions_stale(True)
     assert not ui._stale.isHidden()
+    ui.close()
+
+
+def _panel(app):
+    from tools.fx.grooming.ui import GroomingUI
+
+    adapter = FakeAdapter()
+    ui = GroomingUI()
+    c = ctl.GroomController(adapter, ui)
+    ctl.bind(ui, c)
+    c.set_node(adapter.node)
+    ui.show()
+    app.processEvents()
+    return adapter, ui, c
+
+
+def test_wheel_over_a_slider_scrolls_the_panel_not_the_value(app, prefs) -> None:
+    from PySide6.QtCore import QPoint, QPointF, Qt
+    from PySide6.QtGui import QWheelEvent
+    from PySide6.QtWidgets import QApplication
+
+    from tools.fx.grooming.ui import _SettingRow
+
+    adapter, ui, c = _panel(app)
+    c.select_locks([1])
+    app.processEvents()
+    row = ui._props_widget.findChildren(_SettingRow)[0]
+    before = row.slider.value()
+    event = QWheelEvent(QPointF(5, 5), QPointF(row.slider.mapToGlobal(QPoint(5, 5))), QPoint(0, 0), QPoint(0, -120),
+                        Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    QApplication.sendEvent(row.slider, event)
+    assert row.slider.value() == before and adapter.writes == []
+    assert not event.isAccepted()  # handed up to the scroll area
+    combo_event = QWheelEvent(QPointF(5, 5), QPointF(5, 5), QPoint(0, 0), QPoint(0, -120), Qt.MouseButton.NoButton,
+                              Qt.KeyboardModifier.NoModifier, Qt.ScrollPhase.NoScrollPhase, False)
+    index = ui._display_combo.currentIndex()
+    QApplication.sendEvent(ui._display_combo, combo_event)
+    assert ui._display_combo.currentIndex() == index
+    ui.close()
+
+
+def test_rows_show_mixed_reset_only_when_set_here_and_drag_is_one_write(app, prefs) -> None:
+    from tools.fx.grooming.ui import _SettingRow
+
+    adapter, ui, c = _panel(app)
+    c.select_locks([1, 2])
+    app.processEvents()
+    rows = {r.key: r for r in ui._props_widget.findChildren(_SettingRow)}
+    assert rows["clump"].field.text() == "" and rows["clump"].field.placeholderText() == "mixed"
+    assert rows["density"].field.text() == "150"
+    assert rows["density"].reset.isHidden()  # inherited: no reset
+    c.select_locks([2])
+    app.processEvents()
+    rows = {r.key: r for r in ui._props_widget.findChildren(_SettingRow)}
+    assert not rows["clump"].reset.isHidden() and rows["clump"].source.text() == ""
+    assert rows["density"].source.text() == "built-in"
+    # A drag: many value changes while the handle is down, one write on release
+    slider = rows["frizz"].slider
+    slider.setSliderDown(True)
+    for v in (100, 200, 300, 400):
+        slider.setValue(v)
+    assert adapter.writes == []
+    slider.setSliderDown(False)
+    slider.sliderReleased.emit()
+    assert len(adapter.writes) == 1
+    ui.close()
+
+
+def test_hidden_group_dims_its_rows_and_publish_warns_in_the_panel(app, prefs) -> None:
+    from tools.fx.grooming.ui import DIM, ROLE_ROW, COL_NAME
+
+    adapter, ui, c = _panel(app)
+    c.set_visible(ctl.SEL_GROUP, ["fringe"], False)
+    app.processEvents()
+    lock = ui._rows[(ctl.SEL_LOCKS, 1)]
+    assert lock.data(COL_NAME, ROLE_ROW)["dimmed"]
+    assert lock.foreground(COL_NAME).color().name() == DIM
+    assert "group" in lock.toolTip(2)  # the eye column
+    assert not ui._rows[(ctl.SEL_LOCKS, 3)].data(COL_NAME, ROLE_ROW)["dimmed"]
+    ui._publish_btn.click()
+    assert "2 hidden locks" in ui.publish_warning() and "anyway" in ui._publish_btn.text()
+    assert not hasattr(adapter, "published_version")
+    ui._publish_btn.click()
+    assert adapter.published_version == "v008" or adapter.published_version is None
+    assert ui.publish_warning() == ""
+    ui.close()
+
+
+def test_isolate_shortcut_and_banner(app, prefs) -> None:
+    adapter, ui, c = _panel(app)
+    c.select_group("back")
+    ui._isolate_btn.click()
+    app.processEvents()
+    assert adapter.isolated == [3, 4]
+    assert not ui._banner.isHidden() and "Back" in ui._banner_label.text()
+    assert ui._isolate_btn.isChecked()
+    ui._fire("isolate_off")
+    assert adapter.isolated is None and ui._banner.isHidden()
+    ui.close()
+
+
+def test_ui_size_scales_fonts_and_is_saved(app, prefs) -> None:
+    adapter, ui, c = _panel(app)
+    normal = ui.z.px(15)
+    ui.set_ui_size("Larger")
+    assert ui.z.px(15) == round(15 * 1.3) > normal
+    assert prefs.load_prefs()["ui_size"] == "Larger"
+    assert f"font-size: {ui.z.px(15)}px" in ui.styleSheet()
+    ui.close()
+    from tools.fx.grooming.ui import GroomingUI
+    again = GroomingUI()
+    assert again._ui_size == "Larger"
+    again.close()
+
+
+def test_tree_drop_places_map_to_the_controller(app, prefs) -> None:
+    from PySide6.QtCore import QPoint
+
+    adapter, ui, c = _panel(app)
+    tree = ui._tree
+    ui.set_selection((ctl.SEL_LOCKS, (1, 2)))
+    rect = tree.visualItemRect(ui._rows[(ctl.SEL_GROUP, "back")])
+    target, where, _r = tree._place(QPoint(rect.left() + 20, rect.center().y()))
+    assert target == (ctl.SEL_GROUP, "back") and where == ctl.DROP_ON
+    assert isinstance(ui._ask("can_drop", tree._dragged(), target, where), dict)
+    rect = tree.visualItemRect(ui._rows[(ctl.SEL_LOCKS, 3)])
+    target, where, _r = tree._place(QPoint(20, rect.top() + 2))
+    assert (target, where) == ((ctl.SEL_LOCKS, 3), ctl.DROP_ABOVE)
+    ui._fire("drop", tree._dragged(), target, where)
+    assert [lk.id for lk in adapter.read_data(None).locks if lk.group == "back"] == [1, 2, 3, 4]
     ui.close()
