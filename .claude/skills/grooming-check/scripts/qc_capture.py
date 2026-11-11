@@ -49,6 +49,9 @@ VIEWS = {  # name: (rx, ry) camera rotation in degrees; "crown" frames the top o
     "front": (0, 0), "back": (0, 180), "left": (0, -90), "right": (0, 90), "top": (-80, 0),
     "threequarter": (-15, 40), "crown": (-35, 20),
 }
+_only = [v for v in os.environ.get("QC_VIEWS", "").split(",") if v in VIEWS]
+if _only:                                    # QC_VIEWS=front,crown: just these
+    VIEWS = {k: VIEWS[k] for k in _only}
 
 
 def viewer():
@@ -91,6 +94,34 @@ float jit = fit01(rand(pr * 7.31), 0.75, 1.2);
 vector base = chv("base") * jit * fit01(smooth(0, 0.35, u), 0.45, 1.0);
 v@Cd = base * (0.18 + 0.82 * diff) + spec * 0.55 * {1, 0.97, 0.92} + spec2 * 0.35 * chv("base") * 2.2;
 """
+
+
+# The hair mesh, lit the same way (diffuse + a soft highlight) so its shape compares with the hair.
+VEX_MESH = r"""
+vector V = normalize(chv("eye") - @P);
+vector L = normalize(V + chv("up") * 0.6 + chv("side") * 0.5);
+vector N = normalize(@N);
+if (dot(N, V) < 0) N = -N;
+float diff = max(dot(N, L), 0);
+float spec = pow(max(dot(N, normalize(L + V)), 0), 40);
+v@Cd = chv("base") * (0.25 + 0.75 * diff) + spec * 0.3;
+"""
+
+
+def look_mesh(geo, src, name):
+    nrm = geo.createNode("normal", f"qc_{name}_n")
+    nrm.setInput(0, src)
+    nrm.parm("type").set(0)                 # point normals
+    look = geo.createNode("attribwrangle", f"qc_{name}_shade")
+    look.setInput(0, nrm)
+    look.parm("class").set(2)
+    look.parm("snippet").set(VEX_MESH)
+    ptg = look.parmTemplateGroup()
+    for nm, val in (("eye", (0, 0, 5)), ("up", (0, 1, 0)), ("side", (1, 0, 0)), ("base", (0.5, 0.33, 0.22))):
+        ptg.append(hou.FloatParmTemplate(nm, nm, 3, default_value=val))
+    look.setParmTemplateGroup(ptg)
+    S.setdefault("looks", []).append(look)
+    return look
 
 
 def look_network(geo, src, name):
@@ -172,6 +203,7 @@ def s_open():
     tpl.parm("grouptype").set(3)                         # points
     tpl.parm("group").set("@piece!=-1")
     S["tpl"] = tpl
+    S["mesh"] = look_mesh(geo, pieces, "mesh")
     S["piece_of"] = {p.attribValue("name"): int(p.attribValue("piece"))
                      for p in node.node("SPINES").geometry().prims()}
     S["ours"].setDisplayFlag(True)
@@ -215,6 +247,7 @@ def add_views(prefix, which):
 
 
 add_views("", "ours")
+add_views("mesh_", "mesh")
 if REF:
     add_views("ref_", "ref")
 

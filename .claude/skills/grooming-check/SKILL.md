@@ -46,7 +46,8 @@ $env:QC_REPORT="<out_dir of step 1>/qc_report.json"; $env:QC_REF="<groom.usd>"
 houdini.exe -foreground .claude/skills/grooming-check/scripts/qc_capture.py
 ```
 
-Shots: front, back, left, right, top, three-quarter, crown; the same for the reference (`ref_*`);
+Shots: front, back, left, right, top, three-quarter, crown (`QC_VIEWS=front,crown` for fewer); the
+same of the hair mesh (`mesh_*`) and of the reference (`ref_*`);
 the 4 worst locks of the report alone (`lock_<name>_a/b`). Shading is XGen-preview style, computed in
 VEX per camera (Kajiya-Kay highlights, darker roots, value variation per strand), no shadows: a
 strand that leaves its lock or turns the wrong way catches the highlight differently from its
@@ -55,7 +56,9 @@ neighbours. Shadows were tried and hid the inside of the groom in black.
 Wait for "done" in `capture_log.txt`, then kill the Houdini it started (it often hangs on exit):
 only the process whose command line has `qc_capture`, never the fxhoudini MCP's.
 
-Look at ours next to `ref_*` for the same view, then the worst-lock shots. Say what you see in
+Look at ours next to `mesh_*` and `ref_*` for the same view, then the worst-lock shots. Where ours
+differs from the reference, the mesh tells whose it is: ours follows the mesh by design, so a
+reference groomed past its mesh (Helen's v006 fringe) is a question for the user, not a bug. Say what you see in
 words before judging: bare patches, strands crossing a lock, fans at the root, brush tips, zigzags.
 
 ## 3. Report
