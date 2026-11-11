@@ -675,6 +675,42 @@ def test_rows_show_mixed_reset_only_when_set_here_and_drag_is_one_write(app, pre
     ui.close()
 
 
+def test_slider_drag_survives_a_window_popping_up_and_taking_the_mouse(app, prefs) -> None:
+    """Houdini's cook-interrupt button pops up mid-drag and takes Qt's mouse grab: the slider keeps
+    following the cursor and writes once when the button really comes up."""
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QWidget
+
+    from tools.fx.grooming.ui import _SettingRow
+
+    adapter, ui, c = _panel(app)
+    c.select_locks([1])
+    app.processEvents()
+    row = {r.key: r for r in ui._props_widget.findChildren(_SettingRow)}["density"]
+    slider = row.slider
+    slider.resize(400, slider.height())
+    down = {"v": True}
+    slider.button_down = lambda: down["v"]
+    groove, handle = slider._rects()
+    QTest.mousePress(slider, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, handle.center())
+    assert slider.isSliderDown()
+    popup = QWidget(None, Qt.WindowType.Popup)  # takes the grab; the slider hears nothing more
+    popup.show()
+    app.processEvents()
+    slider.cursor_x = lambda: groove.right()
+    slider._poll()
+    assert slider.isSliderDown() and slider.value() == slider.maximum()
+    assert adapter.writes == []
+    down["v"] = False
+    slider._poll()
+    popup.close()
+    assert not slider.isSliderDown()
+    assert len(adapter.writes) == 1
+    assert adapter.read_data(None).lock(1).overrides["density"] == row._hi
+    ui.close()
+
+
 def test_eye_click_on_a_selected_row_hides_the_whole_selection(app, prefs) -> None:
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest

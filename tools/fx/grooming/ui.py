@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from typing import Any, Callable
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QComboBox,
     QFrame,
     QGridLayout,
@@ -40,7 +42,9 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSlider,
     QSplitter,
+    QStyle,
     QStyledItemDelegate,
+    QStyleOptionSlider,
     QStyleOptionViewItem,
     QToolButton,
     QTreeWidget,
@@ -398,13 +402,89 @@ def _fmt(value: float) -> str:
 # ---------------------------------------------------------------------------
 # Widgets that never take the wheel: it scrolls the panel instead
 # ---------------------------------------------------------------------------
+def _left_button_down() -> bool:
+    """The left mouse button as the system sees it, not as Qt last heard it: Houdini's cook-interrupt
+    button pops up for any cook over ~0.3 s and takes Qt's mouse grab, so Qt never tells the slider about
+    the moves or the release that follow."""
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            user32 = ctypes.windll.user32
+            vk = 0x02 if user32.GetSystemMetrics(23) else 0x01  # SM_SWAPBUTTON: left-handed mouse
+            return bool(user32.GetAsyncKeyState(vk) & 0x8000)
+        except Exception:
+            pass
+    return bool(QApplication.mouseButtons() & Qt.MouseButton.LeftButton)
+
+
 class _Slider(QSlider):
+    """A slider that follows the mouse itself while dragged (a timer reads the cursor and the button), so
+    a window popping up mid-drag does not end the drag. A press on the groove jumps there and drags."""
+
+    FOLLOW_MS = 15
+
     def __init__(self) -> None:
         super().__init__(Qt.Orientation.Horizontal)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # no focus from the wheel either
+        self._grab = 0
+        self._follow = QTimer(self)
+        self._follow.timeout.connect(self._poll)
+        self.button_down = _left_button_down  # tests swap these two
+        self.cursor_x = lambda: self.mapFromGlobal(QCursor.pos()).x()
 
     def wheelEvent(self, event) -> None:  # noqa: N802
         event.ignore()  # goes up to the scroll area
+
+    def _rects(self):
+        opt = QStyleOptionSlider()
+        self.initStyleOption(opt)
+        style = self.style()
+        groove = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderGroove, self)
+        handle = style.subControlRect(QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderHandle, self)
+        return groove, handle
+
+    def _move_to(self, x: int) -> None:
+        groove, handle = self._rects()
+        span = max(groove.width() - handle.width(), 1)
+        pos = min(max(x - self._grab - groove.x(), 0), span)
+        self.setValue(QStyle.sliderValueFromPosition(self.minimum(), self.maximum(), pos, span))
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        if event.button() != Qt.MouseButton.LeftButton:
+            return super().mousePressEvent(event)
+        x = int(event.position().x())
+        handle = self._rects()[1]
+        self._grab = x - handle.x() if handle.contains(event.position().toPoint()) else handle.width() // 2
+        self.setFocus(Qt.FocusReason.MouseFocusReason)
+        self.setSliderDown(True)
+        self._move_to(x)
+        self._follow.start(self.FOLLOW_MS)
+        event.accept()
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802
+        if self.isSliderDown():
+            self._move_to(int(event.position().x()))
+        event.accept()
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802
+        if self.isSliderDown():
+            self._move_to(int(event.position().x()))
+            self._finish()
+        event.accept()
+
+    def _poll(self) -> None:
+        if not self.isSliderDown():
+            self._follow.stop()
+        elif not self.button_down():
+            self._finish()
+        else:
+            self._move_to(self.cursor_x())
+
+    def _finish(self) -> None:
+        self._follow.stop()
+        if self.isSliderDown():
+            self.setSliderDown(False)  # sliderReleased: the row writes the value once
 
 
 class _Combo(QComboBox):

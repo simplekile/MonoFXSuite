@@ -207,7 +207,10 @@
     dragged locks grow at the preview fraction (`set_drag_preview`, hidden parm `preview_ids` read by
     `lock_keys` into a per-lock `strand_factor` that hairgen reads); the release puts the pre-drag data
     back without undo and writes the final value: one undo step, full hair once. Houdini flashes its
-    cook-interrupt button for any cook over ~0.3 s: the "popup" artists saw on every change.
+    cook-interrupt button for any cook over ~0.3 s: the "popup" artists saw on every change. That
+    button takes Qt's mouse grab and ended every drag, so `ui._Slider` follows the drag itself (a 15 ms
+    timer reads the cursor and the system's button state, `_left_button_down`) instead of trusting
+    Qt's mouse events; the poll also skips while a slider is down (a rebuild under the mouse ends it).
   - GUI Helen, hair full: select 0.025 s, hide / show 0.08 s, a drag tick 0.07-0.09 s, release 0.35 s.
 - Per-lock Display: `assign_locks` writes `row_display` (the lock's own Display, else its group's, -1 =
   the node's); `lock_shown` turns it into `disp` (lighter while playing, full hair while publishing) and
