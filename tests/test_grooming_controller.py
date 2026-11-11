@@ -109,6 +109,15 @@ class FakeAdapter:
     def isolate_ids(self, node):
         return self.isolated
 
+    # locks drawn as strands: a view state like isolate
+    strands = None
+
+    def set_strands(self, node, ids) -> None:
+        self.strands = sorted(ids) if ids else None
+
+    def strand_ids(self, node):
+        return self.strands or []
+
     # session 009's per-lock flags: one write, regions out of date
     def _flag(self, ids, field, value):
         data = self.read_data(self.node)
@@ -170,6 +179,11 @@ class RecordingView:
 
     def set_isolate(self, text):
         self.isolate = text
+
+    strands = ""
+
+    def set_strands(self, text):
+        self.strands = text
 
     def set_publish_warning(self, text):
         self.publish_warning = text
@@ -413,6 +427,86 @@ def test_isolate_selection_and_back(env) -> None:
     c.isolate_off()
     assert adapter.isolated is None and view.isolate == ""
     c.isolate_off()  # Esc when not isolated: nothing
+
+
+def test_selecting_never_draws_strands_enter_does_and_again_packs(env) -> None:
+    adapter, view, c = env
+    adapter.deform = (True, False)
+    c.select_group("fringe")
+    assert adapter.strands is None                      # a selection alone: still packed
+    selected = len(adapter.selected)
+    assert c.toggle_strands()
+    assert adapter.strands == [1, 2] and view.strands == "Strands: fringe_01, fringe_02"
+    assert len(adapter.selected) > selected             # the prim numbers changed: selected again
+    assert adapter.writes == []                         # a view state: no groom_data write, no undo step
+    assert c.toggle_strands()                           # the same locks again: packed again
+    assert adapter.strands is None and view.strands == ""
+    c.toggle_strands()
+    c.select_locks([3])
+    assert c.toggle_strands()                           # other locks: they replace the first ones
+    assert adapter.strands == [3]
+
+
+def test_strands_refuse_too_many_locks_and_anim_on(env) -> None:
+    adapter, view, c = env
+    c.select_locks([1])
+    adapter.deform = (True, True)
+    assert not c.toggle_strands()
+    assert adapter.strands is None and "already shows its strands" in view.messages[-1][0]
+    adapter.deform = (True, False)
+    old = ctl.config.STRANDS_MAX
+    ctl.config.STRANDS_MAX = 1
+    try:
+        c.select_locks([1, 2])
+        assert not c.toggle_strands()
+        assert adapter.strands is None and "at most 1" in view.messages[-1][0]
+    finally:
+        ctl.config.STRANDS_MAX = old
+    c.select("none")
+    assert not c.toggle_strands() and "select a lock" in view.messages[-1][0]
+
+
+def test_isolate_selects_the_same_locks_again(env) -> None:
+    """Isolating changes the output's prim numbers: the viewport selection follows the locks."""
+    adapter, view, c = env
+    c.select_locks([3])
+    before = len(adapter.selected)
+    c.toggle_isolate()
+    assert len(adapter.selected) == before + 1 and adapter.selected[-1] == [3]
+    c.isolate_off()
+    assert len(adapter.selected) == before + 2 and adapter.selected[-1] == [3]
+
+
+def test_poll_outside_houdini_runs_at_once() -> None:
+    calls = []
+    assert ctl._when_idle(lambda: calls.append(1))() is None and calls == [1]
+
+
+def test_escape_leaves_isolate_and_strands(env) -> None:
+    adapter, view, c = env
+    adapter.deform = (True, False)
+    c.select_locks([1, 2])
+    c.toggle_isolate()
+    c.toggle_strands()
+    assert adapter.isolated == [1, 2] and adapter.strands == [1, 2]
+    assert c.escape()
+    assert adapter.isolated is None and adapter.strands is None
+    assert not c.escape()                               # nothing left to leave
+
+
+def test_an_edit_with_strands_on_selects_the_locks_again(env) -> None:
+    """An edit changes the strand count of a lock drawn as strands: the viewport's prim numbers are
+    stale, so the panel's locks are selected again by lock id."""
+    adapter, view, c = env
+    adapter.deform = (True, False)
+    c.select_locks([1])
+    c.toggle_strands()
+    before = len(adapter.selected)
+    c.set_value("density", 250.0)
+    assert len(adapter.selected) > before and adapter.selected[-1] == [1]
+    adapter.strands = None                              # cleared outside (scene loaded again)
+    c.poll()
+    assert c.strands is None and view.strands == ""
 
 
 def test_root_flip_and_exclude_reach_the_adapter_and_show_on_rows(env) -> None:
@@ -814,6 +908,49 @@ def test_isolate_shortcut_and_banner(app, prefs) -> None:
     assert ui._isolate_btn.isChecked()
     ui._fire("isolate_off")
     assert adapter.isolated is None and ui._banner.isHidden()
+    ui.close()
+
+
+def test_enter_and_double_click_draw_strands_double_click_on_the_eye_is_two_clicks(app, prefs) -> None:
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from tools.fx.grooming.ui import COL_EYE
+
+    adapter, ui, c = _panel(app)
+    adapter.deform = (True, False)
+    ui.show()
+    c.select_locks([3])
+    ui.set_selection(c.selection)
+    app.processEvents()
+    tree = ui._tree
+    tree.setFocus()
+    QTest.keyClick(tree, Qt.Key.Key_Return)
+    assert adapter.strands == [3]
+    assert not ui._banner.isHidden() and "back_01" in ui._banner_label.text()
+    assert "Packed" in ui._banner_btn.text()
+    QTest.keyClick(ui, Qt.Key.Key_Escape)
+    app.processEvents()
+    assert adapter.strands is None and ui._banner.isHidden()
+    group = ui._rows[(ctl.SEL_GROUP, "back")]
+    expanded = group.isExpanded()
+    rect = tree.visualItemRect(group)
+    at = QPoint(tree.header().sectionViewportPosition(0) + 60, rect.center().y())
+    # a real double-click is press, release, double-click, release; QTest's sends the double-click only
+    QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    QTest.mouseDClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
+    app.processEvents()
+    # the tree is shown again (new items): no collapse on double-click
+    assert adapter.strands == [3, 4] and ui._rows[(ctl.SEL_GROUP, "back")].isExpanded() == expanded
+    item = ui._rows[(ctl.SEL_LOCKS, 1)]
+    rect = tree.visualItemRect(item)
+    x = tree.header().sectionViewportPosition(COL_EYE) + tree.header().sectionSize(COL_EYE) // 2
+    QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     QPoint(x, rect.center().y()))
+    QTest.mouseDClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                      QPoint(x, rect.center().y()))
+    app.processEvents()
+    assert adapter.read_data(adapter.node).lock(1).visible               # hidden, then shown again
+    assert adapter.strands == [3, 4]                                     # the eye draws no strands
     ui.close()
 
 

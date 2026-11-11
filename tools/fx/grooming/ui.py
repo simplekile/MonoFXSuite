@@ -96,6 +96,7 @@ LUCIDE.update({
     "trash": '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
     "git-merge": '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M6 21V9a9 9 0 0 0 9 9"/>',
     "monitor": '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>',
+    "waves": '<path d="M2 6c.6.5 1.2 1 2.5 1C7 7 7 5 9.5 5c2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 12c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 18c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/>',
     "focus": '<circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
     "type": '<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>',
     "badge-check": '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>',
@@ -611,6 +612,31 @@ class _LayerTree(QTreeWidget):
                 return
         super().mousePressEvent(event)
 
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
+        """Double-click a lock or group: draw it as strands (the first click selected it). On the eye
+        it is a second click: the eye toggles back."""
+        pos = event.position().toPoint()
+        item = self.itemAt(pos)
+        if item is None or event.button() != Qt.MouseButton.LeftButton:
+            super().mouseDoubleClickEvent(event)
+            return
+        if self.columnAt(pos.x()) == COL_EYE:
+            self.mousePressEvent(event)
+            return
+        row = item.data(COL_NAME, ROLE_ROW)
+        if row and row["kind"] in (SEL_GROUP, SEL_LOCKS):
+            self._ui._fire("strands")
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.modifiers():
+            self._ui._fire("strands")
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def startDrag(self, actions) -> None:  # noqa: N802
         """The dragged rows fade in the tree, and the image under the cursor is see-through."""
         if not self._dragged():
@@ -877,7 +903,7 @@ class GroomingUI(QWidget):
         isolate.activated.connect(lambda: self._fire("isolate"))
         leave = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         leave.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-        leave.activated.connect(lambda: self._fire("isolate_off"))
+        leave.activated.connect(lambda: self._fire("escape"))
         self._apply_size(refresh=False)
 
     # =====================================================================
@@ -1019,8 +1045,10 @@ class GroomingUI(QWidget):
         show_all = QToolButton()
         show_all.setText("Show all  Esc")
         show_all.setProperty("flat", True)
-        show_all.clicked.connect(lambda: self._fire("isolate_off"))
+        show_all.clicked.connect(lambda: self._fire("escape"))
         b.addWidget(show_all)
+        self._banner_btn = show_all
+        self._banner_texts = {"isolate": "", "strands": ""}
         self._banner.setVisible(False)
         lay.addWidget(self._banner)
 
@@ -1037,7 +1065,7 @@ class GroomingUI(QWidget):
         tree.customContextMenuRequested.connect(self._row_menu)
         tree.itemSelectionChanged.connect(self._on_tree_selection)
         tree.itemClicked.connect(self._on_item_clicked)
-        tree.setExpandsOnDoubleClick(True)
+        tree.setExpandsOnDoubleClick(False)   # a double-click draws the row as strands
         header = tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(COL_NAME, header.ResizeMode.Stretch)
@@ -1165,7 +1193,7 @@ class GroomingUI(QWidget):
         select(kind, ids), set_value(key, value), reset_value(key), set_visible(kind, ids, on),
         set_row_display(kind, ids, mode), set_group_color(gid, rgb), confirm(ids),
         reassign_orphan(orphan_id, lock_id), delete_orphan(orphan_id), detect(), split_regions(),
-        set_display(mode, color_by), publish(version), isolate(), isolate_off(),
+        set_display(mode, color_by), publish(version), isolate(), isolate_off(), escape(), strands(),
         can_drop(dragged, target, where) -> plan | reason, drop(dragged, target, where),
         poll(), refresh(), dock()
         """
@@ -1427,13 +1455,27 @@ class GroomingUI(QWidget):
         self._version_edit.setText(version)
         self._version_edit.setToolTip(note)
 
-    def set_isolate(self, text: str) -> None:
-        """'' = every lock shown; else what the viewport shows alone."""
+    def _show_banner(self) -> None:
+        iso, strands = self._banner_texts["isolate"], self._banner_texts["strands"]
+        text = "  ·  ".join(t for t in (iso, strands) if t)
         self._banner_label.setText(text)
         self._banner.setVisible(bool(text))
+        self._banner_btn.setText("Show all  Esc" if iso else "Packed  Esc")
+        self._banner_btn.setToolTip("Show every lock again" + (" and draw every lock packed" if strands else "")
+                                    if iso else "Draw every lock packed again")
+
+    def set_isolate(self, text: str) -> None:
+        """'' = every lock shown; else what the viewport shows alone."""
+        self._banner_texts["isolate"] = text
+        self._show_banner()
         self._isolate_btn.setChecked(bool(text))
         # on: the icon takes the accent too, not only the background (the tint alone was easy to miss)
         self._recolor_icon(self._isolate_btn, ACCENT if text else TEXT_LABEL)
+
+    def set_strands(self, text: str) -> None:
+        """'' = every lock packed; else the locks drawn as strands (Enter / double-click)."""
+        self._banner_texts["strands"] = text
+        self._show_banner()
 
     def set_publish_warning(self, text: str) -> None:
         """Next to Publish: hidden or isolated locks. The button turns amber and says the next click goes on."""
@@ -1513,6 +1555,8 @@ class GroomingUI(QWidget):
                 .triggered.connect(lambda: self._fire("set_visible", kind, ids, not visible))
             menu.addAction(_lucide_icon("focus", z.px(15)), "Isolate    I").triggered.connect(
                 lambda: self._fire("isolate"))
+            menu.addAction(_lucide_icon("waves", z.px(15)), "Show strands    Enter").triggered.connect(
+                lambda: self._fire("strands"))
             self._display_menu(row, menu.addMenu(_lucide_icon("monitor", z.px(15)), "Display"))
         if row["kind"] == SEL_LOCKS:
             unsure = [r["id"] for r in self._selected_rows() if r["kind"] == SEL_LOCKS

@@ -29,6 +29,7 @@ PLAY_DISPLAY: tuple[str, ...] = ("same", "guide", "hair_preview")  # index = the
 PREVIEW_FRACTION = 0.10
 PREVIEW_MAX_STRANDS = 20_000
 PREVIEW_FACTOR_STEP = 0.8      # a capped preview factor snaps down to 0.8^k (it is in every lock's cache key)
+STRANDS_MAX = 20              # locks drawn as strands at most (Enter / double-click): 20 is ~1.9 M points
 CLUMP_ID_STRIDE = 100_000      # clump_id = lock_id x this + hairclump's clump: clumped per lock, unique per groom
 
 # Publish layout (department name "grooming").

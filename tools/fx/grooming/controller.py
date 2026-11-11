@@ -9,7 +9,7 @@ it imports `apps.houdini.grooming_adapter` and the Qt panel only then.
 What the controller calls on its view (ui.GroomingUI, or a fake in tests):
   show_node(path, asset), show_tree(rows), set_selection(selection), show_properties(props),
   set_message(text, error=False), set_regions_stale(stale), set_display_state(mode, color_by),
-  set_publish_version(version, note), set_isolate(text), set_publish_warning(text)
+  set_publish_version(version, note), set_isolate(text), set_publish_warning(text), set_strands(text)
 """
 
 from __future__ import annotations
@@ -109,6 +109,7 @@ class GroomController:
         self._node_lost = False
         self._data: model.GroomData | None = None   # last data shown: drag feedback reads it, never writes
         self.isolated: tuple[int, ...] | None = None  # lock ids shown alone in the viewport; None = all
+        self.strands: tuple[int, ...] | None = None   # lock ids drawn as strands, not packed; None = none
         self._publish_armed: tuple | None = None      # what the publish warning named; a 2nd click goes on
         self.unit_cm = DEFAULT_UNIT_CM
         self._drag_origin: str | None = None   # groom_data before a slider drag (preview_value)
@@ -167,6 +168,16 @@ class GroomController:
             return None
         return tuple(sorted(ids)) if ids else None
 
+    def _read_strands(self) -> tuple[int, ...] | None:
+        read = getattr(self.adapter, "strand_ids", None)
+        if read is None or self.node is None:
+            return None
+        try:
+            ids = read(self.node)
+        except Exception:
+            return None
+        return tuple(sorted(ids)) if ids else None
+
     def node_path(self) -> str:
         path = getattr(self.node, "path", None)
         return path() if callable(path) else str(self.node or "")
@@ -179,6 +190,7 @@ class GroomController:
         self._last_json = data.to_json()
         self._data = data
         self.isolated = self._read_isolate()
+        self.strands = self._read_strands()
         key = self._infos_key(data)
         if key != self._infos_for:      # an eye, a display or the order measures nothing new
             try:
@@ -193,6 +205,12 @@ class GroomController:
         self.view.show_properties(self.properties(data))
         self.view.set_regions_stale(data.regions_stale)
         self.view.set_isolate(self.isolate_text(data))
+        if hasattr(self.view, "set_strands"):
+            self.view.set_strands(self.strands_text(data))
+        if self.strands:
+            # an edit changes how many strands a lock drawn as strands has, so the prim numbers the
+            # viewport selection holds now point past them: select the locks again by their lock ids
+            self._sync_viewport(data)
         if self._publish_armed is not None and self._publish_armed != self._unseen(data):
             self._publish_armed = None  # what was hidden changed: the warning no longer says what is true
             self.view.set_publish_warning("")
@@ -758,6 +776,11 @@ class GroomController:
             return False
         return self._set_isolate(None)
 
+    def escape(self) -> bool:
+        """Esc / the banner's button: back to every lock shown and every lock packed."""
+        done = self.strands_off()
+        return self.isolate_off() or done
+
     def _set_isolate(self, ids: list[int] | None) -> bool:
         call = getattr(self.adapter, "set_isolate", None)
         if call is None:
@@ -766,7 +789,58 @@ class GroomController:
         if self._run("Isolate", lambda: call(self.node, ids) or True) is None:
             return False
         self.refresh()
+        self._sync_viewport()   # the output's prim numbers changed: keep the same locks selected
         self.view.set_message(self.isolate_text() or "Showing every lock again")
+        return True
+
+    # ------------------------------------------------------------------
+    # Strands: the viewport draws a packed lock as a flat band of one width; the locks the user opens
+    # (Enter, double-click) are drawn as their strands, each thinning to its tip. A view state like
+    # isolate. Selecting alone never does it: unpacking costs a cook and changes the prim numbers.
+    # ------------------------------------------------------------------
+    def strands_text(self, data: model.GroomData | None = None) -> str:
+        if not self.strands:
+            return ""
+        data = data or self._data or self.data()
+        names = [lk.name or f"lock {lk.id}" for lk in data.locks if lk.id in set(self.strands)]
+        return f"Strands: {_names(names)}" if names else ""
+
+    def toggle_strands(self) -> bool:
+        """Draw the selected locks (or the group's) as strands; again on the same locks: packed again."""
+        data = self.data()
+        ids = self.lock_ids_of(data, self.selection)
+        if not ids:
+            if self.strands:
+                return self.strands_off()
+            self.view.set_message("Strands: select a lock or a group first")
+            return False
+        if self.strands == tuple(ids):
+            return self.strands_off()
+        if len(ids) > config.STRANDS_MAX:
+            self.view.set_message(f"Strands: {len(ids)} locks selected; at most {config.STRANDS_MAX} at a time "
+                                  "(more makes every edit slow again)")
+            return False
+        if self.deform_state() == (True, True):
+            self.view.set_message("Anim is on: every lock already shows its strands")
+            return False
+        return self._set_strands(ids)
+
+    def strands_off(self) -> bool:
+        if not self.strands:
+            return False
+        return self._set_strands(None)
+
+    def _set_strands(self, ids: list[int] | None) -> bool:
+        call = getattr(self.adapter, "set_strands", None)
+        if call is None:
+            self.view.set_message("Strands need a newer MONO Grooming adapter", error=True)
+            return False
+        if self._run("Strands", lambda: call(self.node, ids) or True) is None:
+            return False
+        self.refresh()   # with strands on it selects the same locks again: the prim numbers changed
+        if not self.strands:
+            self._sync_viewport()
+        self.view.set_message(self.strands_text() or "Every lock packed again")
         return True
 
     # ------------------------------------------------------------------
@@ -943,15 +1017,21 @@ class GroomController:
             except Exception:
                 pass
         self.view.show_properties(self.properties(data))
-        lock_ids = self.lock_ids_of(data, self.selection)
         if kind in (SEL_LOCKS, SEL_GROUP):
-            self._run("Select", lambda: self.adapter.select_locks(self.node, lock_ids))
-            # Remember what the viewport reports now (hidden locks are not in its geometry), so the next
-            # poll does not take that subset for a new viewport selection and replace the panel's.
-            try:
-                self._viewport_ids = sorted(self.adapter.selected_lock_ids(self.node))
-            except Exception:
-                self._viewport_ids = lock_ids
+            self._sync_viewport(data)
+
+    def _sync_viewport(self, data: model.GroomData | None = None) -> None:
+        """Select the panel's locks in the viewport, by the node's geometry as it is now."""
+        lock_ids = self.lock_ids_of(data or self._data or self.data(), self.selection)
+        if not lock_ids:
+            return
+        self._run("Select", lambda: self.adapter.select_locks(self.node, lock_ids))
+        # Remember what the viewport reports now (hidden locks are not in its geometry), so the next
+        # poll does not take that subset for a new viewport selection and replace the panel's.
+        try:
+            self._viewport_ids = sorted(self.adapter.selected_lock_ids(self.node))
+        except Exception:
+            self._viewport_ids = lock_ids
 
     def select_locks(self, ids) -> None:
         self.select(SEL_LOCKS, tuple(ids))
@@ -976,7 +1056,8 @@ class GroomController:
                 self.view.set_message(f"{self.node_path() or 'The node'} can no longer be read: {e}", error=True)
             return
         self._node_lost = False
-        if data.to_json() != self._last_json or self._read_isolate() != self.isolated:
+        if data.to_json() != self._last_json or self._read_isolate() != self.isolated \
+                or self._read_strands() != self.strands:
             self.refresh(data)
         elif data.locks and not self._infos:  # opened before the first cook: measure once it has cooked
             try:
@@ -1036,6 +1117,8 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("publish", controller.publish)
     ui.on("isolate", controller.toggle_isolate)
     ui.on("isolate_off", controller.isolate_off)
+    ui.on("escape", controller.escape)
+    ui.on("strands", controller.toggle_strands)
     ui.on("set_root_flip", controller.set_root_flip)
     ui.on("set_shot_deform", controller.set_shot_deform)
     ui.on("set_excluded", controller.set_excluded)
@@ -1057,6 +1140,28 @@ def _shelf_node(adapter: Any) -> Any:
     return nodes[0] if nodes else adapter.create_node()
 
 
+def _when_idle(poll: Callable[[], None]) -> Callable[[], None]:
+    """The poll's timer, run when Houdini's event loop is idle. Houdini handles Qt events in the middle
+    of a long cook (Anim on: ~1.4 s), and the poll then asked the viewer for its selection on the node
+    being cooked: a cook inside the cook, "Infinite recursion in evaluation", and the cook failed.
+    hdefereval runs the call from the event loop, never inside a cook; one at a time."""
+    try:
+        import hdefereval
+    except ImportError:   # outside Houdini
+        return poll
+    pending = [False]
+
+    def run_it() -> None:
+        pending[0] = False
+        poll()
+
+    def tick() -> None:
+        if not pending[0]:
+            pending[0] = True
+            hdefereval.executeDeferred(run_it)
+    return tick
+
+
 def create_panel(adapter: Any = None, node: Any = None, docked: bool = False):
     """A panel widget with its controller; the Python Panel (docked) and run() (floating) both use it."""
     from tools.fx.grooming.ui import GroomingUI
@@ -1068,6 +1173,7 @@ def create_panel(adapter: Any = None, node: Any = None, docked: bool = False):
     ui = GroomingUI(docked=docked)
     controller = GroomController(adapter, ui)
     bind(ui, controller)
+    ui.on("poll", _when_idle(controller.poll))
     ui.on("dock", lambda: _dock(ui))
     if node is not None:
         controller.set_node(node)

@@ -1169,6 +1169,7 @@ def build_network(sub) -> None:
     # What the viewport shows when there is no shot deform: the hair as one packed prim per lock
     # (cook_hair_packed), coloured per packed prim. An edit or a hide then changes one or no packed prim
     # and the viewport keeps the others; the merged strands above are for publish and the deform only.
+    # The locks in `strand_ids` are drawn as strands after the packed prims (their width ramp shows).
     packed = _node(sub, "python", "hair_packed", [end, keys])
     packed.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_hair_packed(hou.pwd())\n")
@@ -1368,6 +1369,9 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     drag = hou.StringParmTemplate("preview_ids", "Locks shown light while a slider drags", 1)
     drag.hide(True)
     ptg.append(drag)
+    strands = hou.StringParmTemplate("strand_ids", "Locks drawn as strands", 1)
+    strands.hide(True)
+    ptg.append(strands)
     cook_all = hou.ToggleParmTemplate("cook_all", "Cook every lock", default_value=False)
     cook_all.hide(True)
     ptg.append(cook_all)

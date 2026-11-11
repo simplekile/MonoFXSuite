@@ -95,6 +95,7 @@ object with these functions, so its tests run with a fake adapter.
 | `publish_context(node) -> (scene_name, existing_versions)` | For the panel's version field (`logic.publish_version`) |
 | `display_state(node) -> (mode, color_by)` | The node's display parms, shown when the panel opens |
 | `set_isolate(node, lock_ids: list[int] \| None)` / `isolate_ids(node) -> list[int]` | Show only those locks (None / [] = all shown ones). No undo step, not restored with the scene |
+| `set_strands(node, lock_ids: list[int] \| None)` / `strand_ids(node) -> list[int]` | Draw those locks as strands, not packed (the viewport shows each strand's width ramp only unpacked). At most 20. No undo step, not restored with the scene |
 | `set_root_flip(node, lock_ids, flip) -> int` | Root at the piece's other end, one undo step, regions stale; returns locks changed |
 | `set_excluded(node, lock_ids, excluded) -> int` | No hair for those locks (guide, mesh stay), one undo step, regions stale |
 | `unit_cm(node) -> float` (optional) | cm per scene unit for the panel's measured values; else the node's `unit_cm` parm |
@@ -167,6 +168,12 @@ Panel and network, after testing the Helen sandbox scene:
   the node's), mesh, guide and hair side by side; publish is always full hair.
 - Fixed 2026-11-11: the small window that flashed up on every edit and ended slider drags was the
   setting row's Reset button, shown before it had a parent (not Houdini's cook-interrupt button).
+- Added 2026-11-11: strands. With Anim off the hair is packed, and the viewport draws a packed lock as
+  a flat band of one width. Enter or double-click on a lock or group (right-click › Show strands) draws
+  those locks unpacked, each strand thinning to its tip; Esc packs them again. Selecting alone does not.
+  Also fixed on the way: Ctrl+Z after an edit undid the panel's viewport selection instead of the edit;
+  isolate on / off left the viewport selecting another lock; with Anim on and locks selected in the
+  viewport, the panel's poll failed the cook ("Infinite recursion in evaluation").
 - UI pass for long working days (artist in it for hours, every action quick). Clear separators,
   a clear main / secondary hierarchy, colour only where it means something. Seen on the current panel:
   - The tree and the settings run into each other; settings rows have no separation; "Measured" is

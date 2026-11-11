@@ -45,6 +45,7 @@ PARM_PUBLISH_PATH = "publish_path"   # hidden, read by PUBLISH_USD
 PARM_PUBLISH_VERSION = "publish_version"
 PARM_ISOLATE = "isolate_ids"         # hidden: locks shown alone ("" = none); display only, never undone
 PARM_DRAG_PREVIEW = "preview_ids"    # hidden: locks a slider is dragging, grown light; display only
+PARM_STRANDS = "strand_ids"          # hidden: locks drawn as strands, not packed (Enter / double-click)
 PARM_COOK_ALL = "cook_all"           # hidden: 1 while publishing: every lock, hidden or isolated out
 PARM_DISPLAY_EFF = "display_eff"     # hidden expression: the mode drawn (Display, or While playing)
 PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playbar callback, undo off)
@@ -52,7 +53,8 @@ PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playb
 # Parms whose value never reaches the per-lock hair cook (display, publish, deform, what the geometry
 # already carries): left out of the cache key, so changing them recooks no lock.
 _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
-                   PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_COOK_ALL,
+                   PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_STRANDS,
+                   PARM_COOK_ALL,
                    "shot_deform", "deform_active", "anim_wired",   # per lock: do_capture; deform_radius stays
                    PARM_DISPLAY_EFF, PARM_PLAYING, "play_display",
                    "rest_frame", "detect", "split_regions", "publish"}
@@ -637,6 +639,25 @@ def set_drag_preview(node, lock_ids: Sequence[int] | None) -> None:
         p.set(format_isolate(lock_ids))
 
 
+def set_strands(node, lock_ids: Sequence[int] | None) -> None:
+    """Draw these locks as their strands (None: every lock packed again). The viewport draws a packed
+    lock's strands as a flat band of one width; unpacked, it draws each strand's width, thinning to the
+    tip. A view state like isolate: no undo step, cleared when the scene is loaded again. It changes no
+    lock's hair, only how `hair_packed` hands it to the viewport (at most `config.STRANDS_MAX` locks)."""
+    p = node.parm(PARM_STRANDS)
+    if p is None:
+        return
+    ids = sorted(set(int(i) for i in (lock_ids or ())))[:config.STRANDS_MAX]
+    with hou.undos.disabler():
+        p.set(format_isolate(ids))
+
+
+def strand_ids(node) -> list[int]:
+    """The locks drawn as strands, [] when every lock is packed."""
+    p = node.parm(PARM_STRANDS)
+    return parse_isolate(p.eval()) if p is not None else []
+
+
 def _set_lock_flag(node, lock_ids: Iterable[int], field_name: str, value: bool, label: str) -> int:
     data = read_data(node)
     want = set(int(i) for i in lock_ids)
@@ -698,6 +719,27 @@ def _parse_ranges(text: str) -> list[int]:
     return out
 
 
+_LOCK_OF_PRIM: dict[int, tuple] = {}   # node session id -> (cookCount, lock_id per prim, frozen output)
+
+
+def _lock_of_prim(node) -> tuple[list[int], "hou.Geometry"] | None:
+    """lock_id of each output prim, read again only after the node has cooked again. The panel polls
+    the viewport selection while Houdini handles events in the middle of a cook (Anim on: ~1.4 s), and
+    node.geometry() there cooks the node inside its own cook: "Infinite recursion in evaluation", and
+    the cook fails. needsToCook() cannot tell (it stays true on this node)."""
+    count = node.cookCount()
+    hit = _LOCK_OF_PRIM.get(node.sessionId())
+    if hit is not None and hit[0] == count:
+        return hit[1], hit[2]
+    geo = node.geometry()
+    if geo.findPrimAttrib(config.ATTR_LOCK_ID) is None:
+        return None
+    ids = list(geo.primIntAttribValues(config.ATTR_LOCK_ID))
+    frozen = geo.freeze(read_only=True)   # shares the cooked data; resolves selection strings later
+    _LOCK_OF_PRIM[node.sessionId()] = (node.cookCount(), ids, frozen)
+    return ids, frozen
+
+
 def selected_lock_ids(node) -> list[int]:
     """Locks whose spines, strands or mesh pieces are selected in the viewport (empty when none).
     Bulk reads: the panel polls this, and one hou.Prim per selected strand made every tick lag."""
@@ -710,10 +752,10 @@ def selected_lock_ids(node) -> list[int]:
         return []
     if sel is None or node not in sel.nodes():
         return []
-    geo = node.geometry()
-    if geo.findPrimAttrib(config.ATTR_LOCK_ID) is None:
+    read = _lock_of_prim(node)
+    if read is None:
         return []
-    lock_of_prim = geo.primIntAttribValues(config.ATTR_LOCK_ID)
+    lock_of_prim, geo = read
     ids: set[int] = set()
     for s in sel.selections():
         if s.selectionType() == hou.geometryType.Primitives:
@@ -740,9 +782,12 @@ def select_locks(node, ids: Iterable[int]) -> None:
     # one bulk read and a range string: a hou.Prim per strand (116 k on Helen) made each selection lag
     picked = [i for i, lid in enumerate(geo.primIntAttribValues(config.ATTR_LOCK_ID)) if lid in want]
     try:
-        node.setCurrent(True, clear_all_selected=True)
-        viewer.setCurrentGeometrySelection(hou.geometryType.Primitives, (node,), (
-            hou.Selection(geo, hou.geometryType.Primitives, _index_ranges(picked)),))
+        # no undo step: Houdini records a viewport selection, and the panel selects again after an edit
+        # (the prim numbers of locks drawn as strands change), so Ctrl+Z undid that, not the edit
+        with hou.undos.disabler():
+            node.setCurrent(True, clear_all_selected=True)
+            viewer.setCurrentGeometrySelection(hou.geometryType.Primitives, (node,), (
+                hou.Selection(geo, hou.geometryType.Primitives, _index_ranges(picked)),))
     except hou.Error:
         # The viewer has no active selector (view state, not a select state): Houdini refuses with
         # "Not available in this context / no active selector found". The panel's selection simply is
@@ -883,7 +928,7 @@ def on_loaded(node) -> None:
     """HDA OnLoaded: isolate is a temporary view, so a scene saved while isolated opens showing all;
     a scene saved while playing opens at its Display."""
     with hou.undos.disabler():
-        for name, empty in ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_PLAYING, 0)):
+        for name, empty in ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_STRANDS, ""), (PARM_PLAYING, 0)):
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)
@@ -1079,7 +1124,10 @@ def cook_hair_cache(sop) -> None:
 def cook_hair_packed(sop) -> None:
     """Python SOP "hair_packed": the display's hair, one packed primitive per lock embedding its cached
     strands (no copy). Merging 4 M points into one geometry made every edit and every hide re-upload the
-    whole groom to the viewport; packed, the viewport keeps the locks that did not change."""
+    whole groom to the viewport; packed, the viewport keeps the locks that did not change.
+    Locks in `strand_ids` are drawn as strands (the viewport draws no width ramp inside a packed prim):
+    their packed prim stays, empty, so every lock keeps prim number = its place among the packed prims
+    and a viewport selection of packed locks still means the same locks; their strands come after."""
     geo = sop.geometry()
     geo.clear()
     lid_attr = geo.addAttrib(hou.attribType.Prim, config.ATTR_LOCK_ID, -1)
@@ -1087,6 +1135,9 @@ def cook_hair_packed(sop) -> None:
     by_group = int(sop.parent().evalParm("color_by")) == 1
     cache = hair_cache()
     sid = sop.parent().sessionId()
+    strands = set(strand_ids(sop.parent()))
+    empty = hou.Geometry().freeze(read_only=True) if strands else None
+    unpacked = []
     for lid, name, g, sp in _cached_hair(sop, with_prim=True):
         # The viewport does not tint embedded geometry with the packed prim's Cd (it drew Helen white):
         # the colour goes inside, on a copy of the lock's strands made once per colour and kept in the
@@ -1102,9 +1153,15 @@ def cook_hair_packed(sop) -> None:
             coloured = tinted.freeze(read_only=True)
             cache.put(sid, lid, mode, key, coloured)
         prim = geo.createPacked("PackedGeometry")
-        prim.setEmbeddedGeometry(coloured)
+        if lid in strands:
+            prim.setEmbeddedGeometry(empty)
+            unpacked.append(coloured)
+        else:
+            prim.setEmbeddedGeometry(coloured)
         prim.setAttribValue(lid_attr, lid)
         prim.setAttribValue(name_attr, name)
+    for g in unpacked:  # the cached strands carry lock_id and name
+        geo.merge(g)
 
 
 def cook_frozen_regions(sop) -> None:
@@ -1119,6 +1176,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "set_isolate", "isolate_ids", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "set_isolate", "isolate_ids", "set_strands", "strand_ids", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]

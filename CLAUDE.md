@@ -199,6 +199,23 @@
     frozen strands, coloured per packed prim). The merged 4 M points re-uploaded the whole groom to the
     viewport on every edit and hide. `HAIR` (merged) stays for publish and the deform; tests read
     strands there, not from the node's output.
+  - The viewport draws a packed lock as a flat band of one width: Houdini ignores curve width inside
+    any packed prim (Pack SOP fragments, packed disk too; "shade open curves" changes nothing). Strands
+    (Enter or double-click on a row, right-click › Show strands; Esc back): those locks are drawn
+    unpacked, each strand thinning to its tip. A view state like isolate (hidden parm `strand_ids`,
+    undo off, cleared by OnLoaded, at most `config.STRANDS_MAX` = 20 locks); selecting alone never
+    unpacks (the user asked: a selection of the whole groom would be 4 M points again). Their packed
+    prim stays, empty, so prim number = place among the packed prims for every lock; their strands come
+    after. Helen GUI: Enter 0.05 s, a group of 20 0.2 s, an edit +0.01-0.03 s. Rejected (t29/t30):
+    one geo object per lock, since with dependencies every edit recooks all 61 (3.2-3.5 s).
+  - The output's prim numbers change with strands and isolate, and an edit changes how many strands a
+    lock drawn as strands has: the controller selects the panel's locks again by lock id after each
+    (`_sync_viewport`), with undo off in `select_locks` (Houdini records a viewport selection, and
+    Ctrl+Z undid that instead of the edit).
+  - The panel's poll runs from Houdini's idle loop (`controller._when_idle`, hdefereval): Houdini
+    handles Qt events mid-cook, and the poll asking the viewer for its selection on a node being cooked
+    (Anim on, ~1.4 s) failed the cook with "Infinite recursion in evaluation". `needsToCook()` cannot
+    tell (always true on this node). `selected_lock_ids` keeps lock_id per prim by `cookCount()`.
   - Selection reads `lock_id` in bulk and builds a range string (`_index_ranges`); one hou.Prim per
     strand (116 k) made each selection and every poll lag.
   - `lock_infos` reads the scalp areas in bulk, and the panel re-reads it only when settings, regions
