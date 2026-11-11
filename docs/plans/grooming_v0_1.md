@@ -196,6 +196,10 @@ Panel and network, after testing the Helen sandbox scene:
   - Colours: one accent for the main action (Publish) and the selection; status colours only for
     status; the rest neutral.
 
+- View model 2026-11-12 (thinking as the artist at work): selecting is editing, so the selection shows its
+  real strands and the rest are x-ray bands; X shows the selection inside the real groom; nothing
+  selected is the whole groom as strands. The per-lock strands set (icon, Enter, button) is gone.
+  Settings ⚙ holds font size and X-ray strength.
 - Redesign 2026-11-12 (UI/UX review + Houdini names): view bar apart from actions, narrow docked layout,
   quiet icon columns, filter, Confirm all, the selection's action row, groom overview with keys, fading
   result line, labels renamed as Houdini names things (CLAUDE.md lists them). Checked in GUI Houdini at

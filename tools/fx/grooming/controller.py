@@ -9,7 +9,7 @@ it imports `apps.houdini.grooming_adapter` and the Qt panel only then.
 What the controller calls on its view (ui.GroomingUI, or a fake in tests):
   show_node(path, asset), show_tree(rows), set_selection(selection), show_properties(props),
   set_message(text, error=False), set_regions_stale(stale), set_display_state(mode, color_by),
-  set_publish_version(version, note), set_isolate(text), set_publish_warning(text), set_strands(text)
+  set_publish_version(version, note), set_isolate(text), set_publish_warning(text), set_xray_on(on)
 """
 
 from __future__ import annotations
@@ -73,9 +73,10 @@ SOURCE_NAMES: dict[str, str] = {"defaults": ALL_LOCKS, "builtin": "tool default"
 
 # Keys of the panel, listed while nothing is selected
 SHORTCUTS: tuple[tuple[str, str], ...] = (
+    ("Click a lock", "Edit it: it shows its real strands, the others x-ray"),
+    ("X", "X-ray off / on: see the selection inside the real groom"),
     ("I", "Isolate the selection (again: show all)"),
-    ("Enter / double-click", "Strands or packed for the selection"),
-    ("Esc", "Show all and pack all"),
+    ("Esc", "Leave isolate, else deselect: the whole groom as strands"),
     ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
     ("Shift / Ctrl click", "Select several locks"),
 )
@@ -141,7 +142,7 @@ class GroomController:
         self._node_lost = False
         self._data: model.GroomData | None = None   # last data shown: drag feedback reads it, never writes
         self.isolated: tuple[int, ...] | None = None  # lock ids shown alone in the viewport; None = all
-        self.strands: tuple[int, ...] | None = None   # lock ids drawn as strands, not packed; None = none
+        self.xray = True        # selected: the others see-through bands (False: every lock as strands)
         self._publish_armed: tuple | None = None      # what the publish warning named; a 2nd click goes on
         self.unit_cm = DEFAULT_UNIT_CM
         self._drag_origin: str | None = None   # groom_data before a slider drag (preview_value)
@@ -213,16 +214,6 @@ class GroomController:
             return None
         return tuple(sorted(ids)) if ids else None
 
-    def _read_strands(self) -> tuple[int, ...] | None:
-        read = getattr(self.adapter, "strand_ids", None)
-        if read is None or self.node is None:
-            return None
-        try:
-            ids = read(self.node)
-        except Exception:
-            return None
-        return tuple(sorted(ids)) if ids else None
-
     def node_path(self) -> str:
         path = getattr(self.node, "path", None)
         return path() if callable(path) else str(self.node or "")
@@ -235,7 +226,6 @@ class GroomController:
         self._last_json = data.to_json()
         self._data = data
         self.isolated = self._read_isolate()
-        self.strands = self._read_strands()
         key = self._infos_key(data)
         if key != self._infos_for:      # an eye, a display or the order measures nothing new
             try:
@@ -252,16 +242,10 @@ class GroomController:
         if hasattr(self.view, "set_review"):
             self.view.set_review(*self.review_counts(data))
         self.view.set_isolate(self.isolate_text(data))
-        if hasattr(self.view, "set_strands"):
-            self.view.set_strands(self.strands_text(data))
         if hasattr(self.adapter, "set_focus"):
-            # an eye or a group's eye may have hidden or shown the selection: focus only drawn locks
-            # (set_focus writes only when the ids change)
+            # an eye or a group's eye may have hidden or shown the selection: focus and strands only on
+            # drawn locks (the adapter writes only when they change)
             self._sync_viewport(data, quiet=True)
-        elif self.strands:
-            # an edit changes how many strands a lock drawn as strands has, so the prim numbers the
-            # viewport selection holds now point past them: select the locks again by their lock ids
-            self._sync_viewport(data)
         if self._publish_armed is not None and self._publish_armed != self._unseen(data):
             self._publish_armed = None  # what was hidden changed: the warning no longer says what is true
             self.view.set_publish_warning("")
@@ -304,7 +288,6 @@ class GroomController:
                              ["edited"] if data.defaults else [],
                              "meta": "Settings every lock takes, unless its group or the lock sets its own"}]
         isolated = set(self.isolated) if self.isolated else None
-        strands = set(self.strands or ())
         for gid in self._group_order(data):
             g = data.group(gid)
             group_visible = g.visible if g else True
@@ -316,7 +299,7 @@ class GroomController:
                 "hidden_by_group": not group_visible,
                 "isolated_out": isolated is not None and lk.id not in isolated,
                 "isolated_in": isolated is not None and lk.id in isolated,
-                "root_flip": lk.root_flip, "excluded": lk.excluded, "strands": lk.id in strands,
+                "root_flip": lk.root_flip, "excluded": lk.excluded,
                 "badges": (["edited"] if lk.overrides else []) + ([lk.match] if lk.match in ("unsure", "new") else []),
             } for lk in locks]
             badges = ["edited"] if g and g.overrides else []
@@ -330,7 +313,6 @@ class GroomController:
                 "visible": group_visible, "display": g.display if g else None,
                 "isolated_out": isolated is not None and not any(lk.id in isolated for lk in locks),
                 "isolated_in": isolated is not None and any(lk.id in isolated for lk in locks),
-                "strands": bool(locks) and all(lk.id in strands for lk in locks),
                 "badges": badges, "meta": f"{len(locks)} lock{'s' if len(locks) != 1 else ''}",
                 "children": children,
             })
@@ -466,7 +448,7 @@ class GroomController:
 
     def _state(self, data: model.GroomData, kind: str, ids) -> dict:
         """What the viewport does with the selection, for the properties' action row and its subtitle:
-        drawn as strands, isolated, shown, root flipped, excluded (None when the locks differ), and a
+        isolated, shown, root flipped, excluded (None when the locks differ), and a
         note when the selection is not drawn (its edits would be invisible)."""
         if kind not in (SEL_GROUP, SEL_LOCKS):
             return {}
@@ -494,7 +476,6 @@ class GroomController:
         else:
             note = ""
         return {"kind": kind, "ids": list(ids), "lock_ids": lock_ids, "visible": visible,
-                "strands": bool(lock_ids) and set(lock_ids) <= set(self.strands or ()),
                 "isolated": bool(isolated) and set(lock_ids) <= isolated,
                 "root_flip": same(lk.root_flip for lk in locks) if kind == SEL_LOCKS else None,
                 "excluded": same(lk.excluded for lk in locks) if kind == SEL_LOCKS else None,
@@ -978,9 +959,15 @@ class GroomController:
         return self._set_isolate(None)
 
     def escape(self) -> bool:
-        """Esc / the banner's button: back to every lock shown and every lock packed."""
-        done = self.strands_off()
-        return self.isolate_off() or done
+        """Esc / the banner's button: out of isolate first; else nothing selected (the whole groom)."""
+        if self.isolate_off():
+            return True
+        if self.selection[0] == SEL_NONE:
+            return False
+        self.select(SEL_NONE)
+        if hasattr(self.view, "set_selection"):
+            self.view.set_selection(self.selection)
+        return True
 
     def focus_off(self) -> None:
         """The panel closes or changes node: every lock in its colour again."""
@@ -1021,60 +1008,22 @@ class GroomController:
         return True
 
     # ------------------------------------------------------------------
-    # Strands: the viewport draws a packed lock as a flat band of one width; the locks the user opens
-    # (Enter, double-click) are drawn as their strands, each thinning to its tip. A view state like
-    # isolate. Selecting alone never does it: unpacking costs a cook and changes the prim numbers.
+    # How the viewport draws: it follows the work, nothing to switch or remember. Selected (drawn)
+    # locks are their real strands and the others x-ray bands (packed, see-through: only packed geometry
+    # can be see-through in the viewport); X turns the x-ray off to see the selection among the real
+    # groom; nothing selected shows the whole groom as strands. t41 (GUI Helen): select 0.04-0.08 s,
+    # a group of 20 0.16 s, back to the whole groom 0.37 s, an edit 0.50 s (x-ray) / 0.84 s (all strands).
     # ------------------------------------------------------------------
-    def strands_text(self, data: model.GroomData | None = None) -> str:
-        if not self.strands:
-            return ""
-        data = data or self._data or self.data()
-        names = [lk.name or f"lock {lk.id}" for lk in data.locks if lk.id in set(self.strands)]
-        return f"Strands: {_names(names)}" if names else ""
-
-    def toggle_strands(self) -> bool:
-        """Enter / double-click: the selected locks (or the group's) as strands, or packed again when
-        they all are already; other locks drawn as strands stay so."""
-        data = self.data()
-        ids = self.lock_ids_of(data, self.selection)
-        if not ids:
-            self.view.set_message("Strands: select a lock or a group first")
-            return False
-        return self.set_strands_of(SEL_LOCKS, ids, not set(ids) <= set(self.strands or ()))
-
-    def set_strands_of(self, kind: str, ids, on: bool) -> bool:
-        """The row's packed / strands icon (on its selection when it is part of it): these locks, or
-        the groups' locks, drawn as strands (on) or packed again (off)."""
-        data = self.data()
-        lock_ids = (self.lock_ids_of(data, (SEL_GROUP, tuple(ids))) if kind == SEL_GROUP
-                    else [int(i) for i in ids])
-        now = set(self.strands or ())
-        want = sorted(now | set(lock_ids)) if on else sorted(now - set(lock_ids))
-        if on and self.deform_state() == (True, True):
-            self.view.set_message("Deform is on: every lock already shows its strands")
-            return False
-        if len(want) > config.STRANDS_MAX:
-            self.view.set_message(f"Strands: at most {config.STRANDS_MAX} locks at a time ({len(want)} asked; "
-                                  "more makes every edit slow again). Esc packs them all")
-            return False
-        return self._set_strands(want or None)
-
-    def strands_off(self) -> bool:
-        if not self.strands:
-            return False
-        return self._set_strands(None)
-
-    def _set_strands(self, ids: list[int] | None) -> bool:
-        call = getattr(self.adapter, "set_strands", None)
-        if call is None:
-            self.view.set_message("Strands need a newer MONO Grooming adapter", error=True)
-            return False
-        if self._run("Strands", lambda: call(self.node, ids) or True) is None:
-            return False
-        self.refresh()   # with strands on it selects the same locks again: the prim numbers changed
-        if not self.strands:
-            self._sync_viewport()
-        self.view.set_message("" if self.strands else "Every lock packed again")
+    def toggle_xray(self) -> bool:
+        """X / the view bar's X-ray: the others as see-through bands (on) or as real strands (off)."""
+        self.xray = not self.xray
+        if hasattr(self.view, "set_xray_on"):
+            self.view.set_xray_on(self.xray)
+        self._sync_viewport()
+        if self.selection[0] in (SEL_LOCKS, SEL_GROUP):
+            self.view.set_message("X-ray on: the locks you are not editing are see-through bands" if self.xray
+                                  else "X-ray off: every lock as real strands, the selection still edits"
+                                       " (edits are slower: X turns it back on)")
         return True
 
     # ------------------------------------------------------------------
@@ -1265,8 +1214,24 @@ class GroomController:
         focus = getattr(self.adapter, "set_focus", None)
         if focus is not None:
             drawn = self._drawn(data, lock_ids)
-            self._run("Focus", lambda: focus(self.node, drawn or None))
+            every = self._drawn(data, [lk.id for lk in data.locks])
+            # the whole groom as it will render: nothing (drawn) selected, all of it, or X-ray off
+            look = not drawn or not self.xray or set(drawn) >= set(every)
+            strands = getattr(self.adapter, "set_strands", None)
+            whole = getattr(self.adapter, "STRANDS_ALL", "all")
+            too_many = not look and len(drawn) > config.STRANDS_MAX
+
+            def show():
+                focus(self.node, None if look else drawn)
+                if strands is not None:
+                    strands(self.node, whole if look else (None if too_many else drawn))
+                return True
+
+            self._run("Focus", show)
             self._viewport_ids = []
+            if too_many and not quiet:
+                self.view.set_message(f"{len(drawn)} locks selected: drawn as bands (strands for up to"
+                                      f" {config.STRANDS_MAX}). X shows every lock as strands")
             if lock_ids and not drawn and not quiet:
                 names = ", ".join(lk.name for lk in (data.lock(i) for i in lock_ids[:3]) if lk is not None)
                 more = f" and {len(lock_ids) - 3} more" if len(lock_ids) > 3 else ""
@@ -1315,8 +1280,7 @@ class GroomController:
                 self.view.set_message(f"{self.node_path() or 'The node'} can no longer be read: {e}", error=True)
             return
         self._node_lost = False
-        if data.to_json() != self._last_json or self._read_isolate() != self.isolated \
-                or self._read_strands() != self.strands:
+        if data.to_json() != self._last_json or self._read_isolate() != self.isolated:
             self.refresh(data)
         elif data.locks and not self._infos:  # opened before the first cook: measure once it has cooked
             try:
@@ -1383,10 +1347,9 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("hidden", controller.focus_off)
     ui.on("shown", lambda: controller._sync_viewport() if controller.node is not None else None)
     ui.on("redo", lambda: controller.undo(redo=True))
-    ui.on("strands", controller.toggle_strands)
+    ui.on("xray", controller.toggle_xray)
     ui.on("confirm_all", controller.confirm_all)
     ui.on("set_xray", controller.set_xray)
-    ui.on("set_strands_of", controller.set_strands_of)
     ui.on("set_root_flip", controller.set_root_flip)
     ui.on("set_shot_deform", controller.set_shot_deform)
     ui.on("set_excluded", controller.set_excluded)

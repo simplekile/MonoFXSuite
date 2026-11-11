@@ -200,16 +200,20 @@
     viewport on every edit and hide. `HAIR` (merged) stays for publish and the deform; tests read
     strands there, not from the node's output.
   - The viewport draws a packed lock as a flat band of one width: Houdini ignores curve width inside
-    any packed prim (Pack SOP fragments, packed disk too; "shade open curves" changes nothing). Strands
-    (the row's packed / strands icon beside the eye, Enter or double-click, right-click › Show strands:
-    each adds or removes those locks, the selection when the row is in it; Esc packs all): those locks are
-    drawn unpacked, each strand thinning to its tip. A view state like isolate (hidden parm `strand_ids`,
-    undo off, cleared by OnLoaded, at most `config.STRANDS_MAX` = 20 locks); selecting alone never
-    unpacks (the user asked: a selection of the whole groom would be 4 M points again). Their packed
-    prim stays, empty, so prim number = place among the packed prims for every lock; their strands come
-    after. Helen GUI: Enter 0.05 s, a group of 20 0.2 s, an edit +0.01-0.03 s. Rejected (t29/t30):
-    one geo object per lock, since with dependencies every edit recooks all 61 (3.2-3.5 s). Every lock
-    as strands all the time (t33, GUI): an edit 0.71-0.78 s vs 0.44 packed, a hide 0.31 vs 0.06 s.
+    any packed prim (Pack SOP fragments, packed disk too). The view follows the work, nothing to switch
+    or remember (the user: a strands set of its own, kept while the selection moved on, left grey solid
+    locks over the one being edited): the selected, drawn locks are their real strands (unpacked, width
+    ramp) and the others see-through bands (packed: only packed geometry can be see-through); **X**
+    (view bar X-ray) turns the bands into real strands to judge the selection inside the groom, the
+    selection still edits; nothing selected, All locks, or a selection that is all that is drawn shows
+    the whole groom as strands (`set_strands(node, STRANDS_ALL)`, hidden parm `strand_ids` = "all").
+    Over `config.STRANDS_MAX` (20) selected locks stay bands, the message says so. `controller.
+    _sync_viewport` sets focus and strands together on every selection change and refresh. Esc leaves
+    isolate, then deselects. No strands icon, button, menu or Enter. Their packed prim stays, empty, so
+    prim number = place among the packed prims for every lock. t41/t42 (GUI Helen): select 0.04-0.10 s,
+    a group of 20 0.16 s, back to the whole groom 0.37 s, an edit 0.5-0.86 s with X-ray, 0.84-1.18 s
+    without. Rejected (t29/t30): one geo object per lock, since with dependencies every edit recooks all
+    61 (3.2-3.5 s).
   - Focus, not Houdini's selection highlight (the user: the highlight paints the lock over; the others
     should go x-ray): the panel's selection is the hidden parm `focus_ids` (`set_focus`, by lock id,
     undo off, cleared by OnLoaded and when the panel hides). Locks in focus keep their colour, the

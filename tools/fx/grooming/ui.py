@@ -4,11 +4,11 @@ MONO Grooming panel — one window, floating or docked in a Houdini pane.
 Zones, each on its own surface with a line between them:
   top bar      the node, its asset, Settings (font size, X-ray strength), Dock; under it the view bar: what the viewport draws
                (Display, Color by, Deform, Isolate). Viewing never sits next to an action that writes.
-  left         the layer tree (All locks › group › lock, Missing locks): swatch, name, status, packed /
-               strands, eye (the two icons show on hover, on the selection, or when not the default);
+  left         the layer tree (All locks › group › lock, Missing locks): swatch, name, status, eye (shown on
+               hover, on the selection, or when not the default);
                a filter, Confirm all while locks are new or to check; drag to reorder or regroup
-  right (main) the selection: title, what the viewport does with it, its actions (Strands, Isolate,
-               Hide, Flip root, Exclude), measured shape (cm), then one compact row per setting; with
+  right (main) the selection: title, what the viewport does with it, its actions (Hidden, Flip root,
+               Exclude), measured shape (cm), then one compact row per setting; with
                nothing selected, the whole groom and the keys
   action bar   loading, the result line (fades); Detect locks, Update regions; version, Publish (the one
                accent button) with its warning when locks are hidden or isolated
@@ -112,6 +112,7 @@ LUCIDE.update({
     "badge-check": '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>',
     "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     "play": '<polygon points="6 3 20 12 6 21 6 3"/>',
+    "contrast": '<circle cx="12" cy="12" r="10"/><path d="M12 18a6 6 0 0 0 0-12v12z"/>',
     "settings": '<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0'
                 ' 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0'
                 ' 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2'
@@ -158,9 +159,9 @@ SWATCHES: tuple[tuple[float, float, float], ...] = (
     (0.38, 0.62, 0.95), (0.62, 0.52, 0.95), (0.88, 0.50, 0.80), (0.70, 0.70, 0.72), (0.55, 0.45, 0.38),
 )
 
-COL_NAME, COL_STATUS, COL_STRANDS, COL_EYE = range(4)
+COL_NAME, COL_STATUS, COL_EYE = range(3)
 ROLE_ROW = Qt.ItemDataRole.UserRole + 1
-ROLE_ICON = Qt.ItemDataRole.UserRole + 2    # the packed / strands and eye icons, painted by _IconDelegate
+ROLE_ICON = Qt.ItemDataRole.UserRole + 2    # the eye icon, painted by _IconDelegate
 ROLE_QUIET = Qt.ItemDataRole.UserRole + 3   # True: the default state, drawn only on hover or selection
 NARROW_PX = 760      # below this width (at size 1) the tree sits above the settings
 MESSAGE_MS = 6000    # the result line fades after this; errors stay twice as long
@@ -171,7 +172,6 @@ FILTER_WORDS = {      # words the tree's filter knows besides names
     "hidden": lambda r: not r.get("visible", True) or bool(r.get("hidden_by_group")),
     "excluded": lambda r: bool(r.get("excluded")),
     "flipped": lambda r: bool(r.get("root_flip")),
-    "strands": lambda r: bool(r.get("strands")),
 }
 SLIDER_STEPS = 1000
 
@@ -648,9 +648,9 @@ class _WrapRow(QWidget):
 
 
 class _IconDelegate(QStyledItemDelegate):
-    """The packed / strands and eye columns: an icon in its default state (packed, shown) is drawn only on
-    the row under the mouse or a selected row, so 60 identical icons do not fill the tree; a state that
-    is not the default (strands, hidden, isolated) always shows."""
+    """The eye column: an eye in its default state (shown by its own eye) is drawn only on the row under
+    the mouse or a selected row, so 60 identical icons do not fill the tree; a state that is not the
+    default (hidden, hidden by its group, isolated) always shows."""
 
     def __init__(self, tree: "_LayerTree") -> None:
         super().__init__(tree)
@@ -748,47 +748,26 @@ class _LayerTree(QTreeWidget):
         return plan, target, where
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
-        """An eye or packed / strands click acts on the selection it is part of: handled here, before
-        Qt's press replaces a multi-selection with the clicked row alone."""
+        """An eye click acts on the selection it is part of: handled here, before Qt's press replaces a
+        multi-selection with the clicked row alone."""
         pos = event.position().toPoint()
         item = self.itemAt(pos)
-        column = self.columnAt(pos.x())
-        if item is not None and event.button() == Qt.MouseButton.LeftButton and column in (COL_EYE, COL_STRANDS):
+        if item is not None and event.button() == Qt.MouseButton.LeftButton \
+                and self.columnAt(pos.x()) == COL_EYE:
             row = item.data(COL_NAME, ROLE_ROW)
             if row and row["kind"] in (SEL_GROUP, SEL_LOCKS):
                 kind, ids = self._ui._targets(row)
-                if column == COL_EYE:
-                    self._ui._fire("set_visible", kind, ids, not row.get("visible", True))
-                else:
-                    self._ui._fire("set_strands_of", kind, ids, not row.get("strands", False))
+                self._ui._fire("set_visible", kind, ids, not row.get("visible", True))
                 event.accept()
                 return
         super().mousePressEvent(event)
 
     def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802
-        """Double-click a lock or group: strands / packed (the first click selected it). On the eye or the
-        packed / strands icon it is a second click: it toggles back."""
-        pos = event.position().toPoint()
-        item = self.itemAt(pos)
-        if item is None or event.button() != Qt.MouseButton.LeftButton:
-            super().mouseDoubleClickEvent(event)
-            return
-        if self.columnAt(pos.x()) in (COL_EYE, COL_STRANDS):
+        """On the eye a double-click is two clicks: the eye toggles back."""
+        if self.columnAt(event.position().toPoint().x()) == COL_EYE:
             self.mousePressEvent(event)
             return
-        row = item.data(COL_NAME, ROLE_ROW)
-        if row and row["kind"] in (SEL_GROUP, SEL_LOCKS):
-            self._ui._fire("strands")
-            event.accept()
-            return
         super().mouseDoubleClickEvent(event)
-
-    def keyPressEvent(self, event) -> None:  # noqa: N802
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and not event.modifiers():
-            self._ui._fire("strands")
-            event.accept()
-            return
-        super().keyPressEvent(event)
 
     def startDrag(self, actions) -> None:  # noqa: N802
         """The dragged rows fade in the tree, and the image under the cursor is see-through."""
@@ -1090,6 +1069,9 @@ class GroomingUI(QWidget):
         root.addWidget(_line())
         root.addWidget(self._build_action_bar())
 
+        xray = QShortcut(QKeySequence("X"), self)
+        xray.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        xray.activated.connect(lambda: self._fire("xray"))
         isolate = QShortcut(QKeySequence("I"), self)
         isolate.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         isolate.activated.connect(lambda: self._fire("isolate"))
@@ -1132,7 +1114,7 @@ class GroomingUI(QWidget):
         self._tree.setAlternatingRowColors(False)
         self._tree.viewport().setStyleSheet(f"background-color: {PANE};")
         header = self._tree.header()
-        for col, width in ((COL_STATUS, 92), (COL_STRANDS, 30), (COL_EYE, 36)):
+        for col, width in ((COL_STATUS, 110), (COL_EYE, 36)):
             header.resizeSection(col, z.px(width))
         self._version_edit.setFixedWidth(z.px(84))
         self._filter.setMinimumWidth(z.px(120))
@@ -1271,7 +1253,7 @@ class GroomingUI(QWidget):
         self._icon(self._deform_btn, "move-3d", TEXT_LABEL, 16)
         self._deform_btn.setToolTip("Deform by the animated hair mesh wired into input 3 (Point Deform), as in"
                                     " the shot. Off while grooming: every edit would deform 4 M points (~1 s), every"
-                                    " lock is drawn as strands and the others only dim")
+                                    " lock is drawn as strands and X-ray only dims the others")
         self._deform_btn.clicked.connect(lambda on: self._fire("set_shot_deform", on))
         self._deform_btn.setVisible(False)
         toggles.addWidget(self._deform_btn)
@@ -1285,6 +1267,19 @@ class GroomingUI(QWidget):
         self._icon(self._isolate_btn, "focus", TEXT_LABEL, 16)
         self._isolate_btn.clicked.connect(lambda: self._fire("isolate"))
         toggles.addWidget(self._isolate_btn)
+        self._xray_toggle = QToolButton()
+        self._xray_toggle.setProperty("flat", True)
+        self._xray_toggle.setCheckable(True)
+        self._xray_toggle.setChecked(True)
+        self._xray_toggle.setText("  X-ray")
+        self._xray_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._xray_toggle.setToolTip("X-ray (X): while you edit, the other locks are see-through bands so the"
+                                     " selection stands out and edits stay quick. Off: every lock as real strands,"
+                                     " to judge the selection inside the groom (edits slower). How see-through:"
+                                     " Settings › X-ray")
+        self._icon(self._xray_toggle, "contrast", ACCENT, 16)
+        self._xray_toggle.clicked.connect(lambda _on: self._fire("xray"))
+        toggles.addWidget(self._xray_toggle)
         toggles.addStretch(1)
         self._view_groups = (shown, toggles)
         self._view_lay.addLayout(shown)
@@ -1314,7 +1309,7 @@ class GroomingUI(QWidget):
         self._filter.setClearButtonEnabled(True)
         self._filter.addAction(_lucide_icon("search", 16, TEXT_META), QLineEdit.ActionPosition.LeadingPosition)
         self._filter.setToolTip("Shows the locks whose name holds the text. Words: new, check (match to check),"
-                                " hidden, edited, excluded, flipped, strands")
+                                " hidden, edited, excluded, flipped")
         self._filter.textChanged.connect(lambda _t: self._apply_filter())
         lay.addWidget(self._filter)
 
@@ -1353,12 +1348,12 @@ class GroomingUI(QWidget):
         show_all.clicked.connect(lambda: self._fire("escape"))
         b.addWidget(show_all)
         self._banner_btn = show_all
-        self._banner_texts = {"isolate": "", "strands": ""}
+        self._banner_texts = {"isolate": ""}
         self._banner.setVisible(False)
         lay.addWidget(self._banner)
 
         tree = _LayerTree(self)
-        tree.setColumnCount(4)
+        tree.setColumnCount(COL_EYE + 1)
         tree.setHeaderHidden(True)
         tree.setUniformRowHeights(True)
         # Lock names share their group's prefix (hair_back_01, hair_back_02 ...): cut them in the middle so
@@ -1367,17 +1362,16 @@ class GroomingUI(QWidget):
         tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         tree.setItemDelegateForColumn(COL_STATUS, _StatusDelegate(tree))
         icons = _IconDelegate(tree)
-        tree.setItemDelegateForColumn(COL_STRANDS, icons)
         tree.setItemDelegateForColumn(COL_EYE, icons)
         tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         tree.customContextMenuRequested.connect(self._row_menu)
         tree.itemSelectionChanged.connect(self._on_tree_selection)
         tree.itemClicked.connect(self._on_item_clicked)
-        tree.setExpandsOnDoubleClick(False)   # a double-click draws the row as strands
+        tree.setExpandsOnDoubleClick(True)
         header = tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(COL_NAME, header.ResizeMode.Stretch)
-        for col in (COL_STATUS, COL_STRANDS, COL_EYE):
+        for col in (COL_STATUS, COL_EYE):
             header.setSectionResizeMode(col, header.ResizeMode.Fixed)
         self._tree = tree
         lay.addWidget(tree, stretch=1)
@@ -1531,8 +1525,8 @@ class GroomingUI(QWidget):
         select(kind, ids), set_value(key, value), reset_value(key), set_visible(kind, ids, on),
         set_row_display(kind, ids, mode), set_group_color(gid, rgb), confirm(ids),
         reassign_orphan(orphan_id, lock_id), delete_orphan(orphan_id), detect(), split_regions(),
-        set_display(mode, color_by), publish(version), isolate(), isolate_off(), escape(), strands(),
-        set_strands_of(kind, ids, on), confirm_all(), set_root_flip(ids, on), set_excluded(ids, on), undo(), redo(),
+        set_display(mode, color_by), publish(version), isolate(), isolate_off(), escape(), xray(),
+        set_xray(level), confirm_all(), set_root_flip(ids, on), set_excluded(ids, on), undo(), redo(),
         can_drop(dragged, target, where) -> plan | reason, drop(dragged, target, where),
         poll(), refresh(), dock()
         """
@@ -1717,17 +1711,6 @@ class GroomingUI(QWidget):
             item.setData(COL_EYE, ROLE_ICON, _fixed_icon(icon, z.px(16), color))
             item.setData(COL_EYE, ROLE_QUIET, icon == "eye" and color == TEXT_LABEL)   # shown, its own eye
             item.setToolTip(COL_EYE, tip)
-            # Packed (a flat band, quiet) or drawn as its strands, each thinning to its tip (accent)
-            if row.get("strands"):
-                item.setData(COL_STRANDS, ROLE_ICON, _fixed_icon("waves", z.px(16), ACCENT))
-                item.setData(COL_STRANDS, ROLE_QUIET, False)
-                item.setToolTip(COL_STRANDS, "Strands: drawn strand by strand, each thinning to its tip. Click,"
-                                             " double-click or Enter to pack it again")
-            else:
-                item.setData(COL_STRANDS, ROLE_ICON, _fixed_icon("package", z.px(15), TEXT_LABEL))
-                item.setData(COL_STRANDS, ROLE_QUIET, True)
-                item.setToolTip(COL_STRANDS, "Packed: drawn as a flat band (fast). Click, double-click or Enter to"
-                                             " draw its strands")
             if by_group:
                 item.setToolTip(COL_NAME, "Hidden by its group")
         self._rows[(kind, row["id"])] = item
@@ -1841,9 +1824,6 @@ class GroomingUI(QWidget):
         kind, ids, lock_ids = state["kind"], state["ids"], state["lock_ids"]
         hidden = state.get("visible") is False
         buttons = [
-            ("Strands", "waves", bool(state.get("strands")),
-             "Draw strand by strand (Enter, double-click); off: packed, a flat band", lambda _on: self._fire("strands")),
-            ("Isolate", "focus", bool(state.get("isolated")), "Show it alone (I)", lambda _on: self._fire("isolate")),
             ("Hidden", "eye-off", hidden, "Its eye is off: not drawn, not cooked for display (Publish still writes it)",
              lambda _on: self._fire("set_visible", kind, list(ids), hidden)),
         ]
@@ -1980,13 +1960,10 @@ class GroomingUI(QWidget):
         self._version_edit.setToolTip(f"Publish version (vNNN). {note}" if note else "Publish version (vNNN)")
 
     def _show_banner(self) -> None:
-        iso, strands = self._banner_texts["isolate"], self._banner_texts["strands"]
-        text = "  ·  ".join(t for t in (iso, strands) if t)
+        text = self._banner_texts["isolate"]
         self._banner_label.setText(text)
         self._banner.setVisible(bool(text))
-        self._banner_btn.setText("Show all  Esc" if iso else "Pack all  Esc")
-        self._banner_btn.setToolTip("Show every lock again" + (" and draw every lock packed" if strands else "")
-                                    if iso else "Draw every lock packed again (a flat band each)")
+        self._banner_btn.setToolTip("Show every lock again")
 
     def set_isolate(self, text: str) -> None:
         """'' = every lock shown; else what the viewport shows alone."""
@@ -1996,10 +1973,10 @@ class GroomingUI(QWidget):
         # on: the icon takes the accent too, not only the background (the tint alone was easy to miss)
         self._recolor_icon(self._isolate_btn, ACCENT if text else TEXT_LABEL)
 
-    def set_strands(self, text: str) -> None:
-        """'' = every lock packed; else the locks drawn as strands (Enter / double-click)."""
-        self._banner_texts["strands"] = text
-        self._show_banner()
+    def set_xray_on(self, on: bool) -> None:
+        """X-ray on: the locks not being edited are see-through bands; off: every lock as real strands."""
+        self._xray_toggle.setChecked(bool(on))
+        self._recolor_icon(self._xray_toggle, ACCENT if on else TEXT_LABEL)
 
     def set_publish_warning(self, text: str) -> None:
         """Next to Publish: hidden or isolated locks. The button turns amber and says the next click goes on."""
@@ -2079,10 +2056,6 @@ class GroomingUI(QWidget):
                 .triggered.connect(lambda: self._fire("set_visible", kind, ids, not visible))
             menu.addAction(_lucide_icon("focus", z.px(15)), "Isolate    I").triggered.connect(
                 lambda: self._fire("isolate"))
-            strands = bool(row.get("strands"))
-            menu.addAction(_lucide_icon("package" if strands else "waves", z.px(15)),
-                           ("Pack" if strands else "Strands") + "    Enter").triggered.connect(
-                lambda: self._fire("set_strands_of", kind, ids, not strands))
             self._display_menu(row, menu.addMenu(_lucide_icon("monitor", z.px(15)), "Display"))
         if row["kind"] == SEL_LOCKS:
             unsure = [r["id"] for r in self._selected_rows() if r["kind"] == SEL_LOCKS

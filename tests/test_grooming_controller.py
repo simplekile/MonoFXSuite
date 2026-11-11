@@ -123,7 +123,7 @@ class FakeAdapter:
     strands = None
 
     def set_strands(self, node, ids) -> None:
-        self.strands = sorted(ids) if ids else None
+        self.strands = ids if ids == "all" else (sorted(ids) if ids else None)
 
     def strand_ids(self, node):
         return self.strands or []
@@ -439,32 +439,60 @@ def test_isolate_selection_and_back(env) -> None:
     c.isolate_off()  # Esc when not isolated: nothing
 
 
-def test_selecting_never_draws_strands_enter_does_and_again_packs(env) -> None:
+def _with_focus(adapter, monkeypatch) -> list:
+    calls: list = []
+    monkeypatch.setattr(adapter, "set_focus", lambda node, ids: calls.append(sorted(ids) if ids else None),
+                        raising=False)
+    return calls
+
+
+def test_the_view_follows_the_selection(env, monkeypatch) -> None:
+    """Nothing to switch or remember: the locks being edited show their real strands, the others are
+    see-through bands, nothing selected (or all of it) is the whole groom as strands."""
     adapter, view, c = env
-    adapter.deform = (True, False)
+    focus = _with_focus(adapter, monkeypatch)
+    c.select_locks([1])
+    assert adapter.strands == [1] and focus[-1] == [1]
+    c.select_locks([3])                                 # the next lock: the first one is a band again
+    assert adapter.strands == [3] and focus[-1] == [3]
     c.select_group("fringe")
-    assert adapter.strands is None                      # a selection alone: still packed
-    selected = len(adapter.selected)
-    assert c.toggle_strands()
-    assert adapter.strands == [1, 2] and view.strands == "Strands: fringe_01, fringe_02"
-    assert len(adapter.selected) > selected             # the prim numbers changed: selected again
-    assert adapter.writes == []                         # a view state: no groom_data write, no undo step
-    assert c.toggle_strands()                           # the same locks again: packed again
-    assert adapter.strands is None and view.strands == ""
-    c.toggle_strands()
-    c.select_locks([3])
-    assert c.toggle_strands()                           # other locks: added, the first ones stay
-    assert adapter.strands == [1, 2, 3]
-    assert c.set_strands_of(ctl.SEL_LOCKS, [1], False)  # a row's icon: that lock packed again
-    assert adapter.strands == [2, 3]
-    rows = {r["id"]: r for g in c.tree_rows(c.data()) for r in [g] + g.get("children", [])}
-    assert rows[2]["strands"] and not rows[1]["strands"]
-    assert not rows["fringe"]["strands"]                # a group: only when all its locks are
-    assert c.set_strands_of(ctl.SEL_GROUP, ["fringe"], True)
-    assert adapter.strands == [1, 2, 3]
-    assert c.set_strands_of(ctl.SEL_GROUP, ["fringe"], False)
-    assert adapter.strands == [3]
-    assert c.set_strands_of(ctl.SEL_LOCKS, [3], False) and adapter.strands is None
+    assert adapter.strands == [1, 2] and focus[-1] == [1, 2]
+    c.select("none")
+    assert adapter.strands == "all" and focus[-1] is None
+    c.select(ctl.SEL_DEFAULTS)                          # All locks: the whole groom
+    assert adapter.strands == "all" and focus[-1] is None
+    assert adapter.writes == []                          # a view: no groom_data write, no undo step
+
+
+def test_x_turns_the_xray_off_to_see_the_selection_in_the_real_groom(env, monkeypatch) -> None:
+    adapter, view, c = env
+    focus = _with_focus(adapter, monkeypatch)
+    c.select_locks([1])
+    assert c.toggle_xray() and not c.xray
+    assert adapter.strands == "all" and focus[-1] is None and c.selection == (ctl.SEL_LOCKS, (1,))
+    assert "X-ray off" in view.messages[-1][0]
+    c.select_locks([2])                                 # stays off while you go on
+    assert adapter.strands == "all"
+    c.toggle_xray()
+    assert adapter.strands == [2] and focus[-1] == [2]
+
+
+def test_more_locks_than_strands_max_stay_bands(env, monkeypatch) -> None:
+    adapter, view, c = env
+    _with_focus(adapter, monkeypatch)
+    monkeypatch.setattr(ctl.config, "STRANDS_MAX", 1)
+    c.select_locks([1, 2])
+    assert adapter.strands is None and "drawn as bands" in view.messages[-1][0]
+
+
+def test_escape_leaves_isolate_then_the_selection(env, monkeypatch) -> None:
+    adapter, view, c = env
+    _with_focus(adapter, monkeypatch)
+    c.select_locks([1, 2])
+    c.toggle_isolate()
+    assert c.escape() and adapter.isolated is None and c.selection == (ctl.SEL_LOCKS, (1, 2))
+    assert c.escape() and c.selection == (ctl.SEL_NONE, ()) and adapter.strands == "all"
+    assert not c.escape()                               # nothing left to leave
 
 
 def test_a_change_and_its_cook_show_the_loading_line(env) -> None:
@@ -477,25 +505,6 @@ def test_a_change_and_its_cook_show_the_loading_line(env) -> None:
     assert seen[-3:] == ["Clump on fringe_01", "cook", None]         # cooked inside, the line cleared after
     c.toggle_isolate()
     assert seen[seen.index("Isolate") + 1] == "cook" and seen[-1] is None
-
-
-def test_strands_refuse_too_many_locks_and_anim_on(env) -> None:
-    adapter, view, c = env
-    c.select_locks([1])
-    adapter.deform = (True, True)
-    assert not c.toggle_strands()
-    assert adapter.strands is None and "already shows its strands" in view.messages[-1][0]
-    adapter.deform = (True, False)
-    old = ctl.config.STRANDS_MAX
-    ctl.config.STRANDS_MAX = 1
-    try:
-        c.select_locks([1, 2])
-        assert not c.toggle_strands()
-        assert adapter.strands is None and "at most 1" in view.messages[-1][0]
-    finally:
-        ctl.config.STRANDS_MAX = old
-    c.select("none")
-    assert not c.toggle_strands() and "select a lock" in view.messages[-1][0]
 
 
 def test_isolate_selects_the_same_locks_again(env) -> None:
@@ -512,33 +521,6 @@ def test_isolate_selects_the_same_locks_again(env) -> None:
 def test_poll_outside_houdini_runs_at_once() -> None:
     calls = []
     assert ctl._when_idle(lambda: calls.append(1))() is None and calls == [1]
-
-
-def test_escape_leaves_isolate_and_strands(env) -> None:
-    adapter, view, c = env
-    adapter.deform = (True, False)
-    c.select_locks([1, 2])
-    c.toggle_isolate()
-    c.toggle_strands()
-    assert adapter.isolated == [1, 2] and adapter.strands == [1, 2]
-    assert c.escape()
-    assert adapter.isolated is None and adapter.strands is None
-    assert not c.escape()                               # nothing left to leave
-
-
-def test_an_edit_with_strands_on_selects_the_locks_again(env) -> None:
-    """An edit changes the strand count of a lock drawn as strands: the viewport's prim numbers are
-    stale, so the panel's locks are selected again by lock id."""
-    adapter, view, c = env
-    adapter.deform = (True, False)
-    c.select_locks([1])
-    c.toggle_strands()
-    before = len(adapter.selected)
-    c.set_value("density", 250.0)
-    assert len(adapter.selected) > before and adapter.selected[-1] == [1]
-    adapter.strands = None                              # cleared outside (scene loaded again)
-    c.poll()
-    assert c.strands is None and view.strands == ""
 
 
 def test_root_flip_and_exclude_reach_the_adapter_and_show_on_rows(env) -> None:
@@ -644,8 +626,8 @@ def test_focus_only_on_drawn_locks(env, monkeypatch) -> None:
     c.toggle_isolate()
     c.select_locks([3])                            # outside the isolate
     assert calls[-1] is None and "outside the isolate" in view.messages[-1][0]
-    c.toggle_isolate()                             # I on it: isolated, and in focus
-    assert adapter.isolated == [3] and calls[-1] == [3]
+    c.toggle_isolate()                             # I on it: alone, so it is all there is to see
+    assert adapter.isolated == [3] and calls[-1] is None and adapter.strands == "all"
     c.toggle_isolate()
     c.select_locks([2, 3])
     c.set_visible(ctl.SEL_LOCKS, [3], False)       # its eye off: focus keeps only what is drawn
@@ -814,6 +796,7 @@ def test_panel_smoke(app, prefs) -> None:
     assert ui._tree.topLevelItemCount() == 2             # All locks (holding the groups), Missing locks
     root = ui._rows[(ctl.SEL_DEFAULTS, "")]
     assert root.text(0) == "All locks" and root.childCount() == 2 and root.isExpanded()
+    assert ui._tree.columnCount() == 3 and ui._tree.columnWidth(0) > 150   # the names have room
     # Selecting a lock row in the tree selects it in the viewport and shows its settings
     ui._rows[(ctl.SEL_LOCKS, 2)].setSelected(True)
     assert adapter.selected[-1] == [2]
@@ -991,7 +974,7 @@ def test_eye_click_on_a_selected_row_hides_the_whole_selection(app, prefs) -> No
 def test_eye_shape_says_drawn_tone_says_why(app, prefs) -> None:
     """Open eye = drawn, crossed = not drawn; the tooltip says the row's own eye and who decided."""
     adapter, ui, c = _panel(app)
-    eye = lambda lid: ui._rows[(ctl.SEL_LOCKS, lid)].toolTip(3)  # noqa: E731
+    eye = lambda lid: ui._rows[(ctl.SEL_LOCKS, lid)].toolTip(2)  # noqa: E731
     assert eye(1).startswith("Shown")
     c.set_visible(ctl.SEL_LOCKS, [3], False)
     app.processEvents()
@@ -1018,7 +1001,7 @@ def test_hidden_group_dims_its_rows_and_publish_warns_in_the_panel(app, prefs) -
     lock = ui._rows[(ctl.SEL_LOCKS, 1)]
     assert lock.data(COL_NAME, ROLE_ROW)["dimmed"]
     assert lock.foreground(COL_NAME).color().name() == DIM
-    assert "group" in lock.toolTip(3)  # the eye column
+    assert "group" in lock.toolTip(2)  # the eye column
     assert not ui._rows[(ctl.SEL_LOCKS, 3)].data(COL_NAME, ROLE_ROW)["dimmed"]
     ui._publish_btn.click()
     assert "2 hidden locks" in ui.publish_warning() and "anyway" in ui._publish_btn.text()
@@ -1042,36 +1025,22 @@ def test_isolate_shortcut_and_banner(app, prefs) -> None:
     ui.close()
 
 
-def test_enter_and_double_click_draw_strands_double_click_on_the_eye_is_two_clicks(app, prefs) -> None:
+def test_x_key_and_a_double_click_on_the_eye_is_two_clicks(app, prefs) -> None:
     from PySide6.QtCore import QPoint, Qt
     from PySide6.QtTest import QTest
     from tools.fx.grooming.ui import COL_EYE
 
     adapter, ui, c = _panel(app)
-    adapter.deform = (True, False)
     ui.show()
     c.select_locks([3])
     ui.set_selection(c.selection)
     app.processEvents()
     tree = ui._tree
     tree.setFocus()
-    QTest.keyClick(tree, Qt.Key.Key_Return)
-    assert adapter.strands == [3]
-    assert not ui._banner.isHidden() and "back_01" in ui._banner_label.text()
-    assert "Pack all" in ui._banner_btn.text()
-    QTest.keyClick(ui, Qt.Key.Key_Escape)
-    app.processEvents()
-    assert adapter.strands is None and ui._banner.isHidden()
-    group = ui._rows[(ctl.SEL_GROUP, "back")]
-    expanded = group.isExpanded()
-    rect = tree.visualItemRect(group)
-    at = QPoint(tree.header().sectionViewportPosition(0) + 60, rect.center().y())
-    # a real double-click is press, release, double-click, release; QTest's sends the double-click only
-    QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
-    QTest.mouseDClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, at)
-    app.processEvents()
-    # the tree is shown again (new items): no collapse on double-click
-    assert adapter.strands == [3, 4] and ui._rows[(ctl.SEL_GROUP, "back")].isExpanded() == expanded
+    QTest.keyClick(tree, Qt.Key.Key_X)
+    assert not c.xray and not ui._xray_toggle.isChecked()
+    QTest.keyClick(tree, Qt.Key.Key_X)
+    assert c.xray and ui._xray_toggle.isChecked()
     item = ui._rows[(ctl.SEL_LOCKS, 1)]
     rect = tree.visualItemRect(item)
     x = tree.header().sectionViewportPosition(COL_EYE) + tree.header().sectionSize(COL_EYE) // 2
@@ -1081,39 +1050,18 @@ def test_enter_and_double_click_draw_strands_double_click_on_the_eye_is_two_clic
                       QPoint(x, rect.center().y()))
     app.processEvents()
     assert adapter.read_data(adapter.node).lock(1).visible               # hidden, then shown again
-    assert adapter.strands == [3, 4]                                     # the eye draws no strands
     ui.close()
 
 
-def test_ctrl_z_in_the_panel_and_the_packed_strands_icon(app, prefs) -> None:
-    from PySide6.QtCore import QPoint, Qt
+def test_ctrl_z_in_the_panel_and_the_loading_line(app, prefs) -> None:
+    from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest
-    from tools.fx.grooming.ui import COL_STRANDS
 
     adapter, ui, c = _panel(app)
     adapter.undo_labels = ["Grooming: Clump on back_01"]
     ui._tree.setFocus()
     QTest.keyClick(ui._tree, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
     assert adapter.undone == ("undo", "Grooming: Clump on back_01")
-    adapter.deform = (True, False)
-    ui.show()
-    tree = ui._tree
-
-    def click_icon(key):
-        rect = tree.visualItemRect(ui._rows[key])
-        h = tree.header()
-        x = h.sectionViewportPosition(COL_STRANDS) + h.sectionSize(COL_STRANDS) // 2
-        QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-                         QPoint(x, rect.center().y()))
-        app.processEvents()
-
-    assert "Packed" in ui._rows[(ctl.SEL_LOCKS, 1)].toolTip(COL_STRANDS)
-    click_icon((ctl.SEL_LOCKS, 1))
-    assert adapter.strands == [1] and "Strands:" in ui._rows[(ctl.SEL_LOCKS, 1)].toolTip(COL_STRANDS)
-    click_icon((ctl.SEL_GROUP, "back"))                  # a group's icon: all its locks
-    assert adapter.strands == [1, 3, 4]
-    click_icon((ctl.SEL_LOCKS, 1))
-    assert adapter.strands == [3, 4]
     ui.set_busy("Clump")                                  # the loading line waits a moment
     assert not ui.is_busy()
     QTest.qWait(ui.BUSY_DELAY_MS + 100)
@@ -1144,9 +1092,7 @@ def test_properties_say_what_the_viewport_does_with_the_selection(env) -> None:
     adapter.deform = (True, False)
     c.select_locks([1])
     state = view.props["state"]
-    assert state["visible"] is True and not state["strands"] and not state["isolated"]
-    c.toggle_strands()
-    assert view.props["state"]["strands"]
+    assert state["visible"] is True and not state["isolated"]
     c.set_visible(ctl.SEL_LOCKS, [1], False)
     assert view.props["state"]["visible"] is False and view.props["subtitle"].endswith("hidden")
     c.select_locks([1, 2])
@@ -1230,10 +1176,10 @@ def test_panel_filter_review_line_narrow_layout_and_fading_message(app, prefs) -
     ui.set_selection(c.selection)
     app.processEvents()
     from PySide6.QtWidgets import QToolButton
-    strands = next(b for b in ui._props_widget.findChildren(QToolButton) if b.text().strip() == "Strands")
-    strands.click()
+    hide = next(b for b in ui._props_widget.findChildren(QToolButton) if b.text().strip() == "Hidden")
+    hide.click()
     app.processEvents()
-    assert adapter.strands == [1]
+    assert not adapter.read_data(adapter.node).lock(1).visible
     # the result line fades
     old = ui_mod.MESSAGE_MS
     ui_mod.MESSAGE_MS = 50

@@ -45,7 +45,8 @@ PARM_PUBLISH_PATH = "publish_path"   # hidden, read by PUBLISH_USD
 PARM_PUBLISH_VERSION = "publish_version"
 PARM_ISOLATE = "isolate_ids"         # hidden: locks shown alone ("" = none); display only, never undone
 PARM_DRAG_PREVIEW = "preview_ids"    # hidden: locks a slider is dragging, grown light; display only
-PARM_STRANDS = "strand_ids"          # hidden: locks drawn as strands, not packed (Enter / double-click)
+PARM_STRANDS = "strand_ids"          # hidden: locks drawn as strands, not packed ("all": every lock)
+STRANDS_ALL = "all"                  # set_strands(node, STRANDS_ALL): the whole groom as strands
 PARM_FOCUS = "focus_ids"             # hidden: the panel's selection; the other locks are drawn see-through
 PARM_DRAG_FACTOR = "drag_factor"     # hidden: strand fraction of the locks a slider drags (1 = real count)
 PARM_XRAY = "xray_opacity"           # hidden: alpha per strand of the locks out of focus (the panel's X-ray)
@@ -706,17 +707,28 @@ def focus_ids(node) -> list[int]:
     return parse_isolate(p.eval()) if p is not None else []
 
 
-def set_strands(node, lock_ids: Sequence[int] | None) -> None:
-    """Draw these locks as their strands (None: every lock packed again). The viewport draws a packed
-    lock's strands as a flat band of one width; unpacked, it draws each strand's width, thinning to the
-    tip. A view state like isolate: no undo step, cleared when the scene is loaded again. It changes no
-    lock's hair, only how `hair_packed` hands it to the viewport (at most `config.STRANDS_MAX` locks)."""
+def set_strands(node, lock_ids: Sequence[int] | str | None) -> None:
+    """Draw these locks as their strands (None: every lock packed; STRANDS_ALL: the whole groom). The
+    viewport draws a packed lock's strands as a flat band of one width; unpacked, it draws each strand's
+    width, thinning to the tip. A view state like isolate: no undo step, cleared when the scene is loaded
+    again. It changes no lock's hair, only how `hair_packed` hands it to the viewport (a list holds at
+    most `config.STRANDS_MAX` locks)."""
     p = node.parm(PARM_STRANDS)
     if p is None:
         return
-    ids = sorted(set(int(i) for i in (lock_ids or ())))[:config.STRANDS_MAX]
-    with hou.undos.disabler():
-        p.set(format_isolate(ids))
+    if lock_ids == STRANDS_ALL:
+        text = STRANDS_ALL
+    else:
+        text = format_isolate(sorted(set(int(i) for i in (lock_ids or ())))[:config.STRANDS_MAX])
+    if p.eval() != text:
+        with hou.undos.disabler():
+            p.set(text)
+
+
+def strands_all(node) -> bool:
+    """The whole groom is drawn as strands (set_strands(node, STRANDS_ALL))."""
+    p = node.parm(PARM_STRANDS)
+    return p is not None and p.eval().strip() == STRANDS_ALL
 
 
 def cook_display(node) -> None:
@@ -730,9 +742,11 @@ def cook_display(node) -> None:
 
 
 def strand_ids(node) -> list[int]:
-    """The locks drawn as strands, [] when every lock is packed."""
+    """The locks drawn as strands by id, [] when every lock is packed or all are (strands_all)."""
     p = node.parm(PARM_STRANDS)
-    return parse_isolate(p.eval()) if p is not None else []
+    if p is None or p.eval().strip() == STRANDS_ALL:
+        return []
+    return parse_isolate(p.eval())
 
 
 def _set_lock_flag(node, lock_ids: Iterable[int], field_name: str, value: bool, label: str) -> int:
@@ -1223,10 +1237,11 @@ def cook_hair_packed(sop) -> None:
     by_group = int(sop.parent().evalParm("color_by")) == 1
     cache = hair_cache()
     sid = sop.parent().sessionId()
+    every = strands_all(sop.parent())
     strands = set(strand_ids(sop.parent()))
     focus = set(focus_ids(sop.parent()))
     alpha = round(xray_opacity(sop.parent()), 4)
-    empty = hou.Geometry().freeze(read_only=True) if strands else None
+    empty = hou.Geometry().freeze(read_only=True) if strands or every else None
     unpacked = []
     for lid, name, g, sp in _cached_hair(sop, with_prim=True):
         # The viewport does not tint embedded geometry with the packed prim's Cd (it drew Helen white):
@@ -1243,7 +1258,7 @@ def cook_hair_packed(sop) -> None:
             coloured = tinted.freeze(read_only=True)
             cache.put(sid, lid, mode, key, coloured)
         prim = geo.createPacked("PackedGeometry")
-        if lid in strands:   # hair_packed_color gives them their colour, or the see-through grey
+        if every or lid in strands:   # hair_packed_color gives them their colour, or the see-through grey
             prim.setEmbeddedGeometry(empty)
             unpacked.append(coloured)
         elif focus and lid not in focus:
@@ -1283,6 +1298,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]
