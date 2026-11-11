@@ -193,10 +193,22 @@
   lock row's right-click menu ("Root at the other end", "Leave out of the hair", several locks at once);
   the row says "flipped" / "no hair" in its status column (neutral colour, the name is never shortened)
   and an excluded lock is dimmed.
-- Every panel edit refreshes `lock_infos`; it reads the scalp areas with bulk calls
-  (`primIntListAttribValues`, `primFloatAttribValues`): one `attribValue` per scalp prim (24k on Helen)
-  made each edit cost 2 s on top of the cook. GUI Helen, hair full: hide / show a group 0.3-0.7 s,
-  isolate 0.2 s, root flip 0.8 s, exclude 0.6 s, one lock's density 2.7 s (0.85 s in hython).
+- Interactive feel (judge it in GUI Houdini, until the viewport has drawn: `tests/t24_feel/t24_gui.py`
+  in the sandbox; hython numbers missed all of the below):
+  - Display without a shot deform is one packed prim per lock (`hair_packed`, embedding the cached
+    frozen strands, coloured per packed prim). The merged 4 M points re-uploaded the whole groom to the
+    viewport on every edit and hide. `HAIR` (merged) stays for publish and the deform; tests read
+    strands there, not from the node's output.
+  - Selection reads `lock_id` in bulk and builds a range string (`_index_ranges`); one hou.Prim per
+    strand (116 k) made each selection and every poll lag.
+  - `lock_infos` reads the scalp areas in bulk, and the panel re-reads it only when settings, regions
+    or flags change (`_infos_key`: not eyes, displays, order). It cost 2 s, then 0.12 s, on every edit.
+  - A slider drag writes each tick with no undo step (`write_data_live`, at most every 120 ms), the
+    dragged locks grow at the preview fraction (`set_drag_preview`, hidden parm `preview_ids` read by
+    `lock_keys` into a per-lock `strand_factor` that hairgen reads); the release puts the pre-drag data
+    back without undo and writes the final value: one undo step, full hair once. Houdini flashes its
+    cook-interrupt button for any cook over ~0.3 s: the "popup" artists saw on every change.
+  - GUI Helen, hair full: select 0.025 s, hide / show 0.08 s, a drag tick 0.07-0.09 s, release 0.35 s.
 - Test scripts reload the suite's HDA with `force_use_assets=True` after loading a scene: a hip names
   the library it was saved with (another session's worktree), and Houdini prefers the newest file.
 - Lock ids are never reused (`GroomData.id_high`): frozen regions and old publishes may still name them.

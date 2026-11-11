@@ -111,6 +111,10 @@ class GroomController:
         self.isolated: tuple[int, ...] | None = None  # lock ids shown alone in the viewport; None = all
         self._publish_armed: tuple | None = None      # what the publish warning named; a 2nd click goes on
         self.unit_cm = DEFAULT_UNIT_CM
+        self._drag_origin: str | None = None   # groom_data before a slider drag (preview_value)
+        self._infos_for: str | None = None    # _infos_key of the data lock_infos was read for
+        self._drag_preview = True             # dragged locks grow light (adapter.set_drag_preview)
+        self._drag_origin_new = False
         if node is not None:
             self.set_node(node)
 
@@ -172,10 +176,13 @@ class GroomController:
         self._last_json = data.to_json()
         self._data = data
         self.isolated = self._read_isolate()
-        try:
-            self._infos = {info.id: info for info in self.adapter.lock_infos(self.node)}
-        except Exception:
-            self._infos = {}
+        key = self._infos_key(data)
+        if key != self._infos_for:      # an eye, a display or the order measures nothing new
+            try:
+                self._infos = {info.id: info for info in self.adapter.lock_infos(self.node)}
+                self._infos_for = key
+            except Exception:
+                self._infos, self._infos_for = {}, None
         self._drop_gone_selection(data)
         self.view.show_node(self.node_path(), data.asset)
         self.view.show_tree(self.tree_rows(data))
@@ -186,6 +193,17 @@ class GroomController:
         if self._publish_armed is not None and self._publish_armed != self._unseen(data):
             self._publish_armed = None  # what was hidden changed: the warning no longer says what is true
             self.view.set_publish_warning("")
+
+    @staticmethod
+    def _infos_key(data: model.GroomData) -> str:
+        """What the measured values (lock_infos) depend on: the data without eyes, displays and order.
+        Reading them costs a cook of the spines and regions, so a hide or a show does not."""
+        d = model.GroomData.from_json(data.to_json())
+        for row in [*d.locks, *d.groups]:
+            row.visible, row.display = True, None
+        d.locks.sort(key=lambda lk: lk.id)
+        d.groups.sort(key=lambda g: g.id)
+        return d.to_json()
 
     def _drop_gone_selection(self, data: model.GroomData) -> None:
         kind, ids = self.selection
@@ -390,10 +408,53 @@ class GroomController:
             return lk.name if lk else str(ids[0])
         return f"{len(ids)} locks"
 
+    def preview_value(self, key: str, value: float) -> bool:
+        """A slider tick while dragging: the viewport follows at once, with no undo step and no panel
+        refresh. The first tick keeps the data from before the drag; set_value (the release) puts it back
+        and writes the final value as one undo step."""
+        live = getattr(self.adapter, "write_data_live", None)
+        if live is None or self.node is None or key not in model.BUILTIN_DEFAULTS:
+            return False
+        try:
+            data = self.data()
+            if self._drag_origin is None:
+                self._drag_origin = data.to_json()
+                self._drag_origin_new = True
+            _own, levels = self._own_level(data)
+            if not levels:
+                return False
+            for lv in levels:
+                lv[key] = float(value)
+            # While dragging, the locks being changed regrow as the preview (a tenth of the strands), like
+            # XGen's interactive mode: a full regrow of one lock takes ~0.2-0.35 s, and past ~0.3 s Houdini
+            # flashes its cook-interrupt button. The release restores the data from before the drag, so the
+            # locks' own display comes back and they grow in full once.
+            first = self._drag_origin_new
+            self._drag_origin_new = False
+            light = getattr(self.adapter, "set_drag_preview", None)
+            if first and self._drag_preview and light is not None:
+                light(self.node, self.lock_ids_of(data, self.selection))
+            live(self.node, data)
+        except Exception as e:
+            self.view.set_message(f"{SETTING_LABELS.get(key, key)} failed: {e}", error=True)
+            return False
+        return True
+
+    def _end_drag(self) -> None:
+        """Put back the data from before a drag (no undo step), so the release's write is the only step."""
+        origin, self._drag_origin = self._drag_origin, None
+        light = getattr(self.adapter, "set_drag_preview", None)
+        if origin is not None and light is not None and self.node is not None:
+            light(self.node, None)          # the release grows them in full
+        live = getattr(self.adapter, "write_data_live", None)
+        if origin is not None and live is not None and self.node is not None:
+            live(self.node, model.GroomData.from_json(origin))
+
     def set_value(self, key: str, value: float) -> bool:
         """Write *value* for *key* at the selection's own level (defaults, the group or every selected lock)."""
         if key not in model.BUILTIN_DEFAULTS:
             raise KeyError(key)
+        self._end_drag()
         holder: dict = {}
 
         def change(data: model.GroomData):
@@ -924,6 +985,7 @@ def bind(ui: Any, controller: GroomController) -> None:
     """Wire the Qt panel's events to the controller."""
     ui.on("select", controller.select)
     ui.on("set_value", controller.set_value)
+    ui.on("preview_value", controller.preview_value)
     ui.on("reset_value", controller.reset_value)
     ui.on("set_visible", controller.set_visible)
     ui.on("set_row_display", controller.set_row_display)

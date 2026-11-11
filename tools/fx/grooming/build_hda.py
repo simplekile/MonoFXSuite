@@ -435,6 +435,7 @@ if (total * f > cap && total > 0) {
     if (f > 0) f = pow(%(step)s, ceil(log(f) / log(%(step)s) - 1e-6));
 }
 f@factor = chi("../display_eff") == 2 ? f : 1.0;   // display_eff: the display mode, lighter while playing
+f@preview_factor = f;   // the locks a slider is dragging (preview_ids) grow at this, whatever the display
 // fingerprints of each lock's region for the hair cache (adapter.cook_lock_keys): per lock id 9 floats
 // summing what the per-lock loop reads of its prims (count, area / share, share, centre, centre x a
 // weight by prim number, so a moved or swapped prim changes it)
@@ -1069,7 +1070,7 @@ def build_network(sub) -> None:
         '/ max(ch("../strand_segment_cm"), 0.1)))')
     hairgen.parm("densityoverride").set(1)  # skin attribute "density" (strands/cm2) x the parm
     hairgen.parm("density").setExpression(
-        'pow(ch("../unit_cm"), 2) * detail("../PREVIEW", "factor", 0)')
+        'pow(ch("../unit_cm"), 2) * prim("../foreach_begin", 0, "strand_factor", 0)')
     hairgen.parm("scatterseed").setExpression('prim("../foreach_begin", 0, "lock_id", 0)')
     hairgen.parm("thickness").setExpression('ch("../strand_width")')
     fit_root = _wrangle(sub, "fit_root", VEX_FIT_ROOT, PRIM, [hairgen, begin, frame, surface])
@@ -1131,6 +1132,15 @@ def build_network(sub) -> None:
     hair_col = _wrangle(sub, "hair_color", VEX_HAIR_COLOR, PRIM, [hair, spines])
     disp = _node(sub, "switch", "display", [mesh_col, guide_col, hair_col])
     disp.parm("input").setExpression('min(ch("../display_eff"), 2)')
+    # What the viewport shows when there is no shot deform: the hair as one packed prim per lock
+    # (cook_hair_packed), coloured per packed prim. An edit or a hide then changes one or no packed prim
+    # and the viewport keeps the others; the merged strands above are for publish and the deform only.
+    packed = _node(sub, "python", "hair_packed", [end, keys])
+    packed.parm("python").set("from apps.houdini import grooming_adapter\n"
+                              "grooming_adapter.cook_hair_packed(hou.pwd())\n")
+    packed_col = _wrangle(sub, "hair_packed_color", VEX_HAIR_COLOR, PRIM, [packed, spines])
+    disp_fast = _node(sub, "switch", "display_fast", [mesh_col, guide_col, packed_col])
+    disp_fast.parm("input").setExpression('min(ch("../display_eff"), 2)')
     section("Display")
 
     # ---- shot deform: the animated hair mesh, from a packed USD import too ----
@@ -1153,7 +1163,7 @@ def build_network(sub) -> None:
     deform = _node(sub, "pointdeform", "deform", [capture, in_hair, anim_hair], mode="deform")
     for pd in (capture, deform):
         pd.parm("radius").setExpression('ch("../deform_radius")')
-    use_deform = _node(sub, "switch", "use_deform", [disp, deform])
+    use_deform = _node(sub, "switch", "use_deform", [disp_fast, deform])
     use_deform.parm("input").setExpression(
         'if(strcmp(opinputpath("..", 2), "") == 0, 0, detail("../ANIM_HAIR", "deform_ok", 0))')
     out = _node(sub, "null", "OUT", [use_deform])
@@ -1304,6 +1314,9 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     iso = hou.StringParmTemplate("isolate_ids", "Isolated locks", 1)
     iso.hide(True)
     ptg.append(iso)
+    drag = hou.StringParmTemplate("preview_ids", "Locks shown light while a slider drags", 1)
+    drag.hide(True)
+    ptg.append(drag)
     cook_all = hou.ToggleParmTemplate("cook_all", "Cook every lock", default_value=False)
     cook_all.hide(True)
     ptg.append(cook_all)

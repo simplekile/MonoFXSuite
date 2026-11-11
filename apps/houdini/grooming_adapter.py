@@ -44,6 +44,7 @@ PARM_PREVIEW = "preview_fraction"
 PARM_PUBLISH_PATH = "publish_path"   # hidden, read by PUBLISH_USD
 PARM_PUBLISH_VERSION = "publish_version"
 PARM_ISOLATE = "isolate_ids"         # hidden: locks shown alone ("" = none); display only, never undone
+PARM_DRAG_PREVIEW = "preview_ids"    # hidden: locks a slider is dragging, grown light; display only
 PARM_COOK_ALL = "cook_all"           # hidden: 1 while publishing: every lock, hidden or isolated out
 PARM_DISPLAY_EFF = "display_eff"     # hidden expression: the mode drawn (Display, or While playing)
 PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playbar callback, undo off)
@@ -51,7 +52,8 @@ PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playb
 # Parms whose value never reaches the per-lock hair cook (display, publish, deform, what the geometry
 # already carries): left out of the cache key, so changing them recooks no lock.
 _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
-                   PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_COOK_ALL, "deform_radius",
+                   PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_COOK_ALL,
+                   "deform_radius",
                    PARM_DISPLAY_EFF, PARM_PLAYING, "play_display",
                    "rest_frame", "detect", "split_regions", "publish"}
 # Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
@@ -456,6 +458,14 @@ def write_data(node, data: model.GroomData, label: str) -> None:
         node.parm(config.DATA_PARM).set(data.to_json())
 
 
+def write_data_live(node, data: model.GroomData) -> None:
+    """Store `groom_data` with no undo step: the ticks of a slider drag. The drag's release writes the
+    final value with write_data, after putting the value from before the drag back, so one undo returns
+    to where the drag started."""
+    with hou.undos.disabler():
+        node.parm(config.DATA_PARM).set(data.to_json())
+
+
 def lock_infos(node) -> list[LockInfo]:
     """From the cooked spines: id, name, group, root, length, width, thick, twist, strands, region area."""
     geo = _cooked(node, NODE_SPINES_LOCKS)
@@ -597,6 +607,17 @@ def isolate_ids(node) -> list[int]:
     return parse_isolate(node.evalParm(PARM_ISOLATE))
 
 
+def set_drag_preview(node, lock_ids: Sequence[int] | None) -> None:
+    """While a slider drags: these locks grow at the preview fraction (the rest keep their display), so
+    each tick regrows a tenth of their strands. None clears it (the release grows them in full). No undo
+    step, never saved (OnLoaded clears it), never during publish."""
+    p = node.parm(PARM_DRAG_PREVIEW)
+    if p is None:
+        return
+    with hou.undos.disabler():
+        p.set(format_isolate(lock_ids))
+
+
 def _set_lock_flag(node, lock_ids: Iterable[int], field_name: str, value: bool, label: str) -> int:
     data = read_data(node)
     want = set(int(i) for i in lock_ids)
@@ -631,8 +652,36 @@ def _scene_viewer():
     return hou.ui.paneTabOfType(hou.paneTabType.SceneViewer)
 
 
+def _index_ranges(indices: Iterable[int]) -> str:
+    """0 1 2 5 -> "0-2 5": a selection string Houdini resolves in C++, not one hou.Prim per item."""
+    out, run = [], None
+    for i in sorted(indices):
+        if run and i == run[1] + 1:
+            run[1] = i
+        else:
+            if run:
+                out.append(f"{run[0]}-{run[1]}" if run[1] > run[0] else str(run[0]))
+            run = [i, i]
+    if run:
+        out.append(f"{run[0]}-{run[1]}" if run[1] > run[0] else str(run[0]))
+    return " ".join(out)
+
+
+def _parse_ranges(text: str) -> list[int]:
+    out: list[int] = []
+    for part in text.split():
+        if "-" in part:
+            lo, hi = part.split("-", 1)
+            if lo.isdigit() and hi.isdigit():
+                out.extend(range(int(lo), int(hi) + 1))
+        elif part.isdigit():
+            out.append(int(part))
+    return out
+
+
 def selected_lock_ids(node) -> list[int]:
-    """Locks whose spines, strands or mesh pieces are selected in the viewport (empty when none)."""
+    """Locks whose spines, strands or mesh pieces are selected in the viewport (empty when none).
+    Bulk reads: the panel polls this, and one hou.Prim per selected strand made every tick lag."""
     viewer = _scene_viewer()
     if viewer is None:
         return []
@@ -645,12 +694,14 @@ def selected_lock_ids(node) -> list[int]:
     geo = node.geometry()
     if geo.findPrimAttrib(config.ATTR_LOCK_ID) is None:
         return []
+    lock_of_prim = geo.primIntAttribValues(config.ATTR_LOCK_ID)
     ids: set[int] = set()
     for s in sel.selections():
-        prims = list(s.prims(geo))
-        for pt in s.points(geo):
-            prims.extend(pt.prims())
-        ids.update(p.intAttribValue(config.ATTR_LOCK_ID) for p in prims)
+        if s.selectionType() == hou.geometryType.Primitives:
+            ids.update(lock_of_prim[i] for i in _parse_ranges(s.selectionString(geo)) if i < len(lock_of_prim))
+        else:   # points: few in practice, take their prims
+            for pt in s.points(geo):
+                ids.update(p.intAttribValue(config.ATTR_LOCK_ID) for p in pt.prims())
     return sorted(i for i in ids if i >= 0)
 
 
@@ -667,10 +718,12 @@ def select_locks(node, ids: Iterable[int]) -> None:
     geo = node.geometry()
     if geo.findPrimAttrib(config.ATTR_LOCK_ID) is None:
         return
-    prims = [p for p in geo.iterPrims() if p.intAttribValue(config.ATTR_LOCK_ID) in want]
+    # one bulk read and a range string: a hou.Prim per strand (116 k on Helen) made each selection lag
+    picked = [i for i, lid in enumerate(geo.primIntAttribValues(config.ATTR_LOCK_ID)) if lid in want]
     try:
         node.setCurrent(True, clear_all_selected=True)
-        viewer.setCurrentGeometrySelection(hou.geometryType.Primitives, (node,), (hou.Selection(prims),))
+        viewer.setCurrentGeometrySelection(hou.geometryType.Primitives, (node,), (
+            hou.Selection(geo, hou.geometryType.Primitives, _index_ranges(picked)),))
     except hou.Error:
         # The viewer has no active selector (view state, not a select state): Houdini refuses with
         # "Not available in this context / no active selector found". The panel's selection simply is
@@ -811,7 +864,7 @@ def on_loaded(node) -> None:
     """HDA OnLoaded: isolate is a temporary view, so a scene saved while isolated opens showing all;
     a scene saved while playing opens at its Display."""
     with hou.undos.disabler():
-        for name, empty in ((PARM_ISOLATE, ""), (PARM_PLAYING, 0)):
+        for name, empty in ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_PLAYING, 0)):
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)
@@ -895,6 +948,9 @@ def cook_lock_keys(sop) -> None:
     surface = ins[2].geometry()
     mode = str(top.evalParm(PARM_DISPLAY_EFF))
     factor = preview.attribValue("factor") if preview.findGlobalAttrib("factor") else 1.0
+    light = preview.attribValue("preview_factor") if preview.findGlobalAttrib("preview_factor") else factor
+    dragged = set(parse_isolate(top.evalParm(PARM_DRAG_PREVIEW))) \
+        if top.parm(PARM_DRAG_PREVIEW) is not None and not top.evalParm(PARM_COOK_ALL) else set()
     rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
     sk = surface.floatListAttribValue("surface_keys") if surface.findGlobalAttrib("surface_keys") else ()
     shared = lock_key([CACHE_NET_VERSION, mode, factor, _definition_stamp(top), _key_parms(top)])
@@ -903,7 +959,7 @@ def cook_lock_keys(sop) -> None:
     parrays = [np.frombuffer(geo.pointFloatAttribValuesAsString(a.name()), dtype=np.float32).reshape(-1, a.size())
                for a in pattrs]
     rattrs = sorted((a for a in geo.primAttribs() if a.name() not in _KEY_SKIP_ATTRIBS), key=lambda a: a.name())
-    for name, default in (("cache_key", ""), ("cache_mode", ""), ("cached", 0)):
+    for name, default in (("cache_key", ""), ("cache_mode", ""), ("cached", 0), ("strand_factor", 1.0)):
         if geo.findPrimAttrib(name) is None:
             geo.addAttrib(hou.attribType.Prim, name, default)
     cache = hair_cache()
@@ -911,20 +967,24 @@ def cook_lock_keys(sop) -> None:
         if hou.nodeBySessionId(nid) is None:
             cache.drop_node(nid)
     sid = top.sessionId()
-    keys, flags = [], []
+    keys, flags, factors = [], [], []
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
+        f = min(light, factor) if lid in dragged else factor   # hairgen's density x this (strand_factor)
+        factors.append(f)
         piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
         idx = [p.number() for p in prim.points()]
         parts: list[Any] = [shared, [(a.name(), prim.attribValue(a)) for a in rattrs]]
         parts.extend(arr[idx].tobytes() for arr in parrays)
         parts.append(tuple(rk[lid * 9:lid * 9 + 9]) if lid >= 0 else ())
         parts.append(tuple(sk[piece * 9:piece * 9 + 9]) if piece >= 0 else ())
+        parts.append(f)
         key = lock_key(parts)
         keys.append(key)
         flags.append(int(cache.has(sid, lid, mode, key)))
     geo.setPrimStringAttribValues("cache_key", keys)
     geo.setPrimStringAttribValues("cache_mode", [mode] * len(keys))
+    geo.setPrimFloatAttribValues("strand_factor", factors)
     geo.setPrimIntAttribValues("cached", flags)
 
 
@@ -942,28 +1002,50 @@ def cook_cache_store(sop) -> None:
     geo.clear()
 
 
-def cook_hair_cache(sop) -> None:
-    """Python SOP "hair_cache": the strands of every lock that grows (shown, not excluded; every lock
-    while publishing), from the cache. Input 0 is the per-lock loop (it stored the missing ones),
-    input 1 the keyed spines."""
-    geo = sop.geometry()
-    geo.clear()
+def _cached_hair(sop):
+    """(lock id, name, frozen strands) of every lock that grows, from the cache; input 1 = keyed spines."""
     keyed = sop.inputs()[1].geometry()
     cache = hair_cache()
     sid = sop.parent().sessionId()
-    missing = 0
     grows = keyed.findPrimAttrib("grows") is not None
+    named = keyed.findPrimAttrib(config.ATTR_NAME) is not None
+    missing = 0
     for p in keyed.iterPrims():
         if grows and p.intAttribValue("grows") == 0:
             continue
-        g = cache.get(sid, p.intAttribValue(config.ATTR_LOCK_ID), p.stringAttribValue("cache_mode"),
-                      p.stringAttribValue("cache_key"))
+        lid = p.intAttribValue(config.ATTR_LOCK_ID)
+        g = cache.get(sid, lid, p.stringAttribValue("cache_mode"), p.stringAttribValue("cache_key"))
         if g is None:
             missing += 1
         else:
-            geo.merge(g)
+            yield lid, (p.stringAttribValue(config.ATTR_NAME) if named else ""), g
     if missing:
         sop.addWarning(f"{missing} lọn chưa có tóc trong cache: đổi Display rồi đổi lại để nấu lại")
+
+
+def cook_hair_cache(sop) -> None:
+    """Python SOP "hair_cache": the strands of every lock that grows (shown, not excluded; every lock
+    while publishing), from the cache, merged (publish and the shot deform read this). Input 0 is the
+    per-lock loop (it stored the missing ones), input 1 the keyed spines."""
+    geo = sop.geometry()
+    geo.clear()
+    for _lid, _name, g in _cached_hair(sop):
+        geo.merge(g)
+
+
+def cook_hair_packed(sop) -> None:
+    """Python SOP "hair_packed": the display's hair, one packed primitive per lock embedding its cached
+    strands (no copy). Merging 4 M points into one geometry made every edit and every hide re-upload the
+    whole groom to the viewport; packed, the viewport keeps the locks that did not change."""
+    geo = sop.geometry()
+    geo.clear()
+    lid_attr = geo.addAttrib(hou.attribType.Prim, config.ATTR_LOCK_ID, -1)
+    name_attr = geo.addAttrib(hou.attribType.Prim, config.ATTR_NAME, "")
+    for lid, name, g in _cached_hair(sop):
+        prim = geo.createPacked("PackedGeometry")
+        prim.setEmbeddedGeometry(g)
+        prim.setAttribValue(lid_attr, lid)
+        prim.setAttribValue(name_attr, name)
 
 
 def cook_frozen_regions(sop) -> None:
@@ -976,7 +1058,7 @@ def cook_frozen_regions(sop) -> None:
 
 
 __all__ = [
-    "find_nodes", "create_node", "read_data", "write_data", "lock_infos", "detect", "split_regions",
+    "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "set_isolate", "isolate_ids", "set_root_flip", "set_excluded",
+    "set_isolate", "isolate_ids", "set_drag_preview", "set_root_flip", "set_excluded",
 ]

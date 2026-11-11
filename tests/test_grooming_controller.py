@@ -56,6 +56,13 @@ class FakeAdapter:
         self.text = data.to_json()
         self.writes.append(label)
 
+    def set_drag_preview(self, node, ids) -> None:
+        self.light = sorted(ids) if ids else None
+
+    def write_data_live(self, node, data: GroomData) -> None:   # no undo step
+        self.text = data.to_json()
+        self.live = getattr(self, "live", 0) + 1
+
     def lock_infos(self, node):
         return [LockInfo(i, f"l{i}", "g", (0, 0, 0), 10.0, 1.5, 0.4, 0.2, 1000, 3.0) for i in (1, 2, 3, 4)]
 
@@ -406,6 +413,22 @@ def test_root_flip_and_exclude_reach_the_adapter_and_show_on_rows(env) -> None:
     assert rows[1]["root_flip"] and rows[1]["excluded"] and not rows[3]["excluded"]
     assert "Split regions" in view.messages[-1][0]
     assert not c.set_excluded([], True)          # nothing selected: nothing written
+
+
+def test_slider_drag_follows_live_and_is_one_undo_step(env) -> None:
+    adapter, view, c = env
+    c.select_locks([1])
+    before = adapter.read_data(adapter.node).resolve(1)["density"]
+    writes = len(adapter.writes)
+    assert c.preview_value("density", 200.0) and c.preview_value("density", 260.0)
+    assert adapter.read_data(adapter.node).lock(1).overrides["density"] == 260.0   # the viewport follows
+    assert adapter.light == [1]                                                    # light while dragging
+    assert len(adapter.writes) == writes and adapter.live == 2                     # no undo step yet
+    c.set_value("density", 300.0)                                                  # the release
+    assert len(adapter.writes) == writes + 1 and adapter.live == 3                 # origin back, then one step
+    assert adapter.read_data(adapter.node).lock(1).overrides["density"] == 300.0
+    assert before != 300.0
+    assert adapter.light is None                                                   # full again after
 
 
 def test_isolate_without_adapter_support_says_so(env) -> None:

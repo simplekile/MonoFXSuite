@@ -587,10 +587,19 @@ class _LayerTree(QTreeWidget):
 class _SettingRow(QWidget):
     """One setting on one line: name, slider, value, where an inherited value comes from, Reset (shown
     only when the value is set at this level). Fires *on_set(key, value)* once per change: a drag writes
-    on release, so it is one undo step; *on_reset(key)*."""
+    on release, so it is one undo step; while dragging, *on_preview(key, value)* at most every
+    PREVIEW_MS so the viewport follows the slider (no undo step); *on_reset(key)*."""
 
-    def __init__(self, s: dict, z: Sz, on_set: Callable[[str, float], None], on_reset: Callable[[str], None]):
+    PREVIEW_MS = 120
+
+    def __init__(self, s: dict, z: Sz, on_set: Callable[[str, float], None], on_reset: Callable[[str], None],
+                 on_preview: Callable[[str, float], None] | None = None):
         super().__init__()
+        self._on_preview = on_preview
+        self._pending: float | None = None
+        self._tick = QTimer(self)
+        self._tick.setSingleShot(True)
+        self._tick.timeout.connect(self._send_preview)
         self.setProperty("setting", True)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.key = s["key"]
@@ -658,8 +667,19 @@ class _SettingRow(QWidget):
         self.field.setText(_fmt(self._from_steps(steps)))
         if not self.slider.isSliderDown():  # a click on the groove or a key: one change
             self._commit(self._from_steps(steps))
+        elif self._on_preview is not None:  # dragging: the viewport follows, throttled
+            self._pending = self._from_steps(steps)
+            if not self._tick.isActive():
+                self._tick.start(self.PREVIEW_MS)
+
+    def _send_preview(self) -> None:
+        if self._pending is not None and self.slider.isSliderDown() and self._on_preview is not None:
+            value, self._pending = self._pending, None
+            self._on_preview(self.key, round(value, 4))
 
     def _commit_slider(self) -> None:
+        self._tick.stop()
+        self._pending = None
         self._commit(self._from_steps(self.slider.value()))
 
     def _on_field(self) -> None:
@@ -1179,7 +1199,8 @@ class GroomingUI(QWidget):
             for s in props["settings"]:
                 lay.addWidget(_SettingRow(
                     s, z, lambda key, value: self._fire("set_value", key, value),
-                    lambda key: self._fire("reset_value", key)))
+                    lambda key: self._fire("reset_value", key),
+                    lambda key, value: self._fire("preview_value", key, value)))
         lay.addStretch(1)
         QTimer.singleShot(0, lambda: self._scroll.verticalScrollBar().setValue(scroll))
 

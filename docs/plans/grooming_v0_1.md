@@ -162,6 +162,11 @@ Panel and network, after testing the Helen sandbox scene:
   between groups, change order.
 - A lock does not yet follow its group's display (hiding a group should hide its locks).
 - A hidden group is drawn dimmed in the panel, its row and every lock inside it.
+- Bug found 2026-11-12: the per-row Display (right click › Display on a lock or group) is stored in
+  `groom_data` but the HDA never reads it: the node's Display mode applies to every lock. Either make
+  the HDA honour it per lock (mixed modes in one output) or remove the menu.
+- The release of a slider drag regrows the dragged locks in full once (~0.35 s on Helen), so Houdini's
+  cook-interrupt button still flashes once there; the ticks before it no longer do.
 - UI pass for long working days (artist in it for hours, every action quick). Clear separators,
   a clear main / secondary hierarchy, colour only where it means something. Seen on the current panel:
   - The tree and the settings run into each other; settings rows have no separation; "Measured" is
