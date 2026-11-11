@@ -145,7 +145,9 @@ Panel and network, after testing the Helen sandbox scene:
 - Hiding, or editing one lock or one group, recooks only that part, not the whole groom, in every
   display mode (Mesh, Guide, Hair preview, Hair full). A hidden lock or group is not cooked at all
   for display (today it still grows hair and is only blasted at the end), so hiding is near instant
-  and makes the rest faster. Publish still cooks every lock, hidden or not.
+  and makes the rest faster. Publish still cooks every lock, hidden or not, and says so first when
+  some are hidden: the panel names them (count and names) and Publish needs a second click to go on.
+  No modal dialog (rule above): the warning sits in the panel next to the button.
 - Fonts and icons follow Houdini's UI size (its scale setting), plus a UI size setting of the panel's
   own. The current panel is too small to read comfortably.
 - Several characters in one shot: how each is groomed, deformed and cached (one MONO Grooming per
