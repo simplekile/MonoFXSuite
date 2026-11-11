@@ -163,6 +163,28 @@ def _swatch(color: tuple[float, float, float] | None, size: int = 12) -> QIcon:
     return QIcon(pm)
 
 
+LUCIDE.setdefault("chevron-right", '<path d="m9 18 6-6-6-6"/>')
+
+
+def _branch_arrows_css() -> str:
+    """Expand / collapse arrows on group rows. A style sheet on ::branch drops Qt's own arrows, so the
+    groups looked flat although they fold; the arrows are written once to the temp folder (Qt style
+    sheets take images by file)."""
+    import os
+    import tempfile
+
+    folder = os.path.join(tempfile.gettempdir(), "monofx_grooming_ui")
+    os.makedirs(folder, exist_ok=True)
+    paths = {}
+    for name in ("chevron-right", "chevron-down"):
+        path = os.path.join(folder, f"{name}.png").replace("\\", "/")
+        if not os.path.isfile(path):
+            _lucide_pixmap(name, 12, TEXT_LABEL, 2.0).save(path)
+        paths[name] = path
+    return (f'QTreeWidget::branch:has-children:closed {{ image: url("{paths["chevron-right"]}"); }}'
+            f'QTreeWidget::branch:has-children:open {{ image: url("{paths["chevron-down"]}"); }}')
+
+
 _hda_icon_cache: dict[int, QPixmap] = {}
 
 
@@ -360,7 +382,7 @@ class GroomingUI(QWidget):
 
     def _build_tree(self) -> QWidget:
         side = QWidget()
-        side.setMinimumWidth(300)
+        side.setMinimumWidth(360)
         lay = QVBoxLayout(side)
         lay.setContentsMargins(10, 12, 10, 10)
         lay.setSpacing(6)
@@ -371,16 +393,21 @@ class GroomingUI(QWidget):
         tree.setStyleSheet(STYLE_TREE)
         tree.setIndentation(16)
         tree.setIconSize(QSize(12, 12))
+        # Lock names share their group's prefix (hair_back_01, hair_back_02 ...): cut them in the middle so
+        # the number that tells them apart stays visible.
+        tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         tree.setItemDelegateForColumn(COL_BADGES, _BadgeDelegate(tree))
         tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         tree.customContextMenuRequested.connect(self._row_menu)
         tree.itemSelectionChanged.connect(self._on_tree_selection)
         tree.itemClicked.connect(self._on_item_clicked)
+        tree.setStyleSheet(STYLE_TREE + _branch_arrows_css())
+        tree.setExpandsOnDoubleClick(True)
         header = tree.header()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(COL_NAME, header.ResizeMode.Stretch)
-        for col, width in ((COL_BADGES, 120), (COL_DISPLAY, 92), (COL_EYE, 30)):
+        for col, width in ((COL_BADGES, 84), (COL_DISPLAY, 76), (COL_EYE, 30)):
             header.setSectionResizeMode(col, header.ResizeMode.Fixed)
             header.resizeSection(col, width)
         self._tree = tree

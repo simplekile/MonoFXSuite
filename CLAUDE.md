@@ -170,20 +170,34 @@
 - Hidden locks (the panel's eye) are display only: they still grow hair and are published.
 - Lock ids are never reused (`GroomData.id_high`): frozen regions and old publishes may still name them.
   Detect stores roots unrounded, so an unchanged unnamed mesh re-matches "ok".
-- Spine and measure (`build_hda.py` `spine_build`): bands by distance along the mesh from the root (points
-  nearest the scalp), not by projection on a straight axis, so bent or folded ribbons still give one
+- Root end: the root of a ribbon is one END of it, never "every point near the scalp" (that took the
+  whole underside of Helen's hair_base caps as root: 20 cm wide roots, strands in a cone, worst lock
+  74 mm off its mesh). Two sweeps of distance along the mesh find both ends (`root_seed0` -> `end_a`
+  -> `root_end`); the end nearer the scalp is the root, `root_tolerance` widens it to a band. Detect
+  stores roots by this rule: a scene detected before it re-matches "unsure"; Detect again.
+- Spine and measure (`build_hda.py` `spine_build`): bands by distance along the mesh from the root end,
+  not by projection on a straight axis, so bent or folded ribbons still give one
   cross-section per band; per band a 2D principal-axis fit in a parallel-transported frame gives width,
   thickness and twist (a near-round band keeps the previous axis). Lock ids reach the network by the
   root Detect stored (`assign_pieces`), so Detect must run after the hair mesh changes.
-- hairgen only scatters roots on the lock's region (no guides); `fit_to_lock` places each strand in the
-  measured cross-section. One hairclump for the whole groom, `clumpid` = `lock_id`, so clumps stay in a lock.
+- hairgen only scatters roots on the lock's region (no guides); `fit_to_lock` places each strand on the
+  lock's own mesh surface: `surface_params` gives every mesh point (along u, across s) and its offset
+  from the spine, `SURFACE_CLOUD` holds them at (u x `surface_along_weight`, s, piece x `PIECE_GAP`) and a
+  `pcfind` there gives the offset (the ellipse only when a piece has no points). The piece in z replaces
+  a per-lock blast that cost 73 ms a lock (6.2 s of a 2.2 s cook). Width/thickness/twist settings scale
+  that offset; `root_blend` (0.05 of the length) eases the root onto its scalp point. Worst Helen lock
+  p95 7 mm off its mesh. One hairclump for the whole groom, `clumpid` = `lock_id`, so clumps stay in a lock.
   The frozen split lives on the node's hidden geometry parm `regions` (not a stash SOP: inner nodes of a
   locked HDA cannot be set); Python SOPs inside the HDA call `grooming_adapter.cook_assign` / `cook_frozen_regions`.
 - hairgen's `skinprim` indexes the per-lock region cut inside the loop; strands get it again from
   `guideskinattriblookup` on the clump skin, else hairclump errors. Per-lock clump reaches hairclump via
   `tightnessoverride` = `curveattrib` (`tightness`).
-- Helen (sandbox t12): 61/61 locks with hair, 107 k strands, full cook 2.2 s, preview 1.75 s (47–56 s
-  before). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
+- The scalp and rest hair mesh are read at `rest_frame` (timeshift): a USD Import is time dependent even
+  for a static file, so the whole groom recooked every frame; now only the shot deform does (0.7 s/frame).
+- Inside the HDA every stage is a titled network box, one column each (`_layout_sections`): one
+  `layoutChildren` over everything made a knot of crossing wires.
+- Helen (sandbox t12/t16): 61/61 locks with hair, 102 k strands, full cook 2.2 s, density edit 1.7 s,
+  detect 2.6 s, split 4 s, publish 1.9 s (47–56 s before regions were frozen). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
   Quitting Houdini with `hou.exit` from a Qt timer segfaults even in an empty session (fxhoudinimcp
   loaded): not this tool; kill leftover test sessions after a GUI run.
 - Shots: Karma's hair procedural (Generate) does not reproduce clump/frizz, so publishes carry full

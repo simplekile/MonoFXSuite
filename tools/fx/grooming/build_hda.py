@@ -51,23 +51,74 @@ VEX_SCALP_DIST = """// distance of each hair-mesh point to the scalp
 f@scalpdist = nprimitives(1) > 0 ? xyzdist(1, @P) : @P.y;
 """
 
-VEX_ROOT_SEEDS = """// root of every piece: its points within root_tolerance of the piece's scalp-distance range
+# The root of a lock is one END of its ribbon, found along the surface: from the point nearest the
+# scalp go to the farthest point A, from A to the farthest point B; A and B are the two ends and the
+# one nearer the scalp is the root. "Every point near the scalp" (the first rule) took whole ribbons
+# lying on the scalp (Helen's hair_base) as root, so bands ran along the lock and a 4 cm ribbon
+# measured 20 cm wide.
+
+def _per_piece_pick(attrib: str, best: str, group: str) -> str:
+    """Detail VEX: per piece, the point with the lowest/highest `attrib` goes to `group`."""
+    better = "<" if best == "min" else ">"
+    start = "1e30" if best == "min" else "-1e30"
+    return f"""// per piece: the point with the {best} {attrib} -> group {group}
 int np = npoints(0);
 int npc = 0;
 for (int i = 0; i < np; i++) npc = max(npc, point(0, "piece", i) + 1);
-float mn[], mx[];
-resize(mn, npc); resize(mx, npc);
-for (int k = 0; k < npc; k++) { mn[k] = 1e30; mx[k] = -1e30; }
+float bv[]; int bp[];
+resize(bv, npc); resize(bp, npc);
+for (int k = 0; k < npc; k++) {{ bv[k] = {start}; bp[k] = -1; }}
+for (int i = 0; i < np; i++) {{
+    int k = point(0, "piece", i);
+    float v = point(0, "{attrib}", i);
+    if (v < 0 && "{attrib}" != "scalpdist") continue;   // not reached by the distance pass
+    if (v {better} bv[k]) {{ bv[k] = v; bp[k] = i; }}
+}}
+for (int k = 0; k < npc; k++) if (bp[k] >= 0) setpointgroup(0, "{group}", bp[k], 1);
+"""
+
+
+VEX_SEED_NEAREST = _per_piece_pick("scalpdist", "min", "s0")
+VEX_END_A = _per_piece_pick("d0", "max", "end_a")
+
+VEX_ROOT_END = """// per piece: B = farthest from A; the root end is whichever of A, B is nearer the scalp
+int np = npoints(0);
+int npc = 0;
+for (int i = 0; i < np; i++) npc = max(npc, point(0, "piece", i) + 1);
+float bd[]; int bb[], aa[];
+resize(bd, npc); resize(bb, npc); resize(aa, npc);
+for (int k = 0; k < npc; k++) { bd[k] = -1; bb[k] = -1; aa[k] = -1; }
 for (int i = 0; i < np; i++) {
     int k = point(0, "piece", i);
-    float d = point(0, "scalpdist", i);
-    mn[k] = min(mn[k], d); mx[k] = max(mx[k], d);
+    if (inpointgroup(0, "end_a", i)) aa[k] = i;
+    float v = point(0, "dA", i);
+    if (v > bd[k]) { bd[k] = v; bb[k] = i; }
+}
+for (int k = 0; k < npc; k++) {
+    int a = aa[k], b = bb[k];
+    if (a < 0 && b < 0) continue;
+    float sa = a >= 0 ? point(0, "scalpdist", a) : 1e30;   // typed: point() is ambiguous inside '<'
+    float sb = b >= 0 ? point(0, "scalpdist", b) : 1e30;
+    int r = sb < sa ? b : a;
+    setpointgroup(0, "root_end", r, 1);
+}
+"""
+
+VEX_ROOT_SEEDS = """// root of every piece: its points within root_tolerance of the lock's length from the root end
+int np = npoints(0);
+int npc = 0;
+for (int i = 0; i < np; i++) npc = max(npc, point(0, "piece", i) + 1);
+float mx[];
+resize(mx, npc);
+for (int i = 0; i < np; i++) {
+    int k = point(0, "piece", i);
+    mx[k] = max(mx[k], point(0, "dR", i));
 }
 float tol = chf("../root_tolerance");
 for (int i = 0; i < np; i++) {
     int k = point(0, "piece", i);
-    float d = point(0, "scalpdist", i);
-    setpointgroup(0, "root", i, d <= mn[k] + tol * (mx[k] - mn[k]) ? 1 : 0);
+    float d = point(0, "dR", i);
+    setpointgroup(0, "root", i, d >= 0 && d <= tol * mx[k] ? 1 : 0);
 }
 """
 
@@ -361,7 +412,34 @@ s = len(prs) > 0 ? s / len(prs) : 1.0;
 f@density = detail(0, "lock_density") / max(s, 1.0);
 """
 
-VEX_FIT = """// place the strand in the lock's measured cross-section, from its root on the scalp
+VEX_SURFACE_PARAMS = """// every hair-mesh point: where it sits along its lock (pu, the spine's parameter) and its offset
+// across the lock in the spine's measured frame (ds along the width axis, dt along the thickness axis)
+f@pu = -1; f@ds = 0; f@dt = 0; f@ps = 0;
+int sp = findattribval(1, "prim", "piece", i@piece);
+if (sp < 0) return;
+int hp; vector huv;
+xyzdist(1, itoa(sp), v@P, hp, huv);
+vector c = primuv(1, "P", sp, huv);
+vector a = normalize(primuv(1, "lock_axis", sp, huv));
+vector m = normalize(primuv(1, "lock_minor", sp, huv));
+float w = max(primuv(1, "lock_width", sp, huv), 1e-6);
+f@pu = huv.x;
+f@ds = dot(v@P - c, a);
+f@dt = dot(v@P - c, m);
+f@ps = clamp(f@ds / (0.5 * w), -1.5, 1.5);
+"""
+
+PIECE_GAP = 100.0   # far beyond (along x weight, across) = (3, 1): lookups never reach another piece
+
+VEX_SURFACE_CLOUD = """// the mesh points as a cloud in (along, across) space, for fit_to_lock's lookup; z = the piece x
+// PIECE_GAP keeps each lock's points apart, so a lookup needs no per-lock blast (73 ms a lock)
+@P = set(f@pu * chf("../surface_along_weight"), f@ps, i@piece * %(gap)s);
+""" % {"gap": PIECE_GAP}
+
+VEX_FIT = """// place the strand on the lock's own mesh surface (not on a flat ellipse: wide caps like Helen's
+// hair_base are curved), from its root on the scalp. (s, t) = where its root sits in the lock's
+// region; the mesh offset at (u, s) comes from the surface cloud (input 3), then the lock's settings
+// (width_mult, thick_mult, twist_add through the spine's axes) apply; t adds a little volume.
 int pr = pointprims(0, @ptnum)[0];
 int nv = primvertexcount(0, pr);
 int iv = vertexprimindex(0, pointvertex(0, @ptnum));
@@ -374,16 +452,40 @@ int p0 = primpoint(1, 0, 0);
 vector a0 = point(1, "lock_axis", p0), m0 = point(1, "lock_minor", p0);
 if (dot(ra, a0) < 0) s = -s;
 if (dot(rb, m0) < 0) t = -t;
-vector uv = set(u, 0, 0);
-vector c = primuv(1, "P", 0, uv);
-vector a = normalize(primuv(1, "lock_axis", 0, uv));
-vector m = normalize(primuv(1, "lock_minor", 0, uv));
-float w = primuv(1, "lock_width", 0, uv), th = primuv(1, "lock_thick", 0, uv);
-vector shaped = c + a * (s * 0.5 * w) + m * (t * 0.5 * th);
-vector c0 = point(1, "P", p0) + a0 * (s * 0.5 * float(point(1, "lock_width", p0)))
-          + m0 * (t * 0.5 * float(point(1, "lock_thick", p0)));
+float wm = prim(1, "width_mult", 0), tm = prim(1, "thick_mult", 0);
+if (wm <= 0) wm = 1;
+if (tm <= 0) tm = 1;
+float aw = chf("../surface_along_weight");
+float pz = prim(1, "piece", 0) * %(gap)s;
+float cm = 1.0 / max(chf("../unit_cm"), 1e-6);
+
+vector place(float uu; float ss; float tt; float aw; float pz; float wm; float tm; float cm) {
+    vector uv = set(uu, 0, 0);
+    vector c = primuv(1, "P", 0, uv);
+    vector a = normalize(primuv(1, "lock_axis", 0, uv));
+    vector m = normalize(primuv(1, "lock_minor", 0, uv));
+    float w = primuv(1, "lock_width", 0, uv), th = primuv(1, "lock_thick", 0, uv);
+    float vol = min(min(th, 0.15 * w), cm);           // volume around the surface, at most 1 cm
+    vector q = set(uu * aw, ss, pz);
+    int near[] = pcfind(3, "P", q, 0.25, chi("../surface_neighbours"));
+    if (len(near) == 0) near = pcfind(3, "P", q, %(gap)s * 0.5, 1);
+    if (len(near) == 0)                                 // no mesh points for this piece: the ellipse
+        return c + a * (ss * 0.5 * w) + m * (tt * 0.5 * th);
+    float wsum = 0, ds = 0, dt = 0;
+    foreach (int n; near) {
+        float k = 1.0 / max(distance(point(3, "P", n), q), 1e-4);
+        ds += k * point(3, "ds", n);
+        dt += k * point(3, "dt", n);
+        wsum += k;
+    }
+    ds /= wsum; dt /= wsum;
+    return c + a * (ds * wm) + m * (dt * tm + tt * 0.5 * vol);
+}
+
+vector shaped = place(u, s, t, aw, pz, wm, tm, cm);
+vector c0 = place(0.0, s, t, aw, pz, wm, tm, cm);
 @P = shaped + (root - c0) * (1 - smooth(0, max(chf("../root_blend"), 1e-4), u));
-"""
+""" % {"gap": PIECE_GAP}
 
 VEX_STRAND_TAGS = """// lock attributes on every strand
 i@lock_id = prim(1, "lock_id", 0);
@@ -489,14 +591,38 @@ DETAIL, PRIM, POINT = 0, 1, 2
 def build_network(sub) -> None:
     """Create every node of the HDA inside `sub` (a SOP subnet with 3 indirect inputs)."""
     ins = sub.indirectInputs()
-    in_scalp = _node(sub, "null", "IN_SCALP", [ins[0]])
-    in_hair = _node(sub, "null", "IN_HAIR", [ins[1]])
+    # The scalp and the rest hair mesh are read at one fixed frame: a USD Import upstream is time
+    # dependent even for a static file, which made the whole groom recook on every frame (2 s/frame on
+    # Helen) when only the deform by input 2 should.
+    rest_scalp = _node(sub, "timeshift", "rest_frame_scalp", [ins[0]])
+    rest_hair = _node(sub, "timeshift", "rest_frame_hair", [ins[1]])
+    for ts in (rest_scalp, rest_hair):
+        ts.parm("frame").setExpression('ch("../rest_frame")')
+    in_scalp = _node(sub, "null", "IN_SCALP", [rest_scalp])
+    in_hair = _node(sub, "null", "IN_HAIR", [rest_hair])
     in_anim = _node(sub, "null", "IN_ANIM", [ins[2]])
+    sections = []
+
+    def section(title):
+        seen = {n for _, ns in sections for n in ns}
+        sections.append((title, [n for n in sub.children() if n not in seen]))
+
+    section("Inputs (rest frame)")
 
     # ---- pieces, spine and measure ----
     pieces = _node(sub, "connectivity", "pieces", [in_hair], connecttype=0, attribname="piece")
     sdist = _wrangle(sub, "scalp_dist", VEX_SCALP_DIST, POINT, [pieces, in_scalp])
-    seeds = _wrangle(sub, "root_seeds", VEX_ROOT_SEEDS, DETAIL, [sdist])
+    # the two ends of each ribbon along its surface; the one nearer the scalp is the root
+    s0 = _wrangle(sub, "root_seed0", VEX_SEED_NEAREST, DETAIL, [sdist])
+    d0 = _node(sub, "distancealonggeometry", "dist_from_seed0", [s0], startpts="s0", outattrib="d0")
+    end_a = _wrangle(sub, "end_a", VEX_END_A, DETAIL, [d0])
+    da = _node(sub, "distancealonggeometry", "dist_from_end_a", [end_a], startpts="end_a", outattrib="dA")
+    root_end = _wrangle(sub, "root_end", VEX_ROOT_END, DETAIL, [da])
+    dr = _node(sub, "distancealonggeometry", "dist_from_root_end", [root_end], startpts="root_end",
+               outattrib="dR")
+    for n in (d0, da, dr):
+        n.parm("distmetric").set(0)  # along edges: fast, close to the surface distance on a quad mesh
+    seeds = _wrangle(sub, "root_seeds", VEX_ROOT_SEEDS, DETAIL, [dr])
     dist = _node(sub, "distancealonggeometry", "dist_from_root", [seeds],
                  startpts="root", outattrib="dist")
     dist.parm("distmetric").set(0)  # along edges: fast, and on a quad mesh close to the surface distance
@@ -507,6 +633,11 @@ def build_network(sub) -> None:
                      docurveuattr=1, dotangentattr=1)
     resample.parm("segs").setExpression('ch("../spine_points")')
     raw = _node(sub, "null", "SPINES_RAW", [resample])
+    # the hair mesh as a lookup cloud: strands follow its real surface, curved caps included
+    sparams = _wrangle(sub, "surface_params", VEX_SURFACE_PARAMS, POINT, [pieces, raw])
+    scloud = _wrangle(sub, "surface_cloud", VEX_SURFACE_CLOUD, POINT, [sparams])
+    surface = _node(sub, "null", "SURFACE_CLOUD", [scloud])
+    section("Pieces, root ends, spines")
 
     # ---- lock ids, names, groups and resolved settings from the JSON ----
     assign = _node(sub, "python", "assign_locks", [raw])
@@ -518,6 +649,7 @@ def build_network(sub) -> None:
     # hidden locks (the panel's eye) still grow hair and are published: visibility is display only
     guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0", grouptype=4)
     guides = _wrangle(sub, "guide_roots", VEX_GUIDE_ROOT, POINT, [guides_cut, in_scalp])
+    section("Locks and settings (groom_data)")
 
     # ---- frozen regions, on a finer scalp (bilinear: same shape and UVs) so footprints are not one prim ----
     fine = _node(sub, "subdivide", "scalp_subdivide", [in_scalp])
@@ -531,6 +663,7 @@ def build_network(sub) -> None:
     rprims = _wrangle(sub, "region_prims", VEX_REGION_PRIMS, PRIM, [rpts, spines, frozen])
     regions = _node(sub, "null", "SCALP_REGIONS", [rprims])
     preview = _wrangle(sub, "PREVIEW", VEX_PREVIEW, DETAIL, [regions])
+    section("Frozen regions")
 
     # ---- hairgen per lock ----
     begin = _node(sub, "block_begin", "foreach_begin", [guides], method=1, blockpath="../foreach_end")
@@ -548,7 +681,7 @@ def build_network(sub) -> None:
         'pow(ch("../unit_cm"), 2) * detail("../PREVIEW", "factor", 0)')
     hairgen.parm("scatterseed").setExpression('prim("../foreach_begin", 0, "lock_id", 0)')
     hairgen.parm("thickness").setExpression('ch("../strand_width")')
-    fit = _wrangle(sub, "fit_to_lock", VEX_FIT, POINT, [hairgen, begin, frame])
+    fit = _wrangle(sub, "fit_to_lock", VEX_FIT, POINT, [hairgen, begin, frame, surface])
     tags = _wrangle(sub, "strand_tags", VEX_STRAND_TAGS, PRIM, [fit, begin])
     nothing = _node(sub, "add", "no_strands")
     has_region = _node(sub, "switch", "has_region", [nothing, tags])
@@ -556,6 +689,7 @@ def build_network(sub) -> None:
     end = _node(sub, "block_end", "foreach_end", [has_region], itermethod=1, method=1, useattrib=1,
                 attrib="lock_id", blockpath="../foreach_begin", templatepath="../foreach_begin")
     end.parm("class").set(0)
+    section("Hair per lock (for each lock_id)")
 
     # ---- clump, length, frizz ----
     clump_skin = _wrangle(sub, "clump_skin", "v@rest = @P;  // hairclump wants a rest skin\n", POINT,
@@ -571,6 +705,7 @@ def build_network(sub) -> None:
     lf = _wrangle(sub, "length_frizz", VEX_LENGTH_FRIZZ, PRIM, [clump])
     hair_out = _wrangle(sub, "hair_attribs", VEX_HAIR_OUT, PRIM, [lf])
     hair = _node(sub, "null", "HAIR", [hair_out])
+    section("Clump, length, frizz")
 
     # ---- publish: the full hair, without display-only attributes ----
     # skinprim / skinprimuv refer to the per-lock region inside the loop, not the scalp: dropped
@@ -586,6 +721,7 @@ def build_network(sub) -> None:
     pub.parm("enable_topologyhandling").set(1)
     pub.parm("topologyhandling").set("static")
     pub.parm("trange").set(0)
+    section("Publish")
 
     # ---- display ----
     mesh_col = _wrangle(sub, "mesh_color", VEX_MESH_COLOR, PRIM, [pieces, spines])
@@ -603,7 +739,29 @@ def build_network(sub) -> None:
     output = _node(sub, "output", "output0", [out])
     output.setDisplayFlag(True)
     output.setRenderFlag(True)
-    sub.layoutChildren()
+    section("Display and shot deform")
+    _layout_sections(sub, sections)
+
+
+def _layout_sections(sub, sections) -> None:
+    """One column per section, left to right in build order, each in a titled network box: one
+    layoutChildren over everything put the loop and the regions in a knot of crossing wires."""
+    x = 0.0
+    for title, nodes in sections:
+        if not nodes:
+            continue
+        sub.layoutChildren(items=nodes)
+        xs = [n.position()[0] for n in nodes]
+        ys = [n.position()[1] for n in nodes]
+        shift = hou.Vector2(x - min(xs), -max(ys))
+        for n in nodes:
+            n.move(shift)
+        box = sub.createNetworkBox()
+        box.setComment(title)
+        for n in nodes:
+            box.addItem(n)
+        box.fitAroundContents()
+        x += max(xs) - min(xs) + 5.0
 
 
 def _parm_templates() -> hou.ParmTemplateGroup:
@@ -632,6 +790,19 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                               default_value=(config.PREVIEW_FRACTION,), min=0.0, max=1.0))
     adv.addParmTemplate(hou.IntParmTemplate("preview_max", "Preview max strands", 1,
                                             default_value=(config.PREVIEW_MAX_STRANDS,), min=0, max=100000))
+    adv.addParmTemplate(hou.FloatParmTemplate("surface_along_weight", "Surface along weight", 1,
+                                              default_value=(3.0,), min=0.1, max=20.0,
+                                              help="How much a mesh point's position along the lock counts "
+                                                   "against its position across, when a strand looks up the "
+                                                   "mesh surface"))
+    adv.addParmTemplate(hou.IntParmTemplate("surface_neighbours", "Surface neighbours", 1, default_value=(1,),
+                                            min=1, max=12,
+                                            help="Mesh points averaged per strand point. 1 keeps strands on the "
+                                                 "surface of curved caps; more smooths flat ribbons"))
+    adv.addParmTemplate(hou.FloatParmTemplate("rest_frame", "Rest frame", 1, default_value=(1.0,),
+                                              min=-100.0, max=1000.0,
+                                              help="Frame at which the scalp and the rest hair mesh (inputs "
+                                                   "1-2) are read; only the animated hair mesh follows time"))
     adv.addParmTemplate(hou.IntParmTemplate("region_subdiv", "Region subdivisions", 1,
                                             default_value=(config.REGION_SUBDIV,), min=0, max=4,
                                             help="Bilinear subdivisions of the scalp before Chia vùng "
@@ -645,7 +816,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                               min=0.0, max=1.0,
                                               help="Below this anisotropy a cross-section keeps the previous "
                                                    "band's axis, so a round lock does not show false twist"))
-    adv.addParmTemplate(hou.FloatParmTemplate("root_blend", "Root blend", 1, default_value=(0.12,),
+    adv.addParmTemplate(hou.FloatParmTemplate("root_blend", "Root blend", 1, default_value=(0.05,),
                                               min=0.0, max=1.0))
     adv.addParmTemplate(hou.FloatParmTemplate("unit_cm", "Centimetres per unit", 1, default_value=(100.0,),
                                               min=0.001, max=1000.0))

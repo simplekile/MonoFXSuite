@@ -116,7 +116,15 @@ try later (publish animated guides only, deform the rest strands at render time)
   belongs to every lock whose footprint covers its centroid (radius = `REGION_FOOTPRINT` 0.5 x the
   lock's measured root width), else to the nearest lock of its group. Stacked locks (Helen's fringe
   layers, roots 1-4 mm apart) share the patch and divide its density, so the scalp's strand count does
-  not change; every lock gets at least its nearest prim.
+  not change; every lock gets at least its nearest prim. The root width is the widest cross-section
+  over the first 10% of the spine.
+- A lock's root is one end of its ribbon (the end nearer the scalp, found by two sweeps of distance
+  along the mesh), not every mesh point near the scalp: that made Helen's curved caps grow strands in
+  a cone. Scenes detected before this rule re-match "unsure" and need Detect again.
+- Strands follow the lock's own mesh surface (`fit_to_lock` looks the offset up in `SURFACE_CLOUD` by
+  along/across position, the piece kept apart in z), not an ellipse around the spine; `root_blend`
+  (default 0.05) eases each strand onto its scalp root.
+- The scalp and rest hair mesh are read at `rest_frame`, so only the shot deform cooks per frame.
 - Re-import keeps ids: match by name, then root position on the scalp, then shape. Unsure matches are
   marked and need a confirm; locks that disappear go to `orphans` with their settings kept.
 - Publish never overwrites silently. Version default = the `_vNNN` of the scene name; when that version

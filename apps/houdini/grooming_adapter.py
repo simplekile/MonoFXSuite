@@ -429,10 +429,11 @@ def split_regions(node) -> None:
         if lid < 0:
             continue
         roots[lid] = tuple(prim.attribValue("root"))  # type: ignore[assignment]
-        # The root band of a lock is often tapered to almost nothing; its footprint follows the
-        # widest section of the first quarter of the spine instead.
+        # The root band of a lock is often tapered to almost nothing, so the footprint takes the widest
+        # section near the root (first 10 % of the spine). Not further: Helen's hair_base caps widen
+        # to 20 cm a little up, and a 10 cm footprint grew a cone of strands converging on the lock.
         pts0 = prim.points()
-        head = pts0[:max(1, len(pts0) // 4)]
+        head = pts0[:max(2, len(pts0) // 10)]
         width = max((p.floatAttribValue(config.ATTR_LOCK_WIDTH) for p in head), default=0.0)
         radii[lid] = config.REGION_FOOTPRINT * width
     has_group = scalp.findPointAttrib(config.ATTR_GROUP) is not None
@@ -522,10 +523,13 @@ def select_locks(node, ids: Iterable[int]) -> None:
     if geo.findPrimAttrib(config.ATTR_LOCK_ID) is None:
         return
     prims = [p for p in geo.iterPrims() if p.intAttribValue(config.ATTR_LOCK_ID) in want]
-    node.setCurrent(True, clear_all_selected=True)
     try:
+        node.setCurrent(True, clear_all_selected=True)
         viewer.setCurrentGeometrySelection(hou.geometryType.Primitives, (node,), (hou.Selection(prims),))
-    except hou.OperationFailed:  # the viewer is in a state that takes no geometry selection
+    except hou.Error:
+        # The viewer has no active selector (view state, not a select state): Houdini refuses with
+        # "Not available in this context / no active selector found". The panel's selection simply is
+        # not mirrored there; that is not an error the user has to see.
         pass
 
 
