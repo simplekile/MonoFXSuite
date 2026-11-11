@@ -711,6 +711,33 @@ def test_slider_drag_survives_a_window_popping_up_and_taking_the_mouse(app, pref
     ui.close()
 
 
+def test_rebuilding_the_settings_shows_no_window_of_its_own(app, prefs) -> None:
+    """Reset was shown before it had a parent: a little window flashed up on every edit and took the
+    mouse from the slider being dragged."""
+    from PySide6.QtCore import QEvent, QObject
+    from PySide6.QtWidgets import QWidget
+
+    adapter, ui, c = _panel(app)
+    shown = []
+
+    class Spy(QObject):
+        def eventFilter(self, obj, event):  # noqa: N802
+            if event.type() == QEvent.Type.Show and isinstance(obj, QWidget) and obj.isWindow() and obj is not ui:
+                shown.append(type(obj).__name__)
+            return False
+
+    spy = Spy()
+    app.installEventFilter(spy)
+    try:
+        c.select_locks([2])  # a lock with its own values: rows with Reset
+        c.set_value("density", 180.0)
+        app.processEvents()
+    finally:
+        app.removeEventFilter(spy)
+    assert shown == []
+    ui.close()
+
+
 def test_eye_click_on_a_selected_row_hides_the_whole_selection(app, prefs) -> None:
     from PySide6.QtCore import Qt
     from PySide6.QtTest import QTest

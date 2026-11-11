@@ -165,8 +165,8 @@ Panel and network, after testing the Helen sandbox scene:
 - Fixed 2026-11-12: the per-row Display (right click › Display on a lock or group) was stored in
   `groom_data` but never read by the HDA. Each lock now shows in its own mode (lock, else group, else
   the node's), mesh, guide and hair side by side; publish is always full hair.
-- The release of a slider drag regrows the dragged locks in full once (~0.35 s on Helen), so Houdini's
-  cook-interrupt button still flashes once there; the ticks before it no longer do.
+- Fixed 2026-11-11: the small window that flashed up on every edit and ended slider drags was the
+  setting row's Reset button, shown before it had a parent (not Houdini's cook-interrupt button).
 - UI pass for long working days (artist in it for hours, every action quick). Clear separators,
   a clear main / secondary hierarchy, colour only where it means something. Seen on the current panel:
   - The tree and the settings run into each other; settings rows have no separation; "Measured" is

@@ -206,11 +206,15 @@
   - A slider drag writes each tick with no undo step (`write_data_live`, at most every 120 ms), the
     dragged locks grow at the preview fraction (`set_drag_preview`, hidden parm `preview_ids` read by
     `lock_keys` into a per-lock `strand_factor` that hairgen reads); the release puts the pre-drag data
-    back without undo and writes the final value: one undo step, full hair once. Houdini flashes its
-    cook-interrupt button for any cook over ~0.3 s: the "popup" artists saw on every change. That
-    button takes Qt's mouse grab and ended every drag, so `ui._Slider` follows the drag itself (a 15 ms
-    timer reads the cursor and the system's button state, `_left_button_down`) instead of trusting
-    Qt's mouse events; the poll also skips while a slider is down (a rebuild under the mouse ends it).
+    back without undo and writes the final value: one undo step, full hair once.
+  - The "popup that flashes on every change" was the panel's own Reset button: a setting row showed it
+    before adding it to its layout, so for a moment it was a window of its own, on every rebuild of the
+    settings, and it took the mouse from the slider being dragged (`test_rebuilding_the_settings_shows_no_window_of_its_own`).
+    It was first blamed on Houdini's cook-interrupt button: a spy on window Show events in GUI Houdini
+    found no other window, Anim on included. Show a widget only once it has a parent. `ui._Slider` also
+    follows a drag itself (a 15 ms timer reads the cursor and the system's button state,
+    `_left_button_down`), so a window popping up mid-drag no longer ends it; the poll skips while a
+    slider is down (a rebuild under the mouse ends it).
   - GUI Helen, hair full: select 0.025 s, hide / show 0.08 s, a drag tick 0.07-0.09 s, release 0.35 s.
 - Per-lock Display: `assign_locks` writes `row_display` (the lock's own Display, else its group's, -1 =
   the node's); `lock_shown` turns it into `disp` (lighter while playing, full hair while publishing) and
@@ -222,8 +226,7 @@
   prim's Cd and drew the groom white.
 - Shot deform: toggle `shot_deform` (panel: the Anim button, shown when an animated hair mesh is wired;
   no undo step). Hidden `anim_wired` / `deform_active`. With it on, every edit deforms all 4 M points
-  (~1.2 s): Houdini's cook-interrupt button then flashes on every action, so grooming is done with it
-  off (edits 0.1 s). Each lock is captured to the rest hair mesh inside the per-lock loop and cached
+  (~1.2 s), so grooming is done with it off (edits 0.1 s); with it on a drag applies on release. Each lock is captured to the rest hair mesh inside the per-lock loop and cached
   with its strands (`lock_capture`, per-lock `do_capture` in the key: always with deform on, full-hair
   locks only with it off, so turning it on regrows nothing and drag ticks skip the ~0.3 s capture);
   capturing the merged 4 M points cost 3-9 s per hide or show. Only mesh / guide parts are captured at

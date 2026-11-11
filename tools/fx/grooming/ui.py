@@ -403,9 +403,8 @@ def _fmt(value: float) -> str:
 # Widgets that never take the wheel: it scrolls the panel instead
 # ---------------------------------------------------------------------------
 def _left_button_down() -> bool:
-    """The left mouse button as the system sees it, not as Qt last heard it: Houdini's cook-interrupt
-    button pops up for any cook over ~0.3 s and takes Qt's mouse grab, so Qt never tells the slider about
-    the moves or the release that follow."""
+    """The left mouse button as the system sees it, not as Qt last heard it: any window that pops up
+    takes Qt's mouse grab, and Qt then never tells the slider about the moves or the release."""
     if sys.platform == "win32":
         try:
             import ctypes
@@ -787,8 +786,9 @@ class _SettingRow(QWidget):
         policy = self.reset.sizePolicy()
         policy.setRetainSizeWhenHidden(True)  # the columns stay lined up row to row
         self.reset.setSizePolicy(policy)
-        self.reset.setVisible(own)
         lay.addWidget(self.reset)
+        self.reset.setVisible(own)  # only once it has a parent: shown alone it is a window that flashes
+        # up on every rebuild and takes the mouse from a slider being dragged
 
     def _to_steps(self, value: float) -> int:
         t = (value - self._lo) / (self._hi - self._lo) if self._hi > self._lo else 0.0
