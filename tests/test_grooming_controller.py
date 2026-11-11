@@ -177,7 +177,7 @@ def test_group_edit_applies_to_its_locks(env) -> None:
     assert data.group("fringe").overrides == {"clump": 0.2}
     assert data.resolve(1)["clump"] == 0.2 and data.source_of(1, "clump") == "group"
     assert data.resolve(2)["clump"] == 0.8  # its own override still wins
-    assert data.resolve(3)["clump"] == 0.4  # other group: built-in
+    assert data.resolve(3)["clump"] == 0.3  # other group: built-in
     assert _setting(view, "clump")["source"] == "group"
 
 

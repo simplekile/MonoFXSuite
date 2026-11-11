@@ -429,12 +429,44 @@ f@dt = dot(v@P - c, m);
 f@ps = clamp(f@ds / (0.5 * w), -1.5, 1.5);
 """
 
+VEX_SPINE_SMOOTH = """// blur along the spine: each inner point moves halfway to its neighbours' average, the ends stay
+// (Attribute Blur pins every point of an open curve: all of them are on its border)
+int pts[] = primpoints(0, @primnum);
+int n = len(pts), it = chi("../spine_smooth");
+if (n < 3 || it <= 0) return;
+string fl[] = {"lock_width", "lock_thick"};
+string vc[] = {"P", "lock_axis", "lock_minor"};
+foreach (string a; vc) {
+    if (!haspointattrib(0, a)) continue;
+    vector V[]; foreach (int p; pts) { vector v = point(0, a, p); append(V, v); }
+    for (int k = 0; k < it; k++) {
+        vector W[] = V;
+        for (int i = 1; i < n - 1; i++) W[i] = lerp(V[i], (V[i - 1] + V[i + 1]) * 0.5, 0.5);
+        V = W;
+    }
+    for (int i = 1; i < n - 1; i++) setpointattrib(0, a, pts[i], a == "P" ? V[i] : normalize(V[i]));
+}
+foreach (string a; fl) {
+    if (!haspointattrib(0, a)) continue;
+    float V[]; foreach (int p; pts) { float v = point(0, a, p); append(V, v); }
+    for (int k = 0; k < it; k++) {
+        float W[] = V;
+        for (int i = 1; i < n - 1; i++) W[i] = lerp(V[i], (V[i - 1] + V[i + 1]) * 0.5, 0.5);
+        V = W;
+    }
+    for (int i = 1; i < n - 1; i++) setpointattrib(0, a, pts[i], V[i]);
+}
+"""
+
 PIECE_GAP = 100.0   # far beyond (along x weight, across) = (3, 1): lookups never reach another piece
+SHEET_GAP = 10.0    # a lock's underside (dt < 0) sits this far from its top side in the cloud
 
 VEX_SURFACE_CLOUD = """// the mesh points as a cloud in (along, across) space, for fit_to_lock's lookup; z = the piece x
 // PIECE_GAP keeps each lock's points apart, so a lookup needs no per-lock blast (73 ms a lock)
-@P = set(f@pu * chf("../surface_along_weight"), f@ps, i@piece * %(gap)s);
-""" % {"gap": PIECE_GAP}
+// and its underside (dt < 0) at + SHEET_GAP: top and underside share (along, across), and one lookup
+// for both made strands jump between them every segment (zigzags of the lock's thickness)
+@P = set(f@pu * chf("../surface_along_weight"), f@ps, i@piece * %(gap)s + (f@dt < 0 ? %(sheet)s : 0));
+""" % {"gap": PIECE_GAP, "sheet": SHEET_GAP}
 
 VEX_FIT = """// place the strand on the lock's own mesh surface (not on a flat ellipse: wide caps like Helen's
 // hair_base are curved), from its root on the scalp. (s, t) = where its root sits in the lock's
@@ -452,6 +484,14 @@ int p0 = primpoint(1, 0, 0);
 vector a0 = point(1, "lock_axis", p0), m0 = point(1, "lock_minor", p0);
 if (dot(ra, a0) < 0) s = -s;
 if (dot(rb, m0) < 0) t = -t;
+// where a root fell in the region bunches strands in the middle of the lock (Helen: 22 %% of the mesh
+// with no strand near it before clumping); cross_spread moves each strand toward an even spread over
+// the whole cross-section. root_pull then brings its root under that spot.
+float spread = clamp(chf("../cross_spread"), 0, 1);
+if (spread > 0) {
+    s = lerp(s, fit01(rand(set(pr, 0.37, 1.7)), -1, 1), spread);
+    t = lerp(t, fit01(rand(set(pr, 2.91, 0.3)), -1, 1), spread);
+}
 float wm = prim(1, "width_mult", 0), tm = prim(1, "thick_mult", 0);
 if (wm <= 0) wm = 1;
 if (tm <= 0) tm = 1;
@@ -466,33 +506,72 @@ vector place(float uu; float ss; float tt; float aw; float pz; float wm; float t
     vector m = normalize(primuv(1, "lock_minor", 0, uv));
     float w = primuv(1, "lock_width", 0, uv), th = primuv(1, "lock_thick", 0, uv);
     float vol = min(min(th, 0.15 * w), cm);           // volume around the surface, at most 1 cm
-    vector q = set(uu * aw, ss, pz);
-    int near[] = pcfind(3, "P", q, 0.25, chi("../surface_neighbours"));
-    if (len(near) == 0) near = pcfind(3, "P", q, %(gap)s * 0.5, 1);
-    if (len(near) == 0)                                 // no mesh points for this piece: the ellipse
+    // the cloud keeps the mesh's faces: the nearest spot on them, interpolated, is continuous along
+    // the strand (the nearest POINT jumped from one mesh point to the next). Top side and underside
+    // are looked up apart and blended by t, so a strand stays at one depth inside the lock.
+    int ht, hb; vector uvt, uvb;
+    xyzdist(3, set(uu * aw, ss, pz), ht, uvt, %(gap)s * 0.5);
+    xyzdist(3, set(uu * aw, ss, pz + %(sheet)s), hb, uvb, %(gap)s * 0.5);
+    if (ht < 0)                                         // no mesh for this piece: the ellipse
         return c + a * (ss * 0.5 * w) + m * (tt * 0.5 * th);
-    float wsum = 0, ds = 0, dt = 0;
-    foreach (int n; near) {
-        float k = 1.0 / max(distance(point(3, "P", n), q), 1e-4);
-        ds += k * point(3, "ds", n);
-        dt += k * point(3, "dt", n);
-        wsum += k;
-    }
-    ds /= wsum; dt /= wsum;
-    return c + a * (ds * wm) + m * (dt * tm + tt * 0.5 * vol);
+    float dst = primuv(3, "ds", ht, uvt), dtt = primuv(3, "dt", ht, uvt);
+    float dsb = primuv(3, "ds", hb, uvb), dtb = primuv(3, "dt", hb, uvb);
+    float k = clamp((tt + 1) * 0.5, 0, 1);
+    float ds = lerp(dsb, dst, k), dt = lerp(dtb, dtt, k);
+    float extra = max(vol - abs(dtt - dtb), 0);         // a one-sided ribbon still gets some volume
+    return c + a * (ds * wm) + m * (dt * tm + tt * 0.5 * extra);
 }
 
 vector shaped = place(u, s, t, aw, pz, wm, tm, cm);
 vector c0 = place(0.0, s, t, aw, pz, wm, tm, cm);
+// roots are scattered over the lock's whole scalp region, often much wider than the lock's own root:
+// pulled toward the mesh root at the same (s, t) and put back on the region, strands leave the scalp
+// like the mesh does instead of fanning in from all over the region
+float pull = clamp(chf("../root_pull"), 0, 1);
+if (pull > 0 && nprimitives(2) > 0) {
+    int rp; vector ruv;
+    xyzdist(2, lerp(root, c0, pull), rp, ruv);
+    root = primuv(2, "P", rp, ruv);
+}
 @P = shaped + (root - c0) * (1 - smooth(0, max(chf("../root_blend"), 1e-4), u));
-""" % {"gap": PIECE_GAP}
+""" % {"gap": PIECE_GAP, "sheet": SHEET_GAP}
+
+VEX_STRAND_SMOOTH = """// a surface lookup can land on a fold of the flattened mesh and throw one point off (Helen: 2-11 %
+// of points bent back over 90 deg). The strand's offset from its lock's spine (smooth already) gets a
+// median of 3, which removes single spikes, then a light blur; the root stays.
+int pts[] = primpoints(0, @primnum);
+int n = len(pts), it = chi("../strand_smooth");
+if (n < 4 || it <= 0) return;
+vector O[], S[];
+for (int i = 0; i < n; i++) {
+    vector sp = primuv(1, "P", 0, set(float(i) / (n - 1), 0, 0));
+    vector p = point(0, "P", pts[i]);
+    append(S, sp); append(O, p - sp);
+}
+vector M[] = O;
+for (int i = 1; i < n - 1; i++) {                  // median of 3, per component
+    vector a = O[i - 1], b = O[i], c = O[i + 1], r;
+    for (int k = 0; k < 3; k++) {
+        float x = a[k], y = b[k], z = c[k];
+        r[k] = max(min(x, y), min(max(x, y), z));
+    }
+    M[i] = r;
+}
+for (int k = 0; k < it; k++) {
+    vector W[] = M;
+    for (int i = 1; i < n - 1; i++) W[i] = lerp(M[i], (M[i - 1] + M[i + 1]) * 0.5, 0.5);
+    W[n - 1] = lerp(M[n - 1], M[n - 2], 0.25);
+    M = W;
+}
+for (int i = 1; i < n; i++) setpointattrib(0, "P", pts[i], S[i] + M[i]);
+"""
 
 VEX_STRAND_TAGS = """// lock attributes on every strand
 i@lock_id = prim(1, "lock_id", 0);
 s@name = prim(1, "name", 0);
 s@group = prim(1, "group", 0);
 i@clumpid = i@lock_id;
-f@tightness = prim(1, "clump", 0);
+f@clumpblend = prim(1, "clump", 0);   // the lock's clump drives hairclump's blend
 f@length_mult = prim(1, "length_mult", 0);
 f@frizz = prim(1, "frizz", 0);
 i@visible = prim(1, "visible", 0);
@@ -632,7 +711,10 @@ def build_network(sub) -> None:
     resample = _node(sub, "resample", "spine_resample", [build], dolength=0, dosegs=1,
                      docurveuattr=1, dotangentattr=1)
     resample.parm("segs").setExpression('ch("../spine_points")')
-    raw = _node(sub, "null", "SPINES_RAW", [resample])
+    # band centroids and frames jump from band to band (Helen: median corner 34 deg every 2.8 cm), and
+    # every strand inherits them as zigzags: blurred along the spine, root and tip held
+    smooth = _wrangle(sub, "spine_smooth", VEX_SPINE_SMOOTH, PRIM, [resample])
+    raw = _node(sub, "null", "SPINES_RAW", [smooth])
     # the hair mesh as a lookup cloud: strands follow its real surface, curved caps included
     sparams = _wrangle(sub, "surface_params", VEX_SURFACE_PARAMS, POINT, [pieces, raw])
     scloud = _wrangle(sub, "surface_cloud", VEX_SURFACE_CLOUD, POINT, [sparams])
@@ -648,7 +730,9 @@ def build_network(sub) -> None:
     spines = _node(sub, "null", "SPINES", [settings])
     # hidden locks (the panel's eye) still grow hair and are published: visibility is display only
     guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0", grouptype=4)
-    guides = _wrangle(sub, "guide_roots", VEX_GUIDE_ROOT, POINT, [guides_cut, in_scalp])
+    roots = _wrangle(sub, "guide_roots", VEX_GUIDE_ROOT, POINT, [guides_cut, in_scalp])
+    guides = _wrangle(sub, "guide_length", 'f@lock_len = primintrinsic(0, "measuredperimeter", @primnum);\n',
+                      PRIM, [roots])
     section("Locks and settings (groom_data)")
 
     # ---- frozen regions, on a finer scalp (bilinear: same shape and UVs) so footprints are not one prim ----
@@ -675,14 +759,18 @@ def build_network(sub) -> None:
     # lock's shape (the spine as a hairgen guide would need skinprim/skinuv on the region).
     hairgen = _node(sub, "hairgen::2.0", "hairgen", [rdens], useguides=0, growunguided=1,
                     useinitdirattrib=0, unguidedlength=0.01)
-    hairgen.parm("unguidedsegments").setExpression('ch("../spine_points")')
+    # segments by the lock's length (24 on a 90 cm lock made 4 cm straight runs across its curves)
+    hairgen.parm("unguidedsegments").setExpression(
+        'max(ch("../spine_points"), ceil(prim("../foreach_begin", 0, "lock_len", 0) * ch("../unit_cm") '
+        '/ max(ch("../strand_segment_cm"), 0.1)))')
     hairgen.parm("densityoverride").set(1)  # skin attribute "density" (strands/cm2) x the parm
     hairgen.parm("density").setExpression(
         'pow(ch("../unit_cm"), 2) * detail("../PREVIEW", "factor", 0)')
     hairgen.parm("scatterseed").setExpression('prim("../foreach_begin", 0, "lock_id", 0)')
     hairgen.parm("thickness").setExpression('ch("../strand_width")')
     fit = _wrangle(sub, "fit_to_lock", VEX_FIT, POINT, [hairgen, begin, frame, surface])
-    tags = _wrangle(sub, "strand_tags", VEX_STRAND_TAGS, PRIM, [fit, begin])
+    sm_strand = _wrangle(sub, "strand_smooth", VEX_STRAND_SMOOTH, PRIM, [fit, begin])
+    tags = _wrangle(sub, "strand_tags", VEX_STRAND_TAGS, PRIM, [sm_strand, begin])
     nothing = _node(sub, "add", "no_strands")
     has_region = _node(sub, "switch", "has_region", [nothing, tags])
     has_region.parm("input").setExpression('if(nprims("../region_cut") > 0, 1, 0)')
@@ -699,9 +787,12 @@ def build_network(sub) -> None:
     skinref = _node(sub, "guideskinattriblookup", "strands_skinref", [end, clump_skin])
     clump = _node(sub, "hairclump::2.0", "clump", [skinref, clump_skin])
     clump.parm("clumpsize").setExpression('ch("../clump_size")')
-    clump.parm("tightness").set(1.0)  # x the strand's `tightness` = the lock's clump setting
-    clump.parm("tightnessoverride").set("curveattrib")
-    clump.parm("tightnesscurveattrib").set("tightness")
+    # the lock's clump setting is hairclump's blend (per strand `clumpblend`): its tightness alone does not
+    # switch clumping off (tightness 0 still left 27 % of Helen's mesh bare, blend 0 left 10 %)
+    clump.parm("tightness").set(0.5)
+    clump.parm("blend").set(1.0)
+    clump.parm("blendoverride").set("curveattrib")
+    clump.parm("blendcurveattrib").set("clumpblend")
     lf = _wrangle(sub, "length_frizz", VEX_LENGTH_FRIZZ, PRIM, [clump])
     hair_out = _wrangle(sub, "hair_attribs", VEX_HAIR_OUT, PRIM, [lf])
     hair = _node(sub, "null", "HAIR", [hair_out])
@@ -709,7 +800,7 @@ def build_network(sub) -> None:
 
     # ---- publish: the full hair, without display-only attributes ----
     # skinprim / skinprimuv refer to the per-lock region inside the loop, not the scalp: dropped
-    pub_clean = _node(sub, "attribdelete", "publish_clean", [hair], primdel="lock_cd group_cd tightness "
+    pub_clean = _node(sub, "attribdelete", "publish_clean", [hair], primdel="lock_cd group_cd tightness clumpblend "
                       "length_mult frizz clumpid skinprim skinprimuv path visible",
                       ptdel="Cd tightness skinprim skinprimuv")
     pub = _node(sub, "usdexport", "PUBLISH_USD",[pub_clean])
@@ -795,10 +886,29 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                               help="How much a mesh point's position along the lock counts "
                                                    "against its position across, when a strand looks up the "
                                                    "mesh surface"))
-    adv.addParmTemplate(hou.IntParmTemplate("surface_neighbours", "Surface neighbours", 1, default_value=(1,),
-                                            min=1, max=12,
-                                            help="Mesh points averaged per strand point. 1 keeps strands on the "
-                                                 "surface of curved caps; more smooths flat ribbons"))
+    gone = hou.IntParmTemplate("surface_neighbours", "Surface neighbours (unused)", 1, default_value=(1,))
+    gone.hide(True)   # kept so scenes saved before the face lookup load without a warning
+    adv.addParmTemplate(gone)
+    adv.addParmTemplate(hou.FloatParmTemplate("cross_spread", "Cross-section spread", 1, default_value=(1.0,),
+                                              min=0.0, max=1.0,
+                                              help="0: a strand's place across the lock follows where its root "
+                                                   "fell in the region (bunches in the middle); 1: an even spread"))
+    adv.addParmTemplate(hou.FloatParmTemplate("root_pull", "Root pull to mesh", 1, default_value=(0.85,),
+                                              min=0.0, max=1.0,
+                                              help="0: roots stay where hairgen scattered them over the lock's "
+                                                   "region (fans in from a wide region); 1: under the mesh root"))
+    adv.addParmTemplate(hou.FloatParmTemplate("strand_segment_cm", "Strand segment (cm)", 1, default_value=(2.0,),
+                                              min=0.5, max=10.0,
+                                              help="Longest segment of a strand: long locks get more points, "
+                                                   "never fewer than Spine segments"))
+    adv.addParmTemplate(hou.IntParmTemplate("strand_smooth", "Strand smoothing", 1, default_value=(3,),
+                                            min=0, max=30,
+                                            help="Blur passes on each strand's offset from its lock's spine, after "
+                                                 "a spike filter. 0 keeps the raw surface lookup"))
+    adv.addParmTemplate(hou.IntParmTemplate("spine_smooth", "Spine smoothing", 1, default_value=(10,),
+                                            min=0, max=50,
+                                            help="Blur passes along each lock's spine and its width, thickness "
+                                                 "and axes. 0 keeps the raw band measure, which zigzags"))
     adv.addParmTemplate(hou.FloatParmTemplate("rest_frame", "Rest frame", 1, default_value=(1.0,),
                                               min=-100.0, max=1000.0,
                                               help="Frame at which the scalp and the rest hair mesh (inputs "

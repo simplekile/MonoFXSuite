@@ -180,18 +180,30 @@
   cross-section per band; per band a 2D principal-axis fit in a parallel-transported frame gives width,
   thickness and twist (a near-round band keeps the previous axis). Lock ids reach the network by the
   root Detect stored (`assign_pieces`), so Detect must run after the hair mesh changes.
+- Hair quality is judged by the skill `.claude/skills/grooming-check` (numbers per strand and per lock
+  against the approved groom, plus XGen-style shaded viewport shots); run it after any change to the
+  network. Medians and averages passed a groom whose every strand had a 150 deg corner and half of
+  whose mesh had no hair near it.
 - hairgen only scatters roots on the lock's region (no guides); `fit_to_lock` places each strand on the
-  lock's own mesh surface: `surface_params` gives every mesh point (along u, across s) and its offset
-  from the spine, `SURFACE_CLOUD` holds them at (u x `surface_along_weight`, s, piece x `PIECE_GAP`) and a
-  `pcfind` there gives the offset (the ellipse only when a piece has no points). The piece in z replaces
-  a per-lock blast that cost 73 ms a lock (6.2 s of a 2.2 s cook). Width/thickness/twist settings scale
-  that offset; `root_blend` (0.05 of the length) eases the root onto its scalp point. Worst Helen lock
-  p95 7 mm off its mesh. One hairclump for the whole groom, `clumpid` = `lock_id`, so clumps stay in a lock.
+  lock's own mesh surface. `surface_params` gives every mesh point (along u, across s) and its offset
+  from the spine; `SURFACE_CLOUD` keeps the mesh faces at (u x `surface_along_weight`, s, piece x
+  `PIECE_GAP`), the underside (dt < 0) another `SHEET_GAP` away: top and underside share (u, s), and one
+  lookup for both made strands jump between them (zigzags). `xyzdist` + `primuv` on the faces (not the
+  nearest point) gives a continuous offset; top and underside are blended by the strand's t.
+  The piece in z replaces a per-lock blast that cost 73 ms a lock.
+- Strand shape: spines are smoothed along their length (`spine_smooth`, a wrangle: Attribute Blur pins
+  every point of an open curve); each strand's offset from its spine gets a median of 3 and a light blur
+  (`strand_smooth`); segments follow the lock's length (`strand_segment_cm`). A strand's place across
+  the lock is an even spread (`cross_spread`), not where its root fell in the region (that bunched
+  strands mid-lock), and its root is pulled under that spot (`root_pull`, else wide regions fan in).
+  `root_blend` (0.05 of the length) eases the root onto the scalp.
+- One hairclump for the whole groom, `clumpid` = `lock_id`, so clumps stay in a lock. The lock's clump
+  setting drives hairclump's `blend` (per strand `clumpblend`): its tightness alone never switches
+  clumping off (tightness 0 still left 27 % of Helen's mesh bare). Default clump 0.3.
   The frozen split lives on the node's hidden geometry parm `regions` (not a stash SOP: inner nodes of a
   locked HDA cannot be set); Python SOPs inside the HDA call `grooming_adapter.cook_assign` / `cook_frozen_regions`.
 - hairgen's `skinprim` indexes the per-lock region cut inside the loop; strands get it again from
-  `guideskinattriblookup` on the clump skin, else hairclump errors. Per-lock clump reaches hairclump via
-  `tightnessoverride` = `curveattrib` (`tightness`).
+  `guideskinattriblookup` on the clump skin, else hairclump errors.
 - The scalp and rest hair mesh are read at `rest_frame` (timeshift): a USD Import is time dependent even
   for a static file, so the whole groom recooked every frame; now only the shot deform does (0.7 s/frame).
 - Inside the HDA every stage is a titled network box, one column each (`_layout_sections`): one
