@@ -274,12 +274,15 @@ def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_group
     """New GroomData after Detect: matched locks keep id and settings and take the new root / length,
     new pieces become locks (name from the mesh, else `logic.lock_name` of the group), locks with no
     piece move to `orphans` with their settings. Regions go stale whenever a lock is added, removed or
-    moved. `piece_groups[i]` is the group of `pieces[i]`; `report.matches` refer to `MeshPiece.index`."""
+    moved. `piece_groups[i]` is the group of `pieces[i]`; `report.matches` refer to `MeshPiece.index`.
+    The first Detect (no locks yet) marks nothing "new": every lock would be, and a status on every row
+    says nothing."""
     out = model.GroomData.from_json(data.to_json())
     if asset and not out.asset:
         out.asset = asset
     by_index = {p.index: (p, g) for p, g in zip(pieces, piece_groups)}
     old = {lk.id: lk for lk in out.locks}
+    first = not old and not out.orphans
     taken = [lk.name for lk in out.locks] + [o.name for o in out.orphans]
     locks: list[model.Lock] = []
     stale = False
@@ -300,7 +303,7 @@ def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_group
         name = piece.name or logic.lock_name(group, taken)
         taken.append(name)
         locks.append(model.Lock(id=m.lock_id, name=name, group=group, root=root,  # type: ignore[arg-type]
-                                length=length, match="new",
+                                length=length, match="ok" if first else "new",
                                 direction=tuple(round(c, 6) for c in piece.direction)))  # type: ignore[arg-type]
         stale = True
     for lid in report.orphaned:

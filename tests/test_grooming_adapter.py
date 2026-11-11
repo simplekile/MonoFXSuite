@@ -91,7 +91,7 @@ def test_apply_detect_first_time_names_groups_and_stale(lock_names):
     out = ga.apply_detect(data, pieces, ["hair_bang", "main"], report, asset="char_Helen")
     assert out.asset == "char_Helen"
     assert [(lk.id, lk.name, lk.group, lk.match) for lk in out.locks] == [
-        (1, "hair_bang_01", "hair_bang", "new"), (2, "tuft", "main", "new")]
+        (1, "hair_bang_01", "hair_bang", "ok"), (2, "tuft", "main", "ok")]   # the first Detect: none "new"
     assert out.locks[0].root == (0.1, 0.2, 0.3)
     assert {g.id for g in out.groups} == {"hair_bang", "main"}
     assert out.regions_stale is True

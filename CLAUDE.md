@@ -366,6 +366,25 @@
   source as plain text, Reset only when set at this level); several locks that differ show "mixed"; a
   drag writes once on release (one undo step). Sliders and combos ignore the wheel, so it scrolls the panel.
   Measured values in cm (`adapter.unit_cm(node)` when there, else the node's `unit_cm` parm).
+- Panel layout (2026-11-12 redesign): top bar (node, asset, UI size `Aa`, Dock), then a view bar (Display,
+  Color by, Deform, Isolate: viewing never sits next to an action that writes), the tree (filter, a Confirm
+  all line while locks are new / to check, banner, rows), the settings (title, subtitle with what the
+  viewport does with the selection, toggles Strands / Isolate / Hidden / Flip root / Exclude in a `_WrapRow`
+  that wraps to the width, measured cells, settings), the action bar (loading, result line that fades
+  after `MESSAGE_MS`, Detect locks, Update regions, version, Publish). Nothing selected shows the whole
+  groom and the keys. Below `NARROW_PX` (760 x scale) the tree sits above the settings, both bars stack,
+  rows go compact and cells two a line; the floating window's minimum is 400 x scale. A width-dependent
+  widget wraps itself on resize (`_WrapRow`): building to a measured width failed, the layout had not
+  given the column its new width yet. The packed / strands and eye icons are painted by `_IconDelegate`
+  (`ROLE_ICON`, `ROLE_QUIET`): the default state (packed, shown by its own eye) only on the hovered or a
+  selected row, any other state always. The first Detect marks no lock "new" (every row would say it).
+- Names as Houdini uses them (checked against SideFX's Hair Generate / Hair Clump pages): Thickness and
+  `width` are one strand's, so the lock's cross-section is "Lock width" / "Lock thickness" (settings and
+  measured); the scalp is "skin" (Skin area); Clump drives Hair Clump's Blend (tooltip); Guides; Hair /
+  Hair preview (10%); Color (US spelling); Deform, not "Anim" with a play icon (it read as playback);
+  Update regions (pairs with "Regions out of date"), Detect locks, Pack all, Flip root, Exclude from hair,
+  check match (the data keeps "unsure"), Missing locks (data: orphans). Twist is shown in degrees
+  (`SETTING_SCALE`, stored in radians) like the measured twist. Data keys never changed.
 - The eye: its shape says what the viewport draws (open = drawn, crossed = not drawn), its tone says why
   (normal = the row's own eye, faint `FAINT` = its group or isolate decided, accent = drawn because
   isolated); a click always toggles the row's own eye and the tooltip says it. Before, a lock under a

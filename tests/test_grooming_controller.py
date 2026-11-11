@@ -318,7 +318,7 @@ def test_detect_report_is_shown(env) -> None:
     c.detect()
     text, error = view.messages[-1]
     assert not error
-    assert "4 locks" in text and "2 ok" in text and "1 unsure" in text and "1 new" in text and "1 orphaned" in text
+    assert "4 locks" in text and "2 ok" in text and "1 to check" in text and "1 new" in text and "1 missing" in text
     assert "regions out of date" in text
     assert view.stale is True
     c.split_regions()
@@ -409,7 +409,7 @@ def test_measured_values_are_in_cm(env) -> None:
     c.unit_cm = 100.0  # scene in metres; FakeAdapter widths are 1.5 units
     c.select_locks([1])
     measured = dict(view.props["measured"])
-    assert measured["Width"] == "150.0 cm" and measured["Length"] == "1000.0 cm"
+    assert measured["Lock width"] == "150.0 cm" and measured["Length"] == "1000.0 cm"
     assert measured["Twist"].endswith("°")
 
 
@@ -549,7 +549,7 @@ def test_root_flip_and_exclude_reach_the_adapter_and_show_on_rows(env) -> None:
     assert data.lock(1).root_flip and data.lock(1).excluded and data.lock(2).excluded
     rows = {ch["id"]: ch for g in view.tree if "children" in g for ch in g["children"]}
     assert rows[1]["root_flip"] and rows[1]["excluded"] and not rows[3]["excluded"]
-    assert "Split regions" in view.messages[-1][0]
+    assert "Update regions" in view.messages[-1][0]
     assert not c.set_excluded([], True)          # nothing selected: nothing written
 
 
@@ -921,7 +921,7 @@ def test_slider_drag_survives_a_window_popping_up_and_taking_the_mouse(app, pref
     popup = QWidget(None, Qt.WindowType.Popup)  # takes the grab; the slider hears nothing more
     popup.show()
     app.processEvents()
-    slider.cursor_x = lambda: groove.right()
+    slider.cursor_x = lambda: slider._rects()[0].right() + 5   # the layout may have resized it meanwhile
     slider._poll()
     assert slider.isSliderDown() and slider.value() == slider.maximum()
     assert adapter.writes == []
@@ -1056,7 +1056,7 @@ def test_enter_and_double_click_draw_strands_double_click_on_the_eye_is_two_clic
     QTest.keyClick(tree, Qt.Key.Key_Return)
     assert adapter.strands == [3]
     assert not ui._banner.isHidden() and "back_01" in ui._banner_label.text()
-    assert "Packed" in ui._banner_btn.text()
+    assert "Pack all" in ui._banner_btn.text()
     QTest.keyClick(ui, Qt.Key.Key_Escape)
     app.processEvents()
     assert adapter.strands is None and ui._banner.isHidden()
@@ -1107,7 +1107,7 @@ def test_ctrl_z_in_the_panel_and_the_packed_strands_icon(app, prefs) -> None:
 
     assert "Packed" in ui._rows[(ctl.SEL_LOCKS, 1)].toolTip(COL_STRANDS)
     click_icon((ctl.SEL_LOCKS, 1))
-    assert adapter.strands == [1] and "strands" in ui._rows[(ctl.SEL_LOCKS, 1)].toolTip(COL_STRANDS)
+    assert adapter.strands == [1] and "Strands:" in ui._rows[(ctl.SEL_LOCKS, 1)].toolTip(COL_STRANDS)
     click_icon((ctl.SEL_GROUP, "back"))                  # a group's icon: all its locks
     assert adapter.strands == [1, 3, 4]
     click_icon((ctl.SEL_LOCKS, 1))
@@ -1118,6 +1118,98 @@ def test_ctrl_z_in_the_panel_and_the_packed_strands_icon(app, prefs) -> None:
     assert ui.is_busy() and "Clump" in ui._busy_label.text()
     ui.set_busy(None)
     assert not ui.is_busy()
+    ui.close()
+
+
+def test_labels_name_the_lock_not_the_strand_and_twist_is_in_degrees(env) -> None:
+    """Houdini's Thickness / width are one strand's: the lock's are called Lock width / Lock thickness.
+    Twist is shown in degrees like the measured twist, stored in radians."""
+    import math
+
+    adapter, view, c = env
+    c.select_locks([1])
+    rows = {s["key"]: s for s in view.props["settings"]}
+    assert rows["width_mult"]["label"] == "Lock width ×" and rows["thick_mult"]["label"] == "Lock thickness ×"
+    assert rows["twist_add"]["unit"] == "°" and abs(rows["twist_add"]["scale"] - 180 / math.pi) < 1e-9
+    assert "Hair Clump" in rows["clump"]["tip"]
+    c.set_value("twist_add", math.radians(30))
+    assert view.messages[-1][0].startswith("Twist + = 30°")
+    assert ctl.DISPLAY_LABELS["hair"] == "Hair" and ctl.DISPLAY_LABELS["guide"] == "Guides"
+
+
+def test_properties_say_what_the_viewport_does_with_the_selection(env) -> None:
+    adapter, view, c = env
+    adapter.deform = (True, False)
+    c.select_locks([1])
+    state = view.props["state"]
+    assert state["visible"] is True and not state["strands"] and not state["isolated"]
+    c.toggle_strands()
+    assert view.props["state"]["strands"]
+    c.set_visible(ctl.SEL_LOCKS, [1], False)
+    assert view.props["state"]["visible"] is False and view.props["subtitle"].endswith("hidden")
+    c.select_locks([1, 2])
+    assert view.props["state"]["visible"] is None          # they differ
+    c.select("none")
+    overview = dict(view.props["overview"])
+    assert overview["Locks"] == "4" and overview["To check"] == "2" and overview["Missing locks"] == "1"
+    assert view.props["shortcuts"]
+
+
+def test_confirm_all_clears_new_and_to_check(env) -> None:
+    adapter, view, c = env
+    assert c.review_counts(c.data()) == (1, 1)
+    assert c.confirm_all()
+    assert c.review_counts(c.data()) == (0, 0) and len(adapter.writes) == 1     # one undo step
+    assert not c.confirm_all()
+
+
+def test_panel_filter_review_line_narrow_layout_and_fading_message(app, prefs) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    from tools.fx.grooming import ui as ui_mod
+
+    adapter, ui, c = _panel(app)
+    rows = ui._rows
+    # filter by name, then by a word
+    ui._filter.setText("02")
+    assert not rows[(ctl.SEL_LOCKS, 2)].isHidden() and rows[(ctl.SEL_LOCKS, 1)].isHidden()
+    ui._filter.setText("check")
+    assert not rows[(ctl.SEL_LOCKS, 3)].isHidden() and rows[(ctl.SEL_LOCKS, 4)].isHidden()
+    ui._filter.setText("")
+    assert not rows[(ctl.SEL_LOCKS, 1)].isHidden()
+    # one Confirm all line instead of a word on every row
+    assert not ui._review.isHidden() and "1 new" in ui._review_label.text()
+    ui._review_btn.click()
+    app.processEvents()
+    assert ui._review.isHidden()
+    # docked narrow: the tree above the settings, the bars wrap
+    ui.resize(420, 900)
+    app.processEvents()
+    assert ui._narrow and ui._body.orientation() == Qt.Orientation.Vertical
+    assert ui._action_lay.direction() == ui_mod.QBoxLayout.Direction.TopToBottom
+    ui.resize(1200, 800)
+    app.processEvents()
+    assert not ui._narrow and ui._body.orientation() == Qt.Orientation.Horizontal
+    # the selection's actions: a toggle fires the controller
+    adapter.deform = (True, False)
+    c.select_locks([1])
+    ui.set_selection(c.selection)
+    app.processEvents()
+    from PySide6.QtWidgets import QToolButton
+    strands = next(b for b in ui._props_widget.findChildren(QToolButton) if b.text().strip() == "Strands")
+    strands.click()
+    app.processEvents()
+    assert adapter.strands == [1]
+    # the result line fades
+    old = ui_mod.MESSAGE_MS
+    ui_mod.MESSAGE_MS = 50
+    try:
+        ui.set_message("Done")
+        QTest.qWait(150)
+        assert ui._message_label.text() == ""
+    finally:
+        ui_mod.MESSAGE_MS = old
     ui.close()
 
 

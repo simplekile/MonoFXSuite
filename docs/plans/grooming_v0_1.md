@@ -196,6 +196,11 @@ Panel and network, after testing the Helen sandbox scene:
   - Colours: one accent for the main action (Publish) and the selection; status colours only for
     status; the rest neutral.
 
+- Redesign 2026-11-12 (UI/UX review + Houdini names): view bar apart from actions, narrow docked layout,
+  quiet icon columns, filter, Confirm all, the selection's action row, groom overview with keys, fading
+  result line, labels renamed as Houdini names things (CLAUDE.md lists them). Checked in GUI Houdini at
+  1240 / 700 / 500 px and UI size Largest (sandbox t39), with t36 / t37 again.
+
 ## Panel pass (2026-11-11, branch claude/grooming-panel-v2-d1d5c0)
 
 Done in the panel (the HDA side, partial recook and hidden-not-cooked, is session 009's):

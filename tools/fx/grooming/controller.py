@@ -34,21 +34,47 @@ SETTING_RANGES: dict[str, tuple[float, float]] = {
     "length_mult": (0.0, 2.0),
     "frizz": (0.0, 1.0),
 }
+# Names as Houdini uses them: Hair Generate's "Thickness" (and the `width` attribute) is one strand's, so
+# the lock's measured cross-section is "Lock width" / "Lock thickness", never plain Width / Thickness.
 SETTING_LABELS: dict[str, str] = {
     "density": "Density",
-    "width_mult": "Width ×",
-    "thick_mult": "Thickness ×",
+    "width_mult": "Lock width ×",
+    "thick_mult": "Lock thickness ×",
     "twist_add": "Twist +",
     "clump": "Clump",
     "length_mult": "Length ×",
     "frizz": "Frizz",
 }
-SETTING_UNITS: dict[str, str] = {"density": "/cm²", "twist_add": "rad"}
+SETTING_UNITS: dict[str, str] = {"density": "/cm²", "twist_add": "°"}
+# Stored value x scale = the value the panel shows (twist is stored in radians, shown in degrees like the
+# measured twist)
+SETTING_SCALE: dict[str, float] = {"twist_add": 180.0 / math.pi}
+SETTING_TIPS: dict[str, str] = {
+    "density": "Strands per cm² of skin (Hair Generate › Density); stacked locks share it",
+    "width_mult": "Multiplies the lock's measured width (its hair mesh piece). Not the strand thickness",
+    "thick_mult": "Multiplies the lock's measured thickness (the ribbon's depth). Not Hair Generate's strand "
+                  "Thickness",
+    "twist_add": "Degrees added to the lock's measured twist along its length",
+    "clump": "Hair Clump › Blend: 0 no clumping, 1 strands fully gathered into clumps",
+    "length_mult": "Multiplies the strands' length",
+    "frizz": "Frizz amount (as Guide Process › Frizz): random waves along each strand",
+}
 
 DISPLAY_LABELS: dict[str, str] = {
-    "mesh": "Mesh", "guide": "Guide", "hair_preview": "Hair preview", "hair": "Hair full",
+    "mesh": "Mesh", "guide": "Guides", "hair_preview": "Hair preview", "hair": "Hair",
 }
 COLOR_BY_LABELS: dict[str, str] = {"lock": "Lock", "group": "Group"}
+# Match states as the panel words them ("unsure" is the data's word)
+MATCH_LABELS: dict[str, str] = {"unsure": "check match", "new": "new", "ok": "ok"}
+
+# Keys of the panel, listed while nothing is selected
+SHORTCUTS: tuple[tuple[str, str], ...] = (
+    ("I", "Isolate the selection (again: show all)"),
+    ("Enter / double-click", "Strands or packed for the selection"),
+    ("Esc", "Show all and pack all"),
+    ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
+    ("Shift / Ctrl click", "Select several locks"),
+)
 
 # Selection kinds: what the properties column edits
 SEL_NONE, SEL_DEFAULTS, SEL_GROUP, SEL_LOCKS, SEL_ORPHAN = "none", "defaults", "group", "locks", "orphan"
@@ -72,12 +98,12 @@ def report_text(counts: dict[str, int]) -> str:
     total = counts.get("ok", 0) + counts.get("unsure", 0) + counts.get("new", 0)
     parts = [f"{counts.get('ok', 0)} ok"]
     if counts.get("unsure"):
-        parts.append(f"{counts['unsure']} unsure (confirm them)")
+        parts.append(f"{counts['unsure']} to check (Confirm all, or right click › Confirm match)")
     if counts.get("new"):
         parts.append(f"{counts['new']} new")
     if counts.get("orphaned"):
-        parts.append(f"{counts['orphaned']} orphaned (kept with their settings)")
-    return f"Detect: {total} lock{'s' if total != 1 else ''} · " + " · ".join(parts)
+        parts.append(f"{counts['orphaned']} missing (kept with their settings)")
+    return f"Detect locks: {total} lock{'s' if total != 1 else ''} · " + " · ".join(parts)
 
 
 def _fmt(value: float) -> str:
@@ -208,6 +234,8 @@ class GroomController:
         self.view.set_selection(self.selection)
         self.view.show_properties(self.properties(data))
         self.view.set_regions_stale(data.regions_stale)
+        if hasattr(self.view, "set_review"):
+            self.view.set_review(*self.review_counts(data))
         self.view.set_isolate(self.isolate_text(data))
         if hasattr(self.view, "set_strands"):
             self.view.set_strands(self.strands_text(data))
@@ -291,8 +319,8 @@ class GroomController:
             })
         if data.orphans:
             rows.append({
-                "kind": ORPHANS_ROW, "id": ORPHANS_ROW, "name": "Orphans", "badges": [],
-                "meta": f"{len(data.orphans)} gone from the hair mesh",
+                "kind": ORPHANS_ROW, "id": ORPHANS_ROW, "name": "Missing locks", "badges": [],
+                "meta": f"{len(data.orphans)} no longer in the hair mesh, settings kept",
                 "children": [{"kind": SEL_ORPHAN, "id": o.id, "name": o.name or f"lock {o.id}",
                               "badges": ["edited"] if o.overrides else [], "meta": o.group}
                              for o in data.orphans],
@@ -345,12 +373,13 @@ class GroomController:
         data = data or self.data()
         kind, ids = self.selection
         if kind == SEL_NONE:
-            return {"kind": SEL_NONE, "title": "", "settings": [], "measured": []}
+            return {"kind": SEL_NONE, "title": "", "settings": [], "measured": [],
+                    "overview": self._overview(data), "shortcuts": SHORTCUTS}
         if kind == SEL_ORPHAN:
             o = next(o for o in data.orphans if o.id == ids[0])
             kept = ", ".join(f"{SETTING_LABELS[k]} {_fmt(v)}" for k, v in o.overrides.items()) or "none"
             return {"kind": kind, "title": o.name or f"lock {o.id}",
-                    "subtitle": f"Orphan from {o.group or 'no group'}: gone from the hair mesh",
+                    "subtitle": f"Missing lock from {o.group or 'no group'}: no longer in the hair mesh",
                     "settings": [], "measured": [("Kept settings", kept)],
                     "targets": [(lk.id, lk.name, lk.match) for lk in data.locks]}
         own, levels = self._own_level(data)
@@ -360,7 +389,8 @@ class GroomController:
             settings.append({
                 "key": key, "label": SETTING_LABELS[key], "unit": SETTING_UNITS.get(key, ""),
                 "value": value, "source": source, "mixed": mixed, "range": SETTING_RANGES[key],
-                "resettable": any(key in lv for lv in levels),
+                "resettable": any(key in lv for lv in levels), "scale": SETTING_SCALE.get(key, 1.0),
+                "tip": SETTING_TIPS.get(key, ""),
             })
         if kind == SEL_DEFAULTS:
             title, subtitle = "Defaults", f"{len(data.locks)} locks · a group or lock can override each value"
@@ -379,10 +409,63 @@ class GroomController:
             in_group = (g.name if g else groups[0]) if len(groups) == 1 else f"{len(groups)} groups"
             subtitle = ("Lock · " if len(locks) == 1 else "Locks · ") + in_group
             if len(locks) == 1 and locks[0].match != "ok":
-                subtitle += f" · {locks[0].match} match"
+                subtitle += f" · {MATCH_LABELS.get(locks[0].match, locks[0].match)}"
             infos = [self._infos[i] for i in ids if i in self._infos]
-        return {"kind": kind, "title": title, "subtitle": subtitle, "own": own,
+        state = self._state(data, kind, ids)
+        if state.get("note"):
+            subtitle += f" · {state['note']}"
+        return {"kind": kind, "title": title, "subtitle": subtitle, "own": own, "state": state,
                 "settings": settings, "measured": self._measured(kind, infos)}
+
+    def _state(self, data: model.GroomData, kind: str, ids) -> dict:
+        """What the viewport does with the selection, for the properties' action row and its subtitle:
+        drawn as strands, isolated, shown, root flipped, excluded (None when the locks differ), and a
+        note when the selection is not drawn (its edits would be invisible)."""
+        if kind not in (SEL_GROUP, SEL_LOCKS):
+            return {}
+        lock_ids = self.lock_ids_of(data, self.selection)
+        locks = [lk for lk in (data.lock(i) for i in lock_ids) if lk is not None]
+        if not locks:
+            return {}
+
+        def same(values):
+            values = set(values)
+            return values.pop() if len(values) == 1 else None
+
+        if kind == SEL_GROUP:
+            g = data.group(ids[0])
+            visible = g.visible if g else True
+        else:
+            visible = same(lk.visible for lk in locks)
+        drawn = self._drawn(data, lock_ids)
+        isolated = set(self.isolated or ())
+        if not drawn:
+            note = "outside isolate" if isolated else ("hidden by its group" if all(lk.visible for lk in locks)
+                                                         else "hidden")
+        elif any(lk.excluded for lk in locks) and kind == SEL_LOCKS and len(locks) == 1:
+            note = "excluded from hair"
+        else:
+            note = ""
+        return {"kind": kind, "ids": list(ids), "lock_ids": lock_ids, "visible": visible,
+                "strands": bool(lock_ids) and set(lock_ids) <= set(self.strands or ()),
+                "isolated": bool(isolated) and set(lock_ids) <= isolated,
+                "root_flip": same(lk.root_flip for lk in locks) if kind == SEL_LOCKS else None,
+                "excluded": same(lk.excluded for lk in locks) if kind == SEL_LOCKS else None,
+                "note": note}
+
+    def _overview(self, data: model.GroomData) -> list[tuple[str, str]]:
+        """The whole groom, shown while nothing is selected."""
+        infos = list(self._infos.values())
+        to_check = sum(lk.match != "ok" for lk in data.locks)
+        hidden = len(self._unseen(data)[0])
+        rows = [("Locks", f"{len(data.locks)}"), ("Groups", f"{len(data.groups)}"),
+                ("Strands", f"{sum(i.strands for i in infos):,}" if infos else "not cooked yet"),
+                ("Regions", "out of date" if data.regions_stale else "up to date"),
+                ("To check", f"{to_check}" if to_check else "none"),
+                ("Hidden", f"{hidden}" if hidden else "none")]
+        if data.orphans:
+            rows.append(("Missing locks", f"{len(data.orphans)}"))
+        return rows
 
     def _measured(self, kind: str, infos: list[logic.LockInfo]) -> list[tuple[str, str]]:
         """Measured shape in cm (scene units x `unit_cm`), twist in degrees."""
@@ -391,16 +474,16 @@ class GroomController:
         u = self.unit_cm
         if len(infos) == 1 and kind == SEL_LOCKS:
             i = infos[0]
-            return [("Width", _cm(i.width * u)), ("Thickness", _cm(i.thick * u)), ("Length", _cm(i.length * u)),
-                    ("Twist", f"{math.degrees(i.twist):.0f}°"), ("Strands", f"{i.strands:,}"),
-                    ("Region", f"{_fmt(i.region_area_cm2)} cm²")]
+            return [("Lock width", _cm(i.width * u)), ("Lock thickness", _cm(i.thick * u)),
+                    ("Length", _cm(i.length * u)), ("Twist", f"{math.degrees(i.twist):.0f}°"),
+                    ("Strands", f"{i.strands:,}"), ("Skin area", f"{_fmt(i.region_area_cm2)} cm²")]
         n = len(infos)
-        return [("Width, mean", _cm(sum(i.width for i in infos) / n * u)),
-                ("Thickness, mean", _cm(sum(i.thick for i in infos) / n * u)),
+        return [("Lock width, mean", _cm(sum(i.width for i in infos) / n * u)),
+                ("Lock thickness, mean", _cm(sum(i.thick for i in infos) / n * u)),
                 ("Length, mean", _cm(sum(i.length for i in infos) / n * u)),
                 ("Locks", f"{n}"),
                 ("Strands", f"{sum(i.strands for i in infos):,}"),
-                ("Region", f"{_fmt(sum(i.region_area_cm2 for i in infos))} cm²")]
+                ("Skin area", f"{_fmt(sum(i.region_area_cm2 for i in infos))} cm²")]
 
     # ------------------------------------------------------------------
     # Writing: one read, one change, one write (one undo step)
@@ -452,7 +535,7 @@ class GroomController:
             # would take the mouse from the slider; the value applies on release instead
             if not self._drag_warned:
                 self._drag_warned = True
-                self.view.set_message("Anim is on: the value applies when you let go. Turn Anim off to see it live")
+                self.view.set_message("Deform is on: the value applies when you let go. Turn Deform off to see it live")
             return False
         try:
             data = self.data()
@@ -534,7 +617,9 @@ class GroomController:
         data_name = self._label_target()
         ok = self._edit(f"Grooming: {SETTING_LABELS[key]} on {data_name}", change)
         if ok:
-            self.view.set_message(f"{SETTING_LABELS[key]} = {_fmt(float(value))} on {holder['name']}")
+            shown = float(value) * SETTING_SCALE.get(key, 1.0)
+            degrees = "°" if key == "twist_add" else ""
+            self.view.set_message(f"{SETTING_LABELS[key]} = {_fmt(shown)}{degrees} on {holder['name']}")
         return ok
 
     def reset_value(self, key: str) -> bool:
@@ -610,6 +695,15 @@ class GroomController:
             self.view.set_message(f"Confirmed {self._count(SEL_LOCKS, ids)}")
         return ok
 
+    def confirm_all(self) -> bool:
+        """The tree's "Confirm all": every new and to-check lock accepted as it is."""
+        ids = [lk.id for lk in self.data().locks if lk.match != "ok"]
+        return self.confirm_matches(ids) if ids else False
+
+    def review_counts(self, data: model.GroomData) -> tuple[int, int]:
+        """(new locks, locks to check): what the tree's Confirm all line offers."""
+        return (sum(lk.match == "new" for lk in data.locks), sum(lk.match == "unsure" for lk in data.locks))
+
     def reassign_orphan(self, orphan_id: int, lock_id: int) -> bool:
         """An orphan's settings go to *lock_id* (usually a lock detect marked new), and the orphan
         leaves the list. The lock keeps its id and its name (the hair-mesh piece's name, which the next
@@ -642,7 +736,7 @@ class GroomController:
 
         ok = self._edit(f"Grooming: delete orphan {orphan_id}", change)
         if ok:
-            self.view.set_message(f"Orphan {orphan_id} deleted (Ctrl+Z brings it back)")
+            self.view.set_message(f"Missing lock {orphan_id} deleted (Ctrl+Z brings it back)")
         return ok
 
     @staticmethod
@@ -689,7 +783,7 @@ class GroomController:
         self.refresh()
         text = report_text(report.counts)
         if self.data().regions_stale:
-            text += " · regions out of date: Split regions"
+            text += " · regions out of date: Update regions"
         self.view.set_message(text, error=False)
         return report
 
@@ -697,7 +791,7 @@ class GroomController:
         if self._run("Split regions", lambda: self.adapter.split_regions(self.node) or True) is None:
             return False
         self.refresh()
-        self.view.set_message("Regions split again and frozen")
+        self.view.set_message("Regions updated: each lock grows from its own skin area again (kept until the next update)")
         return True
 
     def set_display(self, mode: str | None = None, color_by: str | None = None) -> bool:
@@ -735,7 +829,7 @@ class GroomController:
         if self._run("Shot deform", lambda: call(self.node, bool(on)) or True) is None:
             return False
         self.view.set_deform_state(*self.deform_state())
-        self.view.set_message("Shot deform on: the hair follows the animation. Every lock is drawn as strands, "
+        self.view.set_message("Deform on: the hair follows the animated hair mesh. Every lock is drawn as strands, "
                               "the others are only dimmed (not see-through), each edit deforms it again"
                               if on else "Shot deform off: the hair stays at rest, edits are fast")
         return True
@@ -872,7 +966,8 @@ class GroomController:
             return False
         self.refresh()
         self._sync_viewport()   # the output's prim numbers changed: keep the same locks selected
-        self.view.set_message(self.isolate_text() or "Showing every lock again")
+        # the banner says what is isolated; the message line only says what changed back
+        self.view.set_message("" if self.isolated else "Showing every lock again")
         return True
 
     # ------------------------------------------------------------------
@@ -906,7 +1001,7 @@ class GroomController:
         now = set(self.strands or ())
         want = sorted(now | set(lock_ids)) if on else sorted(now - set(lock_ids))
         if on and self.deform_state() == (True, True):
-            self.view.set_message("Anim is on: every lock already shows its strands")
+            self.view.set_message("Deform is on: every lock already shows its strands")
             return False
         if len(want) > config.STRANDS_MAX:
             self.view.set_message(f"Strands: at most {config.STRANDS_MAX} locks at a time ({len(want)} asked; "
@@ -929,7 +1024,7 @@ class GroomController:
         self.refresh()   # with strands on it selects the same locks again: the prim numbers changed
         if not self.strands:
             self._sync_viewport()
-        self.view.set_message(self.strands_text() or "Every lock packed again")
+        self.view.set_message("" if self.strands else "Every lock packed again")
         return True
 
     # ------------------------------------------------------------------
@@ -938,12 +1033,12 @@ class GroomController:
     def set_root_flip(self, ids, flip: bool) -> bool:
         """Root at the mesh piece's other end, for a loop or a piece Detect read the wrong way round."""
         return self._lock_flag("set_root_flip", ids, flip,
-                               "Root at the other end" if flip else "Root at the end nearer the scalp")
+                               "Root flipped" if flip else "Root at the end nearer the scalp")
 
     def set_excluded(self, ids, excluded: bool) -> bool:
         """No hair for these locks (an accessory, a floating piece); mesh and guide still show them."""
         return self._lock_flag("set_excluded", ids, excluded,
-                               "Left out of the hair" if excluded else "Grows hair again")
+                               "Excluded from hair" if excluded else "Grows hair again")
 
     def _lock_flag(self, name: str, ids, value: bool, what: str) -> bool:
         call = getattr(self.adapter, name, None)
@@ -957,7 +1052,7 @@ class GroomController:
             return False
         self.refresh()
         n = len(ids)
-        self.view.set_message(f"{what}: {n} lock{'s' if n != 1 else ''}. Regions are out of date: Split regions")
+        self.view.set_message(f"{what}: {n} lock{'s' if n != 1 else ''}. Regions are out of date: Update regions")
         return bool(changed)
 
     # ------------------------------------------------------------------
@@ -1009,7 +1104,7 @@ class GroomController:
         if tkind == SEL_DEFAULTS:
             return "Defaults holds settings, not locks"
         if tkind in (SEL_ORPHAN, ORPHANS_ROW):
-            return "Orphans are locks gone from the hair mesh: drop into a group"
+            return "Missing locks are no longer in the hair mesh: drop into a group"
         if tkind == SEL_GROUP:
             group, before = tid, None
             if where == DROP_BELOW:  # just under the group's own row: first in it
@@ -1239,6 +1334,7 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("shown", lambda: controller._sync_viewport() if controller.node is not None else None)
     ui.on("redo", lambda: controller.undo(redo=True))
     ui.on("strands", controller.toggle_strands)
+    ui.on("confirm_all", controller.confirm_all)
     ui.on("set_strands_of", controller.set_strands_of)
     ui.on("set_root_flip", controller.set_root_flip)
     ui.on("set_shot_deform", controller.set_shot_deform)
