@@ -25,7 +25,7 @@ import os
 from typing import Any, Callable
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtGui import QColor, QCursor, QFont, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -95,6 +95,7 @@ LUCIDE.update({
     "focus": '<circle cx="12" cy="12" r="3"/><path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/><path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
     "type": '<polyline points="4 7 4 4 20 4 20 7"/><line x1="9" x2="15" y1="20" y2="20"/><line x1="12" x2="12" y1="4" y2="20"/>',
     "badge-check": '<path d="M3.85 8.62a4 4 0 0 1 4.78-4.77 4 4 0 0 1 6.74 0 4 4 0 0 1 4.78 4.78 4 4 0 0 1 0 6.74 4 4 0 0 1-4.77 4.78 4 4 0 0 1-6.75 0 4 4 0 0 1-4.78-4.77 4 4 0 0 1 0-6.76Z"/><path d="m9 12 2 2 4-4"/>',
+    "folder": '<path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>',
     "play": '<polygon points="6 3 20 12 6 21 6 3"/>',
     "triangle-alert": '<path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/>',
 })
@@ -516,9 +517,61 @@ class _LayerTree(QTreeWidget):
         self.viewport().update()
         return plan, target, where
 
+    def mousePressEvent(self, event) -> None:  # noqa: N802
+        """An eye click acts on the selection it is part of: handled here, before Qt's press replaces a
+        multi-selection with the clicked row alone."""
+        pos = event.position().toPoint()
+        item = self.itemAt(pos)
+        if item is not None and event.button() == Qt.MouseButton.LeftButton \
+                and self.columnAt(pos.x()) == COL_EYE:
+            row = item.data(COL_NAME, ROLE_ROW)
+            if row and row["kind"] in (SEL_GROUP, SEL_LOCKS):
+                kind, ids = self._ui._targets(row)
+                self._ui._fire("set_visible", kind, ids, not row.get("visible", True))
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
     def startDrag(self, actions) -> None:  # noqa: N802
-        if self._dragged():
-            super().startDrag(Qt.DropAction.MoveAction)
+        """The dragged rows fade in the tree, and the image under the cursor is see-through."""
+        if not self._dragged():
+            return
+        from PySide6.QtGui import QDrag
+        items = self.selectedItems()
+        rects = [self.visualItemRect(it) for it in items]
+        rects = [r for r in rects if r.isValid() and self.viewport().rect().intersects(r)]
+        drag = QDrag(self)
+        drag.setMimeData(self.model().mimeData(self.selectedIndexes()))
+        if rects:
+            box = rects[0]
+            for r in rects[1:]:
+                box = box.united(r)
+            box = QRect(0, box.top(), self.viewport().width(), min(box.height(), self.z.px(36) * 6))
+            shot = self.viewport().grab(box)
+            faded = QPixmap(shot.size())
+            faded.fill(Qt.GlobalColor.transparent)
+            p = QPainter(faded)
+            p.setOpacity(0.55)
+            p.drawPixmap(0, 0, shot)
+            p.end()
+            drag.setPixmap(faded)
+            drag.setHotSpot(self.viewport().mapFromGlobal(QCursor.pos()) - box.topLeft())
+        self._dragging = True
+        self.viewport().update()
+        try:
+            drag.exec(Qt.DropAction.MoveAction)
+        finally:
+            self._dragging = False
+            self.viewport().update()
+
+    def drawRow(self, painter, option, index) -> None:  # noqa: N802
+        if getattr(self, "_dragging", False) and self.selectionModel().isSelected(index):
+            painter.save()
+            painter.setOpacity(0.4)
+            super().drawRow(painter, option, index)
+            painter.restore()
+        else:
+            super().drawRow(painter, option, index)
 
     def dragEnterEvent(self, event) -> None:  # noqa: N802
         if event.source() is self:
@@ -1113,7 +1166,11 @@ class GroomingUI(QWidget):
             item.setFont(COL_NAME, z.font("name"))
         else:
             item.setFont(COL_NAME, z.font("body"))
-        if "color" in row:
+        if kind == SEL_GROUP:     # a group reads as a folder, in its colour (dim when hidden)
+            rgb = row.get("color", (0.6, 0.6, 0.6))
+            hexc = DIM if row["dimmed"] else "#%02x%02x%02x" % tuple(int(max(0.0, min(1.0, c)) * 255) for c in rgb)
+            item.setIcon(COL_NAME, _lucide_icon("folder", z.px(16), hexc))
+        elif "color" in row:
             item.setIcon(COL_NAME, _swatch(row["color"], z.px(14), 0.35 if row["dimmed"] else 1.0))
         elif kind == SEL_DEFAULTS:
             item.setIcon(COL_NAME, QIcon(_hda_icon(z.px(14))))
@@ -1345,10 +1402,7 @@ class GroomingUI(QWidget):
         row = item.data(COL_NAME, ROLE_ROW)
         if row["kind"] not in (SEL_GROUP, SEL_LOCKS):
             return
-        if column == COL_EYE:
-            kind, ids = self._targets(row)
-            self._fire("set_visible", kind, ids, not row.get("visible", True))
-        elif column == COL_STATUS and row.get("display"):
+        if column == COL_STATUS and row.get("display"):   # the eye is the tree's own (mousePressEvent)
             menu = self._display_menu(row)
             menu.exec(self._tree.viewport().mapToGlobal(self._tree.visualItemRect(item).bottomRight()))
 

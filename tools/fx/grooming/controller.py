@@ -115,6 +115,7 @@ class GroomController:
         self._infos_for: str | None = None    # _infos_key of the data lock_infos was read for
         self._drag_preview = True             # dragged locks grow light (adapter.set_drag_preview)
         self._drag_origin_new = False
+        self._drag_warned = False
         if node is not None:
             self.set_node(node)
 
@@ -417,6 +418,13 @@ class GroomController:
         live = getattr(self.adapter, "write_data_live", None)
         if live is None or self.node is None or key not in model.BUILTIN_DEFAULTS:
             return False
+        if self.deform_state() == (True, True):
+            # Anim on: each tick would deform the whole groom (~1.3-1.8 s) and Houdini's interrupt popup
+            # would take the mouse from the slider; the value applies on release instead
+            if not self._drag_warned:
+                self._drag_warned = True
+                self.view.set_message("Anim is on: the value applies when you let go. Turn Anim off to see it live")
+            return False
         try:
             data = self.data()
             if self._drag_origin is None:
@@ -445,6 +453,7 @@ class GroomController:
     def _end_drag(self) -> None:
         """Put back the data from before a drag (no undo step), so the release's write is the only step."""
         origin, self._drag_origin = self._drag_origin, None
+        self._drag_warned = False
         light = getattr(self.adapter, "set_drag_preview", None)
         if origin is not None and light is not None and self.node is not None:
             light(self.node, None)          # the release grows them in full
@@ -954,6 +963,10 @@ class GroomController:
         """Timer tick: the node's data changed outside (undo, the HDA's parms) → show it again; the
         viewport selection changed → select those locks here."""
         if self.node is None:
+            return
+        if self._drag_origin is not None:
+            # a slider is being dragged: its ticks change groom_data, and showing it again would rebuild
+            # the settings under the mouse and end the drag
             return
         try:
             data = self.data()

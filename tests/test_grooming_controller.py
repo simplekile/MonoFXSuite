@@ -429,6 +429,7 @@ def test_root_flip_and_exclude_reach_the_adapter_and_show_on_rows(env) -> None:
 
 def test_slider_drag_follows_live_and_is_one_undo_step(env) -> None:
     adapter, view, c = env
+    adapter.deform = (True, False)             # Anim off: the drag is live
     c.select_locks([1])
     before = adapter.read_data(adapter.node).resolve(1)["density"]
     writes = len(adapter.writes)
@@ -441,6 +442,22 @@ def test_slider_drag_follows_live_and_is_one_undo_step(env) -> None:
     assert adapter.read_data(adapter.node).lock(1).overrides["density"] == 300.0
     assert before != 300.0
     assert adapter.light is None                                                   # full again after
+
+
+def test_slider_drag_with_anim_on_applies_on_release_and_poll_keeps_the_slider(env) -> None:
+    adapter, view, c = env
+    adapter.deform = (True, True)              # Anim on: a tick would deform the whole groom
+    c.select_locks([1])
+    assert not c.preview_value("density", 200.0)
+    assert "applies when you let go" in view.messages[-1][0]
+    adapter.deform = (True, False)
+    c.preview_value("density", 210.0)          # a drag in progress...
+    rebuilt = len(view.messages)
+    tree_before = view.tree
+    c.poll()                                   # ...the poll must not rebuild the panel under the mouse
+    assert view.tree is tree_before
+    c.set_value("density", 220.0)
+    assert adapter.read_data(adapter.node).lock(1).overrides["density"] == 220.0
 
 
 def test_shot_deform_toggle_turns_the_anim_off_for_fast_edits(env) -> None:
@@ -655,6 +672,31 @@ def test_rows_show_mixed_reset_only_when_set_here_and_drag_is_one_write(app, pre
     slider.setSliderDown(False)
     slider.sliderReleased.emit()
     assert len(adapter.writes) == 1
+    ui.close()
+
+
+def test_eye_click_on_a_selected_row_hides_the_whole_selection(app, prefs) -> None:
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from tools.fx.grooming.ui import COL_EYE
+
+    adapter, ui, c = _panel(app)
+    ui.show()
+    c.select_locks([1, 2])
+    ui.set_selection(c.selection)
+    app.processEvents()
+    tree = ui._tree
+    item = ui._rows[(ctl.SEL_LOCKS, 1)]
+    tree.scrollToItem(item)
+    app.processEvents()
+    rect = tree.visualItemRect(item)
+    x = tree.header().sectionViewportPosition(COL_EYE) + tree.header().sectionSize(COL_EYE) // 2
+    QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                     rect.center().__class__(x, rect.center().y()))
+    app.processEvents()
+    data = adapter.read_data(adapter.node)
+    assert not data.lock(1).visible and not data.lock(2).visible   # both, not just the clicked one
+    assert data.lock(3).visible
     ui.close()
 
 
