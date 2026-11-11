@@ -191,6 +191,9 @@
   lookup for both made strands jump between them (zigzags). `xyzdist` + `primuv` on the faces (not the
   nearest point) gives a continuous offset; top and underside are blended by the strand's t.
   The piece in z replaces a per-lock blast that cost 73 ms a lock.
+- Cross-sections are fitted to `measure_samples` (4000) points spread over each lock's faces, not to the
+  mesh's own points: a low-res lock (Helen hair_base_03, 254 points) left ~5 points a band, measured
+  1.6 cm across a 4 cm cap and its hair came out a narrow twisted ribbon. Lock shape was not the cause.
 - Strand shape: spines have 48 points, smoothed along their length (`spine_smooth`, a wrangle:
   Attribute Blur pins every point of an open curve), which also writes the new `tangentu` (Resample's
   is stale after the blur and turned the frame again). The frame is not blurred as vectors: a band's
@@ -218,7 +221,7 @@
 - Inside the HDA every stage is a titled network box, one column each (`_layout_sections`): one
   `layoutChildren` over everything made a knot of crossing wires.
 - Helen (sandbox t12/t16/t18): 61/61 locks with hair, 116 k strands, 4 M points, hair check PASS (corner
-  p95 26 deg vs 43 for v006, mesh uncovered 7 % vs 3.5 %), full cook 5.3 s, density edit 5 s, shot frame 1 s,
+  p95 26 deg vs 43 for v006, mesh uncovered 6 % vs 3.5 %, every lock at least 0.76 of its mesh's width), full cook 5.3 s, density edit 5 s, shot frame 1 s,
   detect 2.6 s, split 4 s, publish 5 s / 50 MB (47–56 s before regions were frozen). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
   Quitting Houdini with `hou.exit` from a Qt timer segfaults even in an empty session (fxhoudinimcp
   loaded): not this tool; kill leftover test sessions after a GUI run.

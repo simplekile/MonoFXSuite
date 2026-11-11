@@ -13,7 +13,7 @@ Per strand, over its polyline. `p95` = 95th percentile over strands. Reference =
 | other_mean | share of points sitting on another lock's mesh | 0 | fans at the root; stacked locks |
 | uncovered | hair mesh with no strand curve within 6 mm | 0.035 | strands bunched mid-lock (fixed: `cross_spread`); hairclump's blend (fixed: the lock's clump drives `blend`, tightness alone never switches it off); `ps` narrower than the mesh (fixed: stretched to its edges); strand count from the root only (fixed: widest band); too coarse spines in curls (fixed: 48 points) |
 | lock_uncovered_worst | the barest lock | | as above |
-| lock_width_ratio_worst | hair's spread / mesh's across the lock (2nd principal axis), at least 0.7 | | crown caps wider than long: the spine and cross-section model does not fit them, their hair twists into a narrow ribbon (open). Coverage misses it: a thin cap is within 6 mm of a ribbon in its middle |
+| lock_width_ratio_worst | hair's spread / mesh's across the lock (2nd principal axis), at least 0.7 | | low-res lock meshes: ~5 mesh points a cross-section band measured the width wrong and the hair twisted into a narrow ribbon (fixed: bands fitted to `measure_samples` points spread over the faces). Coverage misses it: a thin lock is within 6 mm of a ribbon in its middle. First thought was "caps are wider than long": the numbers said 13.8 cm long, 3.4 cm wide; measure before explaining |
 | lock_dmax / lock_kink worst | the worst lock | | look at its close-up |
 
 Diagnose by stage before changing code: measure the same numbers on the HDA's inner nodes

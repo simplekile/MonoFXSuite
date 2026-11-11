@@ -122,6 +122,35 @@ for (int i = 0; i < np; i++) {
 }
 """
 
+VEX_MEASURE_SAMPLES = """// points spread evenly over each piece's faces, for spine_build's cross-sections: a band is fitted
+// to the points inside it, and a low-res lock had ~5 (Helen hair_base_03: 254 mesh points, 48 bands),
+// which measured 1.6 cm across a 4 cm cap and twisted its hair. At least measure_samples points per
+// piece, by face area; dist comes from the faces. The mesh stays (spine_build reads its names).
+int target = max(chi("../measure_samples"), 0);
+if (target == 0) return;
+int npr = nprimitives(0);
+float area[]; int pcs[]; resize(area, npr); resize(pcs, npr);
+float tot[];
+for (int pr = 0; pr < npr; pr++) {
+    area[pr] = primintrinsic(0, "measuredarea", pr);
+    pcs[pr] = point(0, "piece", primpoint(0, pr, 0));
+    if (pcs[pr] >= len(tot)) resize(tot, pcs[pr] + 1);
+    tot[pcs[pr]] += area[pr];
+}
+for (int pr = 0; pr < npr; pr++) {
+    if (tot[pcs[pr]] <= 0) continue;
+    int k = int(ceil(target * area[pr] / tot[pcs[pr]]));
+    for (int j = 0; j < k; j++) {
+        vector uv = set(rand(set(pr, j, 0.17)), rand(set(pr, j, 0.71)), 0);
+        vector p = primuv(0, "P", pr, uv);          // typed: untyped primuv() is ambiguous here
+        float d = primuv(0, "dist", pr, uv);
+        int pt = addpoint(0, p);
+        setpointattrib(0, "piece", pt, pcs[pr]);
+        setpointattrib(0, "dist", pt, d);
+    }
+}
+"""
+
 VEX_SPINE_BUILD = """// one spine per piece: band centroids by along-surface distance, cross-section fit per band
 int N = max(chi("../spine_points"), 3);
 int np = npoints(1);
@@ -824,7 +853,8 @@ def build_network(sub) -> None:
     dist.parm("distmetric").set(0)  # along edges: fast, and on a quad mesh close to the surface distance
     empty = _node(sub, "add", "empty")
     attrs = _wrangle(sub, "spine_attribs", VEX_SPINE_ATTRIBS, DETAIL, [empty])
-    build = _wrangle(sub, "spine_build", VEX_SPINE_BUILD, DETAIL, [attrs, dist])
+    samples = _wrangle(sub, "measure_samples", VEX_MEASURE_SAMPLES, DETAIL, [dist])
+    build = _wrangle(sub, "spine_build", VEX_SPINE_BUILD, DETAIL, [attrs, samples])
     resample = _node(sub, "resample", "spine_resample", [build], dolength=0, dosegs=1,
                      docurveuattr=1, dotangentattr=1)
     resample.parm("segs").setExpression('ch("../spine_points")')
@@ -1024,6 +1054,10 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                             min=0, max=30,
                                             help="Blur passes on each strand's offset from its lock's spine, after "
                                                  "a spike filter. 0 keeps the raw surface lookup"))
+    adv.addParmTemplate(hou.IntParmTemplate("measure_samples", "Measure samples", 1, default_value=(4000,),
+                                            min=0, max=20000,
+                                            help="Points spread over each lock's mesh to measure its cross-sections; "
+                                                 "low-res meshes otherwise give a few points a band and a wrong width"))
     adv.addParmTemplate(hou.IntParmTemplate("spine_smooth", "Spine smoothing", 1, default_value=(18,),
                                             min=0, max=50,
                                             help="Blur passes along each lock's spine and its width, thickness "
