@@ -201,7 +201,9 @@ Detect and the hair mesh
 - Piece with no thickness (single-sided card), closed tube, open ribbon, very low-res (fixed:
   measure_samples), very short, very long: all measured; the check covers each kind.
 - Piece touching the scalp at both ends (a loop, hair tied back) or at none (an accessory, a floating
-  strand): OPEN: root at the nearer end with a warning, or excluded from hair?
+  strand): Detect takes the nearer end and flags the lock; the user decides per lock: flip which end
+  is the root, exclude the piece from hair, or (later, with drawn locks) give it a guide of their own.
+  Not there yet: a per-lock "root end" (flip) and "exclude" in the panel, both kept through re-Detect.
 - Scalp without UV, scaled or moved objects, scenes not in metres (`unit_cm`): detect warns.
 - Animated hair mesh with another point count or order than the rest mesh: refuse the deform with a
   message, never deform with the wrong points.
@@ -214,7 +216,11 @@ Publish and caches
 - Several characters in a shot: one node per character; cache paths carry the character (and an
   instance number when the same asset appears twice), so two Helens never write one file. Caching
   one, several or all; one failing does not stop or corrupt the others; frame ranges per character.
-  OPEN: same asset twice in a shot with different grooms (variants)?
+- The same character several times in one shot (clones of one asset, same groom) is normal, and so
+  are variants (one asset, different grooms). Each instance has its own animation, so its own deform
+  and cache, named by instance; the groom publish they read is shared (variants read their own).
+  Instances that share one animation (exact copies, offsets only) can share one cache and be
+  instanced, instead of deforming and writing the same hair again.
 
 Panel
 - Long names, 200+ locks, a narrow docked panel, Houdini UI scale 0.75-2 plus the panel's own size.
