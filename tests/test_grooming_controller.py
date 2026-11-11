@@ -94,6 +94,24 @@ class FakeAdapter:
     def isolate_ids(self, node):
         return self.isolated
 
+    # session 009's per-lock flags: one write, regions out of date
+    def _flag(self, ids, field, value):
+        data = self.read_data(self.node)
+        changed = 0
+        for lk in data.locks:
+            if lk.id in ids and getattr(lk, field) != value:
+                setattr(lk, field, value)
+                changed += 1
+        data.regions_stale = True
+        self.write_data(self.node, data, field)
+        return changed
+
+    def set_root_flip(self, node, ids, flip):
+        return self._flag(ids, "root_flip", flip)
+
+    def set_excluded(self, node, ids, excluded):
+        return self._flag(ids, "excluded", excluded)
+
 
 class RecordingView:
     def __init__(self) -> None:
@@ -376,6 +394,18 @@ def test_isolate_selection_and_back(env) -> None:
     c.isolate_off()
     assert adapter.isolated is None and view.isolate == ""
     c.isolate_off()  # Esc when not isolated: nothing
+
+
+def test_root_flip_and_exclude_reach_the_adapter_and_show_on_rows(env) -> None:
+    adapter, view, c = env
+    assert c.set_root_flip([1], True)
+    assert c.set_excluded([1, 2], True)
+    data = adapter.read_data(adapter.node)
+    assert data.lock(1).root_flip and data.lock(1).excluded and data.lock(2).excluded
+    rows = {ch["id"]: ch for g in view.tree if "children" in g for ch in g["children"]}
+    assert rows[1]["root_flip"] and rows[1]["excluded"] and not rows[3]["excluded"]
+    assert "Split regions" in view.messages[-1][0]
+    assert not c.set_excluded([], True)          # nothing selected: nothing written
 
 
 def test_isolate_without_adapter_support_says_so(env) -> None:

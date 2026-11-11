@@ -1052,6 +1052,14 @@ class GroomingUI(QWidget):
         name = row["name"]
         if kind in (SEL_DEFAULTS, ORPHANS_ROW, SEL_GROUP) and row.get("meta"):
             item.setToolTip(COL_NAME, row["meta"])
+        if kind == SEL_LOCKS:                      # the per-lock choices show on the row, quietly
+            notes = (["no hair"] if row.get("excluded") else []) + (["root flipped"] if row.get("root_flip") else [])
+            if notes:
+                name = f"{name}  ·  {', '.join(notes)}"
+                item.setToolTip(COL_NAME, "Right click to change: " + ", ".join(notes))
+            if row.get("excluded"):
+                row["dimmed"] = True
+                item.setData(COL_NAME, ROLE_ROW, row)
         item.setText(COL_NAME, name)
         flags = item.flags()
         if kind not in (SEL_GROUP, SEL_LOCKS):
@@ -1317,6 +1325,16 @@ class GroomingUI(QWidget):
             act = menu.addAction(_lucide_icon("check", z.px(15)), "Confirm match")
             act.setEnabled(bool(unsure))
             act.triggered.connect(lambda: self._fire("confirm", unsure))
+            menu.addSeparator()
+            _kind, ids = self._targets(row)
+            flip = menu.addAction("Root at the other end")
+            flip.setCheckable(True)
+            flip.setChecked(bool(row.get("root_flip")))
+            flip.triggered.connect(lambda on: self._fire("set_root_flip", ids, on))
+            excl = menu.addAction("Leave out of the hair")
+            excl.setCheckable(True)
+            excl.setChecked(bool(row.get("excluded")))
+            excl.triggered.connect(lambda on: self._fire("set_excluded", ids, on))
         if row["kind"] == SEL_GROUP:
             colors = menu.addMenu(_lucide_icon("palette", z.px(15)), "Colour")
             for rgb in SWATCHES:

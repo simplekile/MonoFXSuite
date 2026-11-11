@@ -222,6 +222,7 @@ class GroomController:
                 # The group wins: a shown lock of a hidden group is hidden, its own state kept for later
                 "hidden_by_group": not group_visible,
                 "isolated_out": isolated is not None and lk.id not in isolated,
+                "root_flip": lk.root_flip, "excluded": lk.excluded,
                 "badges": (["edited"] if lk.overrides else []) + ([lk.match] if lk.match in ("unsure", "new") else []),
             } for lk in locks]
             badges = ["edited"] if g and g.overrides else []
@@ -673,6 +674,34 @@ class GroomController:
         return True
 
     # ------------------------------------------------------------------
+    # Per lock: which end is the root, and whether it grows hair at all
+    # ------------------------------------------------------------------
+    def set_root_flip(self, ids, flip: bool) -> bool:
+        """Root at the mesh piece's other end, for a loop or a piece Detect read the wrong way round."""
+        return self._lock_flag("set_root_flip", ids, flip,
+                               "Root at the other end" if flip else "Root at the end nearer the scalp")
+
+    def set_excluded(self, ids, excluded: bool) -> bool:
+        """No hair for these locks (an accessory, a floating piece); mesh and guide still show them."""
+        return self._lock_flag("set_excluded", ids, excluded,
+                               "Left out of the hair" if excluded else "Grows hair again")
+
+    def _lock_flag(self, name: str, ids, value: bool, what: str) -> bool:
+        call = getattr(self.adapter, name, None)
+        ids = [int(i) for i in (ids or [])]
+        if call is None or not ids:
+            if call is None:
+                self.view.set_message(f"{what} needs a newer MONO Grooming adapter", error=True)
+            return False
+        changed = self._run(what, lambda: call(self.node, ids, value))
+        if changed is None:
+            return False
+        self.refresh()
+        n = len(ids)
+        self.view.set_message(f"{what}: {n} lock{'s' if n != 1 else ''}. Regions are out of date: Split regions")
+        return bool(changed)
+
+    # ------------------------------------------------------------------
     # Drag and drop in the tree: order, and locks into another group
     # ------------------------------------------------------------------
     def plan_drop(self, dragged, target, where: str) -> dict | str:
@@ -906,6 +935,8 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("publish", controller.publish)
     ui.on("isolate", controller.toggle_isolate)
     ui.on("isolate_off", controller.isolate_off)
+    ui.on("set_root_flip", controller.set_root_flip)
+    ui.on("set_excluded", controller.set_excluded)
     ui.on("can_drop", controller.plan_drop)
     ui.on("drop", controller.drop)
     ui.on("poll", controller.poll)
