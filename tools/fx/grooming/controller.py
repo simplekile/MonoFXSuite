@@ -691,6 +691,36 @@ class GroomController:
         what = "Show" if visible else "Hide"
         return self._edit(f"Grooming: {what} {self._count(kind, ids)}", change)
 
+    def solo_visible(self, kind: str, ids) -> bool:
+        """Alt+click on an eye: only these locks (or groups) shown, every other one hidden, each eye kept as
+        a plain eye state (saved, one undo step). Again on the same rows, when they already are all that is
+        shown: everything shown again."""
+        ids = list(ids)
+        holder: dict = {}
+
+        def change(data: model.GroomData):
+            for lk in data.locks:
+                self._ensure_group(data, lk.group)
+            if kind == SEL_GROUP:
+                keep_groups = set(ids)
+                keep_locks = {lk.id for lk in data.locks if lk.group in keep_groups}
+            else:
+                keep_locks = {int(i) for i in ids}
+                keep_groups = {lk.group for lk in data.locks if lk.id in keep_locks}
+            solo = all((lk.visible and data.group(lk.group).visible) == (lk.id in keep_locks) for lk in data.locks)
+            holder["all"] = solo
+            for g in data.groups:
+                g.visible = True if solo else g.id in keep_groups
+            for lk in data.locks:
+                lk.visible = True if solo else (lk.id in keep_locks or (kind == SEL_GROUP and lk.visible))
+
+        what = self._count(kind, ids)
+        ok = self._edit(f"Grooming: show only {what}", change)
+        if ok:
+            self.view.set_message("Every lock shown again" if holder.get("all") else
+                                  f"Showing only {what} (Alt+click its eye again to show everything)")
+        return ok
+
     def set_row_display(self, kind: str, ids, mode: str | None) -> bool:
         """Per-row display override; None follows the node's display mode."""
         if mode is not None and mode not in config.DISPLAY_MODES:
@@ -1349,6 +1379,7 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("redo", lambda: controller.undo(redo=True))
     ui.on("xray", controller.toggle_xray)
     ui.on("confirm_all", controller.confirm_all)
+    ui.on("solo_visible", controller.solo_visible)
     ui.on("set_xray", controller.set_xray)
     ui.on("set_root_flip", controller.set_root_flip)
     ui.on("set_shot_deform", controller.set_shot_deform)

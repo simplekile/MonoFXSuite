@@ -403,7 +403,8 @@
   (normal = the row's own eye, faint `FAINT` = its group or isolate decided, accent = drawn because
   isolated); a click always toggles the row's own eye and the tooltip says it. Before, a lock under a
   hidden group showed an open eye and an isolated lock with its eye off a crossed one, while the viewport
-  did the opposite. The isolate button turns its icon accent when on, not only its background; menu
+  did the opposite. Alt+click on an eye shows only those rows and hides every other lock and group
+  (`controller.solo_visible`, eye states, one undo step); again on the same rows shows everything. The isolate button turns its icon accent when on, not only its background; menu
   actions never use the check icon (it reads as a ticked option): Confirm match is `badge-check`.
 - A hidden group dims its row and its locks ("hidden by group"; their own eye kept). Isolate (I, Esc) is
   `adapter.set_isolate(node, ids | None)` / `isolate_ids(node)`: a view state, never in `groom_data`.

@@ -981,7 +981,8 @@ def test_eye_shape_says_drawn_tone_says_why(app, prefs) -> None:
     assert eye(3).startswith("Hidden: click")
     c.set_visible(ctl.SEL_GROUP, ["fringe"], False)
     app.processEvents()
-    assert eye(1) == "Hidden by its group (its own eye: shown). Click to change its own eye"
+    assert eye(1).startswith("Hidden by its group (its own eye: shown). Click to change its own eye")
+    assert "Alt+click: show only this" in eye(1)
     c.set_visible(ctl.SEL_GROUP, ["fringe"], True)
     c.select_locks([3])
     c.toggle_isolate()                     # isolate a lock whose own eye is off: it is drawn
@@ -1050,6 +1051,11 @@ def test_x_key_and_a_double_click_on_the_eye_is_two_clicks(app, prefs) -> None:
                       QPoint(x, rect.center().y()))
     app.processEvents()
     assert adapter.read_data(adapter.node).lock(1).visible               # hidden, then shown again
+    QTest.mouseClick(tree.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.AltModifier,
+                     QPoint(x, tree.visualItemRect(ui._rows[(ctl.SEL_LOCKS, 1)]).center().y()))
+    app.processEvents()
+    data = adapter.read_data(adapter.node)
+    assert [lk.id for lk in data.locks if data.shown(lk.id)] == [1]      # Alt+click: only that lock
     ui.close()
 
 
@@ -1132,6 +1138,20 @@ def test_parent_levels_say_whether_the_levels_below_follow(env) -> None:
     assert {r["key"]: r for r in view.props["settings"]}["clump"]["below"]["locks"] == []
     c.select_locks([1])
     assert view.props["settings"][0]["below"] is None                 # nothing below a lock
+
+
+def test_alt_click_on_an_eye_shows_only_that_and_again_everything(env) -> None:
+    adapter, view, c = env
+    assert c.solo_visible(ctl.SEL_LOCKS, [3])
+    data = c.data()
+    assert [lk.id for lk in data.locks if data.shown(lk.id)] == [3]
+    assert len(adapter.writes) == 1 and "Showing only lock 3" in view.messages[-1][0]   # one undo step
+    assert c.solo_visible(ctl.SEL_LOCKS, [3])            # again: everything
+    data = c.data()
+    assert all(data.shown(lk.id) for lk in data.locks) and "shown again" in view.messages[-1][0]
+    assert c.solo_visible(ctl.SEL_GROUP, ["fringe"])
+    data = c.data()
+    assert sorted(lk.id for lk in data.locks if data.shown(lk.id)) == [1, 2]
 
 
 def test_confirm_all_clears_new_and_to_check(env) -> None:

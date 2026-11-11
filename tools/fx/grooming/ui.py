@@ -757,7 +757,10 @@ class _LayerTree(QTreeWidget):
             row = item.data(COL_NAME, ROLE_ROW)
             if row and row["kind"] in (SEL_GROUP, SEL_LOCKS):
                 kind, ids = self._ui._targets(row)
-                self._ui._fire("set_visible", kind, ids, not row.get("visible", True))
+                if event.modifiers() & Qt.KeyboardModifier.AltModifier:   # only these shown (again: all)
+                    self._ui._fire("solo_visible", kind, ids)
+                else:
+                    self._ui._fire("set_visible", kind, ids, not row.get("visible", True))
                 event.accept()
                 return
         super().mousePressEvent(event)
@@ -1708,6 +1711,7 @@ class GroomingUI(QWidget):
             else:
                 icon, color = ("eye", TEXT_LABEL) if visible else ("eye-off", TEXT_LABEL)
                 tip = "Shown: click to hide" if visible else "Hidden: click to show"
+            tip += ". Alt+click: show only this (again: show everything)"
             item.setData(COL_EYE, ROLE_ICON, _fixed_icon(icon, z.px(16), color))
             item.setData(COL_EYE, ROLE_QUIET, icon == "eye" and color == TEXT_LABEL)   # shown, its own eye
             item.setToolTip(COL_EYE, tip)
