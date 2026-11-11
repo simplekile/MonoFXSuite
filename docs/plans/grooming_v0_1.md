@@ -136,3 +136,18 @@ try later (publish animated guides only, deform the rest strands at render time)
 - No modal dialogs (they block Houdini and the MCP bridge): results go to the panel's status line.
 - Fonts in pixels and the text roles of `tools/fx/auto_material/ui.py` (`_font`, `ui._text`).
 - GUI checks only on the secondary monitor; prefer hython. One session drives a GUI Houdini at a time.
+
+## Backlog (user notes, 2026-11-11)
+
+Panel and network, after testing the Helen sandbox scene:
+
+- Mouse wheel over the panel must scroll it, never move a parm slider under the cursor (a slider
+  takes the wheel only while it has focus).
+- Hiding, or editing one lock or one group, recooks only that part, not the whole groom. Hiding is
+  display only and must be near instant.
+- Fonts and icons follow Houdini's UI size (its scale setting), not fixed pixels only.
+- Isolate: show one lock or group alone (and back).
+- Drag and drop to reorder in the layer tree, like Cinema 4D or Substance Painter: move locks
+  between groups, change order.
+- A lock does not yet follow its group's display (hiding a group should hide its locks).
+- A hidden group is drawn dimmed in the panel, its row and every lock inside it.
