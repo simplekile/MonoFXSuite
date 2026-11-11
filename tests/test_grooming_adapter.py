@@ -237,3 +237,12 @@ def test_detect_twice_on_unchanged_unnamed_short_locks_is_ok():
     data = GroomData.from_json(ga.apply_detect(GroomData(), pieces, ["g"] * 50, first).to_json())
     again = logic.match_locks(pieces, data.locks, data.next_lock_id())
     assert again.counts["ok"] == 50
+
+
+def test_playing_state_from_playbar_events():
+    assert ga.playing_state("Started") is True and ga.playing_state("Stopped") is False
+    assert ga.playing_state("FrameChanged") is None
+
+
+def test_install_playbar_callback_needs_houdini():
+    ga.install_playbar_callback()   # no hou here: does nothing, raises nothing

@@ -256,3 +256,14 @@ Panel
   measured root, so the flag survives re-Detect); the lookup cloud stays on the measured spine.
 - Measured on Helen (hython, t20): see the session report; hair full one-lock edit 9.5 s -> about 1 s,
   hide 9.5 s -> about 0.3 s, isolate 0.03 s.
+
+## Anim input and playback (decided 2026-11-11, session 011)
+
+- Input 2 takes the animated hair mesh unpacked (as before) or a USD Import left packed: the HDA unpacks
+  only the gprims named like the rest hair mesh's prims (name, path or last path part), points only, no
+  primvars. Point counts must match the rest hair mesh, else no deform and a warning (edge case above).
+- Point Deform captures once at rest (`deform_capture`, time independent) and only deforms per frame.
+  Hair full stays ~1 s a frame on Helen (the deform of 4 M points); fewer neighbours (`maxpt`) moved
+  points up to 2.6 cm, so the quality setting stays.
+- While playing (node parm, default Hair preview): playback draws min(Display, While playing), back on
+  stop; Same as Display turns it off. Never applies to publish or to caching a shot by frames in hython.

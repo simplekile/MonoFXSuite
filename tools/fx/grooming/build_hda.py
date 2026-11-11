@@ -434,7 +434,7 @@ if (total * f > cap && total > 0) {
     f = cap / total;
     if (f > 0) f = pow(%(step)s, ceil(log(f) / log(%(step)s) - 1e-6));
 }
-f@factor = chi("../display_mode") == 2 ? f : 1.0;
+f@factor = chi("../display_eff") == 2 ? f : 1.0;   // display_eff: the display mode, lighter while playing
 // fingerprints of each lock's region for the hair cache (adapter.cook_lock_keys): per lock id 9 floats
 // summing what the per-lock loop reads of its prims (count, area / share, share, centre, centre x a
 // weight by prim number, so a moved or swapped prim changes it)
@@ -902,6 +902,32 @@ if (sp >= 0) c = chi("../color_by") == 0 ? prim(1, "lock_cd", sp) : prim(1, "gro
 v@Cd = c;
 """
 
+VEX_REST_NAMES = """// prim names of the rest hair mesh (Geo_HairBang ...): which prims of a packed anim input are hair
+string names[];
+if (hasprimattrib(0, "name")) names = uniquevals(0, "prim", "name");
+s[]@rest_names = names;
+"""
+
+VEX_ANIM_KIND = """// a packed USD anim input (USD Import left packed) is unpacked here, hair prims only
+string t = nprimitives(0) > 0 ? primintrinsic(0, "typename", 0) : "";
+i@packed = t == "PackedUSD";
+"""
+
+VEX_ANIM_KEEP = """// keep the gprims named like a rest hair mesh prim (by name, path, or the path's last part): matching
+// "Hair" would also take Helen's HairProxy_grp/Geo_Eyebrows
+string nm[] = detail(1, "rest_names");
+string path = s@path, name = s@name;
+string parts[] = split(path, "/");
+string leaf = len(parts) > 0 ? parts[-1] : "";
+if (find(nm, name) < 0 && find(nm, path) < 0 && find(nm, leaf) < 0) removeprim(0, @primnum, 1);
+"""
+
+VEX_ANIM_CHECK = """// deform only with the rest mesh's points: another count would move the wrong points
+i@deform_ok = npoints(0) == npoints(1) && npoints(0) > 0;
+if (!i@deform_ok && npoints(0) > 0)
+    warning("Anim hair mesh: %d points, rest hair mesh %d: no deform", npoints(0), npoints(1));
+"""
+
 # ---------------------------------------------------------------------------
 # network
 # ---------------------------------------------------------------------------
@@ -1104,16 +1130,37 @@ def build_network(sub) -> None:
     guide_col = _wrangle(sub, "guide_color", VEX_COLOR_POINTS, POINT, [guides_vis])
     hair_col = _wrangle(sub, "hair_color", VEX_HAIR_COLOR, PRIM, [hair, spines])
     disp = _node(sub, "switch", "display", [mesh_col, guide_col, hair_col])
-    disp.parm("input").setExpression('min(ch("../display_mode"), 2)')
-    deform = _node(sub, "pointdeform", "deform", [disp, in_hair, in_anim])
-    deform.parm("radius").setExpression('ch("../deform_radius")')
+    disp.parm("input").setExpression('min(ch("../display_eff"), 2)')
+    section("Display")
+
+    # ---- shot deform: the animated hair mesh, from a packed USD import too ----
+    # A USD Import unpacked to polygons costs 0.1-0.3 s a frame for the whole character (627 k points on
+    # Helen, the hair is 196 k); packed it is 0.001 s. A packed USD input is unpacked here to its gprims
+    # as packed prims, only those named like the rest hair mesh's prims are kept, and only they become
+    # polygons, points only (no primvars). An unpacked input goes through as it is.
+    rest_names = _wrangle(sub, "rest_names", VEX_REST_NAMES, DETAIL, [in_hair])
+    anim_kind = _wrangle(sub, "anim_kind", VEX_ANIM_KIND, DETAIL, [in_anim])
+    gprims = _node(sub, "unpackusd", "anim_gprims", [anim_kind], output="packedprims",
+                   unpacktraversal="std:boundables")
+    keep = _wrangle(sub, "anim_keep_hair", VEX_ANIM_KEEP, PRIM, [gprims, rest_names])
+    polys = _node(sub, "unpackusd", "anim_unpack", [keep], output="polygons", unpacktraversal="std:boundables",
+                  importprimvars="", addpathattrib=0, addfilepathattrib=0, addnameattrib=0, detailattributes=0)
+    pick = _node(sub, "switch", "anim_packed", [in_anim, polys])
+    pick.parm("input").setExpression('detail("../anim_kind", "packed", 0)')
+    anim_hair = _wrangle(sub, "ANIM_HAIR", VEX_ANIM_CHECK, DETAIL, [pick, in_hair])
+    # capture once at rest (inputs 1-2 are time independent), then only the deform runs per frame
+    capture = _node(sub, "pointdeform", "deform_capture", [disp, in_hair], mode="capture")
+    deform = _node(sub, "pointdeform", "deform", [capture, in_hair, anim_hair], mode="deform")
+    for pd in (capture, deform):
+        pd.parm("radius").setExpression('ch("../deform_radius")')
     use_deform = _node(sub, "switch", "use_deform", [disp, deform])
-    use_deform.parm("input").setExpression('if(strcmp(opinputpath("..", 2), "") == 0, 0, 1)')
+    use_deform.parm("input").setExpression(
+        'if(strcmp(opinputpath("..", 2), "") == 0, 0, detail("../ANIM_HAIR", "deform_ok", 0))')
     out = _node(sub, "null", "OUT", [use_deform])
     output = _node(sub, "output", "output0", [out])
     output.setDisplayFlag(True)
     output.setRenderFlag(True)
-    section("Display and shot deform")
+    section("Shot deform")
     _layout_sections(sub, sections)
 
 
@@ -1144,6 +1191,21 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     ptg.append(hou.MenuParmTemplate(
         "display_mode", "Display", menu_items=config.DISPLAY_MODES,
         menu_labels=("Mesh", "Guide", "Hair preview", "Hair full"), default_value=2))
+    ptg.append(hou.MenuParmTemplate(
+        "play_display", "While playing", menu_items=config.PLAY_DISPLAY,
+        menu_labels=("Same as Display", "Guide", "Hair preview"), default_value=2,
+        help="Lighter display while the timeline plays (hair full deforms 4 M points, ~1 s a frame on "
+             "Helen); back to Display on stop. Never heavier than Display"))
+    # what the network draws: Display, or While playing during playback (`playing`, set by the
+    # adapter's playbar callback with undo off)
+    eff = hou.IntParmTemplate("display_eff", "Display in use", 1, default_expression=(
+        'if(ch("playing") && ch("play_display") > 0, min(ch("display_mode"), ch("play_display")), '
+        'ch("display_mode"))',), default_expression_language=(hou.scriptLanguage.Hscript,))
+    eff.hide(True)
+    ptg.append(eff)
+    playing = hou.ToggleParmTemplate("playing", "Playing", default_value=False)
+    playing.hide(True)
+    ptg.append(playing)
     ptg.append(hou.MenuParmTemplate("color_by", "Colour by", menu_items=config.COLOR_BY,
                                     menu_labels=("Lock", "Group"), default_value=0))
     detect = hou.ButtonParmTemplate("detect", "Detect", script_callback=cb.format("detect"),
@@ -1251,6 +1313,9 @@ def _parm_templates() -> hou.ParmTemplateGroup:
 ON_LOADED = """from apps.houdini import grooming_adapter
 grooming_adapter.on_loaded(kwargs["node"])
 """
+ON_CREATED = """from apps.houdini import grooming_adapter
+grooming_adapter.install_playbar_callback()
+"""
 
 
 def build(out_path: str = DEFAULT_OUT) -> str:
@@ -1277,6 +1342,8 @@ def build(out_path: str = DEFAULT_OUT) -> str:
     definition.setComment("MONO Grooming v0.1, built by tools/fx/grooming/build_hda.py")
     definition.addSection("OnLoaded", ON_LOADED)
     definition.setExtraFileOption("OnLoaded/IsPython", True)
+    definition.addSection("OnCreated", ON_CREATED)
+    definition.setExtraFileOption("OnCreated/IsPython", True)
     definition.save(out_path, hda, create_backup=False)
     geo.destroy()
 

@@ -25,6 +25,7 @@ NO_OWNER = -1
 
 DISPLAY_MODES: tuple[str, ...] = ("mesh", "guide", "hair_preview", "hair")
 COLOR_BY: tuple[str, ...] = ("lock", "group")
+PLAY_DISPLAY: tuple[str, ...] = ("same", "guide", "hair_preview")  # index = the DISPLAY_MODES index it caps at
 PREVIEW_FRACTION = 0.10
 PREVIEW_MAX_STRANDS = 20_000
 PREVIEW_FACTOR_STEP = 0.8      # a capped preview factor snaps down to 0.8^k (it is in every lock's cache key)

@@ -45,16 +45,20 @@ PARM_PUBLISH_PATH = "publish_path"   # hidden, read by PUBLISH_USD
 PARM_PUBLISH_VERSION = "publish_version"
 PARM_ISOLATE = "isolate_ids"         # hidden: locks shown alone ("" = none); display only, never undone
 PARM_COOK_ALL = "cook_all"           # hidden: 1 while publishing: every lock, hidden or isolated out
+PARM_DISPLAY_EFF = "display_eff"     # hidden expression: the mode drawn (Display, or While playing)
+PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playbar callback, undo off)
 
 # Parms whose value never reaches the per-lock hair cook (display, publish, deform, what the geometry
 # already carries): left out of the cache key, so changing them recooks no lock.
 _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
                    PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_COOK_ALL, "deform_radius",
+                   PARM_DISPLAY_EFF, PARM_PLAYING, "play_display",
                    "rest_frame", "detect", "split_regions", "publish"}
 # Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
 _KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_match", "cached", "cache_key",
                      "cache_mode"}
 _CACHE_ATTR = "_mono_grooming_hair_cache"
+_PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 CACHE_NET_VERSION = "partial-1"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
@@ -718,6 +722,7 @@ def publish(node, version: str | None = None) -> PublishResult:
             node.parm(PARM_PUBLISH_PATH).set(usd)
             node.parm(PARM_DISPLAY).set(config.DISPLAY_MODES.index("hair"))
             node.parm(PARM_COOK_ALL).set(1)   # hidden and isolated-out locks too (the display skips them)
+            node.parm(PARM_PLAYING).set(0)    # the full hair, never the lighter playback display
             try:
                 hair = _cooked(node, NODE_HAIR)
                 strands = len(hair.iterPrims())
@@ -803,11 +808,53 @@ def cook_assign(sop) -> None:
 
 
 def on_loaded(node) -> None:
-    """HDA OnLoaded: isolate is a temporary view, so a scene saved while isolated opens showing all."""
-    p = node.parm(PARM_ISOLATE)
-    if p is not None and p.eval():
-        with hou.undos.disabler():
-            p.set("")
+    """HDA OnLoaded: isolate is a temporary view, so a scene saved while isolated opens showing all;
+    a scene saved while playing opens at its Display."""
+    with hou.undos.disabler():
+        for name, empty in ((PARM_ISOLATE, ""), (PARM_PLAYING, 0)):
+            p = node.parm(name)
+            if p is not None and p.eval():
+                p.set(empty)
+    install_playbar_callback()
+
+
+def playing_state(event_name: str) -> bool | None:
+    """Pure: the `playing` value for a playbar event (by name), None when the event changes nothing."""
+    if event_name == "Started":
+        return True
+    if event_name == "Stopped":
+        return False
+    return None
+
+
+def _on_playbar(event_type, frame) -> None:
+    state = playing_state(str(event_type).rsplit(".", 1)[-1])
+    if state is None:
+        return
+    try:
+        nodes = find_nodes()
+    except hou.Error:
+        return
+    with hou.undos.disabler():
+        for n in nodes:
+            p = n.parm(PARM_PLAYING)
+            if p is not None and p.eval() != int(state):
+                p.set(int(state))
+
+
+def install_playbar_callback() -> None:
+    """Once per session (kept on `sys`, like the cache): while the timeline plays, every MONO Grooming
+    node draws its While playing mode (`display_eff`). Only with a UI; hython has no playbar."""
+    if hou is None or not hou.isUIAvailable() or getattr(sys, _PLAYBAR_ATTR, False):
+        return
+    hou.playbar.addEventCallback(_on_playbar_trampoline)
+    setattr(sys, _PLAYBAR_ATTR, True)
+
+
+def _on_playbar_trampoline(event_type, frame) -> None:
+    # registered once; looks the handler up again so a reloaded adapter's code runs
+    from apps.houdini import grooming_adapter as current
+    current._on_playbar(event_type, frame)
 
 
 def _definition_stamp(top) -> str:
@@ -846,7 +893,7 @@ def cook_lock_keys(sop) -> None:
     ins = sop.inputs()
     preview = ins[1].geometry()
     surface = ins[2].geometry()
-    mode = str(top.evalParm(PARM_DISPLAY))
+    mode = str(top.evalParm(PARM_DISPLAY_EFF))
     factor = preview.attribValue("factor") if preview.findGlobalAttrib("factor") else 1.0
     rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
     sk = surface.floatListAttribValue("surface_keys") if surface.findGlobalAttrib("surface_keys") else ()

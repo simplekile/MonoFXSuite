@@ -251,6 +251,20 @@
   detect 2.6 s, split 4 s, publish 5 s / 50 MB (47–56 s before regions were frozen). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
   Quitting Houdini with `hou.exit` from a Qt timer segfaults even in an empty session (fxhoudinimcp
   loaded): not this tool; kill leftover test sessions after a GUI run.
+- Anim input (input 2) may be a USD Import left packed (one PackedUSD prim): inside, `unpackusd` to
+  gprims as packed prims, keep those whose name / path / last path part is a rest hair mesh prim name
+  (`rest_names`; "Hair" alone would take Helen's HairProxy eyebrows), unpack only them to polygons, no
+  primvars. Unpacking the whole character cost 0.1-0.3 s a frame; packed per frame on sh020: guide
+  0.06 s, mesh 0.10, preview 0.14 (unpacked 0.22 / 0.25 / 0.30). An unpacked input goes through as
+  before. The deform runs only when the anim has the rest mesh's point count (`ANIM_HAIR` `deform_ok`,
+  else a warning). Point Deform is split: `deform_capture` (mode capture, time independent, once) and
+  `deform` (mode deform); hair full is still ~1 s a frame, all of it the deform of 4 M points
+  (`maxpt` 100; 32 is 3x faster but moves some points 2.6 cm, so it stays).
+- While playing (`play_display`, default Hair preview): during playback the node draws
+  min(Display, While playing) through the hidden `display_eff` expression (every inner reference to the
+  mode reads it, the cache key too); the adapter's playbar callback (installed once by OnCreated /
+  OnLoaded, UI only) sets the hidden `playing`, undo off. Hair full playing: ~0.25 s a frame. Publish
+  clears `playing`.
 - Shots: Karma's hair procedural (Generate) does not reproduce clump/frizz, so publishes carry full
   strands and shots Point Deform them (sandbox t02).
 - Names follow the department: `grooming` (`04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`,
