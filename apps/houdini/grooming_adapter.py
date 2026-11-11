@@ -636,7 +636,7 @@ def deform_state(node) -> tuple[bool, bool]:
 
 
 def set_shot_deform(node, on: bool) -> None:
-    """Shot deform on / off: a view choice saved with the scene, no undo step."""
+    """Shot deform on / off: a view choice, no undo step; a scene always opens with it off (OnLoaded)."""
     p = node.parm("shot_deform")
     if p is not None:
         with hou.undos.disabler():
@@ -974,10 +974,12 @@ def cook_assign(sop) -> None:
 
 def on_loaded(node) -> None:
     """HDA OnLoaded: isolate is a temporary view, so a scene saved while isolated opens showing all;
-    a scene saved while playing opens at its Display."""
+    a scene saved while playing opens at its Display; a scene saved with Shot deform on opens at rest
+    (grooming is the main mode: with the deform every lock is drawn as strands and focus cannot see
+    through the others)."""
     with hou.undos.disabler():
         for name, empty in ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_STRANDS, ""), (PARM_FOCUS, ""),
-                            (PARM_PLAYING, 0)):
+                            (PARM_PLAYING, 0), ("shot_deform", 0)):
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)

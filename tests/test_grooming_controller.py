@@ -611,6 +611,29 @@ def test_focus_replaces_the_viewport_highlight(env, monkeypatch) -> None:
     assert calls[-1] is None
 
 
+def test_focus_only_on_drawn_locks(env, monkeypatch) -> None:
+    """A selected lock the viewport does not draw (its eye off, outside the isolate) takes no focus:
+    focusing it would leave every drawn lock see-through and nothing solid on screen."""
+    adapter, view, c = env
+    calls = []
+    monkeypatch.setattr(adapter, "set_focus", lambda node, ids: calls.append(sorted(ids) if ids else None),
+                        raising=False)
+    c.select_locks([1])
+    c.toggle_isolate()
+    c.select_locks([3])                            # outside the isolate
+    assert calls[-1] is None and "outside the isolate" in view.messages[-1][0]
+    c.toggle_isolate()                             # I on it: isolated, and in focus
+    assert adapter.isolated == [3] and calls[-1] == [3]
+    c.toggle_isolate()
+    c.select_locks([2, 3])
+    c.set_visible(ctl.SEL_LOCKS, [3], False)       # its eye off: focus keeps only what is drawn
+    assert calls[-1] == [2]
+    c.set_visible(ctl.SEL_LOCKS, [3], True)
+    assert calls[-1] == [2, 3]
+    c.set_visible(ctl.SEL_LOCKS, [2, 3], False)
+    assert calls[-1] is None
+
+
 def test_undo_from_the_panel_runs_houdinis_undo_and_shows_it(env) -> None:
     adapter, view, c = env
     adapter.undo_labels = ["Grooming: Density on fringe_01"]

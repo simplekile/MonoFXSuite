@@ -1372,9 +1372,10 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     adv.addParmTemplate(hou.FloatParmTemplate("frizz_freq", "Frizz frequency", 1, default_value=(8.0,),
                                               min=0.0, max=50.0))
     adv.addParmTemplate(hou.ToggleParmTemplate(
-        "shot_deform", "Shot deform", default_value=True,
-        help="Off: the hair stays at rest even with an animated hair mesh wired in (grooming is fast: an edit"
-             " does not deform 4 M points). On: it follows the animation"))
+        "shot_deform", "Shot deform", default_value=False,
+        help="Off (the default, and how a scene opens): the hair stays at rest even with an animated hair mesh"
+             " wired in, so an edit does not deform 4 M points and the panel's focus and strands work. On: it"
+             " follows the animation"))
     wired = hou.IntParmTemplate("anim_wired", "Animated hair mesh wired in", 1, default_expression=(
         'strcmp(opinputpath(".", 2), "") != 0',), default_expression_language=(hou.scriptLanguage.Hscript,))
     wired.hide(True)

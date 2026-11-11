@@ -218,7 +218,9 @@
     over the thousands of strands in a lock: 0.12 read as opaque, 0.04 as x-ray. Ghosts in front of
     the lock still cover it (they write depth). set_focus clears this node's viewport selection, so a
     pick in the viewport becomes the panel's selection and focus. A focus change: ~0.01 s, the first
-    0.03 s. The tree says "editing" (yellow) on the selected rows only; a group's locks do not repeat it.
+    0.03 s. Only drawn locks take focus (`controller._drawn`): a selection hidden by its eye or outside
+    the isolate would ghost every drawn lock, so then nothing is ghosted and the message says why; eyes
+    refocus on every refresh. The tree says "editing" (yellow) on the selected rows only; a group's locks do not repeat it.
   - Undo keeps working with the panel focused: Ctrl+Z / Ctrl+Shift+Z / Ctrl+Y are panel shortcuts that
     call `hou.undos.performUndo` / `performRedo` (`adapter.undo`): Houdini's own hotkeys never see keys
     sent to the panel. `select_locks` (adapters without focus) runs with undo off: Houdini records a
@@ -258,7 +260,9 @@
   its colour inside (a copy per lock and colour, in the hair cache): the viewport ignores a packed
   prim's Cd and drew the groom white.
 - Shot deform: toggle `shot_deform` (panel: the Anim button, shown when an animated hair mesh is wired;
-  no undo step). Hidden `anim_wired` / `deform_active`. With it on, every edit deforms all 4 M points
+  no undo step). Off is the main mode: the default, and OnLoaded turns it off (the user groomed a scene
+  saved with it on: every lock drawn as strands, focus only dimming, so select looked like strands /
+  isolate). GUI tests open scenes as saved (t36), not with the deform forced off. Hidden `anim_wired` / `deform_active`. With it on, every edit deforms all 4 M points
   (~1.2 s), so grooming is done with it off (edits 0.1 s); with it on a drag applies on release. Each lock is captured to the rest hair mesh inside the per-lock loop and cached
   with its strands (`lock_capture`, per-lock `do_capture` in the key: always with deform on, full-hair
   locks only with it off, so turning it on regrows nothing and drag ticks skip the ~0.3 s capture);

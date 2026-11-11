@@ -209,10 +209,13 @@ class GroomController:
         self.view.set_isolate(self.isolate_text(data))
         if hasattr(self.view, "set_strands"):
             self.view.set_strands(self.strands_text(data))
-        if self.strands and not hasattr(self.adapter, "set_focus"):
+        if hasattr(self.adapter, "set_focus"):
+            # an eye or a group's eye may have hidden or shown the selection: focus only drawn locks
+            # (set_focus writes only when the ids change)
+            self._sync_viewport(data, quiet=True)
+        elif self.strands:
             # an edit changes how many strands a lock drawn as strands has, so the prim numbers the
             # viewport selection holds now point past them: select the locks again by their lock ids
-            # (focus goes by lock id and needs nothing)
             self._sync_viewport(data)
         if self._publish_armed is not None and self._publish_armed != self._unseen(data):
             self._publish_armed = None  # what was hidden changed: the warning no longer says what is true
@@ -709,7 +712,8 @@ class GroomController:
         if self._run("Shot deform", lambda: call(self.node, bool(on)) or True) is None:
             return False
         self.view.set_deform_state(*self.deform_state())
-        self.view.set_message("Shot deform on: the hair follows the animation (each edit deforms it again)"
+        self.view.set_message("Shot deform on: the hair follows the animation. Every lock is drawn as strands, "
+                              "the others are only dimmed (not see-through), each edit deforms it again"
                               if on else "Shot deform off: the hair stays at rest, edits are fast")
         return True
 
@@ -1075,15 +1079,25 @@ class GroomController:
         if kind in (SEL_LOCKS, SEL_GROUP) or hasattr(self.adapter, "set_focus"):
             self._sync_viewport(data)   # nothing selected: every lock in its colour again
 
-    def _sync_viewport(self, data: model.GroomData | None = None) -> None:
+    def _sync_viewport(self, data: model.GroomData | None = None, quiet: bool = False) -> None:
         """Show the panel's selection in the viewport: the selected locks keep their colour and the others
         go see-through (adapter.set_focus, by lock id, which also clears Houdini's selection highlight that
-        painted the lock over). An adapter without focus selects the locks' prims instead."""
-        lock_ids = self.lock_ids_of(data or self._data or self.data(), self.selection)
+        painted the lock over). Only drawn locks take focus: a selection that is hidden or outside the
+        isolate would leave nothing solid on screen, every lock see-through, so then nothing is ghosted and
+        the message says why. An adapter without focus selects the locks' prims instead."""
+        data = data or self._data or self.data()
+        lock_ids = self.lock_ids_of(data, self.selection)
         focus = getattr(self.adapter, "set_focus", None)
         if focus is not None:
-            self._run("Focus", lambda: focus(self.node, lock_ids or None))
+            drawn = self._drawn(data, lock_ids)
+            self._run("Focus", lambda: focus(self.node, drawn or None))
             self._viewport_ids = []
+            if lock_ids and not drawn and not quiet:
+                names = ", ".join(lk.name for lk in (data.lock(i) for i in lock_ids[:3]) if lk is not None)
+                more = f" and {len(lock_ids) - 3} more" if len(lock_ids) > 3 else ""
+                why = ("outside the isolate: press I to isolate it" if self._read_isolate()
+                       else "hidden: turn its eye on to see it")
+                self.view.set_message(f"{names}{more} is {why}")
             return
         if not lock_ids:
             return
@@ -1094,6 +1108,14 @@ class GroomController:
             self._viewport_ids = sorted(self.adapter.selected_lock_ids(self.node))
         except Exception:
             self._viewport_ids = lock_ids
+
+    def _drawn(self, data: model.GroomData, lock_ids) -> list[int]:
+        """The locks among `lock_ids` the viewport draws: the isolated ones while isolated (even with
+        their eye off), else those shown by their eye and their group's."""
+        isolated = self._read_isolate()
+        if isolated:
+            return [i for i in lock_ids if i in isolated]
+        return [i for i in lock_ids if data.shown(i)]
 
     def select_locks(self, ids) -> None:
         self.select(SEL_LOCKS, tuple(ids))
