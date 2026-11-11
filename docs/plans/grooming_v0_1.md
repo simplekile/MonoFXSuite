@@ -157,3 +157,16 @@ Panel and network, after testing the Helen sandbox scene:
   between groups, change order.
 - A lock does not yet follow its group's display (hiding a group should hide its locks).
 - A hidden group is drawn dimmed in the panel, its row and every lock inside it.
+- UI pass for long working days (artist in it for hours, every action quick). Clear separators,
+  a clear main / secondary hierarchy, colour only where it means something. Seen on the current panel:
+  - The tree and the settings run into each other; settings rows have no separation; "Measured" is
+    a small afterthought at the bottom.
+  - Source chips (group, built-in) look like buttons and carry colour, so they compete with the
+    setting names; a big reset button on every row adds noise (show it only when a value is set here).
+  - A slider spans the whole width with its value box at the far right: long mouse travel, and
+    each setting takes ~90 px, so only 7 fit on screen. Name, slider and value on one compact row.
+  - The tree row packs badges (edited, new) and a "Mesh / auto" column whose meaning is unclear.
+  - The Display and Colour menus in the bottom bar show a square instead of an arrow.
+  - Measured values are raw scene units (Width 0.0466): show cm.
+  - Colours: one accent for the main action (Publish) and the selection; status colours only for
+    status; the rest neutral.
