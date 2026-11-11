@@ -461,11 +461,11 @@ def lock_infos(node) -> list[LockInfo]:
     geo = _cooked(node, NODE_SPINES_LOCKS)
     scalp = _cooked(node, NODE_SCALP_REGIONS)
     area: dict[int, float] = {}   # a shared prim counts 1/share for each of its owners
-    for prim in scalp.iterPrims():
-        own = prim.attribValue(ATTR_LOCK_OWNERS) if scalp.findPrimAttrib(ATTR_LOCK_OWNERS) else ()
-        a = prim.floatAttribValue("area_cm2")
-        for lid in own:
-            area[lid] = area.get(lid, 0.0) + a / len(own)
+    if scalp.findPrimAttrib(ATTR_LOCK_OWNERS) and scalp.findPrimAttrib("area_cm2"):
+        # bulk reads: one attribValue call per scalp prim (24k on Helen) cost 2 s on every panel refresh
+        for own, a in zip(scalp.primIntListAttribValues(ATTR_LOCK_OWNERS), scalp.primFloatAttribValues("area_cm2")):
+            for lid in own:
+                area[lid] = area.get(lid, 0.0) + a / len(own)
     infos = []
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
