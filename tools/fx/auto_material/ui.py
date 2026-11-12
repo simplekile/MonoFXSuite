@@ -177,7 +177,7 @@ STYLE_PILL = f"""
         padding: 5px 12px; font-size: {FS_META}px; text-align: left;
     }}
     QPushButton:hover, QToolButton:hover {{ border-color: #3a3a44; background: {BG_HOVER}; }}
-    QPushButton:checked {{ background: {_rgba(ACCENT, 0.16)}; border-color: {ACCENT_LINE}; color: {ACCENT}; }}
+    QPushButton:checked {{ background: {_rgba(ACCENT, 0.12)}; border-color: {ACCENT_LINE}; color: {ACCENT}; }}
     QToolButton::menu-indicator {{ image: none; width: 0; }}
 """
 

@@ -1260,6 +1260,15 @@ def test_panel_filter_review_line_narrow_layout_and_fading_message(app, prefs) -
     ui.resize(1200, 800)
     app.processEvents()
     assert not ui._narrow and ui._body.orientation() == Qt.Orientation.Horizontal
+    # wide: the tree pane fits the longest name (300 px cut hair_back_01 to "ha…01")
+    from PySide6.QtGui import QFontMetrics
+    tree = ui._tree
+    for (kind, _), item in ui._rows.items():
+        depth, up = 1, item.parent()
+        while up is not None:
+            depth, up = depth + 1, up.parent()
+        need = depth * tree.indentation() + QFontMetrics(item.font(0)).horizontalAdvance(item.text(0))
+        assert tree.header().sectionSize(0) >= need, (item.text(0), tree.header().sectionSize(0), need)
     # the selection's actions: a toggle fires the controller
     adapter.deform = (True, False)
     c.select_locks([1])
