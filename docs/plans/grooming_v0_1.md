@@ -63,8 +63,16 @@ geometry and are multiplied / added by the resolved settings; they are never wri
 | scalp prims | `lock_owners` | int array | Locks growing hair on this prim (stacked locks share it) |
 | scalp prims | `lock_owner`, `share` | int | First owner (-1 none), number of owners |
 | scalp prims | `density` | float | Mean strands/cm² of the owners (each grows its density / share here) |
-| output strand prims | `lock_id`, `name`, `group`, `clump_id` | | For shading, selection, solo |
-| output strands | `Cd` | vector | Display colour only (a prim attribute since the partial cook: 116 k prims, not 4 M points) |
+| output strand prims | `lock_id`, `name`, `group`, `clump_id`, `id` | | For shading, selection, solo |
+| output strand points | `width` | float | Strand thickness (render) |
+| display output prims | `Cd`, `Alpha` | | Display only (output 0): colour, see-through out of focus; never on output 1 or the publish |
+
+Outputs: 0 **Display** is what the viewport draws: hidden and isolated-out locks are missing, the hair is
+packed per lock with its colour inside, locks out of focus are see-through ghosts, preview display lowers
+the density, and with Shot deform on it is the deformed display. 1 **Groom** is the groom itself and never
+depends on the view: every lock that is not excluded, full density, only P and the contract attributes
+above (`config.GROOM_ATTRIBS`), at rest, or deformed by the animated hair mesh while Shot deform is on.
+Downstream nodes (a File Cache for a shot, SOP Import, a ROP, Guide Process) and the publish read output 1.
 
 `lock_width` is the lock's width. Houdini's `width` stays the strand thickness for render. Never mix them.
 
@@ -287,8 +295,10 @@ Panel
   undo finds the previous hair). The key (`lock_keys`) digests the lock's spine with its resolved
   settings, its frozen region (sums per lock computed in PREVIEW), its mesh piece's lookup cloud, the
   loop's parms, the display mode and the preview factor. Colour, visibility and isolate are not in it.
-- Only locks that grow (shown and not excluded, or every lock while publishing: `cook_all`) and miss
-  the cache go through the For-Each; `hair_cache` merges every growing lock. An edit of one lock recooks
+- Only locks that grow (shown and not excluded) and miss the cache go through the For-Each; `hair_cache`
+  merges every growing lock. Output 1 (Groom, and publish) has its own keys (every lock not excluded, full
+  density, no drag) and its own copy of the loop through the same cache, so it shares the strands of locks
+  the display shows as full hair and cooks only when read (decided 2026-11-12, t50). An edit of one lock recooks
   that lock; a group edit its locks; a default or an Advanced parm every lock.
 - Hairclump runs per lock on the lock's own region. Clumps never crossed locks (`clumpid` = lock),
   so the look is the same; `clump_id` = lock_id x 100 000 + the lock's clump keeps ids unique.

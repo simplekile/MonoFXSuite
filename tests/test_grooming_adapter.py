@@ -211,6 +211,27 @@ def test_lock_cache_keeps_last_two_keys_per_lock_and_mode():
     assert len(c) == 0 and c.nodes() == set()
 
 
+def test_lock_cache_drop_forgets_one_slot_only():
+    # the whole merge (hair_cache / groom_cache) keeps one key: the old one is dropped before a put
+    c = ga.LockCache()
+    c.put(7, ga.MERGED_LOCK, ga.MERGED_MODE + "groom_cache", "a", "whole a")
+    c.put(7, ga.MERGED_LOCK, ga.MERGED_MODE + "hair_cache", "a", "display")
+    c.put(7, 1, "hair", "k", "lock 1")
+    c.drop(7, ga.MERGED_LOCK, ga.MERGED_MODE + "groom_cache")
+    c.put(7, ga.MERGED_LOCK, ga.MERGED_MODE + "groom_cache", "b", "whole b")
+    assert not c.has(7, ga.MERGED_LOCK, ga.MERGED_MODE + "groom_cache", "a")
+    assert c.get(7, ga.MERGED_LOCK, ga.MERGED_MODE + "groom_cache", "b") == "whole b"
+    assert c.get(7, ga.MERGED_LOCK, ga.MERGED_MODE + "hair_cache", "a") == "display"
+    assert c.get(7, 1, "hair", "k") == "lock 1"
+    c.drop(7, 99, "nothing there")   # no error
+
+
+def test_groom_output_contract():
+    assert config.OUTPUT_LABELS == ("Display", "Groom")
+    assert set(config.GROOM_ATTRIBS) == {"width", "lock_id", "name", "group", "clump_id", "id"}
+    assert not set(config.GROOM_ATTRIBS) & set(config.LOOP_ONLY_ATTRIBS)
+
+
 def test_hair_cache_survives_adapter_reload():
     import importlib
     c = ga.hair_cache()
