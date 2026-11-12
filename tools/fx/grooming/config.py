@@ -29,6 +29,9 @@ PLAY_DISPLAY: tuple[str, ...] = ("same", "guide", "hair_preview")  # index = the
 PREVIEW_FRACTION = 0.10
 PREVIEW_MAX_STRANDS = 20_000
 PREVIEW_FACTOR_STEP = 0.8      # a capped preview factor snaps down to 0.8^k (it is in every lock's cache key)
+# Prim attributes only the per-lock loop needs (hairgen, fit_to_lock, hairclump): dropped before the cache
+LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_c0", "fit_root", "length_mult", "frizz",
+                     "clumpid", "skinprim", "skinprimuv")
 STRANDS_MAX = 20              # locks drawn as strands at most (Enter / double-click): 20 is ~1.9 M points
 # A slider drag grows the dragged locks at their real strand count, with fewer points a strand (a drag
 # tick on one Helen lock: 0.14 s, its largest 0.36 s); past this many strands (a group) a fraction of

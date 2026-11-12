@@ -1172,7 +1172,8 @@ def test_the_measured_cells_say_what_the_geometry_holds(env, monkeypatch) -> Non
     def geo_stats(node, ids):
         asked.append(ids)
         return {"locks": 1, "prims": 2586, "points": 118956, "mode": "hair",
-                "attribs": {"point": ["P", "width"], "prim": ["lock_id", "name"], "vertex": [], "detail": []}}
+                "attribs": {"point": ["P", "pCaptPts", "width"], "prim": ["lock_id", "name"], "vertex": [],
+                            "detail": ["gl_shadeopencurves"]}}
 
     monkeypatch.setattr(adapter, "geo_stats", geo_stats, raising=False)
     c.select_locks([1])

@@ -399,6 +399,10 @@
 - The measured cells add what the geometry holds (`adapter.geo_stats`, intrinsics of the per-lock cache,
   under 5 ms for the whole groom): real strand count (replacing the estimate; "(preview)" in preview
   display), points, points a strand, and the attribute names by class under the cells.
+- The per-lock loop drops what only it needs (`config.LOOP_ONLY_ATTRIBS`: tightness, clumpblend, fit_*,
+  length_mult, frizz, clumpid, skinprim / skinprimuv, which index the loop's region cut) in `lock_clean`
+  before the cache: the cache, display and deform carry P, width, lock_id, name, group, clump_id, id (+ the
+  deform capture); `tightness` alone was 4 M floats on Helen. Publish (`publish_clean`) also drops the capture.
 - Names as Houdini uses them (checked against SideFX's Hair Generate / Hair Clump pages): Thickness and
   `width` are one strand's, so the lock's cross-section is "Lock width" / "Lock thickness" (settings and
   measured); the scalp is "skin" (Skin area); Clump drives Hair Clump's Blend (tooltip); Guides; Hair /

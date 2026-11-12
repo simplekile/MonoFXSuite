@@ -1134,8 +1134,14 @@ def build_network(sub) -> None:
     clump.parm("blendcurveattrib").set("clumpblend")
     lf = _wrangle(sub, "length_frizz", VEX_LENGTH_FRIZZ, PRIM, [clump])
     hair_out = _wrangle(sub, "hair_attribs", VEX_HAIR_OUT, PRIM, [lf])
+    # what hairgen, fit_to_lock and hairclump needed only inside the loop: dropped before the cache, so the
+    # cache (and the display, deform, publish after it) keep P, width, lock_id, name, group, clump_id, id.
+    # tightness alone was 4 M floats on Helen; skinprim / skinprimuv index the per-lock region cut here, not
+    # the scalp, so they would mislead anyone reading them later
+    lock_clean = _node(sub, "attribdelete", "lock_clean", [hair_out],
+                       primdel=" ".join(config.LOOP_ONLY_ATTRIBS), ptdel="tightness skinprim skinprimuv")
     nothing = _node(sub, "add", "no_strands")
-    has_region = _node(sub, "switch", "has_region", [nothing, hair_out])
+    has_region = _node(sub, "switch", "has_region", [nothing, lock_clean])
     has_region.parm("input").setExpression('if(nprims("../region_cut") > 0, 1, 0)')
     # with the shot deform on, each lock is captured to the rest hair mesh here, once, and kept with its
     # strands: a capture of all 4 M points (and the merge it waits for) cost 3-9 s on every hide or show

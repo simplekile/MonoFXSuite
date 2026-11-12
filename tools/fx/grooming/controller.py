@@ -444,7 +444,9 @@ class GroomController:
         cells += [(label, f"{st['prims']:,}"), ("Points", f"{st['points']:,}"),
                   ("Points / strand", f"{st['points'] / st['prims']:.0f}")]
         attribs = st.get("attribs") or {}
-        line = " · ".join(f"{cls}: {', '.join(names)}" for cls, names in attribs.items() if names)
+        # what a reader of the publish gets: the deform capture and viewport hints stay out of the list
+        shown = {cls: [n for n in names if not n.startswith(("pCapt", "gl_"))] for cls, names in attribs.items()}
+        line = " · ".join(f"{cls}: {', '.join(names)}" for cls, names in shown.items() if names)
         return cells, line
 
     def _below(self, data: model.GroomData, key: str) -> dict | None:
