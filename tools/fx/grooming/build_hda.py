@@ -356,10 +356,10 @@ int on = i@visible;
 string iso = chs("../isolate_ids");
 if (iso != "") on = find(split(iso), itoa(i@lock_id)) >= 0;
 if (chi("../cook_all")) on = 1;
-// the lock's display: its own (or its group's) Display, else the node's; lighter while playing like
-// the node's (display_eff); full hair while publishing
+// the lock's display: its own (or its group's) Display, else the node's; lighter while playing with
+// the shot deform like the node's (display_eff); full hair while publishing
 int m = i@row_display >= 0 ? i@row_display : chi("../display_eff");
-if (chi("../playing") && chi("../play_display") > 0) m = min(m, chi("../play_display"));
+if (chi("../playing") && chi("../deform_active") && chi("../play_display") > 0) m = min(m, chi("../play_display"));
 if (chi("../cook_all")) m = 3;
 i@disp = m;
 i@shown = on;
@@ -1284,12 +1284,14 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     ptg.append(hou.MenuParmTemplate(
         "play_display", "While playing", menu_items=config.PLAY_DISPLAY,
         menu_labels=("Same as Display", "Guide", "Hair preview"), default_value=2,
-        help="Lighter display while the timeline plays (hair full deforms 4 M points, ~1 s a frame on "
-             "Helen); back to Display on stop. Never heavier than Display"))
-    # what the network draws: Display, or While playing during playback (`playing`, set by the
-    # adapter's playbar callback with undo off)
+        help="Lighter display while the timeline plays with Shot deform on (hair full deforms 4 M points, "
+             "~1 s a frame on Helen); back to Display on stop. Never heavier than Display. With Shot deform "
+             "off nothing cooks while playing, so the display stays as it is"))
+    # what the network draws: Display, or While playing during playback with the deform (`playing`, set
+    # by the adapter's playbar callback with undo off, only while the deform is on)
     eff = hou.IntParmTemplate("display_eff", "Display in use", 1, default_expression=(
-        'if(ch("playing") && ch("play_display") > 0, min(ch("display_mode"), ch("play_display")), '
+        'if(ch("playing") && ch("deform_active") && ch("play_display") > 0, '
+        'min(ch("display_mode"), ch("play_display")), '
         'ch("display_mode"))',), default_expression_language=(hou.scriptLanguage.Hscript,))
     eff.hide(True)
     ptg.append(eff)

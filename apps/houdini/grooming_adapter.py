@@ -655,6 +655,11 @@ def set_shot_deform(node, on: bool) -> None:
     if p is not None:
         with hou.undos.disabler():
             p.set(int(bool(on)))
+        try:   # turned on or off mid-playback: the While playing display follows at once
+            playing = hou.isUIAvailable() and hou.playbar.isPlaying()
+        except (AttributeError, hou.Error):
+            playing = False
+        _set_playing(node, playing_flag(playing, _deforming(node)))
 
 
 def set_drag_preview(node, lock_ids: Sequence[int] | None, factor: float = 1.0) -> None:
@@ -1048,6 +1053,25 @@ def playing_state(event_name: str) -> bool | None:
     return None
 
 
+def playing_flag(playing: bool, deforming: bool) -> int:
+    """Pure: the node's `playing` parm. Only a node with Shot deform on draws lighter while playing:
+    without the deform nothing cooks per frame (Helen hair full plays at the 30 fps cap), so switching to
+    Hair preview only recooked on Start and Stop, and regrew every lock's preview on the first play."""
+    return int(playing and deforming)
+
+
+def _deforming(node) -> bool:
+    p = node.parm("deform_active")
+    return bool(p.eval()) if p is not None else False
+
+
+def _set_playing(node, value: int) -> None:
+    p = node.parm(PARM_PLAYING)
+    if p is not None and p.eval() != value:
+        with hou.undos.disabler():
+            p.set(value)
+
+
 def _on_playbar(event_type, frame) -> None:
     state = playing_state(str(event_type).rsplit(".", 1)[-1])
     if state is None:
@@ -1056,16 +1080,14 @@ def _on_playbar(event_type, frame) -> None:
         nodes = find_nodes()
     except hou.Error:
         return
-    with hou.undos.disabler():
-        for n in nodes:
-            p = n.parm(PARM_PLAYING)
-            if p is not None and p.eval() != int(state):
-                p.set(int(state))
+    for n in nodes:
+        _set_playing(n, playing_flag(state, _deforming(n)))
 
 
 def install_playbar_callback() -> None:
     """Once per session (kept on `sys`, like the cache): while the timeline plays, every MONO Grooming
-    node draws its While playing mode (`display_eff`). Only with a UI; hython has no playbar."""
+    node with Shot deform on draws its While playing mode (`display_eff`). Only with a UI; hython has
+    no playbar."""
     if hou is None or not hou.isUIAvailable() or getattr(sys, _PLAYBAR_ATTR, False):
         return
     hou.playbar.addEventCallback(_on_playbar_trampoline)
