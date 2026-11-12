@@ -132,6 +132,23 @@ LIMITS = {
                                "why": "a lock's hair much narrower than its mesh (collapsed, twisted)"},
     "lock_dmax_p95_worst_cm": {"abs": 3.0, "ref_x": None, "why": "the worst lock's far points"},
     "lock_kink_p95_worst_deg": {"abs": 50.0, "ref_x": None, "why": "the worst lock's corners"},
+    # roots and density (ours only: the reference has no lock ids)
+    "density_off_worst": {"abs": 0.15, "ref_x": None,
+                          "why": "a lock's strand count off what density x its area asks (|actual/expected - 1|)"},
+    "root_clumped": {"abs": 0.05, "ref_x": None,
+                     "why": "roots closer than 0.3x the even spacing 1/sqrt(density): brush-like root bunches"},
+    "root_spacing_low": {"abs": None, "min": 0.45, "ref_x": None,
+                         "why": "median nearest-root distance over the even spacing (random ~0.5, even ~0.9-1.1)"},
+    # the lock's shape against its mesh, along its length
+    "width_mid_off_worst": {"abs": 0.45, "ref_x": None,
+                            "why": "hair width over mesh width, middle of the lock, worst lock (|ratio - 1|)"},
+    "tip_width_off_worst": {"abs": 0.6, "ref_x": None,
+                            "why": "hair width over mesh width in the last tenth: the end narrows (or flares) unlike its mesh"},
+    "tip_center_off_worst": {"abs": 0.5, "ref_x": None,
+                             "why": "hair centre off the mesh centre in the last tenth, in mesh widths"},
+    "fold_share": {"abs": 0.01, "ref_x": None,
+                   "why": "strand points turned over 60 deg from the mesh's direction there (folds, hooks)"},
+    "lock_fold_worst": {"abs": 0.05, "ref_x": None, "why": "the worst lock's folded share"},
 }
 
 
@@ -228,6 +245,124 @@ def width_ratios(hair_geo, mesh_geo, spine_geo):
         m, h = mp[mpc == p.attribValue("piece")], hp[hl == p.attribValue("lock_id")]
         if len(m) > 10 and len(h) > 10:
             out[int(p.attribValue("lock_id"))] = float(spread(h)[1] / max(spread(m)[1], 1e-9))
+    return out
+
+
+def hair_arrays(geo):
+    """Points (n, 3), per point: strand index, lock id, u along the strand (0 root, 1 tip). The cached
+    strands are contiguous (each strand's points in order), checked on the first ones."""
+    pos = np.array(geo.pointFloatAttribValues("P")).reshape(-1, 3)
+    counts = np.array([p.numVertices() for p in geo.prims()])
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    if len(pos) != counts.sum():
+        raise RuntimeError("strands share points: cannot read them as contiguous runs")
+    strand = np.repeat(np.arange(len(counts)), counts)
+    lock = np.repeat(np.array(geo.primIntAttribValues("lock_id")), counts)
+    u = (np.arange(len(pos)) - np.repeat(starts, counts)) / np.maximum(np.repeat(counts, counts) - 1, 1)
+    return pos, strand, lock, u, starts, counts
+
+
+def spine_arrays(sg):
+    """lock id -> (points (k, 3), curveu (k,), tangents (k, 3), piece)."""
+    out = {}
+    for p in sg.prims():
+        pts = p.points()
+        P = np.array([q.position() for q in pts])
+        cu = np.array([q.attribValue("curveu") for q in pts])
+        t = np.gradient(P, axis=0)
+        t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-12)
+        out[int(p.attribValue("lock_id"))] = (P, cu, t, int(p.attribValue("piece")))
+    return out
+
+
+def nearest(a, b, chunk=20000):
+    """Index in b of the nearest point to each of a (brute force in chunks; b is a spine, ~50 points)."""
+    idx = np.empty(len(a), int)
+    for i in range(0, len(a), chunk):
+        d = ((a[i:i + chunk, None, :] - b[None, :, :]) ** 2).sum(-1)
+        idx[i:i + chunk] = d.argmin(1)
+    return idx
+
+
+def nn_dist(x):
+    """Each point's distance to its nearest other point (x: (n, 3), n up to a few thousand)."""
+    out = np.empty(len(x))
+    for i in range(0, len(x), 2000):
+        d = ((x[i:i + 2000, None, :] - x[None, :, :]) ** 2).sum(-1)
+        rows = np.arange(i, min(i + 2000, len(x)))
+        d[rows - i, rows] = np.inf
+        out[i:i + 2000] = np.sqrt(d.min(1))
+    return out
+
+
+def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm):
+    """Per lock: strands against density x area (`logic.lock_strands`, what the tool means to grow), and
+    how the roots spread: median nearest-root distance over the even spacing 1/sqrt(actual density on the
+    lock's area), and the share of roots closer than 0.3x that spacing (bunched roots)."""
+    roots = pos[starts]
+    out = {}
+    for info in infos:
+        sel = lock_of_strand == info.id
+        n = int(sel.sum())
+        if n < 3:
+            continue
+        area = max(info.region_area_cm2, 1e-6)
+        spacing = 1.0 / np.sqrt(n / area)                    # cm, if the roots sat evenly on the area
+        d = nn_dist(roots[sel]) * unit_cm
+        out[info.id] = {"strands": n, "expected": int(info.strands), "density_ratio": n / max(info.strands, 1),
+                        "spacing_ratio": float(np.median(d) / spacing), "clumped": float(np.mean(d < 0.3 * spacing)),
+                        "area_cm2": area}
+    return out
+
+
+def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10):
+    """Per lock and tenth of its spine: hair width / mesh width (spread across the lock, perpendicular
+    to the spine), hair centre off the mesh centre (in mesh widths), and the share of strand points whose
+    direction turns over 60 deg from the spine's there. Hair and mesh points take the curveu of their
+    nearest spine point, so both are binned the same way, independent of the tool's own measurement."""
+    tang = np.zeros_like(pos)
+    tang[1:] = pos[1:] - pos[:-1]
+    first = np.concatenate([[True], (lock[1:] != lock[:-1]) | (u[1:] == 0)])
+    tang[first] = 0
+    nxt = np.zeros_like(pos)
+    nxt[:-1] = pos[1:] - pos[:-1]
+    tang[first] = nxt[first]
+    tang /= np.maximum(np.linalg.norm(tang, axis=1, keepdims=True), 1e-12)
+
+    def width(x, t):
+        """Width of a point cloud across direction t: sqrt(12 var) of its widest perpendicular axis
+        (a uniform spread of width w has var w^2 / 12), and its centre."""
+        if len(x) < 6:
+            return None, None
+        c = x.mean(0)
+        y = x - c
+        y = y - np.outer(y @ t, t)
+        ev = np.linalg.eigvalsh(np.cov(y.T))
+        return float(np.sqrt(12 * max(ev[-1], 0))), c
+
+    out = {}
+    for lid, (sp, cu, st, piece) in spines.items():
+        hs = lock == lid
+        ms = mesh_piece == piece
+        if hs.sum() < 50 or ms.sum() < 20:
+            continue
+        hp, mp = pos[hs], mesh_pos[ms]
+        hi, mi = nearest(hp, sp), nearest(mp, sp)
+        hb, mb = np.minimum((cu[hi] * bins).astype(int), bins - 1), np.minimum((cu[mi] * bins).astype(int), bins - 1)
+        cosang = np.abs(np.einsum("ij,ij->i", tang[hs], st[hi]))
+        fold = float(np.mean(cosang < np.cos(np.radians(60))))
+        rows = []
+        for b in range(bins):
+            t = st[min(int((b + 0.5) / bins * (len(sp) - 1)), len(sp) - 1)]
+            hw, hc = width(hp[hb == b], t)
+            mw, mc = width(mp[mb == b], t)
+            if hw is None or mw is None or mw <= 1e-6:
+                rows.append(None)
+                continue
+            off = hc - mc
+            off = off - (off @ t) * t
+            rows.append({"ratio": hw / mw, "center_off": float(np.linalg.norm(off) / mw)})
+        out[lid] = {"bins": rows, "fold": fold}
     return out
 
 
@@ -358,6 +493,46 @@ def main():
         report["ref"]["uncovered"] = 1 - report["ref"]["coverage"]
     s["lock_kink_p95_worst_deg"] = max((r["kink_p95_deg"] for r in locks), default=0.0)
 
+    # roots / density, width profile, folds (numpy over the full hair; ~1 min on Helen)
+    t = time.time()
+    hgeo = hair.geometry()
+    pos, strand, lock, u, starts, counts = hair_arrays(hgeo)
+    lock_of_strand = np.array(hgeo.primIntAttribValues("lock_id"))
+    unit_cm = float(node.evalParm("unit_cm")) if node.parm("unit_cm") else 100.0
+    dens = roots_and_density(pos, starts, counts, lock_of_strand, ga.lock_infos(node), unit_cm)
+    pg = node.node("pieces").geometry()
+    mesh_pos = np.array(pg.pointFloatAttribValues("P")).reshape(-1, 3)
+    mesh_piece = np.array(pg.pointIntAttribValues("piece"))
+    shape = shape_along(pos, lock, u, mesh_pos, mesh_piece, spine_arrays(sg))
+    log(f"roots, width profile, folds: {time.time() - t:.1f}s")
+    for r in locks:
+        d, sh = dens.get(r["lock_id"]), shape.get(r["lock_id"])
+        if d:
+            r.update({"density_ratio": d["density_ratio"], "expected": d["expected"],
+                      "spacing_ratio": d["spacing_ratio"], "clumped": d["clumped"]})
+        if sh:
+            mids = [b["ratio"] for b in sh["bins"][3:7] if b]
+            tip = sh["bins"][-1]
+            r.update({"width_mid": float(np.median(mids)) if mids else 1.0,
+                      "width_tip": tip["ratio"] if tip else 1.0, "tip_center_off": tip["center_off"] if tip else 0.0,
+                      "fold": sh["fold"], "width_profile": [round(b["ratio"], 2) if b else None for b in sh["bins"]]})
+    have = [r for r in locks if "density_ratio" in r]
+    s["density_off_worst"] = max((abs(r["density_ratio"] - 1) for r in have), default=0.0)
+    s["root_clumped"] = float(np.mean([r["clumped"] for r in have])) if have else 0.0
+    s["root_spacing_low"] = float(np.median([r["spacing_ratio"] for r in have])) if have else 1.0
+    shp = [r for r in locks if "width_mid" in r]
+    s["width_mid_off_worst"] = max((abs(r["width_mid"] - 1) for r in shp), default=0.0)
+    s["tip_width_off_worst"] = max((abs(r["width_tip"] - 1) for r in shp), default=0.0)
+    s["tip_center_off_worst"] = max((r["tip_center_off"] for r in shp), default=0.0)
+    total_pts = sum(r["strands"] for r in shp) or 1
+    s["fold_share"] = float(sum(r["fold"] * r["strands"] for r in shp) / total_pts)
+    s["lock_fold_worst"] = max((r["fold"] for r in shp), default=0.0)
+    report["along_lock"] = {
+        "width_ratio_p50_by_tenth": [round(float(np.median([r["width_profile"][b] for r in shp
+                                                             if r["width_profile"][b] is not None])), 2)
+                                     for b in range(10)] if shp else [],
+    }
+
     checks = []
     for key, lim in LIMITS.items():
         if lim.get("min") is not None:           # a floor, not a ceiling
@@ -393,6 +568,21 @@ def main():
         lines.append(f"| {r['name']} | {r['strands']} | {r['kink_p95_deg']:.1f} | {r['zigzag_p95']:.3f} "
                      f"| {r['maxseg_p95_cm']:.2f} | {r['dmax_p95_cm']:.2f} | {r['dtip_p95_cm']:.2f} "
                      f"| {r['other_mean']:.1%} | {r['coverage']:.0%} | {r['width_ratio']:.2f} |")
+    lines += ["", "## Roots and shape per lock (sorted by the biggest miss)", "",
+              "| lock | strands / expected | root spacing | roots bunched | width mid | width tip | tip off centre"
+              " | folded | width along the lock (root -> tip) |", "|---|---|---|---|---|---|---|---|---|"]
+    miss = lambda r: max(abs(r.get("density_ratio", 1) - 1) / 0.15, abs(r.get("width_tip", 1) - 1) / 0.6,  # noqa: E731
+                         abs(r.get("width_mid", 1) - 1) / 0.45, r.get("tip_center_off", 0) / 0.5, r.get("fold", 0) / 0.05,
+                         r.get("clumped", 0) / 0.05)
+    for r in sorted(locks, key=lambda r: -miss(r))[:12]:
+        if "density_ratio" not in r or "width_mid" not in r:
+            continue
+        lines.append(f"| {r['name']} | {r['strands']} / {r['expected']} ({r['density_ratio']:.2f}) | {r['spacing_ratio']:.2f} "
+                     f"| {r['clumped']:.1%} | {r['width_mid']:.2f} | {r['width_tip']:.2f} | {r['tip_center_off']:.2f} "
+                     f"| {r['fold']:.2%} | {' '.join('-' if v is None else f'{v:.2f}' for v in r['width_profile'])} |")
+    if report.get("along_lock", {}).get("width_ratio_p50_by_tenth"):
+        lines += ["", "Hair width / mesh width by tenth of the lock, median over locks: "
+                  + " ".join(f"{v:.2f}" for v in report["along_lock"]["width_ratio_p50_by_tenth"])]
     lines += ["", "## Along the strand (root -> tip)", "", "| u | dist p50 cm | dist p95 cm | over 2 cm "
               "| angle p95 | bent > 60 |", "|---|---|---|---|---|---|"]
     for r in report["profile"]:

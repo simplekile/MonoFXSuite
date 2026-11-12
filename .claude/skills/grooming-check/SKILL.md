@@ -35,6 +35,11 @@ writes `qc_report.md` / `.json`:
   where a problem sits: the root (regions, root pull), the middle (surface fit) or the tip (length,
   frizz).
 
+- **roots and shape per lock**: strands against density x area, root spacing against the even
+  spacing (bunched roots), hair width / mesh width by tenth of the lock (does the end narrow like the
+  mesh), centre offset at the tip, and folds against the mesh's direction. Numbers, so a lock that
+  looks fine but grows from a 2 cm spot of a 7 cm region still fails.
+
 What each check means and what usually causes a failure is in `references/checks.md`. Read it
 before changing code for a failure.
 

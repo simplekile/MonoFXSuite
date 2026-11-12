@@ -1170,7 +1170,7 @@ def build_network(sub) -> None:
     # skinprim / skinprimuv refer to the per-lock region inside the loop, not the scalp: dropped
     pub_clean = _node(sub, "attribdelete", "publish_clean", [hair], primdel="lock_cd group_cd tightness clumpblend fit_s fit_t fit_c0 fit_root "
                       "length_mult frizz clumpid skinprim skinprimuv path visible Cd",
-                      ptdel="Cd tightness skinprim skinprimuv pCaptPts pCaptWeights")
+                      ptdel="Cd tightness skinprim skinprimuv pCaptPts pCaptWeights", dtldel="gl_shadeopencurves")
     pub = _node(sub, "usdexport", "PUBLISH_USD",[pub_clean])
     pub.parm("lopoutput").setExpression('chs("../publish_path")', language=hou.exprLanguage.Hscript)
     pub.parm("pathprefix").set("/groom")

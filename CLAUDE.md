@@ -300,6 +300,15 @@
   cross-section per band; per band a 2D principal-axis fit in a parallel-transported frame gives width,
   thickness and twist (a near-round band keeps the previous axis). Lock ids reach the network by the
   root Detect stored (`assign_pieces`), so Detect must run after the hair mesh changes.
+- Hair QC also measures roots against density, the width profile along each lock against its mesh,
+  and folds (grooming-check, 2026-11-12). Helen: strand counts match density x area (worst 16 %), folds
+  0.02 %, hair ~0.78 of the mesh's width along every lock, but `root_pull` gathers each lock's roots into
+  its mesh piece's root cross-section (hair_base_01: region 6.7 x 7.7 cm, roots in 1.1 x 1.9 cm): the base
+  is ~20-30x denser than set and the scalp between lock bases bare. OPEN, the user's call.
+- Workflow GUI check (t46): drag ticks ~0.43 s (the first 2.5 s), release 0.7 s, undo 0.47 s, Deform
+  frames ~1.5 s (first 4.4 s), publish 0.7 s with 118,380 strands and only contract primvars. Playback
+  with Deform off ~3.3 fps: open. GUI tests cannot play the timeline inside one step (Houdini's playback
+  runs in its own loop): start it in one step, read it in the next.
 - Hair quality is judged by the skill `.claude/skills/grooming-check` (numbers per strand and per lock
   against the approved groom, plus XGen-style shaded viewport shots); run it after any change to the
   network. Medians and averages passed a groom whose every strand had a 150 deg corner and half of
