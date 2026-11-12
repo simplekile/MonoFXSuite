@@ -1072,6 +1072,9 @@ class GroomingUI(QWidget):
         root.addWidget(_line())
         root.addWidget(self._build_action_bar())
 
+        frame = QShortcut(QKeySequence("F"), self)
+        frame.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        frame.activated.connect(lambda: self._fire("frame"))
         xray = QShortcut(QKeySequence("X"), self)
         xray.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         xray.activated.connect(lambda: self._fire("xray"))
@@ -2081,6 +2084,8 @@ class GroomingUI(QWidget):
                 .triggered.connect(lambda: self._fire("set_visible", kind, ids, not visible))
             menu.addAction(_lucide_icon("focus", z.px(15)), "Isolate    I").triggered.connect(
                 lambda: self._fire("isolate"))
+            menu.addAction(_lucide_icon("scan-search", z.px(15)), "Frame    F").triggered.connect(
+                lambda: self._fire("frame"))
             self._display_menu(row, menu.addMenu(_lucide_icon("monitor", z.px(15)), "Display"))
         if row["kind"] == SEL_LOCKS:
             unsure = [r["id"] for r in self._selected_rows() if r["kind"] == SEL_LOCKS

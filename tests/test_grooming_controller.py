@@ -641,10 +641,10 @@ def test_focus_only_on_drawn_locks(env, monkeypatch) -> None:
 
 def test_undo_from_the_panel_runs_houdinis_undo_and_shows_it(env) -> None:
     adapter, view, c = env
-    adapter.undo_labels = ["Grooming: Density on fringe_01"]
+    adapter.undo_labels = ["MONO Grooming: Density on fringe_01"]
     assert c.undo()
-    assert adapter.undone == ("undo", "Grooming: Density on fringe_01")
-    assert view.messages[-1][0] == "Undone: Grooming: Density on fringe_01"
+    assert adapter.undone == ("undo", "MONO Grooming: Density on fringe_01")
+    assert view.messages[-1][0] == "Undone: MONO Grooming: Density on fringe_01"
     assert not c.undo(redo=True) and view.messages[-1][0] == "Nothing to redo"
 
 
@@ -1083,10 +1083,10 @@ def test_ctrl_z_in_the_panel_and_the_loading_line(app, prefs) -> None:
     from PySide6.QtTest import QTest
 
     adapter, ui, c = _panel(app)
-    adapter.undo_labels = ["Grooming: Clump on back_01"]
+    adapter.undo_labels = ["MONO Grooming: Clump on back_01"]
     ui._tree.setFocus()
     QTest.keyClick(ui._tree, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
-    assert adapter.undone == ("undo", "Grooming: Clump on back_01")
+    assert adapter.undone == ("undo", "MONO Grooming: Clump on back_01")
     ui.set_busy("Clump")                                  # the loading line waits a moment
     assert not ui.is_busy()
     QTest.qWait(ui.BUSY_DELAY_MS + 100)
@@ -1211,6 +1211,17 @@ def test_new_only_while_there_are_missing_locks_and_stale_says_why(env) -> None:
     assert "new" not in rows[4]["badges"] and c.review_counts(c.data()) == (0, 1)
     c.drop([(ctl.SEL_LOCKS, 1)], (ctl.SEL_GROUP, "back"), ctl.DROP_ON)
     assert c.data().stale_why == ["lock 1 moved to Back"]
+
+
+def test_f_frames_the_locks_being_edited(env, monkeypatch) -> None:
+    adapter, view, c = env
+    framed = []
+    monkeypatch.setattr(adapter, "frame_locks", lambda node, ids: framed.append(ids), raising=False)
+    c.select_locks([1, 2])
+    assert c.frame() and framed[-1] == [1, 2]
+    c.select("none")
+    assert c.frame() and framed[-1] is None                    # nothing selected: the whole groom
+    assert any(k == "F" for k, _ in ctl.SHORTCUTS) and any("Alt+click" in k for k, _ in ctl.SHORTCUTS)
 
 
 def test_confirm_all_clears_new_and_to_check(env) -> None:

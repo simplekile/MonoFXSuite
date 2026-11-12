@@ -433,6 +433,16 @@
   length_mult, frizz, clumpid, skinprim / skinprimuv, which index the loop's region cut) in `lock_clean`
   before the cache: the cache, display and deform carry P, width, lock_id, name, group, clump_id, id (+ the
   deform capture); `tightness` alone was 4 M floats on Helen. Publish (`publish_clean`) also drops the capture.
+- From the review (t48), done here: Detect checks the scalp's size in cm against a head
+  (`config.SCALP_SIZE_CM`, catches a wrong `unit_cm`), its uv and the object's transform
+  (`adapter.preflight`, warnings on the result line) and, while no split exists, splits regions in the same
+  undo step (the first "regions out of date" only taught a click). Publish refuses pieces Detect has not
+  matched (they grow nothing) and warns, with the second-click rule, about locks to check, new locks while
+  some are missing, regions out of date, hidden / isolated locks (`_publish_risks`). **F** frames the
+  locks being edited, or the whole groom (`adapter.frame_locks`; Houdini's own F frames its selection,
+  which focus clears; an empty `hou.BoundingBox()` already holds the origin). One undo prefix,
+  "MONO Grooming: ", for the HDA's buttons and the panel's edits; the HDA's labels match the panel's
+  (Hair, Guides, Color by, Detect locks). The overview lists every key and gesture (`SHORTCUTS`).
 - Names as Houdini uses them (checked against SideFX's Hair Generate / Hair Clump pages): Thickness and
   `width` are one strand's, so the lock's cross-section is "Lock width" / "Lock thickness" (settings and
   measured); the scalp is "skin" (Skin area); Clump drives Hair Clump's Blend (tooltip); Guides; Hair /

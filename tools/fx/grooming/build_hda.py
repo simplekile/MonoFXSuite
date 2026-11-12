@@ -1280,10 +1280,10 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     cb = 'from apps.houdini import grooming_adapter; grooming_adapter.on_button(kwargs["node"], "{}")'
     ptg.append(hou.MenuParmTemplate(
         "display_mode", "Display", menu_items=config.DISPLAY_MODES,
-        menu_labels=("Mesh", "Guide", "Hair preview", "Hair full"), default_value=2))
+        menu_labels=("Mesh", "Guides", "Hair preview", "Hair"), default_value=2))
     ptg.append(hou.MenuParmTemplate(
         "play_display", "While playing", menu_items=config.PLAY_DISPLAY,
-        menu_labels=("Same as Display", "Guide", "Hair preview"), default_value=2,
+        menu_labels=("Same as Display", "Guides", "Hair preview"), default_value=2,
         help="Lighter display while the timeline plays with Shot deform on (hair full deforms 4 M points, "
              "~1 s a frame on Helen); back to Display on stop. Never heavier than Display. With Shot deform "
              "off nothing cooks while playing, so the display stays as it is"))
@@ -1298,9 +1298,9 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     playing = hou.ToggleParmTemplate("playing", "Playing", default_value=False)
     playing.hide(True)
     ptg.append(playing)
-    ptg.append(hou.MenuParmTemplate("color_by", "Colour by", menu_items=config.COLOR_BY,
+    ptg.append(hou.MenuParmTemplate("color_by", "Color by", menu_items=config.COLOR_BY,
                                     menu_labels=("Lock", "Group"), default_value=0))
-    detect = hou.ButtonParmTemplate("detect", "Detect", script_callback=cb.format("detect"),
+    detect = hou.ButtonParmTemplate("detect", "Detect locks", script_callback=cb.format("detect"),
                                     script_callback_language=hou.scriptLanguage.Python)
     detect.setJoinWithNext(True)
     ptg.append(detect)

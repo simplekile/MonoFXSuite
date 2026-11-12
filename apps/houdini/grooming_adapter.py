@@ -570,6 +570,33 @@ def detect(node) -> DetectReport:
     return report
 
 
+def frame_locks(node, lock_ids: Sequence[int] | None) -> None:
+    """Frame these locks (their spines, in world space) in the Scene Viewer, None: every lock. No undo."""
+    viewer = _scene_viewer()
+    if viewer is None:
+        return
+    geo = _cooked(node, NODE_SPINES)
+    want = None if lock_ids is None else {int(i) for i in lock_ids}
+    box = None   # an empty hou.BoundingBox() already holds the origin: start from the first lock's
+    lids = geo.primIntAttribValues(config.ATTR_LOCK_ID)
+    for prim, lid in zip(geo.iterPrims(), lids):
+        if want is None or lid in want:
+            if box is None:
+                box = hou.BoundingBox(prim.boundingBox())
+            else:
+                box.enlargeToContain(prim.boundingBox())
+    if box is None:
+        return
+    xf = node.parent().worldTransform() if hasattr(node.parent(), "worldTransform") else None
+    if xf is not None:
+        corners = [hou.Vector3(x, y, z) * xf for x in (box.minvec()[0], box.maxvec()[0])
+                   for y in (box.minvec()[1], box.maxvec()[1]) for z in (box.minvec()[2], box.maxvec()[2])]
+        box = hou.BoundingBox(*corners[0], *corners[0])
+        for c in corners[1:]:
+            box.enlargeToContain(c)
+    viewer.curViewport().frameBoundingBox(box)
+
+
 def preflight(node) -> dict:
     """What can make the groom wrong without an error (review t48 P1-1 / P1-2): mesh pieces Detect has not
     matched to a lock (they grow nothing and are not published), and inputs that break the units: a scalp
@@ -1435,6 +1462,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]

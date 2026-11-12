@@ -67,6 +67,9 @@ COLOR_BY_LABELS: dict[str, str] = {"lock": "Lock", "group": "Group"}
 # Match states as the panel words them ("unsure" is the data's word)
 MATCH_LABELS: dict[str, str] = {"unsure": "check match", "new": "new", "ok": "ok"}
 
+# Every undo step of the tool says whose it is, the same as the HDA's buttons (adapter.UNDO_PREFIX)
+UNDO_PREFIX = f"{config.HDA_LABEL}: "
+
 # The defaults level is the tree's root group: every group sits inside it
 ALL_LOCKS = "All locks"
 SOURCE_NAMES: dict[str, str] = {"defaults": ALL_LOCKS, "builtin": "tool default", "mixed": "mixed"}
@@ -74,9 +77,13 @@ SOURCE_NAMES: dict[str, str] = {"defaults": ALL_LOCKS, "builtin": "tool default"
 # Keys of the panel, listed while nothing is selected
 SHORTCUTS: tuple[tuple[str, str], ...] = (
     ("Click a lock", "Edit it: it shows its real strands, the others x-ray"),
+    ("F", "Frame the locks being edited in the viewport (nothing selected: the whole groom)"),
     ("X", "X-ray off / on: see the selection inside the real groom"),
     ("I", "Isolate the selection (again: show all)"),
     ("Esc", "Leave isolate, else deselect: the whole groom as strands"),
+    ("Alt+click an eye", "Show only that lock or group (again: the eyes as they were)"),
+    ("Right-click a row", "Display, Flip root, Exclude from hair, Confirm match, group color"),
+    ("Drag rows", "Reorder, or move locks into another group"),
     ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
     ("Shift / Ctrl click", "Select several locks"),
 )
@@ -676,7 +683,7 @@ class GroomController:
             holder["name"] = self._selection_name(data)
 
         data_name = self._label_target()
-        ok = self._edit(f"Grooming: {SETTING_LABELS[key]} on {data_name}", change)
+        ok = self._edit(f"{UNDO_PREFIX}{SETTING_LABELS[key]} on {data_name}", change)
         if ok:
             shown = float(value) * SETTING_SCALE.get(key, 1.0)
             degrees = "°" if key == "twist_add" else ""
@@ -696,7 +703,7 @@ class GroomController:
             for lv in hit:
                 del lv[key]
 
-        ok = self._edit(f"Grooming: reset {SETTING_LABELS[key]} on {self._label_target()}", change)
+        ok = self._edit(f"{UNDO_PREFIX}reset {SETTING_LABELS[key]} on {self._label_target()}", change)
         if ok:
             self.view.set_message(f"{SETTING_LABELS[key]} reset on {self._label_target()}")
         return ok
@@ -722,7 +729,7 @@ class GroomController:
                 row.visible = visible
 
         what = "Show" if visible else "Hide"
-        return self._edit(f"Grooming: {what} {self._count(kind, ids)}", change)
+        return self._edit(f"{UNDO_PREFIX}{what} {self._count(kind, ids)}", change)
 
     def solo_visible(self, kind: str, ids) -> bool:
         """Alt+click on an eye: only these locks (or groups) shown, every other one hidden, as plain eye
@@ -770,7 +777,7 @@ class GroomController:
             return None
 
         what = self._count(kind, ids)
-        ok = self._edit(f"Grooming: show only {what}", change)
+        ok = self._edit(f"{UNDO_PREFIX}show only {what}", change)
         if ok:
             self.view.set_message("Eyes back as they were" if holder.get("back") else
                                   "Every lock shown again" if holder.get("all") else
@@ -790,13 +797,13 @@ class GroomController:
                 row.display = mode
 
         label = DISPLAY_LABELS[mode] if mode else "node display"
-        return self._edit(f"Grooming: {self._count(kind, ids)} shows {label}", change)
+        return self._edit(f"{UNDO_PREFIX}{self._count(kind, ids)} shows {label}", change)
 
     def set_group_color(self, gid: str, color: tuple[float, float, float]) -> bool:
         def change(data: model.GroomData):
             self._ensure_group(data, gid).color = tuple(float(c) for c in color)[:3]
 
-        return self._edit(f"Grooming: colour of {gid}", change)
+        return self._edit(f"{UNDO_PREFIX}colour of {gid}", change)
 
     def confirm_matches(self, ids) -> bool:
         """Accept unsure / new re-import matches: the badges go."""
@@ -807,7 +814,7 @@ class GroomController:
             for lk in locks:
                 lk.match = "ok"
 
-        ok = self._edit(f"Grooming: confirm {self._count(SEL_LOCKS, ids)}", change)
+        ok = self._edit(f"{UNDO_PREFIX}confirm {self._count(SEL_LOCKS, ids)}", change)
         if ok:
             self.view.set_message(f"Confirmed {self._count(SEL_LOCKS, ids)}")
         return ok
@@ -838,7 +845,7 @@ class GroomController:
             data.orphans.remove(orphan)
             holder["text"] = f"{orphan.name or orphan.id} reassigned to lock {lk.id}"
 
-        ok = self._edit(f"Grooming: reassign orphan {orphan_id}", change)
+        ok = self._edit(f"{UNDO_PREFIX}reassign orphan {orphan_id}", change)
         if ok:
             self.selection = (SEL_LOCKS, (lock_id,))
             self.refresh()
@@ -852,7 +859,7 @@ class GroomController:
                 return False
             data.orphans.remove(orphan)
 
-        ok = self._edit(f"Grooming: delete orphan {orphan_id}", change)
+        ok = self._edit(f"{UNDO_PREFIX}delete orphan {orphan_id}", change)
         if ok:
             self.view.set_message(f"Missing lock {orphan_id} deleted (Ctrl+Z brings it back)")
         return ok
@@ -884,7 +891,7 @@ class GroomController:
         when the viewport next draws, so the line covers the wait the user feels."""
         busy = getattr(self.view, "set_busy", None)
         if busy is not None:
-            busy(what.removeprefix("Grooming: "))
+            busy(what.removeprefix(UNDO_PREFIX))
         try:
             yield
             cook = getattr(self.adapter, "cook_display", None)
@@ -1141,6 +1148,16 @@ class GroomController:
     # groom; nothing selected shows the whole groom as strands. t41 (GUI Helen): select 0.04-0.08 s,
     # a group of 20 0.16 s, back to the whole groom 0.37 s, an edit 0.50 s (x-ray) / 0.84 s (all strands).
     # ------------------------------------------------------------------
+    def frame(self) -> bool:
+        """F: the viewport frames the locks being edited (drawn ones), else the whole groom. Houdini's own F
+        frames its selection, which focus clears (it painted the lock over), so the panel does it."""
+        call = getattr(self.adapter, "frame_locks", None)
+        if call is None or self.node is None:
+            return False
+        data = self._data or self.data()
+        ids = self._drawn(data, self.lock_ids_of(data, self.selection)) or None
+        return self._run("Frame", lambda: call(self.node, ids) or True) is not None
+
     def toggle_xray(self) -> bool:
         """X / the view bar's X-ray: the others as see-through bands (on) or as real strands (off)."""
         self.xray = not self.xray
@@ -1298,7 +1315,7 @@ class GroomController:
             holder["text"] = text
 
         what = "group" if "group_id" in plan else self._count(SEL_LOCKS, plan["locks"])
-        ok = self._edit(f"Grooming: move {what}", change)
+        ok = self._edit(f"{UNDO_PREFIX}move {what}", change)
         if ok:
             self.view.set_message(holder["text"])
         return ok
@@ -1473,6 +1490,7 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("shown", lambda: controller._sync_viewport() if controller.node is not None else None)
     ui.on("redo", lambda: controller.undo(redo=True))
     ui.on("xray", controller.toggle_xray)
+    ui.on("frame", controller.frame)
     ui.on("confirm_all", controller.confirm_all)
     ui.on("solo_visible", controller.solo_visible)
     ui.on("set_xray", controller.set_xray)
