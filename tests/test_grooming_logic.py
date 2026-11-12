@@ -373,3 +373,51 @@ def test_publish_paths_one_spelling_per_version():
     a, _ = logic.publish_paths("D:/p/char_Helen/04_grooming/houdini/work", "char_Helen", "V7")
     b, _ = logic.publish_paths("D:/p/char_Helen/04_grooming/houdini/work", "char_Helen", "v007")
     assert a == b and "/publish/v007/" in a
+
+
+# ---- region_owners: past the footprints, the lock whose mesh lies over the scalp ----
+# Every lock also gets a point on its own root, so the point tested is the only one in question.
+
+def _with_roots(pt, near, roots):
+    pts = [pt] + [roots[lid] for lid in sorted(roots)]
+    return pts, [near] + [[] for _ in roots]
+
+
+def test_region_owners_scalp_goes_to_the_mesh_lying_over_it_not_the_nearest_root():
+    # Lock 1's root is nearer the point, but lock 2's mesh lies over it (Helen: 0.8 cm fringe locks
+    # owned 8 x 8 cm of scalp by nearest root, while other locks' meshes lay over it).
+    roots = {1: (0.0, 0, 0), 2: (0.2, 0, 0)}
+    pts, near = _with_roots((0.05, 0, 0), [(0.04, 1), (0.002, 2)], roots)
+    owners = logic.region_owners(pts, roots, {1: 0.01, 2: 0.01}, {1: "g", 2: "g"}, ["g"] * 3, near)
+    assert owners[0] == [2]
+
+
+def test_region_owners_footprint_comes_before_the_mesh():
+    # A cap lying over another one's root: the root area stays with the lock rooted there.
+    roots = {1: (0.0, 0, 0), 2: (0.3, 0, 0)}
+    pts, near = _with_roots((0.005, 0, 0), [(0.001, 2), (0.01, 1)], roots)
+    owners = logic.region_owners(pts, roots, {1: 0.02, 2: 0.02}, {1: "g", 2: "g"}, ["g"] * 3, near)
+    assert owners[0] == [1]
+
+
+def test_region_owners_layered_meshes_share_within_mesh_share():
+    roots = {1: (0, 0, 0), 2: (0.3, 0, 0), 3: (0.5, 0, 0)}
+    radii = {1: 0.01, 2: 0.01, 3: 0.01}
+    groups = {1: "g", 2: "g", 3: "g"}
+    pts, near = _with_roots((0.1, 0, 0), [(0.0030, 1), (0.0035, 2), (0.02, 3)], roots)
+    assert logic.region_owners(pts, roots, radii, groups, ["g"] * 4, near, mesh_share=0.001)[0] == [1, 2]
+    assert logic.region_owners(pts, roots, radii, groups, ["g"] * 4, near, mesh_share=0.0)[0] == [1]
+
+
+def test_region_owners_mesh_of_another_group_or_an_excluded_lock_is_ignored():
+    roots = {1: (0, 0, 0), 2: (0.3, 0, 0), 3: (0.6, 0, 0)}
+    pts, near = _with_roots((0.1, 0, 0), [(0.001, 3), (0.002, 9), (0.05, 2)], roots)  # 9: excluded
+    owners = logic.region_owners(pts, roots, {1: 0.01, 2: 0.01, 3: 0.01}, {1: "g", 2: "g", 3: "h"},
+                                 ["g", "g", "g", "h"], near)
+    assert owners[0] == [2]
+
+
+def test_region_owners_needs_one_mesh_list_per_point():
+    import pytest
+    with pytest.raises(ValueError):
+        logic.region_owners([(0, 0, 0), (1, 0, 0)], {1: (0, 0, 0)}, {1: 0.1}, {1: "g"}, ["g", "g"], [[]])

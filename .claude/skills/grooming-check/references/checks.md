@@ -16,8 +16,8 @@ Per strand, over its polyline. `p95` = 95th percentile over strands. Reference =
 | lock_width_ratio_worst | hair's spread / mesh's across the lock (2nd principal axis), at least 0.7 | | low-res lock meshes: ~5 mesh points a cross-section band measured the width wrong and the hair twisted into a narrow ribbon (fixed: bands fitted to `measure_samples` points spread over the faces). Coverage misses it: a thin lock is within 6 mm of a ribbon in its middle. First thought was "caps are wider than long": the numbers said 13.8 cm long, 3.4 cm wide; measure before explaining |
 | lock_dmax / lock_kink worst | the worst lock | | look at its close-up |
 | density_off_worst | a lock's strand count against density x its area (`logic.lock_strands`), \|ratio - 1\| | | Helen 2026-11-12: within 2 % on most locks, 16 % worst |
-| root_clumped | share of roots closer than 0.3x the even spacing 1/sqrt(strands / region area) | | Helen 2026-11-12: 67 %: `root_pull` gathers every root under the mesh piece's root cross-section (hair_base_01: region 6.7 x 7.7 cm, roots in 1.1 x 1.9 cm), so the scalp between lock bases is bare at the root and the base is ~20-30x denser than the setting; small stacked locks get identical roots (hair_bang_15: 141 strands, 57 roots). OPEN: needs the user's call (spread roots on the region and converge into the lock, as XGen clumps do) |
-| root_spacing_low | median nearest-root distance / that even spacing (random ~0.5, even ~0.9-1.1), at least | | 0.14 on Helen, same cause |
+| root_clumped | share of roots closer than 0.3x the even spacing 1/sqrt(strands / region area) | | Helen 2026-11-12: 67 %: `root_pull` gathers every root under the mesh piece's root cross-section (hair_base_01: region 6.7 x 7.7 cm, roots in 1.1 x 1.9 cm), so the scalp between lock bases is bare at the root and the base is ~20-30x denser than the setting; small stacked locks get identical roots (hair_bang_15: 141 strands, 57 roots). Fixed 2026-11-12 (t47): roots stay where hairgen scatters them on regions that follow the meshes (`logic.region_owners`: footprint, else the mesh lying over the scalp), strands join their lock where its mesh is nearest the root and converge over `root_converge` x the offset: 0 bunched |
+| root_spacing_low | median nearest-root distance / that even spacing (random ~0.5, even ~0.9-1.1), at least | | 0.14 on Helen, same cause; 0.97 after the fix (t47) |
 | width_mid_off_worst, tip_width_off_worst | hair width / mesh width across the lock (perpendicular to the spine, sqrt(12 var) of both point clouds, binned by the nearest spine point's curveu), middle tenths and last tenth | | Helen: ~0.77-0.80 along every lock (strands do not reach the mesh's edges), 1.0 at the tip median; worst tips 1.32 (flare) and 0.61 (too tight) |
 | tip_center_off_worst | hair centre off the mesh centre in the last tenth, in mesh widths | | 0.23 worst on Helen |
 | fold_share, lock_fold_worst | strand points whose direction turns over 60 deg from the spine's there (folds, hooks) | | 0.02 % on Helen |
@@ -31,6 +31,12 @@ Diagnose by stage before changing code: measure the same numbers on the HDA's in
 (`object_merge` of `<node>/SPINES`, `/foreach_end`, `/clump`, `/HAIR`) to find which node adds the
 problem; `qc_metrics.measure`, `summary`, `profile` and `coverage` import and take any curves node.
 On a copy, `node.allowEditingOfContents()` lets you try a parm on an inner node without a rebuild.
+
+After root spread (t47), what is left shows in the width checks, not the root ones: a lock whose mesh
+lies far above its scalp patch (Helen's fringe, 1.5-2.4 cm) hangs hair under its arc (width_mid 2x), and
+a cap whose root end lies on another cap has no hair on its first stretch (width ratio 0.43, `None` in
+the first tenths of its profile). Measure root to own mesh vs to any mesh (`t47_root_spread/probe_roots.py`)
+before blaming the fit: 59 % of roots over 1 cm from their own mesh was the region rule, not the fit.
 
 Lessons that cost time:
 - An average or a median over all strands passes a groom where every strand has one bad corner.

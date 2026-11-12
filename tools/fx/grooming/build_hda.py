@@ -26,9 +26,9 @@ angle of the major axis in that frame, unwrapped by pi from band to band. The sp
 to equal steps, which gives `curveu`.
 
 Hair per lock (`fit_to_lock`): hairgen only scatters the roots on the lock's own region at the
-lock's density; every strand is then placed in the lock's measured cross-section, at the spot its
-root has in the region (region principal axes mapped onto the lock's width and thickness axes), and
-blended from its root on the scalp into that shape over the first `root_blend` of its length.
+lock's density, and the roots stay there; each strand joins the lock where its mesh is nearest the root
+(`root_spread`), at the rank of the root's offset across the lock there, and leaves its root over a
+length that grows with that offset (`root_converge`).
 
 Only `hou`; no Houdini GUI needed. Indie licence -> .hdalc.
 """
@@ -490,6 +490,27 @@ int id = prim(1, "lock_id", 0);
 if (find(i[]@lock_owners, id) < 0) removeprim(0, @primnum, 1);
 """
 
+VEX_REGION_MESH = """// per scalp prim of SCALP_FINE: how far each lock's hair mesh (same group) lies from its centroid,
+// for Update regions (logic.region_owners: past the footprints the prim goes to the lock lying over it)
+vector c = 0;
+int pts[] = primpoints(0, @primnum);
+foreach (int p; pts) c += point(0, "P", p);
+c /= max(len(pts), 1);
+string g = haspointattrib(0, "group") ? point(0, "group", pts[0]) : "";
+int ids[]; float ds[];
+for (int sp = 0; sp < nprimitives(2); sp++) {
+    int lid = prim(2, "lock_id", sp);
+    if (lid < 0) continue;
+    string lg = prim(2, "group", sp);
+    if (g != "" && lg != g) continue;
+    int hp; vector uv;
+    float d = xyzdist(1, "@piece=" + itoa(prim(2, "piece", sp)), c, hp, uv);
+    if (hp < 0) continue;
+    append(ids, lid); append(ds, d);
+}
+i[]@mesh_lock = ids; f[]@mesh_dist = ds;
+"""
+
 VEX_REGION_FRAME = """// region frame: centroid, principal axes on the scalp, half extents
 int n = npoints(0);
 if (n == 0) return;
@@ -762,7 +783,13 @@ for (int pr = 0; pr < n; pr++) {
     vector la = primuv(2, "lock_axis", 0, uv), lm = primuv(2, "lock_minor", 0, uv);   // typed: dot() overloads
     x[pr] = dot(d, normalize(la)) / (0.5 * w);
     y[pr] = dot(d, normalize(lm)) / (0.5 * th);
-    setprimattrib(0, "fit_u0", pr, u0);
+}
+// the first stretch of a cap often lifts off the scalp (Helen hair_base_17: no root nearer than u 0.26),
+// which left it with no hair: the joins are stretched so the earliest starts at the lock's root
+float ulo = min(u0s), uhi = max(u0s);
+for (int pr = 0; pr < n; pr++) {
+    u0s[pr] = uhi > ulo + 1e-6 ? fit(u0s[pr], ulo, uhi, 0, uhi) : 0.0;
+    setprimattrib(0, "fit_u0", pr, u0s[pr]);
 }
 float spread = clamp(chf("../cross_spread"), 0, 1);
 int ou[] = argsort(u0s);
@@ -1134,6 +1161,8 @@ def build_network(sub) -> None:
     frozen = _node(sub, "python", "frozen_regions", [scalp_fine])
     frozen.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_frozen_regions(hou.pwd())\n")
+    # read only by Update regions (grooming_adapter.split_regions), never by the display
+    _wrangle(sub, "region_mesh", VEX_REGION_MESH, PRIM, [scalp_fine, mesh_pu, spines_locks])
     rpts = _wrangle(sub, "region_points", VEX_REGION_POINTS, POINT, [scalp_fine, frozen, spines])
     rprims = _wrangle(sub, "region_prims", VEX_REGION_PRIMS, PRIM, [rpts, spines, frozen])
     regions = _node(sub, "null", "SCALP_REGIONS", [rprims])

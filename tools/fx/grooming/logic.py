@@ -251,16 +251,25 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
                   roots: dict[int, tuple[float, float, float]],
                   radii: dict[int, float],
                   groups_of: dict[int, str],
-                  point_groups: Sequence[str]) -> list[list[int]]:
+                  point_groups: Sequence[str],
+                  mesh_near: Sequence[Sequence[tuple[float, int]]] | None = None,
+                  mesh_share: float = 0.0) -> list[list[int]]:
     """Locks growing hair at each scalp point: every lock of the point's group whose footprint covers
-    it (distance to its root <= its radius, about half its root width), else the nearest lock of the
-    group, else none.
+    it (distance to its root <= its radius, about half its root width), else the lock of the group
+    whose MESH lies nearest over it (`mesh_near`: per point, (distance, lock) to each lock's hair mesh;
+    locks within `mesh_share` of the nearest share), else the nearest lock root of the group, else none.
 
     Stacked locks (Helen's fringe layers: roots 1-4 mm apart, under one scalp polygon) share the
     patch they stand on instead of the nearest one taking it all; the HDA divides a shared patch's
-    density between its owners, so the strand count of the scalp does not change. Every lock of a
-    group that has points gets at least its nearest point. Lists are sorted by distance (nearest first).
+    density between its owners, so the strand count of the scalp does not change. The footprint comes
+    first so a cap lying on another one's root keeps its own root area. Past the footprints the scalp
+    goes to the lock lying over it: by nearest root, Helen's 0.8 cm wide fringe locks owned 8 x 8 cm of
+    scalp, and 59 % of roots spread at the set density sat over 1 cm from their own lock's mesh (under a
+    neighbour's). Every lock of a group that has points gets at least its nearest point. Lists are
+    sorted by distance (nearest first).
     """
+    if mesh_near is not None and len(mesh_near) != len(scalp_points):
+        raise ValueError(f"{len(scalp_points)} scalp points but {len(mesh_near)} mesh distance lists")
     if len(scalp_points) != len(point_groups):
         raise ValueError(f"{len(scalp_points)} scalp points but {len(point_groups)} point groups")
     by_group = _locks_by_group(roots, groups_of)
@@ -274,8 +283,12 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
             if lid not in nearest_of or d < nearest_of[lid][0]:
                 nearest_of[lid] = (d, i)
         inside = sorted((d, lid) for d, lid in cands if d <= max(radii.get(lid, 0.0), 0.0))
+        over = sorted((d, lid) for d, lid in (mesh_near[i] if mesh_near is not None else ())
+                      if lid in roots and groups_of.get(lid, "") == g)
         if inside:
             out.append([lid for _, lid in inside])
+        elif over:
+            out.append([lid for d, lid in over if d <= over[0][0] + max(mesh_share, 0.0)])
         elif cands:
             out.append([min(cands)[1]])
         else:

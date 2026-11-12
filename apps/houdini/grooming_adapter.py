@@ -37,6 +37,8 @@ ATTR_LOCK_OWNERS = "lock_owners"     # int array: every lock growing hair on a s
 NODE_HAIR = "HAIR"                   # strands at the current density (preview or full)
 NODE_PUBLISH_USD = "PUBLISH_USD"     # usdexport SOP fed by the full hair
 
+NODE_REGION_MESH = "region_mesh"     # per SCALP_FINE prim: distance to each lock's hair mesh (Update regions)
+ATTR_REGION_RULE = "region_rule"     # detail on the frozen regions: the rule they were split by
 PARM_REGIONS = "regions"             # hidden geometry data parm: the frozen region split
 PARM_DISPLAY = "display_mode"
 PARM_COLOR_BY = "color_by"
@@ -566,7 +568,9 @@ def split_regions(node) -> None:
 
     Per prim of the subdivided scalp (`SCALP_FINE`), at its centroid: the locks whose footprint covers
     it (logic.region_owners: radius = REGION_FOOTPRINT x the lock's measured root width), else the
-    nearest lock; stacked locks share. Frozen as one point per prim with `lock_owners` (int array)."""
+    lock whose hair mesh lies nearest over it (`region_mesh`, layers within REGION_MESH_SHARE_CM
+    share), else the nearest lock; stacked locks share. Frozen as one point per prim with `lock_owners`
+    (int array) and the detail `region_rule` (config.REGION_RULE)."""
     data = read_data(node)
     spines = _cooked(node, NODE_SPINES_LOCKS)
     scalp = _cooked(node, NODE_SCALP_FINE)
@@ -601,8 +605,14 @@ def split_regions(node) -> None:
         groups_of = {lk.id: lk.group for lk in data.locks}
     else:  # scalp without regions: every prim may grow any lock
         groups_of = {lid: "" for lid in roots}
-    owners = logic.region_owners(centroids, roots, radii, groups_of, prim_groups)
+    near = _cooked(node, NODE_REGION_MESH)
+    mesh_near = [list(zip(pr.floatListAttribValue("mesh_dist"), pr.intListAttribValue("mesh_lock")))
+                 for pr in near.iterPrims()]
+    share = config.REGION_MESH_SHARE_CM / max(float(node.evalParm("unit_cm")), 1e-6)
+    owners = logic.region_owners(centroids, roots, radii, groups_of, prim_groups, mesh_near, share)
     frozen = hou.Geometry()
+    frozen.addAttrib(hou.attribType.Global, ATTR_REGION_RULE, 0)
+    frozen.setGlobalAttribValue(ATTR_REGION_RULE, config.REGION_RULE)
     frozen.createPoints(centroids)
     frozen.addArrayAttrib(hou.attribType.Point, ATTR_LOCK_OWNERS, hou.attribData.Int)
     frozen.addAttrib(hou.attribType.Point, config.ATTR_LOCK_OWNER, config.NO_OWNER)
@@ -1036,7 +1046,33 @@ def on_loaded(node) -> None:
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)
+        mark_old_regions(node)
     install_playbar_callback()
+
+
+OLD_REGIONS_WHY = "Regions were split by an older rule: Update regions"
+
+
+def region_rule(frozen) -> int:
+    """The rule a stored split was made with (0: before the rule was recorded)."""
+    if frozen is None or frozen.findGlobalAttrib(ATTR_REGION_RULE) is None:
+        return 0
+    return int(frozen.attribValue(ATTR_REGION_RULE))
+
+
+def mark_old_regions(node) -> bool:
+    """A scene whose regions were split by an older rule (config.REGION_RULE) shows them out of date,
+    with the reason, until Update regions. No undo step (called while loading). True when marked."""
+    frozen = node.parm(PARM_REGIONS).evalAsGeometry() if node.parm(PARM_REGIONS) is not None else None
+    if frozen is None or not frozen.intrinsicValue("pointcount") or region_rule(frozen) >= config.REGION_RULE:
+        return False
+    data = read_data(node)
+    if data.regions_stale and OLD_REGIONS_WHY in data.stale_why:
+        return False
+    data.mark_stale(OLD_REGIONS_WHY)
+    with hou.undos.disabler():
+        node.parm(config.DATA_PARM).set(data.to_json())
+    return True
 
 
 def playing_state(event_name: str) -> bool | None:

@@ -68,6 +68,12 @@ MATCH_UNCHANGED_TOL = 1e-5     # root and length within 1e-5 x length: the mesh 
 
 # Region split (logic.region_owners): a lock's footprint radius = this x its measured root width.
 REGION_FOOTPRINT = 0.5
+# Past the footprints a scalp prim goes to the lock whose hair mesh lies nearest over it; locks whose
+# meshes are within this (cm) of the nearest share it (layers lying on each other)
+REGION_MESH_SHARE_CM = 0.1
+# Rule the stored split was made with (detail `region_rule` on the frozen regions): older splits are
+# marked out of date when the scene loads. 2 = footprint, then the mesh lying over the scalp
+REGION_RULE = 2
 REGION_SUBDIV = 2              # bilinear subdivisions of the scalp before the split (x4 points each)
 SECTION_MIN_THICK_RATIO = 0.3  # cross-section floor of a lock: thickness counted as >= 30 % of its width
 
