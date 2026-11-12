@@ -383,9 +383,8 @@
   groom and the keys. Below `NARROW_PX` (760 x scale) the tree sits above the settings, both bars stack,
   rows go compact and cells two a line; the floating window's minimum is 400 x scale. A width-dependent
   widget wraps itself on resize (`_WrapRow`): building to a measured width failed, the layout had not
-  given the column its new width yet. The packed / strands and eye icons are painted by `_IconDelegate`
-  (`ROLE_ICON`, `ROLE_QUIET`): the default state (packed, shown by its own eye) only on the hovered or a
-  selected row, any other state always. The first Detect marks no lock "new" (every row would say it).
+  given the column its new width yet. The eye is painted by `_IconDelegate` (`ROLE_ICON`) and always shows:
+  drawing it only on hover hid the control used most (the user asked why it vanished). The first Detect marks no lock "new" (every row would say it).
 - Inheritance in the panel: the defaults level is the tree's root group **All locks** (`ALL_LOCKS`), the
   groups sit inside it (the data still keeps `defaults` apart; only the view nests). A setting's source
   column names the level an inherited value comes from: the group by its name, All locks, or "tool
@@ -404,7 +403,9 @@
   isolated); a click always toggles the row's own eye and the tooltip says it. Before, a lock under a
   hidden group showed an open eye and an isolated lock with its eye off a crossed one, while the viewport
   did the opposite. Alt+click on an eye shows only those rows and hides every other lock and group
-  (`controller.solo_visible`, eye states, one undo step); again on the same rows shows everything. The isolate button turns its icon accent when on, not only its background; menu
+  (`controller.solo_visible`, eye states, one undo step); again on the same rows puts every eye back as it
+  was before (`_solo_before`, kept while the eyes are still what the solo set; locks hidden before stay
+  hidden: the user found the first version showing them all). The isolate button turns its icon accent when on, not only its background; menu
   actions never use the check icon (it reads as a ticked option): Confirm match is `badge-check`.
 - A hidden group dims its row and its locks ("hidden by group"; their own eye kept). Isolate (I, Esc) is
   `adapter.set_isolate(node, ids | None)` / `isolate_ids(node)`: a view state, never in `groom_data`.

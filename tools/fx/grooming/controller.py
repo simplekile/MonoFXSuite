@@ -143,6 +143,7 @@ class GroomController:
         self._data: model.GroomData | None = None   # last data shown: drag feedback reads it, never writes
         self.isolated: tuple[int, ...] | None = None  # lock ids shown alone in the viewport; None = all
         self.xray = True        # selected: the others see-through bands (False: every lock as strands)
+        self._solo_before: dict | None = None   # eyes before an Alt+click, put back by the next one
         self._publish_armed: tuple | None = None      # what the publish warning named; a 2nd click goes on
         self.unit_cm = DEFAULT_UNIT_CM
         self._drag_origin: str | None = None   # groom_data before a slider drag (preview_value)
@@ -692,10 +693,12 @@ class GroomController:
         return self._edit(f"Grooming: {what} {self._count(kind, ids)}", change)
 
     def solo_visible(self, kind: str, ids) -> bool:
-        """Alt+click on an eye: only these locks (or groups) shown, every other one hidden, each eye kept as
-        a plain eye state (saved, one undo step). Again on the same rows, when they already are all that is
-        shown: everything shown again."""
+        """Alt+click on an eye: only these locks (or groups) shown, every other one hidden, as plain eye
+        states (saved, one undo step). Again on the same rows while they still are all that is shown: the
+        eyes go back to what they were before the first Alt+click (locks hidden then stay hidden); with no
+        such record (another session, the scene reopened) everything is shown."""
         ids = list(ids)
+        key = (kind, tuple(sorted(ids, key=str)))
         holder: dict = {}
 
         def change(data: model.GroomData):
@@ -707,18 +710,39 @@ class GroomController:
             else:
                 keep_locks = {int(i) for i in ids}
                 keep_groups = {lk.group for lk in data.locks if lk.id in keep_locks}
-            solo = all((lk.visible and data.group(lk.group).visible) == (lk.id in keep_locks) for lk in data.locks)
-            holder["all"] = solo
+            shown = {lk.id for lk in data.locks if lk.visible and data.group(lk.group).visible}
+            eyes = ({g.id: g.visible for g in data.groups}, {lk.id: lk.visible for lk in data.locks})
+            before = self._solo_before
+            if before is not None and before["key"] == key and before["after"] == eyes:
+                for g in data.groups:                  # the second Alt+click: the eyes as they were
+                    g.visible = before["groups"].get(g.id, True)
+                for lk in data.locks:
+                    lk.visible = before["locks"].get(lk.id, True)
+                holder["back"] = True
+                self._solo_before = None
+                return None
+            if shown == keep_locks and before is None:  # only these shown already, no record: show all
+                for g in data.groups:
+                    g.visible = True
+                for lk in data.locks:
+                    lk.visible = True
+                holder["all"] = True
+                return None
             for g in data.groups:
-                g.visible = True if solo else g.id in keep_groups
+                g.visible = g.id in keep_groups
             for lk in data.locks:
-                lk.visible = True if solo else (lk.id in keep_locks or (kind == SEL_GROUP and lk.visible))
+                lk.visible = lk.id in keep_locks if kind == SEL_LOCKS else (lk.group in keep_groups and lk.visible)
+            self._solo_before = {"key": key, "groups": eyes[0], "locks": eyes[1],
+                                 "after": ({g.id: g.visible for g in data.groups},
+                                           {lk.id: lk.visible for lk in data.locks})}
+            return None
 
         what = self._count(kind, ids)
         ok = self._edit(f"Grooming: show only {what}", change)
         if ok:
-            self.view.set_message("Every lock shown again" if holder.get("all") else
-                                  f"Showing only {what} (Alt+click its eye again to show everything)")
+            self.view.set_message("Eyes back as they were" if holder.get("back") else
+                                  "Every lock shown again" if holder.get("all") else
+                                  f"Showing only {what} (Alt+click its eye again to put the others back)")
         return ok
 
     def set_row_display(self, kind: str, ids, mode: str | None) -> bool:

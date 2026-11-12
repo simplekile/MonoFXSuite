@@ -1711,9 +1711,9 @@ class GroomingUI(QWidget):
             else:
                 icon, color = ("eye", TEXT_LABEL) if visible else ("eye-off", TEXT_LABEL)
                 tip = "Shown: click to hide" if visible else "Hidden: click to show"
-            tip += ". Alt+click: show only this (again: show everything)"
+            tip += ". Alt+click: show only this (again: the others back as they were)"
             item.setData(COL_EYE, ROLE_ICON, _fixed_icon(icon, z.px(16), color))
-            item.setData(COL_EYE, ROLE_QUIET, icon == "eye" and color == TEXT_LABEL)   # shown, its own eye
+            item.setData(COL_EYE, ROLE_QUIET, False)   # always drawn: the most used control in the tree
             item.setToolTip(COL_EYE, tip)
             if by_group:
                 item.setToolTip(COL_NAME, "Hidden by its group")

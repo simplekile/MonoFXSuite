@@ -983,6 +983,7 @@ def test_eye_shape_says_drawn_tone_says_why(app, prefs) -> None:
     app.processEvents()
     assert eye(1).startswith("Hidden by its group (its own eye: shown). Click to change its own eye")
     assert "Alt+click: show only this" in eye(1)
+    assert not ui._rows[(ctl.SEL_LOCKS, 4)].data(2, __import__('tools.fx.grooming.ui', fromlist=['ROLE_QUIET']).ROLE_QUIET)   # the eye always shows
     c.set_visible(ctl.SEL_GROUP, ["fringe"], True)
     c.select_locks([3])
     c.toggle_isolate()                     # isolate a lock whose own eye is off: it is drawn
@@ -1140,15 +1141,25 @@ def test_parent_levels_say_whether_the_levels_below_follow(env) -> None:
     assert view.props["settings"][0]["below"] is None                 # nothing below a lock
 
 
-def test_alt_click_on_an_eye_shows_only_that_and_again_everything(env) -> None:
+def test_alt_click_on_an_eye_shows_only_that_and_again_puts_the_eyes_back(env) -> None:
     adapter, view, c = env
+    c.set_visible(ctl.SEL_LOCKS, [2], False)             # hidden before: it stays hidden after
+    writes = len(adapter.writes)
     assert c.solo_visible(ctl.SEL_LOCKS, [3])
     data = c.data()
     assert [lk.id for lk in data.locks if data.shown(lk.id)] == [3]
-    assert len(adapter.writes) == 1 and "Showing only lock 3" in view.messages[-1][0]   # one undo step
-    assert c.solo_visible(ctl.SEL_LOCKS, [3])            # again: everything
+    assert len(adapter.writes) == writes + 1 and "Showing only lock 3" in view.messages[-1][0]   # one step
+    assert c.solo_visible(ctl.SEL_LOCKS, [3])            # again: the eyes as they were
     data = c.data()
-    assert all(data.shown(lk.id) for lk in data.locks) and "shown again" in view.messages[-1][0]
+    assert sorted(lk.id for lk in data.locks if data.shown(lk.id)) == [1, 3, 4]
+    assert "as they were" in view.messages[-1][0]
+    assert c.solo_visible(ctl.SEL_GROUP, ["fringe"])      # a group whose lock 2 has its eye off
+    data = c.data()
+    assert sorted(lk.id for lk in data.locks if data.shown(lk.id)) == [1]
+    assert c.solo_visible(ctl.SEL_GROUP, ["fringe"])
+    data = c.data()
+    assert sorted(lk.id for lk in data.locks if data.shown(lk.id)) == [1, 3, 4]
+    c.set_visible(ctl.SEL_LOCKS, [2], True)
     assert c.solo_visible(ctl.SEL_GROUP, ["fringe"])
     data = c.data()
     assert sorted(lk.id for lk in data.locks if data.shown(lk.id)) == [1, 2]
