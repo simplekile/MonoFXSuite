@@ -29,6 +29,7 @@ class LockInfo:
     twist: float          # total measured twist, radians
     strands: int          # strands generated at full count
     region_area_cm2: float
+    floating_cm2: float = 0.0   # skin under floating mesh, its roots moved to the lock's start (falloff-weighted)
 
 
 @dataclass
@@ -91,6 +92,16 @@ def _dot(a: Sequence[float], b: Sequence[float]) -> float | None:
     if na == 0.0 or nb == 0.0:
         return None
     return sum(x * y for x, y in zip(a, b)) / (na * nb)
+
+
+def falloff(height_cm: float, far_cm: float, soft: float) -> float:
+    """How much of the skin's roots start the lock where its mesh lies `height_cm` over it: smoothstep from
+    far_cm x (1 - soft) to far_cm x (1 + soft), as build_hda region_join (VEX smooth)."""
+    lo, hi = far_cm * (1 - soft), far_cm * (1 + soft)
+    if hi <= lo:
+        return 1.0 if height_cm > far_cm else 0.0
+    t = min(max((height_cm - lo) / (hi - lo), 0.0), 1.0)
+    return t * t * (3 - 2 * t)
 
 
 def floating_text(floating: Sequence[tuple[str, float]], shown: int = 5) -> str:

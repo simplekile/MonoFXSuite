@@ -455,6 +455,7 @@ if (nf > 0) {
     c /= max(len(pp), 1);
     int src = nearpoint(2, c);   // by position, never by prim number: a re-exported scalp may reorder
     own = point(2, "lock_owners", src);
+    if (haspointattrib(2, "owner_dist")) f[]@owner_dist = point(2, "owner_dist", src);
 } else {
     int pts[] = primpoints(0, @primnum);
     int ids[], cnt[];
@@ -649,17 +650,17 @@ i@whorl = wh;
 
 VEX_REGION_JOIN = """// per region prim, in parallel (inside region_frame's single thread these lookups cost 0.3 s on Helen):
 // where along the lock the strands rooted on it join it (as root_place does: the footprint at the spine's
-// nearest point, elsewhere at the pu of the lock's mesh nearest it), and whether the lock lies within reach
-// over it at all (root_far). Skin with no part of a lock rooted on the skin within root_far_cm over it
-// roots its strands round the lock's root instead (root_pick): Helen's fringe arches
-// 1.5-2.5 cm over its skin, and strands rooted there and rising to it stood in a curtain under the arch (a fin
-// 4-5x its thickness, turned 0.5-0.8). That skin is thinner than set: the price of the arch.
+// nearest point, elsewhere at the pu of the lock's mesh nearest it), and `far_w`, how much of it lies under
+// floating mesh. Where the lock's mesh lies over root_far_cm above the skin, its roots start the lock
+// instead (root_pick), as the hand groom v006 does (8 %% of the density under Helen's floating caps, 2 %%
+// under the fringe arches): a strand crossing the 1-2.5 cm gap was the spike / fuzz / standing strands
+// (hair_base_08 / 11 / 17) and the fringe's fin. A soft falloff (ROOT_FAR_SOFT either side), not a hard cut,
+// so a small mesh edit never flips a patch of skin at once. That skin is thin on purpose.
 float u = chf("../unit_cm");
 int fl = prim(1, "root_flip", 0);
 float a = f@area_cm2 / max(i@share, 1);
 vector c = primuv(0, "P", @primnum, {0.5, 0.5, 0});
-float uj = 0;
-int far = 0;
+float uj = 0, fw = 0;
 if (distance(c, detail(0, "fp_c")) <= detail(0, "fp_r")) {
     int sq; vector suv;
     xyzdist(1, c, sq, suv);
@@ -668,15 +669,11 @@ if (distance(c, detail(0, "fp_c")) <= detail(0, "fp_r")) {
     int hp; vector huv;
     float dm = xyzdist(2, "@piece=" + itoa(prim(1, "piece", 0)), c, hp, huv);
     if (hp >= 0) { float pu = primuv(2, "pu", hp, huv); uj = clamp(fl ? 1 - pu : pu, 0, %(umax)s); }
-    float fc = chf("../root_far_cm");
-    // only for a lock whose root edge touches the skin (root_gap under ROOT_GAP_CM, an arch like the fringe):
-    // a lock floating at its root (Helen's caps on caps) is bent down to the skin by Root to skin instead,
-    // and its roots stay where hairgen scattered them
-    far = fc > 0 && hp >= 0 && prim(1, "root_gap", 0) * u <= %(gap)s && dm > fc / u;
-    if (far) uj = 0;
+    float fc = chf("../root_far_cm") / u;
+    if (fc > 0 && hp >= 0) fw = smooth(fc * (1 - %(soft)s), fc * (1 + %(soft)s), dm);
 }
-f@join_u = uj; f@join_a = a; i@root_far = far;
-""" % {"umax": JOIN_MAX_U, "gap": config.ROOT_GAP_CM}
+f@join_u = uj; f@join_a = a; f@far_w = fw;
+""" % {"umax": JOIN_MAX_U, "soft": config.ROOT_FAR_SOFT}
 
 VEX_REGION_START = """// start_x extra strands (start extras), rooted round the lock's root ON TOP of its count, as many as its
 // start needs. The lock's own roots stay where hairgen scattered them, at the set density over the whole
@@ -693,9 +690,10 @@ if (n > 0) {
     float ulo = 1, uhi = 0;
     for (int pr = 0; pr < n; pr++) { float uj = prim(0, "join_u", pr); ulo = min(ulo, uj); uhi = max(uhi, uj); }
     for (int pr = 0; pr < n; pr++) {
-        float uj = prim(0, "join_u", pr), a = prim(0, "join_a", pr);
+        float uj = prim(0, "join_u", pr), a = prim(0, "join_a", pr), fw = prim(0, "far_w", pr);
         float uu = uhi > ulo + 1e-6 ? fit(uj, ulo, uhi, 0, uhi) : 0.0;
-        h3 += a * max(0, 0.3 - uu); ht += a * (1 - uu); tot += a;
+        // the share under floating mesh starts the lock (root_pick): it runs the whole length
+        h3 += a * ((1 - fw) * max(0, 0.3 - uu) + fw * 0.3); ht += a * ((1 - fw) * (1 - uu) + fw); tot += a;
     }
     h3 *= own / max(tot, 1e-9); ht *= own / max(tot, 1e-9);
 }
@@ -935,13 +933,15 @@ if (wn + sn >= n) sn = max(0, n - 1 - wn);
 float rk[]; resize(rk, n);
 for (int pr = 0; pr < n; pr++) rk[pr] = rand(set(pr, 7.31, lid));
 int o[] = argsort(rk);
-// the lock's own roots on far skin (region_frame root_far) start it too, laid out with the extras
+// the lock's own roots under floating mesh (region_join far_w, a share of them where it fades) start it too,
+// laid out with the extras
 int isf[]; resize(isf, n);
 int nf = 0;
 for (int k = wn + sn; k < n; k++) {
     int pt = primpoint(0, o[k], 0);
     int spr = haspointattrib(0, "skinprim") ? point(0, "skinprim", pt) : prim(0, "skinprim", o[k]);
-    int fr = spr >= 0 ? prim(1, "root_far", spr) : 0;
+    float fw = spr >= 0 ? prim(1, "far_w", spr) : 0.0;
+    int fr = rand(set(o[k], 3.7, lid)) < fw;
     if (fr) { isf[k] = 1; nf++; }
 }
 int m = sn + nf;
@@ -1824,12 +1824,12 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                               min=0.0, max=20.0,
                                               help="Roots farther than this from where they join their lock are "
                                                    "brought this close (0: no limit, roots stay where scattered)"))
-    adv.addParmTemplate(hou.FloatParmTemplate("root_far_cm", "Root far from lock (cm)", 1,
+    adv.addParmTemplate(hou.FloatParmTemplate("root_far_cm", "Floating mesh (cm)", 1,
                                               default_value=(config.ROOT_FAR_CM,), min=0.0, max=10.0,
-                                              help="Skin with no part of its lock this close over it (or 3x the lock "
-                                                   "root's height off the skin) roots its strands round the lock's "
-                                                   "root instead: no curtain under a lock arching over its skin, which "
-                                                   "is left thinner (0: never)"))
+                                              help="Skin with its lock's mesh more than this above it (fading over "
+                                                   "50 % either side) roots its strands round the lock's root, as a "
+                                                   "hand groom does: no hair crossing the gap, that skin thin "
+                                                   "(0: never)"))
     adv.addParmTemplate(hou.FloatParmTemplate("start_target", "Start fill", 1,
                                               default_value=(config.START_TARGET,), min=0.0, max=1.5,
                                               help="Extra strands rooted round each lock's root, on top of its count, "

@@ -127,6 +127,14 @@ def _fmt(value: float) -> str:
     return f"{value:.3g}" if abs(value) < 1000 else f"{value:,.0f}"
 
 
+def _floating_row(cm2: float) -> list[tuple[str, str]]:
+    """The skin left thin on purpose under floating mesh: its roots start the lock, as a hand groom's do
+    (no hair crossing the gap). Said in the panel so the artist does not read it as a fault."""
+    if cm2 < 0.05:
+        return []
+    return [("Thin under floating mesh", f"{_fmt(cm2)} cm² (roots start the lock instead)")]
+
+
 def _cm(value: float) -> str:
     """A length in cm: one decimal from 10 cm, two below (a 4 mm fringe lock still reads)."""
     return f"{value:.1f} cm" if abs(value) >= 10 else f"{value:.2f} cm"
@@ -549,14 +557,16 @@ class GroomController:
             i = infos[0]
             return [("Lock width", _cm(i.width * u)), ("Lock thickness", _cm(i.thick * u)),
                     ("Length", _cm(i.length * u)), ("Twist", f"{math.degrees(i.twist):.0f}°"),
-                    ("Strands", f"{i.strands:,}"), ("Skin area", f"{_fmt(i.region_area_cm2)} cm²")]
+                    ("Strands", f"{i.strands:,}"), ("Skin area", f"{_fmt(i.region_area_cm2)} cm²")] + _floating_row(
+                        i.floating_cm2)
         n = len(infos)
         return [("Lock width, mean", _cm(sum(i.width for i in infos) / n * u)),
                 ("Lock thickness, mean", _cm(sum(i.thick for i in infos) / n * u)),
                 ("Length, mean", _cm(sum(i.length for i in infos) / n * u)),
                 ("Locks", f"{n}"),
                 ("Strands", f"{sum(i.strands for i in infos):,}"),
-                ("Skin area", f"{_fmt(sum(i.region_area_cm2 for i in infos))} cm²")]
+                ("Skin area", f"{_fmt(sum(i.region_area_cm2 for i in infos))} cm²")] + _floating_row(
+                    sum(i.floating_cm2 for i in infos))
 
     # ------------------------------------------------------------------
     # Writing: one read, one change, one write (one undo step)

@@ -33,6 +33,7 @@ NODE_SPINES_LOCKS = "SPINES_LOCKS"   # spines with lock_id / name / group and re
 NODE_SPINES = "SPINES"               # spines after settings (width_mult, twist_add ...)
 NODE_SCALP_FINE = "SCALP_FINE"       # scalp after the bilinear subdivision used for regions
 NODE_SCALP_REGIONS = "SCALP_REGIONS" # scalp prims with lock_owners (shared when stacked), share, density, area_cm2
+ATTR_OWNER_DIST = "owner_dist"
 ATTR_LOCK_OWNERS = "lock_owners"     # int array: every lock growing hair on a scalp prim
 NODE_HAIR = "HAIR"                   # strands at the current density (preview or full)
 NODE_PUBLISH_USD = "PUBLISH_USD"     # usdexport SOP fed by the rest groom
@@ -75,7 +76,7 @@ _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 MERGED_LOCK = -1                     # LockCache slot of a whole merge (hair_cache / groom_cache), not a lock
 MERGED_MODE = "merged:"
-CACHE_NET_VERSION = "partial-1-root-spread-5"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "partial-1-root-spread-6"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -517,11 +518,21 @@ def lock_infos(node) -> list[LockInfo]:
     geo = _cooked(node, NODE_SPINES_LOCKS)
     scalp = _cooked(node, NODE_SCALP_REGIONS)
     area: dict[int, float] = {}   # a shared prim counts 1/share for each of its owners
+    floating: dict[int, float] = {}   # skin under floating mesh, weighted by the falloff (region_join far_w)
     if scalp.findPrimAttrib(ATTR_LOCK_OWNERS) and scalp.findPrimAttrib("area_cm2"):
         # bulk reads: one attribValue call per scalp prim (24k on Helen) cost 2 s on every panel refresh
-        for own, a in zip(scalp.primIntListAttribValues(ATTR_LOCK_OWNERS), scalp.primFloatAttribValues("area_cm2")):
-            for lid in own:
+        owners = scalp.primIntListAttribValues(ATTR_LOCK_OWNERS)
+        areas = scalp.primFloatAttribValues("area_cm2")
+        dists = scalp.primFloatListAttribValues(ATTR_OWNER_DIST) if scalp.findPrimAttrib(ATTR_OWNER_DIST) else None
+        unit = float(node.evalParm("unit_cm"))
+        far = float(node.evalParm("root_far_cm")) if node.parm("root_far_cm") is not None else config.ROOT_FAR_CM
+        for k, (own, a) in enumerate(zip(owners, areas)):
+            for j, lid in enumerate(own):
                 area[lid] = area.get(lid, 0.0) + a / len(own)
+                if dists is not None and j < len(dists[k]) and dists[k][j] >= 0 and far > 0:
+                    w = logic.falloff(dists[k][j] * unit, far, config.ROOT_FAR_SOFT)
+                    if w > 0:
+                        floating[lid] = floating.get(lid, 0.0) + w * a / len(own)
     infos = []
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
@@ -539,6 +550,7 @@ def lock_infos(node) -> list[LockInfo]:
             width=sum(widths) / max(len(widths), 1), thick=sum(thicks) / max(len(thicks), 1),
             twist=pts[-1].floatAttribValue(config.ATTR_LOCK_TWIST) if pts else 0.0,
             strands=logic.lock_strands(prim.floatAttribValue("density"), a, section), region_area_cm2=a,
+            floating_cm2=floating.get(lid, 0.0),
         ))
     return sorted(infos, key=lambda i: i.id)
 
@@ -739,9 +751,14 @@ def split_regions(node) -> None:
     frozen.createPoints(centroids)
     frozen.addArrayAttrib(hou.attribType.Point, ATTR_LOCK_OWNERS, hou.attribData.Int)
     frozen.addAttrib(hou.attribType.Point, config.ATTR_LOCK_OWNER, config.NO_OWNER)
-    for pt, own in zip(frozen.points(), owners):
+    # how high each owner's mesh lies over the prim (scene units, -1 unknown): the panel's "thin under
+    # floating mesh" reads it without cooking region_mesh on every edit
+    frozen.addArrayAttrib(hou.attribType.Point, ATTR_OWNER_DIST, hou.attribData.Float)
+    for pt, own, nm in zip(frozen.points(), owners, mesh_near):
         pt.setAttribValue(ATTR_LOCK_OWNERS, own)
         pt.setAttribValue(config.ATTR_LOCK_OWNER, own[0] if own else config.NO_OWNER)
+        dist_of = {lid: d for d, lid in nm}
+        pt.setAttribValue(ATTR_OWNER_DIST, [float(dist_of.get(lid, -1.0)) for lid in own])
     data.clear_stale()
     with hou.undos.group(UNDO_PREFIX + "Update regions"):
         node.parm(PARM_REGIONS).set(frozen)

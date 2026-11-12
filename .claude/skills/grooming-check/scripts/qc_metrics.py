@@ -131,21 +131,25 @@ LIMITS = {
     "lock_uncovered_worst": {"abs": 0.35, "ref_x": None, "why": "the barest lock"},
     "lock_width_ratio_worst": {"abs": None, "min": 0.7, "ref_x": None,
                                "why": "a lock's hair much narrower than its mesh (collapsed, twisted), the hair's own mass"},
-    "lock_start_share_worst": {"abs": None, "min": 0.5, "ref_x": None,
+    "lock_start_share_worst": {"abs": None, "min": 0.47, "ref_x": None, "v006": 0.47,
                                "why": "hair in the first 3/10 of a lock over the mesh's share there: a bare, thin start"},
     "lock_dmax_p95_worst_cm": {"abs": 3.0, "ref_x": None, "why": "the worst lock's far points"},
     "lock_kink_p95_worst_deg": {"abs": 50.0, "ref_x": None, "why": "the worst lock's corners"},
     # roots and density (ours only: the reference has no lock ids)
     "density_off_worst": {"abs": 0.15, "ref_x": None,
                           "why": "a lock's strand count off what density x its area asks (|actual/expected - 1|)"},
-    "root_clumped": {"abs": 0.05, "ref_x": None,
+    "root_clumped": {"abs": 0.05, "ref_x": None, "v006": 0.32,
+                     "stricter": "the user chose roots at the set density (2026-11-12): v006's hand-placed guides bunch "
+                                 "its roots; v0.1's gathered roots (0.75) were the bald scalp between locks",
                      "why": "roots closer than 0.3x the even spacing 1/sqrt(density): brush-like root bunches"},
-    "root_spacing_low": {"abs": None, "min": 0.45, "ref_x": None,
+    "root_spacing_low": {"abs": None, "min": 0.45, "ref_x": None, "v006": 0.51,
                          "why": "median nearest-root distance over the even spacing (random ~0.5, even ~0.9-1.1)"},
     # the lock's shape against its mesh, along its length
     "width_start_off_worst": {"abs": 0.5, "ref_x": None,
                               "why": "hair width over mesh width in tenths 2-3 of the lock, worst (|ratio - 1|): a fan at the start"},
-    "width_bulge_worst": {"abs": None, "max": 1.4, "ref_x": None,
+    "width_bulge_worst": {"abs": None, "max": 1.4, "ref_x": None, "v006": None,
+                          "stricter": "v006 cannot be measured per lock: a guide groom, its strands do not follow the "
+                                      "cards (11.7 when assigned to the nearest piece); 1.4 keeps the fringe fin out (2.0)",
                           "why": "widest tenth 2-9 of a lock over its mesh: a fin or fan along the lock"},
     "width_mid_off_worst": {"abs": 0.45, "ref_x": None,
                             "why": "hair width over mesh width, middle of the lock, worst lock (|ratio - 1|)"},
@@ -156,17 +160,25 @@ LIMITS = {
     "fold_share": {"abs": 0.01, "ref_x": None,
                    "why": "strand points turned over 60 deg from the mesh's direction there (folds, hooks)"},
     "lock_fold_worst": {"abs": 0.05, "ref_x": None, "why": "the worst lock's folded share"},
-    "lock_turned_worst": {"abs": 0.10, "ref_x": None,
+    "lock_turned_worst": {"abs": 0.10, "ref_x": None, "v006": None,
+                          "stricter": "v006 cannot be measured per lock (guide groom, 0.78 by nearest piece); v0.1 0.05",
                           "why": "hair turned over 30 deg from its lock in one tenth (3-9) of it: strands crossing the lock "
                                  "to join it (a spike, a fuzzy patch, strands standing up from the skin, fuzz at a start)"},
-    "lock_outside_worst": {"abs": 0.10, "ref_x": None,
+    "lock_outside_worst": {"abs": 0.30, "ref_x": None, "v006": None,
+                           "stricter": "v006 cannot be measured per lock (guide groom: its tips run past the cards, 0.97 by "
+                                       "nearest piece; its shots show no hair crossing a gap). 0.30 sits under the spike / "
+                                       "fuzz caps of 7e33860-9593a15 (0.32-0.53) and over v0.1's back locks (0.25), whose "
+                                       "shots show no crossing hair",
                            "why": "hair beyond its lock's cross-section by 2 mm in one tenth (3-9): strands crossing the gap "
                                   "between the skin and a lock floating over it, in bundles (spike, fuzzy patch, standing strands)"},
     # the skin between locks (whorl roots and start extras, packed on purpose, left out)
-    "skin_thin_share": {"abs": 0.05, "ref_x": None,
+    "skin_thin_share": {"abs": 0.05, "ref_x": None, "v006": 0.75,
+                        "stricter": "the user: keep the skin at the set density where a lock lies within reach "
+                                    "(2026-11-13); v006's roots bunch (spacing 0.51), so its skin reads thin between them",
                         "why": "scalp with under half the roots its regions ask for within 5 mm (skin left thin); skin "
-                               "under an arch (a lock rooted on the skin, its mesh over 1 cm above) left out"},
-    "lock_skin_thin_worst": {"abs": 0.20, "ref_x": None, "why": "the thinnest lock region's thin share"},
+                               "under floating mesh (its lock's mesh higher than the node's root_far_cm) left out"},
+    "lock_skin_thin_worst": {"abs": 0.20, "ref_x": None, "stricter": "as skin_thin_share",
+                             "why": "the thinnest lock region's thin share"},
 }
 
 
@@ -402,8 +414,10 @@ def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm, whorl
 
 
 ROOT_GAP_CM = 0.3   # config.ROOT_GAP_CM: a root edge this far off the skin floats
-ROOT_FAR_CM = 1.0   # config.ROOT_FAR_CM
+ROOT_FAR_CM = 0.5   # config.ROOT_FAR_CM; the node's root_far_cm wins: the skin it thins on purpose
 VEX_ARCH = r"""
+// skin under floating mesh: every owner's mesh lies over ROOT_FAR_CM above it (the tool moves those roots to
+// the lock's start on purpose, as the hand groom does)
 int own[] = i[]@lock_owners;
 i@qc_arch = len(own) > 0;
 float uc = %(unit)s;
@@ -411,12 +425,12 @@ vector c = primuv(0, "P", @primnum, {0.5, 0.5, 0});
 foreach (int o; own) {
     int sp = findattribval(2, "prim", "lock_id", o);
     if (sp < 0) { i@qc_arch = 0; break; }
-    float gap = prim(2, "root_gap", sp) * uc;
     int hp; vector uv;
     float d = xyzdist(1, "@piece=" + itoa(prim(2, "piece", sp)), c, hp, uv) * uc;
-    if (gap > %(gap)s || d <= %(far)s) { i@qc_arch = 0; break; }
+    if (d <= %(far)s) { i@qc_arch = 0; break; }
 }
 """
+
 
 VEX_ROOT_PRIM = r"""
 int rp; vector ruv;
@@ -427,7 +441,7 @@ i@qc_extra = w || e;
 """
 
 
-def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5):
+def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5, far_cm=ROOT_FAR_CM):
     """The skin between locks: per scalp prim of the frozen split (SCALP_REGIONS), the roots within
     `radius_cm` of it against what its regions ask for there (each owner's strands / its region area; a
     shared prim the mean of its owners'), both summed over the prims in that disc, so prim size and region
@@ -445,15 +459,14 @@ def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5):
     rprim = np.array(g.primIntAttribValues("qc_rprim"))
     extra = np.array(g.primIntAttribValues("qc_extra")) > 0
     w.destroy()
-    # skin under an arch: every owner's root edge touches the skin (root_gap) and its mesh lies over
-    # ROOT_FAR_CM away: the tool moves those roots to the lock's start on purpose (the fringe), so that skin
-    # is left out of the check and reported apart
+    # skin under floating mesh (every owner's mesh over ROOT_FAR_CM above it): the tool moves those roots to
+    # the lock's start on purpose, as the hand groom does, so that skin is left out and reported apart
     wa = regions.parent().createNode("attribwrangle", "qc_arch")
     wa.setInput(0, regions)
     wa.setInput(1, mesh)
     wa.setInput(2, spines)
     wa.parm("class").set(1)
-    wa.parm("snippet").set(VEX_ARCH % {"gap": ROOT_GAP_CM, "far": ROOT_FAR_CM, "unit": unit_cm})
+    wa.parm("snippet").set(VEX_ARCH % {"far": far_cm, "unit": unit_cm})
     rg = wa.geometry()
     if rg is None:
         raise RuntimeError(f"qc_arch: {wa.errors()}")
@@ -607,7 +620,9 @@ def main():
     node = ga.find_nodes()[0]
     # the groom itself: output 1 "Groom" (GROOM_REST, every lock, full, rest pose, whatever the view); a
     # node built before it has only HAIR, which needs cook_all for hidden and isolated-out locks
-    groom_path = node.path() + "/GROOM_REST"
+    # read before its contract strip (groom_cache): the same strands, with the tool's own flags (whorl_root,
+    # start_extra) that the root and skin checks leave out
+    groom_path = node.path() + ("/groom_cache" if node.node("groom_cache") is not None else "/GROOM_REST")
     if node.node("GROOM_REST") is None:
         groom_path = node.path() + "/HAIR"
         if node.parm("cook_all") is not None:
@@ -748,7 +763,8 @@ def main():
                               sorted(locks, key=lambda r: -r.get("turned_worst", 0.0))[:8] if "turned_profile" in r]
     t = time.time()
     owners, area, ratio, arch = skin_density(hair, merge(node.path() + "/SCALP_REGIONS", "qc_regions"), mesh, spines,
-                                             ga.lock_infos(node), unit_cm)
+                                             ga.lock_infos(node), unit_cm,
+                                             far_cm=float(node.evalParm("root_far_cm")) if node.parm("root_far_cm") else ROOT_FAR_CM)
     report["skin_arch_cm2"] = float(area[arch].sum())
     report["skin_arch_thin_cm2"] = float(area[arch & (ratio < 0.5)].sum())
     has = np.array([len(o) > 0 for o in owners]) & ~arch
@@ -774,15 +790,17 @@ def main():
 
     checks = []
     for key, lim in LIMITS.items():
+        why = lim["why"] + (f". Stricter than v006: {lim['stricter']}" if lim.get("stricter") else "")
+        v006 = lim.get("v006")                   # the approved groom, measured on Helen (t52) where it can be
         if lim.get("max") is not None:           # a plain ceiling with no reference
             val = s.get(key, 0.0)
-            checks.append({"check": key, "value": round(val, 4), "limit": lim["max"], "ref": None,
-                           "pass": bool(val <= lim["max"]), "why": lim["why"]})
+            checks.append({"check": key, "value": round(val, 4), "limit": lim["max"], "ref": v006,
+                           "pass": bool(val <= lim["max"]), "why": why})
             continue
         if lim.get("min") is not None:           # a floor, not a ceiling
             val = s.get(key, 1.0)
-            checks.append({"check": key, "value": round(val, 4), "limit": lim["min"], "ref": None,
-                           "pass": bool(val >= lim["min"]), "why": lim["why"] + " (at least)"})
+            checks.append({"check": key, "value": round(val, 4), "limit": lim["min"], "ref": v006,
+                           "pass": bool(val >= lim["min"]), "why": why + " (at least)"})
             continue
         limit = lim["abs"]
         if ref is not None and lim["ref_x"] and key in report["ref"]:
@@ -790,8 +808,8 @@ def main():
             limit = min(limit, max(report["ref"][key] * lim["ref_x"], lim["abs"]))
         val = s.get(key, 0.0)
         checks.append({"check": key, "value": round(val, 4), "limit": round(limit, 4),
-                       "ref": round(report["ref"][key], 4) if ref is not None and key in report["ref"] else None,
-                       "pass": bool(val <= limit), "why": lim["why"]})
+                       "ref": round(report["ref"][key], 4) if ref is not None and key in report["ref"] else v006,
+                       "pass": bool(val <= limit), "why": why})
     report["checks"] = checks
     report["passed"] = all(c["pass"] for c in checks)
     report["worst_locks"] = locks[:8]
@@ -825,7 +843,7 @@ def main():
     if report.get("skin_ratio_p"):
         lines += ["", "Skin: roots within 5 mm over what the regions ask (p5 p25 p50 p75 p95): "
                   + " ".join(f"{v:.2f}" for v in report["skin_ratio_p"])
-                  + f"; under arches (left out, roots moved to the lock start on purpose): {report['skin_arch_cm2']:.0f} cm2, "
+                  + f"; thin under floating mesh (left out, roots moved to the lock start on purpose): {report['skin_arch_cm2']:.0f} cm2, "
                   + f"{report['skin_arch_thin_cm2']:.0f} cm2 of it thin; thinnest regions: " + ", ".join(f"{r['name']} {r['skin_thin']:.0%}" for r in
                                                        sorted(locks, key=lambda r: -r.get("skin_thin", 0))[:6] if "skin_thin" in r)]
     lines += ["", "## Worst locks", "", "| lock | strands | kink p95 | zigzag p95 | seg p95 cm | far p95 cm "

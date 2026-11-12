@@ -445,3 +445,10 @@ def test_floating_text_lists_the_worst_roots_first() -> None:
     assert one.startswith("1 lock root off the skin (hair_base_17 0.6 cm)")
     many = logic.floating_text([(f"l{i}", 0.3 + i / 10) for i in range(8)], shown=3)
     assert "(l7 1.0 cm, l6 0.9 cm, l5 0.8 cm and 5 more)" in many
+
+
+def test_falloff_fades_between_the_two_heights() -> None:
+    assert logic.falloff(0.2, 0.5, 0.5) == 0.0
+    assert logic.falloff(0.5, 0.5, 0.5) == 0.5
+    assert logic.falloff(0.8, 0.5, 0.5) == 1.0
+    assert 0.0 < logic.falloff(0.4, 0.5, 0.5) < 0.5 < logic.falloff(0.6, 0.5, 0.5) < 1.0
