@@ -309,6 +309,13 @@
   frames ~1.5 s (first 4.4 s), publish 0.7 s with 118,380 strands and only contract primvars. Playback
   with Deform off ~3.3 fps: open. GUI tests cannot play the timeline inside one step (Houdini's playback
   runs in its own loop): start it in one step, read it in the next.
+- The first drag tick's 2.5 s did not come back (t47, same scene, lock hair_back_04, same commit; 5 GUI
+  runs: t46's order with the hip saved first, a freshly built HDA, two drags a run): first tick 0.32-0.38 s
+  (cook 0.19-0.24 s, the same as later ticks; hython 0.25 vs 0.21 s), later ticks 0.17-0.28 s, release
+  0.5-0.6 s. What the first tick does add, every drag, is ~0.13 s of viewport draw (strands going from 46 to
+  13 points). The 2.5 s was most likely the machine (t46's later ticks were 1.8x slower too): measure a tick
+  against select before calling it a regression. A real mouse drag in a GUI test does not cook: the viewport
+  cooks on Houdini's own idle loop, which a test's `processEvents` pump never reaches.
 - Hair quality is judged by the skill `.claude/skills/grooming-check` (numbers per strand and per lock
   against the approved groom, plus XGen-style shaded viewport shots); run it after any change to the
   network. Medians and averages passed a groom whose every strand had a 150 deg corner and half of
