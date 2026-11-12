@@ -437,3 +437,11 @@ def test_whorls_needs_min_locks_and_none_alone():
     roots = {1: (0.0, 0, 0), 2: (0.01, 0, 0), 3: (0.3, 0, 0)}
     assert logic.whorls(roots, radius=0.015, min_locks=3) == {}
     assert set(logic.whorls(roots, radius=0.015, min_locks=2)) == {1, 2}
+
+
+def test_floating_text_lists_the_worst_roots_first() -> None:
+    assert logic.floating_text([]) == ""
+    one = logic.floating_text([("hair_base_17", 0.58)])
+    assert one.startswith("1 lock root off the skin (hair_base_17 0.6 cm)")
+    many = logic.floating_text([(f"l{i}", 0.3 + i / 10) for i in range(8)], shown=3)
+    assert "(l7 1.0 cm, l6 0.9 cm, l5 0.8 cm and 5 more)" in many

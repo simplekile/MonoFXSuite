@@ -315,11 +315,60 @@ v@lock_axis = qrotate(q, a);
 v@lock_minor = cross(t, v@lock_axis);
 """
 
+VEX_ROOT_GAP = """// how far each lock's mesh root edge lies off the skin (root_gap0, scene units) and the move that puts
+// it on the skin (root_gap_v0): its points in the first 3 % of the way from the root band (`dist`, what the
+// spine's bands are measured by), the one nearest the skin; the same for the other end (root_gap1 / _v1, for root_flip). Helen's caps lying on other caps
+// (hair_base_06-18) start 0.6-1.4 cm off the skin, and the strands rooted under them crossed the gap.
+int pts[] = expandpointgroup(1, "@piece=" + itoa(i@piece));
+float mx = 0;
+foreach (int p; pts) mx = max(mx, point(1, "dist", p));
+float g0 = 1e9, g1 = 1e9;
+vector q0 = 0, q1 = 0;
+foreach (int p; pts) {
+    float r = point(1, "dist", p), d = point(1, "scalpdist", p);
+    if (r <= 0.03 * mx && d < g0) { g0 = d; q0 = point(1, "P", p); }
+    if (r >= 0.97 * mx && d < g1) { g1 = d; q1 = point(1, "P", p); }
+}
+f@root_gap0 = g0 < 1e8 ? g0 : 0; f@root_gap1 = g1 < 1e8 ? g1 : 0;
+v@root_gap_v0 = 0; v@root_gap_v1 = 0;
+int hp; vector uv;
+if (g0 < 1e8 && nprimitives(2) > 0) { xyzdist(2, q0, hp, uv); v@root_gap_v0 = primuv(2, "P", hp, uv) - q0; }
+if (g1 < 1e8 && nprimitives(2) > 0) { xyzdist(2, q1, hp, uv); v@root_gap_v1 = primuv(2, "P", hp, uv) - q1; }
+"""
+
+VEX_ROOT_SKIN = """// Root to skin (per-lock setting root_skin, cm): a lock whose root edge lies over ROOT_GAP_CM off the skin
+// has the first root_skin of its spine bent down by the move that puts its root edge on the skin, fading
+// along it, so its strands grow from the skin and blend into the mesh, as Hair Generate's guides do.
+// A lock whose root already touches the skin is never changed (root_gap under the threshold).
+f@root_bent = 0;
+float uc = max(chf("../unit_cm"), 1e-6);
+float L = f@root_skin / uc;
+if (L <= 0 || f@root_gap * uc <= %(gap)s) return;
+int pts[] = primpoints(0, @primnum);
+int n = len(pts);
+if (n < 2) return;
+vector P[]; foreach (int p; pts) { vector q = point(0, "P", p); append(P, q); }
+vector v = v@root_gap_v;
+vector B[] = P;
+float s = 0;
+for (int i = 0; i < n; i++) {
+    if (i > 0) s += distance(P[i], P[i - 1]);
+    B[i] = P[i] + v * (1 - smooth(0, L, s));
+}
+for (int i = 0; i < n; i++) {        // the bent start's tangent too (later nodes project on it)
+    setpointattrib(0, "P", pts[i], B[i]);
+    setpointattrib(0, "tangentu", pts[i], normalize(B[min(i + 1, n - 1)] - B[max(i - 1, 0)]));
+}
+f@root_bent = 1;
+""" % {"gap": config.ROOT_GAP_CM}
+
 VEX_SPINE_FLIP = """// root_flip (the user's per-lock "root end"): the root is the piece's other end. The spine is
 // reversed in place: the bands were measured from the end Detect took, and seen from the other end they
 // are the same cross-sections in reverse order. Measured from the new root: curveu, twist; the tangent
 // turns round, so the minor axis (tangent x axis) does too. Detect still matches on the measured root
 // (SPINES_RAW), so a flipped lock keeps its id and its flip through re-Detect.
+f@root_gap = i@root_flip ? f@root_gap1 : f@root_gap0;     // the root end's gap off the skin (root_gap)
+v@root_gap_v = i@root_flip ? v@root_gap_v1 : v@root_gap_v0;
 if (i@root_flip == 0) return;
 int pts[] = primpoints(0, @primnum);
 int n = len(pts);
@@ -616,13 +665,14 @@ if (distance(c, detail(0, "fp_c")) <= detail(0, "fp_r")) {
     float dm = xyzdist(2, "@piece=" + itoa(prim(1, "piece", 0)), c, hp, huv);
     if (hp >= 0) { float pu = primuv(2, "pu", hp, huv); uj = clamp(fl ? 1 - pu : pu, 0, %(umax)s); }
     float fc = chf("../root_far_cm");
-    // only for a lock rooted on the skin (lifted under half root_far_cm): a cap lying on other caps (Helen
-    // hair_base_12 / 14, ~1 cm up) has its skin under them, and its hair joins it from there cleanly
-    far = fc > 0 && hp >= 0 && detail(0, "root_lift") < 0.5 * fc / u && dm > fc / u;
+    // only for a lock whose root edge touches the skin (root_gap under ROOT_GAP_CM, an arch like the fringe):
+    // a lock floating at its root (Helen's caps on caps) is bent down to the skin by Root to skin instead,
+    // and its roots stay where hairgen scattered them
+    far = fc > 0 && hp >= 0 && prim(1, "root_gap", 0) * u <= %(gap)s && dm > fc / u;
     if (far) uj = 0;
 }
 f@join_u = uj; f@join_a = a; i@root_far = far;
-""" % {"umax": JOIN_MAX_U}
+""" % {"umax": JOIN_MAX_U, "gap": config.ROOT_GAP_CM}
 
 VEX_REGION_START = """// start_x extra strands (start extras), rooted round the lock's root ON TOP of its count, as many as its
 // start needs. The lock's own roots stay where hairgen scattered them, at the set density over the whole
@@ -1372,7 +1422,8 @@ def build_network(sub) -> None:
     # band centroids and frames jump from band to band (Helen: median corner 34 deg every 2.8 cm), and
     # every strand inherits them as zigzags: blurred along the spine, root and tip held
     smooth = _wrangle(sub, "spine_smooth", VEX_SPINE_SMOOTH, PRIM, [resample])
-    raw = _node(sub, "null", "SPINES_RAW", [smooth])
+    gap = _wrangle(sub, "root_gap", VEX_ROOT_GAP, PRIM, [smooth, dist, in_scalp])
+    raw = _node(sub, "null", "SPINES_RAW", [gap])
     # the hair mesh as a lookup cloud: strands follow its real surface, curved caps included
     sparams = _wrangle(sub, "surface_params", VEX_SURFACE_PARAMS, POINT, [pieces, raw])
     sextent = _wrangle(sub, "surface_extent", VEX_SURFACE_EXTENT, DETAIL, [sparams])
@@ -1391,7 +1442,8 @@ def build_network(sub) -> None:
     flip = _wrangle(sub, "spine_flip", VEX_SPINE_FLIP, PRIM, [assign])
     spines_locks = _node(sub, "null", "SPINES_LOCKS", [flip])
     settings = _wrangle(sub, "apply_settings", VEX_APPLY_SETTINGS, POINT, [spines_locks])
-    spines = _node(sub, "null", "SPINES", [settings])
+    to_skin = _wrangle(sub, "root_skin", VEX_ROOT_SKIN, PRIM, [settings])
+    spines = _node(sub, "null", "SPINES", [to_skin])
     # hidden locks (the panel's eye) are not cooked for display; publish (cook_all) cooks every lock
     guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0", grouptype=4)
     shown = _wrangle(sub, "lock_shown", VEX_LOCK_SHOWN, PRIM, [guides_cut])

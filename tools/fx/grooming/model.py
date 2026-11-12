@@ -22,6 +22,7 @@ BUILTIN_DEFAULTS: dict[str, float] = {
     "clump": 0.2,         # 0..1
     "length_mult": 1.0,   # x measured length
     "frizz": 0.0,         # 0..1
+    "root_skin": 3.0,     # cm of the spine bent down to the skin, only where the root floats (ROOT_GAP_CM)
 }
 SETTING_KEYS: tuple[str, ...] = tuple(BUILTIN_DEFAULTS)
 

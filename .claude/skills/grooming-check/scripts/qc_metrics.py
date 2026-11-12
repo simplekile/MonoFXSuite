@@ -164,7 +164,8 @@ LIMITS = {
                                   "between the skin and a lock floating over it, in bundles (spike, fuzzy patch, standing strands)"},
     # the skin between locks (whorl roots and start extras, packed on purpose, left out)
     "skin_thin_share": {"abs": 0.05, "ref_x": None,
-                        "why": "scalp with under half the roots its regions ask for within 5 mm (skin left thin)"},
+                        "why": "scalp with under half the roots its regions ask for within 5 mm (skin left thin); skin "
+                               "under an arch (a lock rooted on the skin, its mesh over 1 cm above) left out"},
     "lock_skin_thin_worst": {"abs": 0.20, "ref_x": None, "why": "the thinnest lock region's thin share"},
 }
 
@@ -400,6 +401,23 @@ def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm, whorl
     return out
 
 
+ROOT_GAP_CM = 0.3   # config.ROOT_GAP_CM: a root edge this far off the skin floats
+ROOT_FAR_CM = 1.0   # config.ROOT_FAR_CM
+VEX_ARCH = r"""
+int own[] = i[]@lock_owners;
+i@qc_arch = len(own) > 0;
+float uc = %(unit)s;
+vector c = primuv(0, "P", @primnum, {0.5, 0.5, 0});
+foreach (int o; own) {
+    int sp = findattribval(2, "prim", "lock_id", o);
+    if (sp < 0) { i@qc_arch = 0; break; }
+    float gap = prim(2, "root_gap", sp) * uc;
+    int hp; vector uv;
+    float d = xyzdist(1, "@piece=" + itoa(prim(2, "piece", sp)), c, hp, uv) * uc;
+    if (gap > %(gap)s || d <= %(far)s) { i@qc_arch = 0; break; }
+}
+"""
+
 VEX_ROOT_PRIM = r"""
 int rp; vector ruv;
 xyzdist(1, point(0, "P", primpoint(0, @primnum, 0)), rp, ruv);
@@ -409,7 +427,7 @@ i@qc_extra = w || e;
 """
 
 
-def skin_density(hair, regions, infos, unit_cm, radius_cm=0.5):
+def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5):
     """The skin between locks: per scalp prim of the frozen split (SCALP_REGIONS), the roots within
     `radius_cm` of it against what its regions ask for there (each owner's strands / its region area; a
     shared prim the mean of its owners'), both summed over the prims in that disc, so prim size and region
@@ -427,7 +445,19 @@ def skin_density(hair, regions, infos, unit_cm, radius_cm=0.5):
     rprim = np.array(g.primIntAttribValues("qc_rprim"))
     extra = np.array(g.primIntAttribValues("qc_extra")) > 0
     w.destroy()
-    rg = regions.geometry()
+    # skin under an arch: every owner's root edge touches the skin (root_gap) and its mesh lies over
+    # ROOT_FAR_CM away: the tool moves those roots to the lock's start on purpose (the fringe), so that skin
+    # is left out of the check and reported apart
+    wa = regions.parent().createNode("attribwrangle", "qc_arch")
+    wa.setInput(0, regions)
+    wa.setInput(1, mesh)
+    wa.setInput(2, spines)
+    wa.parm("class").set(1)
+    wa.parm("snippet").set(VEX_ARCH % {"gap": ROOT_GAP_CM, "far": ROOT_FAR_CM, "unit": unit_cm})
+    rg = wa.geometry()
+    if rg is None:
+        raise RuntimeError(f"qc_arch: {wa.errors()}")
+    arch = np.array(rg.primIntAttribValues("qc_arch")) > 0
     owners = rg.primIntListAttribValues("lock_owners")
     area = np.array(rg.primFloatAttribValues("area_cm2"))
     P = np.array(rg.pointFloatAttribValues("P")).reshape(-1, 3)
@@ -440,7 +470,7 @@ def skin_density(hair, regions, infos, unit_cm, radius_cm=0.5):
     for i in range(0, len(cen), 1000):
         near = ((cen[i:i + 1000, None, :] - cen[None, :, :]) ** 2).sum(-1) <= r2
         ratio[i:i + 1000] = (near @ have) / np.maximum(near @ want, 1e-9)
-    return owners, area, ratio
+    return owners, area, ratio, arch
 
 
 def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10, unit_cm=100.0):
@@ -712,8 +742,11 @@ def main():
     report["turned_locks"] = [{"name": r["name"], "turned": r["turned_profile"]} for r in
                               sorted(locks, key=lambda r: -r.get("turned_worst", 0.0))[:8] if "turned_profile" in r]
     t = time.time()
-    owners, area, ratio = skin_density(hair, merge(node.path() + "/SCALP_REGIONS", "qc_regions"), ga.lock_infos(node), unit_cm)
-    has = np.array([len(o) > 0 for o in owners])
+    owners, area, ratio, arch = skin_density(hair, merge(node.path() + "/SCALP_REGIONS", "qc_regions"), mesh, spines,
+                                             ga.lock_infos(node), unit_cm)
+    report["skin_arch_cm2"] = float(area[arch].sum())
+    report["skin_arch_thin_cm2"] = float(area[arch & (ratio < 0.5)].sum())
+    has = np.array([len(o) > 0 for o in owners]) & ~arch
     thin = has & (ratio < 0.5)
     s["skin_thin_share"] = float(area[thin].sum() / max(area[has].sum(), 1e-9))
     per = {}
@@ -787,7 +820,8 @@ def main():
     if report.get("skin_ratio_p"):
         lines += ["", "Skin: roots within 5 mm over what the regions ask (p5 p25 p50 p75 p95): "
                   + " ".join(f"{v:.2f}" for v in report["skin_ratio_p"])
-                  + "; thinnest regions: " + ", ".join(f"{r['name']} {r['skin_thin']:.0%}" for r in
+                  + f"; under arches (left out, roots moved to the lock start on purpose): {report['skin_arch_cm2']:.0f} cm2, "
+                  + f"{report['skin_arch_thin_cm2']:.0f} cm2 of it thin; thinnest regions: " + ", ".join(f"{r['name']} {r['skin_thin']:.0%}" for r in
                                                        sorted(locks, key=lambda r: -r.get("skin_thin", 0))[:6] if "skin_thin" in r)]
     lines += ["", "## Worst locks", "", "| lock | strands | kink p95 | zigzag p95 | seg p95 cm | far p95 cm "
               "| tip p95 cm | on other lock | covered | width / mesh |", "|---|---|---|---|---|---|---|---|---|---|"]

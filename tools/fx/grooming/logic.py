@@ -52,6 +52,8 @@ class Match:
 class DetectReport:
     matches: list[Match] = field(default_factory=list)
     orphaned: list[int] = field(default_factory=list)   # lock ids with no piece any more
+    # (lock name, cm) of the locks whose mesh root edge floats over config.ROOT_GAP_CM off the skin
+    floating: list[tuple[str, float]] = field(default_factory=list)
 
     @property
     def counts(self) -> dict[str, int]:
@@ -89,6 +91,17 @@ def _dot(a: Sequence[float], b: Sequence[float]) -> float | None:
     if na == 0.0 or nb == 0.0:
         return None
     return sum(x * y for x, y in zip(a, b)) / (na * nb)
+
+
+def floating_text(floating: Sequence[tuple[str, float]], shown: int = 5) -> str:
+    """The Detect line's warning about locks whose root floats off the skin, or "" when none does."""
+    if not floating:
+        return ""
+    worst = sorted(floating, key=lambda f: -f[1])
+    names = ", ".join(f"{n} {g:.1f} cm" for n, g in worst[:shown])
+    more = f" and {len(worst) - shown} more" if len(worst) > shown else ""
+    return (f"{len(worst)} lock root{'s' if len(worst) > 1 else ''} off the skin ({names}{more}): "
+            f"their meshes start in the air; Root to skin bends them down")
 
 
 def match_locks(pieces: Sequence[MeshPiece], locks: Sequence["object"], next_id: int) -> DetectReport:

@@ -36,6 +36,10 @@ ROOT_CONVERGE_START = 1.0   # the strands that start a lock gather into it quick
 # Skin with no part of its lock within ROOT_FAR_CM (or 3x the lock root's height) over it roots its strands
 # round the lock's root (build_hda region_frame / root_pick): Helen's fringe arches 1.5-2.5 cm over its skin
 ROOT_FAR_CM = 1.0
+# A lock whose mesh root edge lies over ROOT_GAP_CM off the skin floats at its root (a mesh fault: hair does
+# not grow out of the air): Detect lists it, and Root to skin (setting root_skin, cm) bends its spine's start
+# down to the skin
+ROOT_GAP_CM = 0.3
 # a lock's start extras lie on a disc round its root, wide enough to stay under this x the lock's density
 START_DENSITY_MAX = 6.0
 # Prim attributes only the per-lock loop needs (hairgen, fit_to_lock, hairclump): dropped before the cache

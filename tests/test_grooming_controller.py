@@ -325,6 +325,16 @@ def test_detect_report_is_shown(env) -> None:
     assert view.stale is False
 
 
+def test_detect_warns_about_roots_off_the_skin(env) -> None:
+    adapter, view, c = env
+    adapter.report = DetectReport(matches=[Match(0, 1, "ok")], floating=[("hair_base_08", 0.86), ("hair_base_11", 0.96)])
+    c.detect()
+    text, error = view.messages[-1]
+    assert not error
+    assert "2 lock roots off the skin" in text and "hair_base_11 1.0 cm, hair_base_08 0.9 cm" in text
+    assert "Root to skin" in text
+
+
 def test_publish_refusal_message_is_shown(env) -> None:
     adapter, view, c = env
     adapter.publish_result = PublishResult(False, "", "v007", "v007 already exists; next free is v008")

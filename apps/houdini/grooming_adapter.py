@@ -71,7 +71,7 @@ _KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_m
                      "cache_mode", "disp", "row_display"}   # a lock's display reaches its key as its factor
 _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
-CACHE_NET_VERSION = "root-spread-3"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "root-spread-4"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -559,10 +559,25 @@ def detect(node) -> DetectReport:
     asset = asset_from_scene(hou.hipFile.basename())
     new = apply_detect(data, pieces, groups, report, asset=asset)
     write_data(node, new, UNDO_PREFIX + "Detect")
+    report.floating = floating_roots(node)
     c = report.counts
     _status(f"{config.HDA_LABEL}: {len(pieces)} locks - ok {c['ok']}, to check {c['unsure']}, "
-            f"new {c['new']}, missing {c['orphaned']}")
+            f"new {c['new']}, missing {c['orphaned']}"
+            + (" - " + logic.floating_text(report.floating) if report.floating else ""))
     return report
+
+
+def floating_roots(node) -> list[tuple[str, float]]:
+    """(name, cm) of each lock whose mesh root edge lies over config.ROOT_GAP_CM off the skin (`root_gap`
+    on the spines, the root end the user chose)."""
+    geo = _cooked(node, NODE_SPINES_LOCKS)
+    if geo.findPrimAttrib("root_gap") is None:
+        return []
+    unit = node.evalParm("unit_cm")
+    names = _prim_values(geo, config.ATTR_NAME, "s")
+    gaps = _prim_values(geo, "root_gap", "f")
+    ids = _prim_values(geo, config.ATTR_LOCK_ID, "i")
+    return [(n, g * unit) for n, g, i in zip(names, gaps, ids) if i >= 0 and g * unit > config.ROOT_GAP_CM]
 
 
 def _roots_on_skin(roots: dict[int, tuple[float, float, float]],

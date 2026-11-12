@@ -323,14 +323,26 @@
   84 % -> 23 % -> 8 % (only under the fringe arches, see root steps), root_clumped 0.67 -> 0.02 -> 0.01,
   start share worst 0.83 -> 0.55 -> 0.51, widest tenth 1.06 -> 1.25 -> 1.27, turned worst (tenths 3-9)
   0.05 -> 0.36 -> 0.09, strands 118,380 -> 118,705 -> 145,830 (+23 %: start extras 27 k, whorl 4.5 k).
-  OPEN, the user's call: the meshes float 1-2.5 cm over the skin on 28 % of the scalp, and roots at the
-  set density under them must cross that gap. Hair outside its lock's cross-section in a tenth
-  (`lock_outside_worst`, limit 0.10) v0.1 0.25 (back tips) -> 7e33860 0.30 -> now 0.53 (caps hair_base_06 /
-  08 / 11 / 13 / 17): the spike, fuzzy patch and standing strands of the shots (t50 e13/shots2) are that
-  gap hair, in bundles. Fixing it needs either fewer roots under floating locks (thin skin) or accepting
-  hair in the gap. Cook (alternating runs, same scene type): v0.1 6.5-7.2 s, now 7.5-8.8 s, median +23 %
-  (budget +18 %); the extra strands cost most of it, the root steps ~2-4 % after moving their lookups into
-  parallel prim wrangles and halving fit_to_lock's mesh lookups (`fit_mid`).
+  Floating meshes (t51, the user's decision 2026-11-13): 28 % of the scalp (180 cm2) has its lock's mesh
+  1-2.5 cm over it. Two cases, by the mesh root edge's gap off the skin (`root_gap`, the points in the first
+  3 % of `dist` from the root band, nearest the skin; threshold `ROOT_GAP_CM` 0.3): (a) the root floats, a
+  mesh fault (25 locks: hair_base_01/02/04/06-18 0.33-1.38 cm, upper fringe layers hair_bang_01/06/12-18
+  0.3-0.7 cm), 74 cm2 = 43 %; (b) the root touches the skin and the lock arches away (fringe 09/10/19/20,
+  back locks 01/05/13/19, hair_base_20/21), 106 cm2 = 57 %. hair_base_08 / 11 / 17 (the shots' standing
+  strands, spike, fuzz) are all (a): 0.86 / 0.96 / 0.58 cm. (b): roots under the arch start the lock
+  (`root_far`, only when root_gap is under the threshold), and the skin check leaves that skin out (103 cm2,
+  87 of it thin, reported apart). (a): Detect lists the floating roots on the result line; the per-lock
+  setting Root to skin (`root_skin`, cm, default 3, inherited as usual) bends the first part of the spine
+  down by the move that puts the root edge on the skin (`root_skin` wrangle after apply_settings), only
+  where root_gap is over the threshold: 25 locks bent 0.43-1.36 cm, no lock touching the skin moved
+  (t51 check_bend). Roots under (a) locks stay where hairgen scattered them. Result: hair outside the lock
+  in its first tenths drops (hair_base_08 tenth 2 0.13), but the worst tenth is still 0.53 (tenths 4-5 of
+  hair_base_06 / 13): those caps float ~1 cm along their whole length, not only at the root, and the hair
+  rooted under their middle crosses that gap in bundles (the spike and fuzz are still in the shots, t51
+  f3/shots). Shorter transits (root_converge 1.5 / 2): outside 0.40 / 0.44, turned 0.23 / 0.17 (fails).
+  The start extras cannot go: without them the start share is 0.09 (hair_bang_03), Root to skin does not
+  change it; 0.5 -> 0.42 worst with 10.6 k extras. Cook (alternating runs): v0.1 6.73-7.29 s, now
+  8.18-8.63 s, median +24 % (budget +18 %), almost all the start extras' 27 k strands.
 - Workflow GUI check (t46): drag ticks ~0.43 s (the first 2.5 s), release 0.7 s, undo 0.47 s, Deform
   frames ~1.5 s (first 4.4 s), publish 0.7 s with 118,380 strands and only contract primvars. GUI tests
   cannot play the timeline inside one step (Houdini's playback runs in its own loop): start it in one

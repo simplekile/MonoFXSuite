@@ -33,6 +33,7 @@ SETTING_RANGES: dict[str, tuple[float, float]] = {
     "clump": (0.0, 1.0),
     "length_mult": (0.0, 2.0),
     "frizz": (0.0, 1.0),
+    "root_skin": (0.0, 10.0),
 }
 # Names as Houdini uses them: Hair Generate's "Thickness" (and the `width` attribute) is one strand's, so
 # the lock's measured cross-section is "Lock width" / "Lock thickness", never plain Width / Thickness.
@@ -44,8 +45,9 @@ SETTING_LABELS: dict[str, str] = {
     "clump": "Clump",
     "length_mult": "Length ×",
     "frizz": "Frizz",
+    "root_skin": "Root to skin",
 }
-SETTING_UNITS: dict[str, str] = {"density": "/cm²", "twist_add": "°"}
+SETTING_UNITS: dict[str, str] = {"density": "/cm²", "twist_add": "°", "root_skin": "cm"}
 # Stored value x scale = the value the panel shows (twist is stored in radians, shown in degrees like the
 # measured twist)
 SETTING_SCALE: dict[str, float] = {"twist_add": 180.0 / math.pi}
@@ -58,6 +60,9 @@ SETTING_TIPS: dict[str, str] = {
     "clump": "Hair Clump › Blend: 0 no clumping, 1 strands fully gathered into clumps",
     "length_mult": "Multiplies the strands' length",
     "frizz": "Frizz amount (as Guide Process › Frizz): random waves along each strand",
+    "root_skin": "Where the lock's root floats off the skin (a mesh lying on another lock), this length of it is "
+                 "bent down so its strands grow from the skin, as guides do. Locks whose root touches the skin "
+                 "are never changed. 0: off",
 }
 
 DISPLAY_LABELS: dict[str, str] = {
@@ -900,6 +905,8 @@ class GroomController:
             return None
         self.refresh()
         text = report_text(report.counts)
+        if getattr(report, "floating", None):
+            text += " · " + logic.floating_text(report.floating)
         if self.data().regions_stale:
             text += " · regions out of date: Update regions"
         self.view.set_message(text, error=False)
