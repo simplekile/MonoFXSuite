@@ -13,8 +13,11 @@ Per strand, over its polyline. `p95` = 95th percentile over strands. Reference =
 | other_mean | share of points sitting on another lock's mesh | 0 | fans at the root; stacked locks |
 | uncovered | hair mesh with no strand curve within 6 mm | 0.035 | strands bunched mid-lock (fixed: `cross_spread`); hairclump's blend (fixed: the lock's clump drives `blend`, tightness alone never switches it off); `ps` narrower than the mesh (fixed: stretched to its edges); strand count from the root only (fixed: widest band); too coarse spines in curls (fixed: 48 points) |
 | lock_uncovered_worst | the barest lock | | as above |
-| lock_width_ratio_worst | hair's spread / mesh's across the lock (2nd principal axis), at least 0.7 | | low-res lock meshes: ~5 mesh points a cross-section band measured the width wrong and the hair twisted into a narrow ribbon (fixed: bands fitted to `measure_samples` points spread over the faces). Coverage misses it: a thin lock is within 6 mm of a ribbon in its middle. First thought was "caps are wider than long": the numbers said 13.8 cm long, 3.4 cm wide; measure before explaining |
-| lock_dmax / lock_kink worst | the worst lock | | look at its close-up |
+| lock_width_ratio_worst | hair's spread (points weighted by the strand length they stand for) / mesh's (points weighted by face area) across the lock (2nd principal axis), at least 0.7 | | low-res lock meshes: ~5 mesh points a cross-section band measured the width wrong and the hair twisted into a narrow ribbon (fixed: bands fitted to `measure_samples` points spread over the faces). Coverage misses it: a thin lock is within 6 mm of a ribbon in its middle. First thought was "caps are wider than long": the numbers said 13.8 cm long, 3.4 cm wide; measure before explaining |
+| lock_start_share_worst | hair in the first 3/10 of a lock (by nearest spine point) / the mesh's share there by face area, at least 0.5 | | root spread: strands joining a lock where its mesh lies over them left caps and fringe 11-20 % of their mesh's share at the start (fixed: start roots, `start_share`); v0.1 (root_pull) 0.83 |
+| width_start_off_worst | \|hair width / mesh width - 1\| in tenths 2-3, worst lock | | the fringe's start climbing from its skin to an arc 1.5-2.4 cm up (fixed: far roots become start roots) |
+| width_bulge_worst | widest of tenths 2-9 over the mesh, worst lock, at most 1.4 | | fringe fin mid-arc: strands rooted under the arc climbing to it (hair_bang_09 2.0, 4-5x the lock's thickness); same fix |
+| lock_dmax / lock_kink worst | the worst lock | | look at its close-up; a cap lying ~1 cm up on another whose roots all climbed to it from the skin (hair_base_08 61 deg: the far-root height is per lock) |
 | density_off_worst | a lock's strand count against density x its area (`logic.lock_strands`), \|ratio - 1\| | | Helen 2026-11-12: within 2 % on most locks, 16 % worst |
 | root_clumped | share of roots closer than 0.3x the even spacing 1/sqrt(strands / region area) | | Helen 2026-11-12: 67 %: `root_pull` gathers every root under the mesh piece's root cross-section (hair_base_01: region 6.7 x 7.7 cm, roots in 1.1 x 1.9 cm), so the scalp between lock bases is bare at the root and the base is ~20-30x denser than the setting; small stacked locks get identical roots (hair_bang_15: 141 strands, 57 roots). Fixed 2026-11-12 (t47): roots stay where hairgen scatters them on regions that follow the meshes (`logic.region_owners`: footprint, else the mesh lying over the scalp), strands join their lock where its mesh is nearest the root and converge over `root_converge` x the offset: 3 % bunched (fringe roots pulled toward the lock's root) |
 | root_spacing_low | median nearest-root distance / that even spacing (random ~0.5, even ~0.9-1.1), at least | | 0.14 on Helen, same cause; 1.0 after the fix (t47) |
@@ -34,11 +37,13 @@ On a copy, `node.allowEditingOfContents()` lets you try a parm on an inner node 
 
 Whorls (t47): roots the tool packs at a whorl on purpose carry `whorl_root` and are left out of
 density_off, root_clumped and root_spacing; the report's "Whorl" section gives their count and share and the
-densest 1 cm disc of ours and of the reference (v006: 18.6 % of its roots, 5,104 / cm2 at Helen's crown).
-`lock_width_ratio` matches the hair's mass along the lock to the mesh's (tenths of the spine, nearest
-spine point) before comparing spreads: strands join a lock part way along, so a cap's start carried 2 %
-of its hair against 18 % of its mesh, and the whole-lock spread read 0.64 while every tenth read
-0.7-1.0. The unmatched value is printed under the table; the start's density is the coverage checks' job.
+densest 1 cm disc of ours and of the reference (v006: 16,035 roots, 18.6 % of its roots, 5,104 / cm2 at
+Helen's crown). Start roots (`start_root` without `whorl_root`) are the lock's own and are measured like
+any root. The mesh is weighted by face area in the width ratio and the start share (`mesh_point_area`):
+by point count a cap's densely tessellated end weighed 0.44 of it, by area 0.28. Never re-weight the hair
+to pass a check: an earlier version matched the hair's mass along the lock to the mesh's and passed a
+groom whose caps had 2 % of their hair at the start (review t48); that matched value is printed for
+information only.
 Check where the reference puts its roots (`t47_root_spread/probe_ref_roots.py`) before calling a dense
 whorl a bug. Measure the hair share per tenth of a lock against its mesh's (`probe_mass.py`) and root to
 own mesh vs any mesh (`probe_roots.py`) before blaming the fit: 59 % of roots over 1 cm from their own
