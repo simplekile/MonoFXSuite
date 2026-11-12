@@ -356,10 +356,10 @@ int on = i@visible;
 string iso = chs("../isolate_ids");
 if (iso != "") on = find(split(iso), itoa(i@lock_id)) >= 0;
 if (chi("../cook_all")) on = 1;
-// the lock's display: its own (or its group's) Display, else the node's; lighter while playing like
-// the node's (display_eff); full hair while publishing
+// the lock's display: its own (or its group's) Display, else the node's; lighter while playing with
+// the shot deform like the node's (display_eff); full hair while publishing
 int m = i@row_display >= 0 ? i@row_display : chi("../display_eff");
-if (chi("../playing") && chi("../play_display") > 0) m = min(m, chi("../play_display"));
+if (chi("../playing") && chi("../deform_active") && chi("../play_display") > 0) m = min(m, chi("../play_display"));
 if (chi("../cook_all")) m = 3;
 i@disp = m;
 i@shown = on;
@@ -1322,8 +1322,8 @@ def build_network(sub) -> None:
     lock_capture = _node(sub, "pointdeform", "lock_capture", [has_region, in_hair], mode="capture")
     lock_capture.parm("radius").setExpression('ch("../deform_radius")')
     captured = _node(sub, "switch", "captured", [has_region, lock_capture])
-    # per lock (lock_keys): always with Shot deform on; with it off, full-hair locks only, so turning it on
-    # recooks nothing, while a preview lock or a drag tick skips the capture (~0.3 s a lock)
+    # per lock (lock_keys): only while Shot deform runs (the capture held ~800 B a point in the cache);
+    # the first Deform on regrows the groom once
     captured.parm("input").setExpression('prim("../foreach_begin", 0, "do_capture", 0)')
     store = _node(sub, "python", "cache_store", [captured, begin])
     store.parm("python").set("from apps.houdini import grooming_adapter\n"
@@ -1458,12 +1458,14 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     ptg.append(hou.MenuParmTemplate(
         "play_display", "While playing", menu_items=config.PLAY_DISPLAY,
         menu_labels=("Same as Display", "Guide", "Hair preview"), default_value=2,
-        help="Lighter display while the timeline plays (hair full deforms 4 M points, ~1 s a frame on "
-             "Helen); back to Display on stop. Never heavier than Display"))
-    # what the network draws: Display, or While playing during playback (`playing`, set by the
-    # adapter's playbar callback with undo off)
+        help="Lighter display while the timeline plays with Shot deform on (hair full deforms 4 M points, "
+             "~1 s a frame on Helen); back to Display on stop. Never heavier than Display. With Shot deform "
+             "off nothing cooks while playing, so the display stays as it is"))
+    # what the network draws: Display, or While playing during playback with the deform (`playing`, set
+    # by the adapter's playbar callback with undo off, only while the deform is on)
     eff = hou.IntParmTemplate("display_eff", "Display in use", 1, default_expression=(
-        'if(ch("playing") && ch("play_display") > 0, min(ch("display_mode"), ch("play_display")), '
+        'if(ch("playing") && ch("deform_active") && ch("play_display") > 0, '
+        'min(ch("display_mode"), ch("play_display")), '
         'ch("display_mode"))',), default_expression_language=(hou.scriptLanguage.Hscript,))
     eff.hide(True)
     ptg.append(eff)

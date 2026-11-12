@@ -62,14 +62,21 @@ def viewer():
 
 
 def grab(name):
-    """The viewport only, full size."""
-    mw = hou.qt.mainWindow()
-    scr = mw.screen()
-    pix = scr.grabWindow(0, mw.x() - scr.geometry().x(), mw.y() - scr.geometry().y(), mw.width(), mw.height())
-    # crop the menus, shelf and timeline away: the viewport is the big middle of a maximized pane
-    h, w = pix.height(), pix.width()
-    pix = pix.copy(int(w * 0.012), int(h * 0.15), int(w * 0.965), int(h * 0.80))
-    pix.save(os.path.join(OUT, name + ".png"))
+    """The viewport, rendered by a flipbook (never a screen grab: a grab takes whatever window covers the
+    screen, and once saved a video the user had open instead of the hair)."""
+    sv = viewer()
+    st = sv.flipbookSettings().stash()
+    f = int(hou.frame())
+    st.frameRange((f, f))
+    st.output(os.path.join(OUT, f"{name}.$F4.png").replace("\\", "/"))
+    st.outputToMPlay(False)
+    st.useResolution(True)
+    st.resolution((1600, 1200))
+    sv.flipbook(sv.curViewport(), st)
+    out = os.path.join(OUT, f"{name}.{f:04d}.png")
+    final = os.path.join(OUT, name + ".png")
+    if os.path.isfile(out):
+        os.replace(out, final)
 
 
 # XGen-style preview, computed per point for the current camera (the viewport shows it unlit): Kajiya-Kay
@@ -210,7 +217,11 @@ def s_open():
     geo = node.parent()
     node.setInput(2, None)                 # rest pose: the hair mesh is the target
     ga.set_display(node, "hair", "lock")
-    S["ours"] = look_network(geo, node, "ours")
+    # the strands themselves (HAIR, unpacked), not the node's output: the display packs each lock with its
+    # colour inside, which the look's attribdelete / wrangle never reach (flat colour, no strand shading)
+    hair = geo.createNode("object_merge", "qc_ours_hair")
+    hair.parm("objpath1").set(node.path() + "/HAIR")
+    S["ours"] = look_network(geo, hair, "ours")
     if REF:
         imp = geo.createNode("usdimport", "qc_ref_usd")
         imp.parm("filepath1").set(REF)

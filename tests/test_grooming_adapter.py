@@ -254,5 +254,12 @@ def test_playing_state_from_playbar_events():
     assert ga.playing_state("FrameChanged") is None
 
 
+def test_only_a_deforming_node_plays_lighter():
+    # without the deform nothing cooks per frame: switching to the While playing display only recooked
+    assert ga.playing_flag(True, True) == 1
+    assert ga.playing_flag(True, False) == 0
+    assert ga.playing_flag(False, True) == 0 and ga.playing_flag(False, False) == 0
+
+
 def test_install_playbar_callback_needs_houdini():
     ga.install_playbar_callback()   # no hou here: does nothing, raises nothing

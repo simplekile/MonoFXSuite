@@ -45,6 +45,11 @@ before changing code for a failure.
 
 ## 2. Look (`qc_capture.py`, Houdini GUI on the secondary monitor, ~3 min)
 
+Images come from a viewport flipbook, never a screen grab (a grab took whatever window covered the
+screen: a browser video once). "Ours" is the HDA's `HAIR` (the strands), not the node's output, which
+packs each lock with its colour inside, so the XGen look could not reach the strands and every "ours"
+image before 2026-11-12 was flat colour per lock: they show lock shapes only, not strands.
+
 ```powershell
 $env:QC_SUITE="<suite>"; $env:QC_HIP="<scene>"; $env:QC_OUT="<out dir>"
 $env:QC_REPORT="<out_dir of step 1>/qc_report.json"; $env:QC_REF="<groom.usd>"

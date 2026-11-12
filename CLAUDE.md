@@ -286,8 +286,11 @@
   saved with it on: every lock drawn as strands, focus only dimming, so select looked like strands /
   isolate). GUI tests open scenes as saved (t36), not with the deform forced off. Hidden `anim_wired` / `deform_active`. With it on, every edit deforms all 4 M points
   (~1.2 s), so grooming is done with it off (edits 0.1 s); with it on a drag applies on release. Each lock is captured to the rest hair mesh inside the per-lock loop and cached
-  with its strands (`lock_capture`, per-lock `do_capture` in the key: always with deform on, full-hair
-  locks only with it off, so turning it on regrows nothing and drag ticks skip the ~0.3 s capture);
+  with its strands (`lock_capture`, per-lock `do_capture` in the key) **only while the deform runs**:
+  capturing every full-hair lock whenever the anim was wired held ~800 B a point (Helen, anim wired:
+  5.8 GB after a cook, 9.5 GB after an All-locks edit; now 2.1 / 2.7 GB, t49). The first Deform on
+  regrows the groom once (~12 s, was 1.7 s); frames and the deformed hair are the same (max 0.5 mm off).
+  The packed display's coloured / see-through copies never carry the capture (`_display_copy`);
   capturing the merged 4 M points cost 3-9 s per hide or show. Only mesh / guide parts are captured at
   display time. Two switches (`use_deform`, `deform_ok`): one hscript if() evaluated both sides and
   unpacked the anim USD on every frame with the deform off. Publish strips `pCaptPts` / `pCaptWeights`.
@@ -324,9 +327,24 @@
   needs ~2x the whorl roots, ~+8 % cook. OPEN: per-lock shots of the final version (the secondary screen
   was covered); in the last good shots (t47 v17) hair_bang_09 showed a fan at its start and a small fin.
 - Workflow GUI check (t46): drag ticks ~0.43 s (the first 2.5 s), release 0.7 s, undo 0.47 s, Deform
-  frames ~1.5 s (first 4.4 s), publish 0.7 s with 118,380 strands and only contract primvars. Playback
-  with Deform off ~3.3 fps: open. GUI tests cannot play the timeline inside one step (Houdini's playback
-  runs in its own loop): start it in one step, read it in the next.
+  frames ~1.5 s (first 4.4 s), publish 0.7 s with 118,380 strands and only contract primvars. GUI tests
+  cannot play the timeline inside one step (Houdini's playback runs in its own loop): start it in one
+  step, read it in the next (t47: frames timed by a playbar callback, cookCount of every inner node,
+  perfMon per node; a step that reads the 118 k-prim output mid-play adds a ~0.9 s gap of its own).
+- Playback (t47, GUI Helen, 30 fps realtime): with Deform off nothing is time dependent and nothing cooks
+  per frame; the whole groom as strands, hair full, plays at the cap (28.5-28.8 fps, one lock selected
+  the same). t46's "3.3 fps with Deform off" did not reproduce (the same harness again: 24 fps); it is
+  the Deform-on number. Deform on, per frame (Hair preview, 422 k points): the scene's anim input 125 ms
+  (`shot_anim_usd` unpacking the whole character 86 ms + a blast 37 ms), `deform` 101 ms, GPU draw
+  ~21 ms: 3.7 fps; with the USD Import left packed (the node unpacks only the hair gprims) 6.1 fps;
+  While playing Guide 5.4 fps; hair full 1.0 fps (the deform of 4 M points ~0.76 s).
+- The first drag tick's 2.5 s did not come back (t47, same scene, lock hair_back_04, same commit; 5 GUI
+  runs: t46's order with the hip saved first, a freshly built HDA, two drags a run): first tick 0.32-0.38 s
+  (cook 0.19-0.24 s, the same as later ticks; hython 0.25 vs 0.21 s), later ticks 0.17-0.28 s, release
+  0.5-0.6 s. What the first tick does add, every drag, is ~0.13 s of viewport draw (strands going from 46 to
+  13 points). The 2.5 s was most likely the machine (t46's later ticks were 1.8x slower too): measure a tick
+  against select before calling it a regression. A real mouse drag in a GUI test does not cook: the viewport
+  cooks on Houdini's own idle loop, which a test's `processEvents` pump never reaches.
 - Hair quality is judged by the skill `.claude/skills/grooming-check` (numbers per strand and per lock
   against the approved groom, plus XGen-style shaded viewport shots); run it after any change to the
   network. Medians and averages passed a groom whose every strand had a 150 deg corner and half of
@@ -400,11 +418,14 @@
   else a warning). Point Deform is split: `deform_capture` (mode capture, time independent, once) and
   `deform` (mode deform); hair full is still ~1 s a frame, all of it the deform of 4 M points
   (`maxpt` 100; 32 is 3x faster but moves some points 2.6 cm, so it stays).
-- While playing (`play_display`, default Hair preview): during playback the node draws
-  min(Display, While playing) through the hidden `display_eff` expression (every inner reference to the
-  mode reads it, the cache key too); the adapter's playbar callback (installed once by OnCreated /
-  OnLoaded, UI only) sets the hidden `playing`, undo off. Hair full playing: ~0.25 s a frame. Publish
-  clears `playing`.
+- While playing (`play_display`, default Hair preview): during playback with Shot deform on the node
+  draws min(Display, While playing) through the hidden `display_eff` expression (every inner reference to
+  the mode reads it, the cache key too); the adapter's playbar callback (installed once by OnCreated /
+  OnLoaded, UI only) sets the hidden `playing`, undo off, only on nodes whose deform is on
+  (`playing_flag`; `set_shot_deform` mid-play follows). With the deform off it changes nothing: playback
+  cooks nothing per frame, and switching to preview recooked 24 nodes on Start and on Stop (0.3-0.6 s
+  each) and, the first time, regrew every lock's preview (Helen 2.8 s), for no gain. Publish clears
+  `playing`.
 - Shots: Karma's hair procedural (Generate) does not reproduce clump/frizz, so publishes carry full
   strands and shots Point Deform them (sandbox t02).
 - Panel (`ui.py` view, `controller.py` logic): three zones on their own surfaces with a line between (tree

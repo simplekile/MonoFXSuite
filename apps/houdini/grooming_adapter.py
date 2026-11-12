@@ -691,6 +691,11 @@ def set_shot_deform(node, on: bool) -> None:
     if p is not None:
         with hou.undos.disabler():
             p.set(int(bool(on)))
+        try:   # turned on or off mid-playback: the While playing display follows at once
+            playing = hou.isUIAvailable() and hou.playbar.isPlaying()
+        except (AttributeError, hou.Error):
+            playing = False
+        _set_playing(node, playing_flag(playing, _deforming(node)))
 
 
 def set_drag_preview(node, lock_ids: Sequence[int] | None, factor: float = 1.0) -> None:
@@ -1110,6 +1115,25 @@ def playing_state(event_name: str) -> bool | None:
     return None
 
 
+def playing_flag(playing: bool, deforming: bool) -> int:
+    """Pure: the node's `playing` parm. Only a node with Shot deform on draws lighter while playing:
+    without the deform nothing cooks per frame (Helen hair full plays at the 30 fps cap), so switching to
+    Hair preview only recooked on Start and Stop, and regrew every lock's preview on the first play."""
+    return int(playing and deforming)
+
+
+def _deforming(node) -> bool:
+    p = node.parm("deform_active")
+    return bool(p.eval()) if p is not None else False
+
+
+def _set_playing(node, value: int) -> None:
+    p = node.parm(PARM_PLAYING)
+    if p is not None and p.eval() != value:
+        with hou.undos.disabler():
+            p.set(value)
+
+
 def _on_playbar(event_type, frame) -> None:
     state = playing_state(str(event_type).rsplit(".", 1)[-1])
     if state is None:
@@ -1118,16 +1142,14 @@ def _on_playbar(event_type, frame) -> None:
         nodes = find_nodes()
     except hou.Error:
         return
-    with hou.undos.disabler():
-        for n in nodes:
-            p = n.parm(PARM_PLAYING)
-            if p is not None and p.eval() != int(state):
-                p.set(int(state))
+    for n in nodes:
+        _set_playing(n, playing_flag(state, _deforming(n)))
 
 
 def install_playbar_callback() -> None:
     """Once per session (kept on `sys`, like the cache): while the timeline plays, every MONO Grooming
-    node draws its While playing mode (`display_eff`). Only with a UI; hython has no playbar."""
+    node with Shot deform on draws its While playing mode (`display_eff`). Only with a UI; hython has
+    no playbar."""
     if hou is None or not hou.isUIAvailable() or getattr(sys, _PLAYBAR_ATTR, False):
         return
     hou.playbar.addEventCallback(_on_playbar_trampoline)
@@ -1226,7 +1248,10 @@ def cook_lock_keys(sop) -> None:
         # a dragged lock's strands are coarser (DRAG_SEGMENTS): kept apart from its full hair
         lock_mode = "drag" if drag else "hair" if f >= 1.0 else "hair_preview"
         modes.append(lock_mode)
-        cap = int(wired and (deforming or f >= 1.0))   # publish (full) reuses these; it drops the capture
+        # captured only while the shot deform runs. Capturing every full-hair lock whenever the anim was
+        # wired (so that turning the deform on regrew nothing) held ~800 B a point: Helen 5.9 GB after a
+        # cook, 9.5 GB after an edit (review t48). Now the first Deform on regrows the groom once.
+        cap = int(wired and deforming)
         captures.append(cap)
         piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
         idx = [p.number() for p in prim.points()]
@@ -1338,6 +1363,19 @@ def cook_hair_cache(sop) -> None:
         geo.merge(g)
 
 
+def _display_copy(g):
+    """A lock's cached strands for the packed display, without the shot deform's capture: the packed
+    display is never deformed, and pCaptPts / pCaptWeights (~800 B a point at maxpt 100) copied into the
+    coloured and see-through versions took Helen to 5.9-9.5 GB with the anim wired (review t48)."""
+    out = hou.Geometry()
+    out.merge(g)
+    for name in ("pCaptPts", "pCaptWeights"):
+        a = out.findPointAttrib(name)
+        if a is not None:
+            a.destroy()
+    return out
+
+
 def cook_hair_packed(sop) -> None:
     """Python SOP "hair_packed": the display's hair, one packed primitive per lock embedding its cached
     strands (no copy). Merging 4 M points into one geometry made every edit and every hide re-upload the
@@ -1366,8 +1404,7 @@ def cook_hair_packed(sop) -> None:
         mode, key = sp.stringAttribValue("cache_mode") + "#cd", f"{sp.stringAttribValue('cache_key')}|{cd}"
         coloured = cache.get(sid, lid, mode, key)
         if coloured is None:
-            tinted = hou.Geometry()
-            tinted.merge(g)
+            tinted = _display_copy(g)
             tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
             tinted.setPrimFloatAttribValues("Cd", cd * len(tinted.iterPrims()))
             coloured = tinted.freeze(read_only=True)
@@ -1383,8 +1420,7 @@ def cook_hair_packed(sop) -> None:
             if ghost is None:
                 m = config.GHOST_MIX
                 gcd = tuple(c * (1 - m) + t * m for c, t in zip(cd, config.GHOST_TINT))
-                tinted = hou.Geometry()
-                tinted.merge(g)
+                tinted = _display_copy(g)
                 tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
                 tinted.addAttrib(hou.attribType.Prim, "Alpha", 1.0)
                 n = len(tinted.iterPrims())
