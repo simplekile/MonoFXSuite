@@ -31,14 +31,15 @@ PREVIEW_MAX_STRANDS = 20_000
 PREVIEW_FACTOR_STEP = 0.8      # a capped preview factor snaps down to 0.8^k (it is in every lock's cache key)
 # A strand gathers from its root on the region into its lock's shape over this many times the root's
 # distance from the mesh root (build_hda fit_root; at least root_blend of the lock, at most half)
-ROOT_CONVERGE = 1.0
-# Roots with no part of their lock within ROOT_FAR_CM over them become start roots (build_hda root_pick):
-# Helen's fringe lies 1.5-2.4 cm above its skin
+ROOT_CONVERGE = 3.0
+ROOT_CONVERGE_START = 1.0   # the strands that start a lock gather into it quicker
+# Skin with no part of its lock within ROOT_FAR_CM (or 3x the lock root's height) over it roots its strands
+# round the lock's root (build_hda region_frame / root_pick): Helen's fringe arches 1.5-2.5 cm over its skin
 ROOT_FAR_CM = 1.0
-# a lock's start roots lie on a disc round its root, wide enough to stay under this x the lock's density
+# a lock's start extras lie on a disc round its root, wide enough to stay under this x the lock's density
 START_DENSITY_MAX = 6.0
 # Prim attributes only the per-lock loop needs (hairgen, fit_to_lock, hairclump): dropped before the cache
-LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_u0", "fit_c0", "fit_root", "fit_blend", "root_at", "rx", "ry", "start_k", "start_cnt", "start_pos", "mesh_d", "length_mult", "frizz",
+LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_u0", "fit_c0", "fit_root", "fit_blend", "root_at", "rx", "ry", "start_k", "start_cnt", "start_pos", "length_mult", "frizz",
                      "clumpid", "skinprim", "skinprimuv")
 # A slider drag grows the dragged locks at their real strand count, with fewer points a strand (a drag
 # tick on one Helen lock: 0.14 s, its largest 0.36 s); past this many strands (a group) a fraction of
@@ -86,7 +87,9 @@ REGION_RULE = 3     # 3: footprints on the skin, whorls recorded
 WHORL_RADIUS_CM = 1.5
 WHORL_MIN_LOCKS = 3
 WHORL_DISK_CM = 0.7
-START_SHARE = 0.5    # share of a lock's strands rooted round its root, running its whole length
+# Start extras (build_hda region_frame): strands rooted round a lock's root on top of its count, as many as
+# bring the hair in its first 3/10 to START_TARGET x the mesh's share there (QC floor 0.5)
+START_TARGET = 0.63
 WHORL_FILL = 0.3     # extra strands at a whorl, x the lock's start cross-section
 REGION_SUBDIV = 2              # bilinear subdivisions of the scalp before the split (x4 points each)
 SECTION_MIN_THICK_RATIO = 0.3  # cross-section floor of a lock: thickness counted as >= 30 % of its width

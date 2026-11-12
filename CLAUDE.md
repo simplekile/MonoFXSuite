@@ -312,28 +312,25 @@
   cross-section per band; per band a 2D principal-axis fit in a parallel-transported frame gives width,
   thickness and twist (a near-round band keeps the previous axis). Lock ids reach the network by the
   root Detect stored (`assign_pieces`), so Detect must run after the hair mesh changes.
-- Hair QC also measures roots against density, the width profile along each lock against its mesh,
-  the hair's share at each lock's start and folds (grooming-check, 2026-11-12). `root_pull` (0.85 then)
-  gathered each lock's roots into its mesh piece's root cross-section (hair_base_01: region 6.7 x 7.7 cm,
-  roots in 1.1 x 1.9 cm): bases 20-30x denser than set, scalp between them bare, root_clumped 0.67, root
-  spacing 0.14. The user chose roots at the set density on regions that follow the meshes (root spread,
-  below), and a crown whorl packed dense like the approved v006 (its densest 1 cm disc: 16,035 roots,
-  18.6 % of all, 5,104 / cm2). The checks use the hair's own mass and the mesh weighted by face area (the
-  review rejected a width ratio that re-weighted the hair; counting mesh points weighed caps' densely
-  tessellated ends 0.44 of the mesh where their area is 0.28). Helen (t47 v27, v006 ref), v0.1 -> now,
-  every check PASS: root_clumped 0.67 -> 0.02, spacing 0.14 -> 1.10, density worst 16 % -> 0 (hairgen
-  `forcecount`), lock width ratio worst 0.79 -> 0.82, start share worst 0.83 -> 0.55, start fan worst 0.46 -> 0.29,
-  widest tenth (fin) 1.06 -> 1.25 (hair_bang_09 / 10: 2.0 at 0e1d90b), dmax p95 1.25 -> 1.43 cm, other 0.6 -> 1.5 %,
-  folds 0.02 -> 0.17 %, kink p95 26 -> 32 deg (worst lock 47 -> 46), width mid worst 0.33 -> 0.29,
-  118,380 -> 118,705 strands. Whorl: densest 1 cm disc 15,824 roots, 5,037 / cm2 (v006 16,035, 5,104;
-  13.3 % of ours, 18.6 % of v006's, which has 86 k strands). The price: 60 % of the roots are start roots
-  (below), on discs at up to `START_DENSITY_MAX` (6) x the lock's density round each lock's root; the
-  rest of the scalp is thinner than set. Cook: the new root steps cost ~1.3 s of ~10 s (+13 %, profiled);
-  whole cooks alternating with v0.1 +17 % mean, +27 % median (v0.1 alone swung 9.1-12.7 s).
-  Shots (t47 v27, qc_capture of `HAIR`): fringe hair_bang_09 / 10 clean, no fan or fin. OPEN, seen in
-  the shots and caught by no check: hair_base_11 a sliver of strands sticking out a third along,
-  hair_base_17 a fuzzy patch mid-lock (strands joining where its mesh lies over them), hair_base_08 strands
-  standing up from the skin to its start, fuzzy patches on the crown where the start-root discs are.
+- Hair QC also measures roots against density, the skin between locks, the width profile along each lock
+  against its mesh, the hair's share at each lock's start, folds, hair turned off its lock and hair outside
+  its lock (grooming-check). `root_pull` (v0.1, 0.85) gathered each lock's roots into its mesh's root
+  cross-section: bases 20-30x denser than set, scalp between them bare. The user chose roots at the set
+  density, regions that follow the meshes, and a crown whorl packed like the approved v006 (densest 1 cm
+  disc 16,035 roots, 5,104 / cm2). 7e33860 then moved 60 % of the roots round lock roots (start roots);
+  the user rejected that ("tìm cách đi", 2026-11-13: keep the skin at the set density, no thin starts).
+  Now (t50 e13, Helen, v0.1 -> 7e33860 -> now): skin with under half its roots within 5 mm (`skin_thin_share`)
+  84 % -> 23 % -> 8 % (only under the fringe arches, see root steps), root_clumped 0.67 -> 0.02 -> 0.01,
+  start share worst 0.83 -> 0.55 -> 0.51, widest tenth 1.06 -> 1.25 -> 1.27, turned worst (tenths 3-9)
+  0.05 -> 0.36 -> 0.09, strands 118,380 -> 118,705 -> 145,830 (+23 %: start extras 27 k, whorl 4.5 k).
+  OPEN, the user's call: the meshes float 1-2.5 cm over the skin on 28 % of the scalp, and roots at the
+  set density under them must cross that gap. Hair outside its lock's cross-section in a tenth
+  (`lock_outside_worst`, limit 0.10) v0.1 0.25 (back tips) -> 7e33860 0.30 -> now 0.53 (caps hair_base_06 /
+  08 / 11 / 13 / 17): the spike, fuzzy patch and standing strands of the shots (t50 e13/shots2) are that
+  gap hair, in bundles. Fixing it needs either fewer roots under floating locks (thin skin) or accepting
+  hair in the gap. Cook (alternating runs, same scene type): v0.1 6.5-7.2 s, now 7.5-8.8 s, median +23 %
+  (budget +18 %); the extra strands cost most of it, the root steps ~2-4 % after moving their lookups into
+  parallel prim wrangles and halving fit_to_lock's mesh lookups (`fit_mid`).
 - Workflow GUI check (t46): drag ticks ~0.43 s (the first 2.5 s), release 0.7 s, undo 0.47 s, Deform
   frames ~1.5 s (first 4.4 s), publish 0.7 s with 118,380 strands and only contract primvars. GUI tests
   cannot play the timeline inside one step (Houdini's playback runs in its own loop): start it in one
@@ -384,28 +381,33 @@
   rank of the root's offset across the lock at u0, inside strips of sqrt(n) sorted by u0 (an even
   spread that keeps neighbours together: a random (s, t) crossed strands; ranking along the region's
   axes mixed along and across on caps). The strand runs u0 -> tip and leaves its root over
-  `fit_blend` = max(`root_blend`, `root_converge` (1.0) x offset / length), at most half.
-  Root steps: `root_mesh_d` (prim, parallel: each root's distance to its own mesh), `root_pick` (detail:
-  whorl roots and start roots, and where the start roots go), `root_place` (prim, parallel: where each root
-  ends up `root_at`, its raw join `fit_u0`, offset `rx` / `ry`; one detail wrangle doing it all cost 1.1 s
-  on Helen), `root_spread` (detail: stretch and ranks). Start roots (`start_root`) start their lock (join
-  at u 0, run its whole length): every root in the footprint (region_frame `fp_c` / `fp_r`), every root
-  with no part of its lock within max(`root_far_cm` 1, 1.5 x the lock root's height off the skin) over it,
-  and random others up to `start_share` (0.5) of the lock's strands. Strands that join a lock where its
-  mesh lies over them gathered a lying cap's hair along its length: caps and fringe held 11-20 % of their
-  mesh's share in their first 3/10. The fringe floats 1.5-2.4 cm over its skin: strands joining it along
-  the arc climbed to it, a fin 4-5x its thickness; far roots as start roots fixed it, but at 1 cm alone
-  a cap lying ~1 cm up on another (hair_base_08) had most of its roots climb to it in a 61 deg corner,
-  hence the lock's own height. Start roots are laid out again, footprint ones included, as one sunflower
-  on a disc round the lock's root, wide enough for `START_DENSITY_MAX` (6) x the lock's density (3 left
-  the fringe's start a fan 2x the lock), each point moved onto the region; a point that lands off it
-  (sideways to the edge, against the skin's normal) is dropped and the disc grows. Added at random on top
-  of the footprint's own roots they bunched (root_clumped 0.07); projected without the test, the fringe
-  bunched 0.6 of its roots on its region's edge. A lock starting at a whorl gets `whorl_n` = `whorl_fill`
+  `fit_blend` = max(`root_blend`, `root_converge` x offset / length), at most half.
+  Root steps: `region_frame` (detail: frame, footprint, whorl_n, own_n), `region_join` (prim, parallel:
+  where the strands of each region prim join, and `root_far`), `region_start` (detail: start_x),
+  `root_pick` (detail: picks whorl roots and start extras at random among hairgen's, so the lock's own roots
+  stay even; lays out the start roots), `root_place` (prim: `root_at`, raw join `fit_u0`, `rx` / `ry`),
+  `root_spread` (detail: stretch and ranks). Start extras (`start_extra`) are strands ON TOP of the lock's
+  count, as many as bring its first 3/10 to `start_target` (0.63) x the mesh's share there, estimated from
+  the region's joins (the estimate runs ~0.05-0.1 high: hair_base_20 0.51 at 0.63). Own roots keep their
+  place: a fixed share of them moved round the root (7e33860) left the skin between locks thin. Far roots
+  (`root_far`): own roots on skin with no part of their lock within `root_far_cm` (1) over it, only for a
+  lock rooted on the skin (lifted under half that): Helen's fringe arches 1.5-2.5 cm over its skin, and its
+  strands rising to the arch were a fin (width 2.3-3.9x, turned 0.5-0.8; rising at most 20-30 deg or lying
+  along the skin measured worse). They start the lock, so the skin under the arches is thin. Caps lying on
+  other caps (hair_base_12 / 14, ~1 cm up) are left out: their hair joins from the skin under the others.
+  Start roots are laid out as one sunflower on a disc round the lock's root at up to
+  `START_DENSITY_MAX` (6) x its density, each point moved onto the region (a point off it is dropped, the
+  disc grows to at most 3x: grown without bound it reached skin 4 cm away, hair_bang_03, and its strands ran
+  back in a hairpin); extras with no place are dropped. Footprint roots join at the spine's nearest point,
+  never behind it (sent to u 0, the half of the footprint ahead of the root made small hairpins: the crown
+  caps' fuzz in their third tenth, turned 0.36). Joining strands rise over `root_converge` (3) x their
+  offset (at 1 they rose straight up to the floating meshes: spike / fuzz, turned 0.2-0.27), starting ones
+  over `root_converge_start` (1). A lock starting at a whorl gets `whorl_n` = `whorl_fill`
   (0.3) x density x the cross-section of its first `START_SPAN` (0.3) extra strands on top of its count,
-  rooted on a sunflower within `WHORL_DISK_CM` (0.7) of the whorl's centre (`whorl_root`; left out of the
-  root checks, counted apart): with the start roots of the crown and fringe nearby, that is v006's
-  densest disc; `whorl_fill` 2 made it 21,800 / 6,900 per cm2. Raising the density attribute in the
+  rooted on a sunflower within `WHORL_DISK_CM` (0.7) of the whorl's centre (`whorl_root`); whorl roots and
+  start extras are left out of the root and skin checks, counted apart. With the crown's start extras the
+  densest 1 cm disc is 18,111 roots, 5,765 / cm2 (v006 16,035 / 5,104). The crown shot keeps a light patch
+  where the caps meet at the whorl; v006's crown shot has the same. Raising the density attribute in the
   footprint did nothing: hairgen's relax evens density out. `root_reach_cm` (0) can bring every far root
   closer. Strand count uses the lock's widest band anywhere (the first quarter gave
   long hair_back ribbons 800 strands: see-through). Scenes keep the parm values they saved

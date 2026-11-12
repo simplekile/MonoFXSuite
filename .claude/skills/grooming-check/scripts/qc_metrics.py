@@ -107,6 +107,7 @@ if (i > 0 && i < n - 1) {
 
 # Per hair-mesh point: is there a strand within COVER_MM? Bald or see-through patches show as uncovered.
 COVER_MM = 6.0
+OUT_MARGIN_CM = 0.2   # hair this far beyond its lock's cross-section counts as outside the lock
 VEX_COVER = r"""
 int hp; vector huv;
 xyzdist(1, @P, hp, huv, %(r)s);          // the strand curves, not their points (2 cm apart)
@@ -155,6 +156,16 @@ LIMITS = {
     "fold_share": {"abs": 0.01, "ref_x": None,
                    "why": "strand points turned over 60 deg from the mesh's direction there (folds, hooks)"},
     "lock_fold_worst": {"abs": 0.05, "ref_x": None, "why": "the worst lock's folded share"},
+    "lock_turned_worst": {"abs": 0.10, "ref_x": None,
+                          "why": "hair turned over 30 deg from its lock in one tenth (3-9) of it: strands crossing the lock "
+                                 "to join it (a spike, a fuzzy patch, strands standing up from the skin, fuzz at a start)"},
+    "lock_outside_worst": {"abs": 0.10, "ref_x": None,
+                           "why": "hair beyond its lock's cross-section by 2 mm in one tenth (3-9): strands crossing the gap "
+                                  "between the skin and a lock floating over it, in bundles (spike, fuzzy patch, standing strands)"},
+    # the skin between locks (whorl roots and start extras, packed on purpose, left out)
+    "skin_thin_share": {"abs": 0.05, "ref_x": None,
+                        "why": "scalp with under half the roots its regions ask for within 5 mm (skin left thin)"},
+    "lock_skin_thin_worst": {"abs": 0.20, "ref_x": None, "why": "the thinnest lock region's thin share"},
 }
 
 
@@ -368,8 +379,8 @@ def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm, whorl
     """Per lock: strands against density x area (`logic.lock_strands`, what the tool means to grow), and
     how the roots spread: median nearest-root distance over the even spacing 1/sqrt(actual density on the
     lock's area), and the share of roots closer than 0.3x that spacing (bunched roots). Whorl roots
-    (`whorl_root`, extra strands the tool packs at a whorl on purpose) are left out of all three and
-    counted apart. A lock's start roots (`start_root` without `whorl_root`: its own strands, laid out
+    (`whorl_root`) and start extras (`start_extra`), strands the tool packs on purpose on top of a lock's
+    count, are left out of all three and counted apart. A lock's start roots (`start_root` without `whorl_root`: its own strands, laid out
     round its root) are counted and measured like any other."""
     roots = pos[starts]
     whorl = np.zeros(len(roots), dtype=bool) if whorl is None else whorl
@@ -389,7 +400,50 @@ def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm, whorl
     return out
 
 
-def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10):
+VEX_ROOT_PRIM = r"""
+int rp; vector ruv;
+xyzdist(1, point(0, "P", primpoint(0, @primnum, 0)), rp, ruv);
+i@qc_rprim = rp;
+int w = prim(0, "whorl_root", @primnum), e = prim(0, "start_extra", @primnum);
+i@qc_extra = w || e;
+"""
+
+
+def skin_density(hair, regions, infos, unit_cm, radius_cm=0.5):
+    """The skin between locks: per scalp prim of the frozen split (SCALP_REGIONS), the roots within
+    `radius_cm` of it against what its regions ask for there (each owner's strands / its region area; a
+    shared prim the mean of its owners'), both summed over the prims in that disc, so prim size and region
+    borders cancel out. Whorl roots and start extras (`whorl_root`, `start_extra`: strands packed on purpose
+    on top of the lock's count) are left out: what is left must cover the skin evenly. Returns per prim
+    (owners, area cm2, ratio)."""
+    w = hair.parent().createNode("attribwrangle", "qc_root_prim")
+    w.setInput(0, hair)
+    w.setInput(1, regions)
+    w.parm("class").set(1)
+    w.parm("snippet").set(VEX_ROOT_PRIM)
+    g = w.geometry()
+    if g is None:
+        raise RuntimeError(f"qc_root_prim: {w.errors()}")
+    rprim = np.array(g.primIntAttribValues("qc_rprim"))
+    extra = np.array(g.primIntAttribValues("qc_extra")) > 0
+    w.destroy()
+    rg = regions.geometry()
+    owners = rg.primIntListAttribValues("lock_owners")
+    area = np.array(rg.primFloatAttribValues("area_cm2"))
+    P = np.array(rg.pointFloatAttribValues("P")).reshape(-1, 3)
+    cen = np.array([P[[v.point().number() for v in pr.vertices()]].mean(0) for pr in rg.prims()]) * unit_cm
+    dens = {i.id: i.strands / max(i.region_area_cm2, 1e-6) for i in infos}
+    want = np.array([np.mean([dens.get(o, 0.0) for o in own]) if own else 0.0 for own in owners]) * area
+    have = np.bincount(rprim[(rprim >= 0) & ~extra], minlength=len(area)).astype(float)
+    ratio = np.ones(len(area))
+    r2 = radius_cm * radius_cm
+    for i in range(0, len(cen), 1000):
+        near = ((cen[i:i + 1000, None, :] - cen[None, :, :]) ** 2).sum(-1) <= r2
+        ratio[i:i + 1000] = (near @ have) / np.maximum(near @ want, 1e-9)
+    return owners, area, ratio
+
+
+def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10, unit_cm=100.0):
     """Per lock and tenth of its spine: hair width / mesh width (spread across the lock, perpendicular
     to the spine), hair centre off the mesh centre (in mesh widths), and the share of strand points whose
     direction turns over 60 deg from the spine's there. Hair and mesh points take the curveu of their
@@ -401,7 +455,8 @@ def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10):
     nxt = np.zeros_like(pos)
     nxt[:-1] = pos[1:] - pos[:-1]
     tang[first] = nxt[first]
-    tang /= np.maximum(np.linalg.norm(tang, axis=1, keepdims=True), 1e-12)
+    seglen = np.linalg.norm(tang, axis=1)          # each point stands for the segment before it (root: after)
+    tang /= np.maximum(seglen[:, None], 1e-12)
 
     def width(x, t):
         """Width of a point cloud across direction t: sqrt(12 var) of its widest perpendicular axis
@@ -414,6 +469,21 @@ def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10):
         ev = np.linalg.eigvalsh(np.cov(y.T))
         return float(np.sqrt(12 * max(ev[-1], 0))), c
 
+    def outside(h, m, t, w):
+        """Share of the hair (weighted by w) beyond the mesh's cross-section here by over OUT_MARGIN_CM:
+        on the mesh's two principal axes across t, outside its 1-99 % extent."""
+        if len(m) < 8 or len(h) == 0:
+            return 0.0
+        c = m.mean(0)
+        y = m - c
+        y = y - np.outer(y @ t, t)
+        ax = np.linalg.eigh(np.cov(y.T))[1][:, 1:]                # the two widest axes (across t)
+        mm, hh = y @ ax, (h - c) @ ax
+        lo, hi = np.percentile(mm, 1, axis=0), np.percentile(mm, 99, axis=0)
+        e = OUT_MARGIN_CM / unit_cm
+        out = ((hh < lo - e) | (hh > hi + e)).any(1)
+        return float(w[out].sum() / max(w.sum(), 1e-12))
+
     out = {}
     for lid, (sp, cu, st, piece) in spines.items():
         hs = lock == lid
@@ -425,6 +495,7 @@ def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10):
         hb, mb = np.minimum((cu[hi] * bins).astype(int), bins - 1), np.minimum((cu[mi] * bins).astype(int), bins - 1)
         cosang = np.abs(np.einsum("ij,ij->i", tang[hs], st[hi]))
         fold = float(np.mean(cosang < np.cos(np.radians(60))))
+        sl = seglen[hs]
         rows = []
         for b in range(bins):
             t = st[min(int((b + 0.5) / bins * (len(sp) - 1)), len(sp) - 1)]
@@ -435,7 +506,10 @@ def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10):
                 continue
             off = hc - mc
             off = off - (off @ t) * t
-            rows.append({"ratio": hw / mw, "center_off": float(np.linalg.norm(off) / mw)})
+            sb = sl[hb == b]
+            turned = float(sb[cosang[hb == b] < np.cos(np.radians(30))].sum() / max(sb.sum(), 1e-12))
+            rows.append({"ratio": hw / mw, "center_off": float(np.linalg.norm(off) / mw), "turned": turned,
+                         "outside": outside(hp[hb == b], mp[mb == b], t, sb)})
         out[lid] = {"bins": rows, "fold": fold}
     return out
 
@@ -579,8 +653,10 @@ def main():
     unit_cm = float(node.evalParm("unit_cm")) if node.parm("unit_cm") else 100.0
     whorl = (np.array(hgeo.primIntAttribValues("whorl_root")) > 0) if hgeo.findPrimAttrib("whorl_root")         else np.zeros(len(starts), dtype=bool)
     startr = (np.array(hgeo.primIntAttribValues("start_root")) > 0) if hgeo.findPrimAttrib("start_root")         else np.zeros(len(starts), dtype=bool)
+    sx = np.array(hgeo.primIntAttribValues("start_extra")) > 0 if hgeo.findPrimAttrib("start_extra") else np.zeros(len(starts), dtype=bool)
     report["start_roots"] = int((startr & ~whorl).sum())
-    dens = roots_and_density(pos, starts, counts, lock_of_strand, ga.lock_infos(node), unit_cm, whorl)
+    report["start_extras"] = int(sx.sum())
+    dens = roots_and_density(pos, starts, counts, lock_of_strand, ga.lock_infos(node), unit_cm, whorl | sx)
     # the whorl: ours (roots the tool packed there) and the densest 1 cm disc of ours and the reference
     _c, n_ours, d_ours = densest_spot(pos[starts] * unit_cm)
     report["whorl"] = {"ours_whorl_roots": int(whorl.sum()), "ours_whorl_share": float(whorl.mean()) if len(whorl) else 0.0,
@@ -595,7 +671,7 @@ def main():
     pg = node.node("pieces").geometry()
     mesh_pos = np.array(pg.pointFloatAttribValues("P")).reshape(-1, 3)
     mesh_piece = np.array(pg.pointIntAttribValues("piece"))
-    shape = shape_along(pos, lock, u, mesh_pos, mesh_piece, spine_arrays(sg))
+    shape = shape_along(pos, lock, u, mesh_pos, mesh_piece, spine_arrays(sg), unit_cm=unit_cm)
     log(f"roots, width profile, folds: {time.time() - t:.1f}s")
     for r in locks:
         d, sh = dens.get(r["lock_id"]), shape.get(r["lock_id"])
@@ -622,6 +698,36 @@ def main():
     total_pts = sum(r["strands"] for r in shp) or 1
     s["fold_share"] = float(sum(r["fold"] * r["strands"] for r in shp) / total_pts)
     s["lock_fold_worst"] = max((r["fold"] for r in shp), default=0.0)
+    for r in locks:
+        sh = shape.get(r["lock_id"])
+        if sh:
+            r["turned_profile"] = [round(b["turned"], 3) if b else None for b in sh["bins"]]
+            r["turned_worst"] = max((v for v in r["turned_profile"][2:9] if v is not None), default=0.0)
+            r["outside_profile"] = [round(b["outside"], 3) if b else None for b in sh["bins"]]
+            r["outside_worst"] = max((v for v in r["outside_profile"][2:9] if v is not None), default=0.0)
+    s["lock_turned_worst"] = float(max((r.get("turned_worst", 0.0) for r in locks), default=0.0))
+    s["lock_outside_worst"] = float(max((r.get("outside_worst", 0.0) for r in locks), default=0.0))
+    report["outside_locks"] = [{"name": r["name"], "outside": r["outside_profile"]} for r in
+                               sorted(locks, key=lambda r: -r.get("outside_worst", 0.0))[:8] if "outside_profile" in r]
+    report["turned_locks"] = [{"name": r["name"], "turned": r["turned_profile"]} for r in
+                              sorted(locks, key=lambda r: -r.get("turned_worst", 0.0))[:8] if "turned_profile" in r]
+    t = time.time()
+    owners, area, ratio = skin_density(hair, merge(node.path() + "/SCALP_REGIONS", "qc_regions"), ga.lock_infos(node), unit_cm)
+    has = np.array([len(o) > 0 for o in owners])
+    thin = has & (ratio < 0.5)
+    s["skin_thin_share"] = float(area[thin].sum() / max(area[has].sum(), 1e-9))
+    per = {}
+    for own, a, th in zip(owners, area, thin):
+        for o in own:
+            tot = per.setdefault(o, [0.0, 0.0])
+            tot[0] += a
+            tot[1] += a if th else 0.0
+    for r in locks:
+        if r["lock_id"] in per:
+            r["skin_thin"] = per[r["lock_id"]][1] / max(per[r["lock_id"]][0], 1e-9)
+    s["lock_skin_thin_worst"] = max((r.get("skin_thin", 0.0) for r in locks), default=0.0)
+    report["skin_ratio_p"] = [round(float(v), 3) for v in np.percentile(ratio[has], [5, 25, 50, 75, 95])] if has.any() else []
+    log(f"skin density: {time.time() - t:.1f}s")
     report["along_lock"] = {
         "width_ratio_p50_by_tenth": [round(float(np.median([r["width_profile"][b] for r in shp
                                                              if r["width_profile"][b] is not None])), 2)
@@ -633,12 +739,12 @@ def main():
         if lim.get("max") is not None:           # a plain ceiling with no reference
             val = s.get(key, 0.0)
             checks.append({"check": key, "value": round(val, 4), "limit": lim["max"], "ref": None,
-                           "pass": val <= lim["max"], "why": lim["why"]})
+                           "pass": bool(val <= lim["max"]), "why": lim["why"]})
             continue
         if lim.get("min") is not None:           # a floor, not a ceiling
             val = s.get(key, 1.0)
             checks.append({"check": key, "value": round(val, 4), "limit": lim["min"], "ref": None,
-                           "pass": val >= lim["min"], "why": lim["why"] + " (at least)"})
+                           "pass": bool(val >= lim["min"]), "why": lim["why"] + " (at least)"})
             continue
         limit = lim["abs"]
         if ref is not None and lim["ref_x"] and key in report["ref"]:
@@ -647,7 +753,7 @@ def main():
         val = s.get(key, 0.0)
         checks.append({"check": key, "value": round(val, 4), "limit": round(limit, 4),
                        "ref": round(report["ref"][key], 4) if ref is not None and key in report["ref"] else None,
-                       "pass": val <= limit, "why": lim["why"]})
+                       "pass": bool(val <= limit), "why": lim["why"]})
     report["checks"] = checks
     report["passed"] = all(c["pass"] for c in checks)
     report["worst_locks"] = locks[:8]
@@ -672,6 +778,17 @@ def main():
                   f"{w['ours_densest_1cm']} roots ({w['ours_densest_1cm_share']:.1%}), {w['ours_densest_per_cm2']:.0f} / cm2."
                   + (f" Reference: densest 1 cm disc {w['ref_densest_1cm']} roots ({w['ref_densest_1cm_share']:.1%}), "
                      f"{w['ref_densest_per_cm2']:.0f} / cm2." if "ref_densest_1cm" in w else "")]
+    if report.get("turned_locks"):
+        lines += ["", "## Hair turned off its lock (share of hair length over 30 deg, by tenth, root -> tip)", ""]
+        lines += [f"- {t['name']}: " + " ".join("-" if v is None else f"{v:.2f}" for v in t["turned"]) for t in report["turned_locks"]]
+    if report.get("outside_locks"):
+        lines += ["", "## Hair outside its lock (share beyond the mesh's cross-section by 2 mm, by tenth, root -> tip)", ""]
+        lines += [f"- {t['name']}: " + " ".join("-" if v is None else f"{v:.2f}" for v in t["outside"]) for t in report["outside_locks"]]
+    if report.get("skin_ratio_p"):
+        lines += ["", "Skin: roots within 5 mm over what the regions ask (p5 p25 p50 p75 p95): "
+                  + " ".join(f"{v:.2f}" for v in report["skin_ratio_p"])
+                  + "; thinnest regions: " + ", ".join(f"{r['name']} {r['skin_thin']:.0%}" for r in
+                                                       sorted(locks, key=lambda r: -r.get("skin_thin", 0))[:6] if "skin_thin" in r)]
     lines += ["", "## Worst locks", "", "| lock | strands | kink p95 | zigzag p95 | seg p95 cm | far p95 cm "
               "| tip p95 cm | on other lock | covered | width / mesh |", "|---|---|---|---|---|---|---|---|---|---|"]
     for r in locks[:8]:

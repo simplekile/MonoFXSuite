@@ -71,7 +71,7 @@ _KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_m
                      "cache_mode", "disp", "row_display"}   # a lock's display reaches its key as its factor
 _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
-CACHE_NET_VERSION = "root-spread-2"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "root-spread-3"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
