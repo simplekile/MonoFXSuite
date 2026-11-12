@@ -29,6 +29,8 @@ PLAY_DISPLAY: tuple[str, ...] = ("same", "guide", "hair_preview")  # index = the
 PREVIEW_FRACTION = 0.10
 PREVIEW_MAX_STRANDS = 20_000
 PREVIEW_FACTOR_STEP = 0.8      # a capped preview factor snaps down to 0.8^k (it is in every lock's cache key)
+# A scalp's size across (cm) that Detect accepts without a units warning
+SCALP_SIZE_CM = (8.0, 60.0)
 # Prim attributes only the per-lock loop needs (hairgen, fit_to_lock, hairclump): dropped before the cache
 LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_c0", "fit_root", "length_mult", "frizz",
                      "clumpid", "skinprim", "skinprimuv")

@@ -327,6 +327,7 @@ def test_detect_report_is_shown(env) -> None:
 
 def test_publish_refusal_message_is_shown(env) -> None:
     adapter, view, c = env
+    c.confirm_all()                                 # nothing at risk: Publish goes on at once
     adapter.publish_result = PublishResult(False, "", "v007", "v007 already exists; next free is v008")
     c.publish(" v007 ")
     assert adapter.published_version == "v007"
@@ -352,7 +353,7 @@ def test_adapter_error_goes_to_the_message_line(env) -> None:
 
     adapter.detect = broken
     assert c.detect() is None
-    assert view.messages[-1] == ("Detect failed: hair mesh input is empty", True)
+    assert view.messages[-1] == ("Detect locks failed: hair mesh input is empty", True)
 
 
 def test_viewport_selection_and_outside_changes_are_polled(env) -> None:
@@ -710,8 +711,23 @@ def test_publish_warns_about_hidden_and_isolated_then_second_click_goes(env) -> 
 
 def test_nothing_hidden_publishes_at_once(env) -> None:
     adapter, view, c = env
+    c.confirm_all()
     c.publish("v008")
     assert adapter.published_version == "v008" and view.publish_warning == ""
+
+
+def test_publish_warns_about_locks_to_check_new_and_stale_regions_and_refuses_undetected(env) -> None:
+    """Review t48 P1-1: what would publish wrong without a word."""
+    adapter, view, c = env
+    c.publish("v008")                               # back_01 to check, back_02 new while back_old is missing
+    assert getattr(adapter, "published_version", None) is None
+    assert "to check (back_01)" in view.publish_warning and "new while 1 missing" in view.publish_warning
+    c.publish("v008")                               # the same risks: the second click goes on
+    assert adapter.published_version == "v008"
+    adapter.preflight = lambda node: {"undetected": 2, "warnings": []}
+    adapter.published_version = None
+    c.publish("v009")
+    assert adapter.published_version is None and "2 pieces of the hair mesh are not detected" in view.messages[-1][0]
 
 
 def test_drop_reorders_and_moves_locks_between_groups(env) -> None:
@@ -811,6 +827,8 @@ def test_panel_smoke(app, prefs) -> None:
     assert "density" in adapter.read_data(None).lock(2).overrides
     adapter.publish_result = PublishResult(False, "", "v007", "v007 already exists")
     ui._version_edit.setText("v007")
+    ui._publish_btn.click()                          # first click: the risks (locks to check, new) are shown
+    assert "Click again" in ui.publish_warning()
     ui._publish_btn.click()
     assert "already exists" in ui.message()
     ui.set_regions_stale(True)

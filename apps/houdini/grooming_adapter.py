@@ -554,11 +554,59 @@ def detect(node) -> DetectReport:
     report = logic.match_locks(pieces, data.locks, data.next_lock_id())
     asset = asset_from_scene(hou.hipFile.basename())
     new = apply_detect(data, pieces, groups, report, asset=asset)
-    write_data(node, new, UNDO_PREFIX + "Detect")
+    first_split = node.parm(PARM_REGIONS) is not None and node.parm(PARM_REGIONS).evalAsGeometry() is None
+    with hou.undos.group(UNDO_PREFIX + "Detect locks"):
+        write_data(node, new, UNDO_PREFIX + "Detect locks")
+        if first_split and new.locks:
+            # no split to keep yet: "regions out of date" right after the first Detect only asked for a
+            # click every artist had to learn (review t48 P2-6); later Detects never re-split silently
+            split_regions(node)
     c = report.counts
-    _status(f"{config.HDA_LABEL}: {len(pieces)} locks - ok {c['ok']}, to check {c['unsure']}, "
-            f"new {c['new']}, missing {c['orphaned']}")
+    if not data.locks and not data.orphans:
+        _status(f"{config.HDA_LABEL}: found {len(pieces)} locks" + (", regions split" if first_split else ""))
+    else:
+        _status(f"{config.HDA_LABEL}: {len(pieces)} locks - ok {c['ok']}, to check {c['unsure']}, "
+                f"new {c['new']}, missing {c['orphaned']}")
     return report
+
+
+def preflight(node) -> dict:
+    """What can make the groom wrong without an error (review t48 P1-1 / P1-2): mesh pieces Detect has not
+    matched to a lock (they grow nothing and are not published), and inputs that break the units: a scalp
+    whose size in cm (unit_cm) is not a head's, a scalp without uv, an object transformed or scaled.
+    {"undetected": int, "warnings": [str]}."""
+    out: dict = {"undetected": 0, "warnings": []}
+    assign = node.node("assign_locks")
+    if assign is not None:
+        try:
+            assign.cook()
+            ids = assign.geometry().primIntAttribValues(config.ATTR_LOCK_ID)
+            out["undetected"] = sum(1 for i in ids if i < 0)
+        except hou.Error:
+            pass
+    scalp = node.node("IN_SCALP")
+    try:
+        g = scalp.geometry() if scalp is not None else None
+    except hou.Error:
+        g = None
+    if g is not None and len(g.iterPrims()):
+        unit = float(node.evalParm("unit_cm")) if node.parm("unit_cm") is not None else 100.0
+        size_cm = max(g.boundingBox().sizevec()) * unit
+        lo, hi = config.SCALP_SIZE_CM
+        if not lo <= size_cm <= hi:
+            out["warnings"].append(f"the scalp measures {size_cm:,.3g} cm across (a head is {lo}-{hi} cm):"
+                                   f" check Units (cm per scene unit, now {unit:g})")
+        if g.findVertexAttrib("uv") is None and g.findPointAttrib("uv") is None:
+            out["warnings"].append("the scalp has no uv")
+    obj = node.parent()
+    try:
+        xf = obj.worldTransform() if hasattr(obj, "worldTransform") else None
+    except hou.Error:
+        xf = None
+    if xf is not None and not xf.isAlmostEqual(hou.hmath.identityTransform()):
+        out["warnings"].append(f"{obj.name()} is moved or scaled: the groom is made in its own space, so"
+                               " density and widths follow its scale")
+    return out
 
 
 def split_regions(node) -> None:
@@ -1387,6 +1435,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]

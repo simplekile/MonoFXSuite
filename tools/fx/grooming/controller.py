@@ -250,7 +250,7 @@ class GroomController:
             # an eye or a group's eye may have hidden or shown the selection: focus and strands only on
             # drawn locks (the adapter writes only when they change)
             self._sync_viewport(data, quiet=True)
-        if self._publish_armed is not None and self._publish_armed != self._unseen(data):
+        if self._publish_armed is not None and self._publish_armed != self._publish_risks(data):
             self._publish_armed = None  # what was hidden changed: the warning no longer says what is true
             self.view.set_publish_warning("")
 
@@ -895,15 +895,33 @@ class GroomController:
                 busy(None)
 
     def detect(self) -> logic.DetectReport | None:
-        report = self._run("Detect", lambda: self.adapter.detect(self.node))
+        first = not self.data().locks
+        report = self._run("Detect locks", lambda: self.adapter.detect(self.node))
         if report is None:
             return None
         self.refresh()
-        text = report_text(report.counts)
+        c = report.counts
+        if first and not c.get("unsure") and not c.get("orphaned"):   # nothing to match against yet
+            n = c.get("new", 0) + c.get("ok", 0)
+            text = f"Detect locks: found {n} lock{'s' if n != 1 else ''}"
+        else:
+            text = report_text(c)
         if self.data().regions_stale:
             text += " · regions out of date: Update regions"
-        self.view.set_message(text, error=False)
+        warnings = self._preflight().get("warnings", [])
+        if warnings:
+            text += " · Check: " + "; ".join(warnings)
+        self.view.set_message(text, error=bool(warnings))
         return report
+
+    def _preflight(self) -> dict:
+        read = getattr(self.adapter, "preflight", None)
+        if read is None or self.node is None:
+            return {}
+        try:
+            return read(self.node) or {}
+        except Exception:
+            return {}
 
     def split_regions(self) -> bool:
         if self._run("Split regions", lambda: self.adapter.split_regions(self.node) or True) is None:
@@ -974,17 +992,32 @@ class GroomController:
                        if not lk.visible or lk.group in hidden_groups)
         return hidden, self.isolated is not None
 
-    def publish_warning(self, data: model.GroomData) -> str:
-        """What the panel says next to Publish before it goes on, or "" when every lock is shown."""
+    def _publish_risks(self, data: model.GroomData) -> tuple:
+        """What Publish warns about before it goes on (a second click with the same risks publishes):
+        hidden locks, isolate, locks whose match is to check, new locks while some are missing (settings
+        that may belong to them), regions out of date."""
         hidden, isolated = self._unseen(data)
+        to_check = tuple(lk.name for lk in data.locks if lk.match == "unsure")
+        new = tuple(lk.name for lk in data.locks if lk.match == "new") if data.orphans else ()
+        return hidden, isolated, to_check, new, bool(data.regions_stale)
+
+    def publish_warning(self, data: model.GroomData) -> str:
+        """What the panel says next to Publish before it goes on, or "" when nothing is at risk."""
+        hidden, isolated, to_check, new, stale = self._publish_risks(data)
         parts = []
+        if to_check:
+            parts.append(f"{len(to_check)} lock{'s' if len(to_check) != 1 else ''} to check ({_names(list(to_check))})")
+        if new:
+            parts.append(f"{len(new)} new while {len(data.orphans)} missing keep settings")
+        if stale:
+            parts.append("regions out of date")
         if hidden:
             parts.append(f"{len(hidden)} hidden lock{'s' if len(hidden) != 1 else ''} ({_names(list(hidden))})")
         if isolated:
             parts.append(f"isolated on {len(self.isolated or ())} lock{'s' if len(self.isolated or ()) != 1 else ''}")
         if not parts:
             return ""
-        return " · ".join(parts) + ": Publish writes every lock anyway. Click again to publish"
+        return " · ".join(parts) + ": Publish writes every lock as it is now. Click again to publish"
 
     def publish(self, version: str | None) -> logic.PublishResult | None:
         """Publish always writes every lock. When some are hidden or the view is isolated, the first click
@@ -993,7 +1026,14 @@ class GroomController:
         if self.node is None:
             return None
         data = self.data()
-        unseen = self._unseen(data)
+        undetected = int(self._preflight().get("undetected", 0))
+        if undetected:
+            # they grow nothing and would be missing from the publish without a word (review t48 P1-1)
+            self.view.set_message(f"Not published: {undetected} piece{'s' if undetected != 1 else ''} of the hair"
+                                  " mesh {} not detected. Detect locks first".format("are" if undetected != 1 else "is"),
+                                  error=True)
+            return None
+        unseen = self._publish_risks(data)
         warning = self.publish_warning(data)
         if warning and self._publish_armed != unseen:
             self._publish_armed = unseen
