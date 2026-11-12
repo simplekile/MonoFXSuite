@@ -22,7 +22,7 @@ Per strand, over its polyline. `p95` = 95th percentile over strands. Reference =
 | tip_center_off_worst | hair centre off the mesh centre in the last tenth, in mesh widths | | 0.23 worst on Helen |
 | fold_share, lock_fold_worst | strand points whose direction turns over 60 deg from the spine's there (folds, hooks) | | 0.02 % on Helen |
 
-Roots, width profile and folds are numpy over the full HAIR (16 s on Helen). The per-lock table in
+Roots, width profile and folds are numpy over the full groom (output 1, `GROOM_REST`; 16 s on Helen). The per-lock table in
 the report lists the locks that miss most, each with its width ratio by tenth, root -> tip: a lock
 whose hair narrows before its mesh does reads as falling numbers at the end, a flare as a rise.
 
