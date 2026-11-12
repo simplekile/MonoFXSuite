@@ -166,9 +166,12 @@
   `share`) and divide the density. Nearest-root alone left 19/61 Helen fringe locks bare (roots 1-4 mm
   apart), and past the footprints it gave scalp to locks lying elsewhere: 0.8 cm fringe locks owned 8 x 8
   cm, and with roots at the set density 59 % sat over 1 cm from their own mesh, under a neighbour's (by
-  mesh: 25 %). The frozen split is read back by position (`nearpoint`), never by prim number; it records
-  its rule (detail `region_rule`, `config.REGION_RULE`), and a scene split by an older rule opens with
-  regions out of date and the reason (`mark_old_regions` in OnLoaded): existing scenes need Update regions.
+  mesh: 25 %). Update regions also records whorls (`logic.whorls`: a lock with 2+ other roots within
+  `WHORL_RADIUS_CM` 1.5 of its own starts at one; detail `whorl_locks` / `whorl_centres`, read per lock by
+  `whorl_tag` into the cache key). The frozen split is read back by position (`nearpoint`), never by prim
+  number; it records its rule (detail `region_rule`, `config.REGION_RULE` 3), and a scene split by an older
+  rule opens with regions out of date and the reason (`mark_old_regions` in OnLoaded): existing scenes
+  need Update regions.
 - Strands per lock = density x max(its share of the scalp, its own cross-section) (`logic.lock_strands`,
   same rule in the HDA's `region_frame`): fringe locks whose roots converge on one spot still get hair
   matching their mesh. In VEX, type every `prim()` read used in arithmetic (`float a = prim(...)`):
@@ -310,15 +313,16 @@
   and folds (grooming-check, 2026-11-12). `root_pull` (0.85 then) gathered each lock's roots into its mesh
   piece's root cross-section (hair_base_01: region 6.7 x 7.7 cm, roots in 1.1 x 1.9 cm): bases 20-30x
   denser than set, scalp between them bare, root_clumped 0.67, root spacing 0.14. The user chose roots at
-  the set density on regions that follow the meshes (root spread, below). Helen (t47, v006 ref), before ->
-  after: root_clumped 0.67 -> 0.03, spacing 0.14 -> 1.0, density worst 16 % -> 0 (hairgen `forcecount`),
-  dmax p95 1.25 -> 1.66 cm, other 0.6 -> 0.8 %, folds 0.02 -> 0.1 %, kink p95 26 deg, width mid worst
-  0.33 -> 0.37, cook 11.6 -> 12.3 s. OPEN: lock_width_ratio_worst 0.76 -> 0.60 (limit 0.7): ~12 crown caps
-  (hair_base_*) start at one whorl point (x 0, y 172 cm), whose ~15 skin prims they share, so their
-  first stretch gets few strands even at 12x the density there (`START_BOOST_MAX`; 40x changed nothing);
-  the approved v006 puts 15,139 roots (17.5 % of all) within 1 cm of that point, ~4,800 / cm2, so a
-  whorl denser than the set density is the approved look there. The fringe (hair_bang_09) still shows a
-  fan at its start and a small fin mid-arc (its mesh lies 1.8-2.3 cm above the skin it owns).
+  the set density on regions that follow the meshes (root spread, below), and a crown whorl packed dense
+  like the approved v006 (its densest 1 cm disc: 16,035 roots, 18.6 % of all, 5,104 / cm2). Helen (t47,
+  v006 ref), old suite -> now, every check PASS: root_clumped 0.67 -> 0.03, spacing 0.14 -> 0.91, density
+  worst 16 % -> 0 (hairgen `forcecount`), dmax p95 1.25 -> 1.64 cm, other 0.6 -> 0.9 %, folds 0.02 -> 0.1 %,
+  kink p95 26 -> 27 deg, width mid worst 0.33 -> 0.37, lock width ratio worst 0.73 -> 0.75 (mass along the
+  lock matched to the mesh's; with the hair's own mass 0.76 -> 0.64), 118,380 -> 129,109 strands (14,866
+  whorl roots, 11.5 %), cook 15.5 -> 17.0 s (+10 %, alternating runs; machine load swings single runs
+  11.6-16.7 s). Whorl: densest 1 cm disc 9,072 roots (7.0 %, 2,888 / cm2) vs v006 16,035 (18.6 %): closer
+  needs ~2x the whorl roots, ~+8 % cook. OPEN: per-lock shots of the final version (the secondary screen
+  was covered); in the last good shots (t47 v17) hair_bang_09 showed a fan at its start and a small fin.
 - Workflow GUI check (t46): drag ticks ~0.43 s (the first 2.5 s), release 0.7 s, undo 0.47 s, Deform
   frames ~1.5 s (first 4.4 s), publish 0.7 s with 118,380 strands and only contract primvars. Playback
   with Deform off ~3.3 fps: open. GUI tests cannot play the timeline inside one step (Houdini's playback
@@ -355,10 +359,15 @@
   spread that keeps neighbours together: a random (s, t) crossed strands; ranking along the region's
   axes mixed along and across on caps). The strand runs u0 -> tip and leaves its root over
   `fit_blend` = max(`root_blend`, `root_converge` (1.5) x offset / length), at most half.
-  Roots round the lock's root (region_frame footprint `fp_c` / `fp_r`) join at u 0 and get up to
-  `START_BOOST_MAX` x the density there (`fp_boost`: the start's cross-section over the footprint's area;
-  hairgen's count is fixed, so the rest of the region thins): a cap lifting off the skin onto another cap had
-  its own mid nearer those roots, and its first three tenths held 0 % of its hair. Roots with no part of
+  Root steps: `root_pick` (detail: which strands are whorl roots), `root_place` (prim, parallel: where
+  each root ends up `root_at`, its raw join `fit_u0`, offset `rx` / `ry`; one detail wrangle doing it all
+  cost 1.1 s on Helen), `root_spread` (detail: stretch and ranks). Roots round the lock's root
+  (region_frame footprint `fp_c` / `fp_r`) join at u 0: a cap lifting off the skin onto another cap had
+  its own mid nearer those roots, and its first three tenths held 0 % of its hair. A lock starting at a
+  whorl gets `whorl_n` = density x the cross-section of its first `START_SPAN` (0.3) extra strands on top
+  of its count, rooted at random within `WHORL_DISK_CM` (0.7) of the whorl's centre, joining at u 0
+  (`whorl_root` 1; left out of the root checks, counted apart): ~12 Helen crown caps share ~15 skin prims
+  there. Raising the density in the footprint did nothing: hairgen's relax evens density out. Roots with no part of
   their lock within `root_far_cm` (2) over them move `root_far_pull` (0.7) of the way toward the skin under
   the lock's root (Helen's fringe, 1.8-2.3 cm above its skin, hung a curtain under its arc: width mid 2.2x
   -> 0.37; 1 cm bunched 20 % of roots). `root_reach_cm` (0) can bring every far root closer. Strand count uses the lock's widest band anywhere (the first quarter gave

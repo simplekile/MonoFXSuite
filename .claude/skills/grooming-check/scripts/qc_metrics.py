@@ -252,12 +252,29 @@ def width_ratios(hair_geo, mesh_geo, spine_geo):
         x = x - np.average(x, axis=0, weights=w)
         cov = (x * w[:, None]).T @ x / max(w.sum(), 1e-12)
         return np.sqrt(np.maximum(np.sort(np.linalg.eigvalsh(cov))[::-1], 0))
-    out = {}
+    out, raw = {}, {}
     for p in spine_geo.prims():
         sel = hl == p.attribValue("lock_id")
         m, h = mp[mpc == p.attribValue("piece")], hp[sel]
         if len(m) > 10 and len(h) > 10:
-            out[int(p.attribValue("lock_id"))] = float(spread(h, wgt[sel])[1] / max(spread(m)[1], 1e-9))
+            lid = int(p.attribValue("lock_id"))
+            raw[lid] = float(spread(h, wgt[sel])[1] / max(spread(m)[1], 1e-9))
+            # the hair's mass along the lock is matched to the mesh's (tenths of the spine, nearest spine
+            # point): strands that join a lock part way along leave less hair at its start, which the
+            # coverage checks measure; this one is about width (Helen's crown caps: every tenth 0.7-1.0,
+            # the whole lock 0.6 before matching, with 2 % of the hair on a start holding 18 % of the mesh)
+            sp = np.array([v.point().position() for v in p.vertices()])
+            if len(sp) > 1:
+                hb = np.minimum((nearest(h, sp) / (len(sp) - 1) * 10).astype(int), 9)
+                mb = np.minimum((nearest(m, sp) / (len(sp) - 1) * 10).astype(int), 9)
+                hw = wgt[sel]
+                hmass = np.bincount(hb, weights=hw, minlength=10)
+                mshare = np.bincount(mb, minlength=10) / len(m)
+                scale = np.where(hmass > 0, mshare / np.maximum(hmass, 1e-12), 0.0)
+                out[lid] = float(spread(h, hw * scale[hb])[1] / max(spread(m)[1], 1e-9))
+            else:
+                out[lid] = raw[lid]
+    width_ratios.raw = raw
     return out
 
 
@@ -308,14 +325,33 @@ def nn_dist(x):
     return out
 
 
-def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm):
+def densest_spot(roots_cm, radius=1.0, sample=1500):
+    """The densest spot of a groom's roots (a whorl): the root with the most roots within `radius` cm.
+    Returns (centre, count there, roots / cm2 on that disc)."""
+    if not len(roots_cm):
+        return None, 0, 0.0
+    cand = roots_cm[np.linspace(0, len(roots_cm) - 1, min(sample, len(roots_cm))).astype(int)]
+    best, best_n = cand[0], -1
+    for i in range(0, len(cand), 50):
+        d = ((cand[i:i + 50, None, :] - roots_cm[None, :, :]) ** 2).sum(-1)
+        n = (d <= radius * radius).sum(1)
+        j = int(n.argmax())
+        if n[j] > best_n:
+            best, best_n = cand[i + j], int(n[j])
+    return best, best_n, best_n / (np.pi * radius * radius)
+
+
+def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm, whorl=None):
     """Per lock: strands against density x area (`logic.lock_strands`, what the tool means to grow), and
     how the roots spread: median nearest-root distance over the even spacing 1/sqrt(actual density on the
-    lock's area), and the share of roots closer than 0.3x that spacing (bunched roots)."""
+    lock's area), and the share of roots closer than 0.3x that spacing (bunched roots). Whorl roots
+    (`whorl_root`, extra strands the tool packs at a whorl on purpose) are left out of all three and
+    counted apart."""
     roots = pos[starts]
+    whorl = np.zeros(len(roots), dtype=bool) if whorl is None else whorl
     out = {}
     for info in infos:
-        sel = lock_of_strand == info.id
+        sel = (lock_of_strand == info.id) & ~whorl
         n = int(sel.sum())
         if n < 3:
             continue
@@ -494,6 +530,7 @@ def main():
     wr = width_ratios(hair.geometry(), node.node("pieces").geometry(), sg)
     for r in locks:
         r["width_ratio"] = wr.get(r["lock_id"], 1.0)
+        r["width_ratio_raw"] = width_ratios.raw.get(r["lock_id"], 1.0)
         r["coverage"] = cov_piece.get(piece_of.get(r["lock_id"], -1), 0.0)
         r["badness"] = round(badness(r), 2)
     locks.sort(key=lambda r: -r["badness"])
@@ -501,6 +538,7 @@ def main():
     s["lock_dmax_p95_worst_cm"] = max((r["dmax_p95_cm"] for r in locks), default=0.0)
     s["uncovered"] = 1 - report["ours"]["coverage"]
     s["lock_width_ratio_worst"] = min((r["width_ratio"] for r in locks), default=1.0)
+    report["lock_width_ratio_raw_worst"] = min((r["width_ratio_raw"] for r in locks), default=1.0)
     s["lock_uncovered_worst"] = max((1 - r["coverage"] for r in locks), default=0.0)
     if ref is not None:
         report["ref"]["uncovered"] = 1 - report["ref"]["coverage"]
@@ -512,7 +550,19 @@ def main():
     pos, strand, lock, u, starts, counts = hair_arrays(hgeo)
     lock_of_strand = np.array(hgeo.primIntAttribValues("lock_id"))
     unit_cm = float(node.evalParm("unit_cm")) if node.parm("unit_cm") else 100.0
-    dens = roots_and_density(pos, starts, counts, lock_of_strand, ga.lock_infos(node), unit_cm)
+    whorl = (np.array(hgeo.primIntAttribValues("whorl_root")) > 0) if hgeo.findPrimAttrib("whorl_root")         else np.zeros(len(starts), dtype=bool)
+    dens = roots_and_density(pos, starts, counts, lock_of_strand, ga.lock_infos(node), unit_cm, whorl)
+    # the whorl: ours (roots the tool packed there) and the densest 1 cm disc of ours and the reference
+    _c, n_ours, d_ours = densest_spot(pos[starts] * unit_cm)
+    report["whorl"] = {"ours_whorl_roots": int(whorl.sum()), "ours_whorl_share": float(whorl.mean()) if len(whorl) else 0.0,
+                       "ours_densest_1cm": n_ours, "ours_densest_1cm_share": n_ours / max(len(starts), 1),
+                       "ours_densest_per_cm2": d_ours}
+    if REF:
+        rg = imp.geometry()
+        rroots = np.array([pr.vertices()[0].point().position() for pr in rg.prims()]) * unit_cm
+        _c, n_ref, d_ref = densest_spot(rroots)
+        report["whorl"].update({"ref_densest_1cm": n_ref, "ref_densest_1cm_share": n_ref / max(len(rroots), 1),
+                                "ref_densest_per_cm2": d_ref})
     pg = node.node("pieces").geometry()
     mesh_pos = np.array(pg.pointFloatAttribValues("P")).reshape(-1, 3)
     mesh_piece = np.array(pg.pointIntAttribValues("piece"))
@@ -575,6 +625,16 @@ def main():
     for c in checks:
         lines.append(f"| {c['check']} | {c['value']:.3g} | {ref_txt(c)} "
                      f"| {c['limit']:.3g} | {'ok' if c['pass'] else '**FAIL**'} | {c['why']} |")
+    if "lock_width_ratio_raw_worst" in report:
+        lines += ["", f"lock_width_ratio_worst with the hair's own mass along the lock (not matched to the mesh's): "
+                      f"{report['lock_width_ratio_raw_worst']:.3g}"]
+    w = report.get("whorl", {})
+    if w:
+        lines += ["", "## Whorl (roots packed on purpose; not in the root checks above)", "",
+                  f"Ours: {w['ours_whorl_roots']} whorl roots ({w['ours_whorl_share']:.1%} of all); densest 1 cm disc "
+                  f"{w['ours_densest_1cm']} roots ({w['ours_densest_1cm_share']:.1%}), {w['ours_densest_per_cm2']:.0f} / cm2."
+                  + (f" Reference: densest 1 cm disc {w['ref_densest_1cm']} roots ({w['ref_densest_1cm_share']:.1%}), "
+                     f"{w['ref_densest_per_cm2']:.0f} / cm2." if "ref_densest_1cm" in w else "")]
     lines += ["", "## Worst locks", "", "| lock | strands | kink p95 | zigzag p95 | seg p95 cm | far p95 cm "
               "| tip p95 cm | on other lock | covered | width / mesh |", "|---|---|---|---|---|---|---|---|---|---|"]
     for r in locks[:8]:

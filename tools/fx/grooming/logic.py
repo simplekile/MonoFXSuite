@@ -300,6 +300,24 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
     return out
 
 
+def whorls(roots: dict[int, tuple[float, float, float]], radius: float,
+           min_locks: int = 3) -> dict[int, tuple[float, float, float]]:
+    """Locks that start at a whorl, each with its whorl's centre: a lock with at least `min_locks` - 1
+    other roots within `radius` of its own (roots on the skin). The centre is the mean of those roots.
+
+    Helen: ~12 crown caps start at one spot, whose skin cannot hold enough roots at the set density for
+    all their starts (the approved v006 put 17.5 % of its roots within 1 cm of it), so those locks get
+    extra roots packed there; the rest of the scalp stays at the set density."""
+    out: dict[int, tuple[float, float, float]] = {}
+    ids = sorted(roots)
+    for lid in ids:
+        near = [roots[o] for o in ids if _dist(roots[lid], roots[o]) <= radius]
+        if len(near) >= max(min_locks, 1):
+            n = len(near)
+            out[lid] = (sum(p[0] for p in near) / n, sum(p[1] for p in near) / n, sum(p[2] for p in near) / n)
+    return out
+
+
 def section_cm2(width: float, thick: float, unit_cm: float) -> float:
     """Cross-section of a lock in cm² from its widest band (scene units): an ellipse whose
     thickness is at least 30 % of its width, so a flat ribbon still counts as a lock of hair."""

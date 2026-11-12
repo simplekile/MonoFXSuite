@@ -32,14 +32,17 @@ Diagnose by stage before changing code: measure the same numbers on the HDA's in
 problem; `qc_metrics.measure`, `summary`, `profile` and `coverage` import and take any curves node.
 On a copy, `node.allowEditingOfContents()` lets you try a parm on an inner node without a rebuild.
 
-After root spread (t47), what is left shows in the width checks, not the root ones. `lock_width_ratio`
-weighs each hair point by the strand length it stands for (strands that join a lock part way along have
-the same point count, packed toward the tip); the cap that still fails (0.60) has little hair on its first
-stretch, which is real: ~12 Helen caps start at one crown whorl point and share its skin. The approved
-v006 has 17.5 % of its roots within 1 cm of that point, so check where the reference puts its roots
-(`t47_root_spread/probe_ref_roots.py`) before calling a dense whorl a bug. Measure the hair share per tenth
-of a lock against its mesh's (`probe_mass.py`) and root to own mesh vs any mesh (`probe_roots.py`)
-before blaming the fit: 59 % of roots over 1 cm from their own mesh was the region rule, not the fit.
+Whorls (t47): roots the tool packs at a whorl on purpose carry `whorl_root` and are left out of
+density_off, root_clumped and root_spacing; the report's "Whorl" section gives their count and share and the
+densest 1 cm disc of ours and of the reference (v006: 18.6 % of its roots, 5,104 / cm2 at Helen's crown).
+`lock_width_ratio` matches the hair's mass along the lock to the mesh's (tenths of the spine, nearest
+spine point) before comparing spreads: strands join a lock part way along, so a cap's start carried 2 %
+of its hair against 18 % of its mesh, and the whole-lock spread read 0.64 while every tenth read
+0.7-1.0. The unmatched value is printed under the table; the start's density is the coverage checks' job.
+Check where the reference puts its roots (`t47_root_spread/probe_ref_roots.py`) before calling a dense
+whorl a bug. Measure the hair share per tenth of a lock against its mesh's (`probe_mass.py`) and root to
+own mesh vs any mesh (`probe_roots.py`) before blaming the fit: 59 % of roots over 1 cm from their own
+mesh was the region rule, not the fit.
 
 Lessons that cost time:
 - An average or a median over all strands passes a groom where every strand has one bad corner.

@@ -421,3 +421,19 @@ def test_region_owners_needs_one_mesh_list_per_point():
     import pytest
     with pytest.raises(ValueError):
         logic.region_owners([(0, 0, 0), (1, 0, 0)], {1: (0, 0, 0)}, {1: 0.1}, {1: "g"}, ["g", "g"], [[]])
+
+
+# ---- whorls: locks whose roots converge on one spot ----
+
+def test_whorls_finds_locks_starting_at_one_spot_with_its_centre():
+    roots = {1: (0.0, 0, 0), 2: (0.01, 0, 0), 3: (0.0, 0.01, 0), 4: (0.5, 0, 0)}
+    out = logic.whorls(roots, radius=0.015, min_locks=3)
+    assert set(out) == {1, 2, 3}
+    cx, cy, _ = out[1]
+    assert abs(cx - 0.01 / 3) < 1e-9 and abs(cy - 0.01 / 3) < 1e-9
+
+
+def test_whorls_needs_min_locks_and_none_alone():
+    roots = {1: (0.0, 0, 0), 2: (0.01, 0, 0), 3: (0.3, 0, 0)}
+    assert logic.whorls(roots, radius=0.015, min_locks=3) == {}
+    assert set(logic.whorls(roots, radius=0.015, min_locks=2)) == {1, 2}

@@ -39,6 +39,8 @@ NODE_PUBLISH_USD = "PUBLISH_USD"     # usdexport SOP fed by the full hair
 
 NODE_REGION_MESH = "region_mesh"     # per SCALP_FINE prim: distance to each lock's hair mesh (Update regions)
 ATTR_REGION_RULE = "region_rule"     # detail on the frozen regions: the rule they were split by
+ATTR_WHORL_LOCKS = "whorl_locks"     # detail on the frozen regions: locks that start at a whorl
+ATTR_WHORL_CENTRES = "whorl_centres" # ... and their whorl's centre (3 floats each)
 PARM_REGIONS = "regions"             # hidden geometry data parm: the frozen region split
 PARM_DISPLAY = "display_mode"
 PARM_COLOR_BY = "color_by"
@@ -630,6 +632,13 @@ def split_regions(node) -> None:
     frozen = hou.Geometry()
     frozen.addAttrib(hou.attribType.Global, ATTR_REGION_RULE, 0)
     frozen.setGlobalAttribValue(ATTR_REGION_RULE, config.REGION_RULE)
+    # whorls: locks whose roots converge on one spot get extra roots packed there (build_hda root_spread)
+    uc = max(float(node.evalParm("unit_cm")), 1e-6)
+    whorl = logic.whorls(roots, config.WHORL_RADIUS_CM / uc, config.WHORL_MIN_LOCKS)
+    frozen.addArrayAttrib(hou.attribType.Global, ATTR_WHORL_LOCKS, hou.attribData.Int)
+    frozen.addArrayAttrib(hou.attribType.Global, ATTR_WHORL_CENTRES, hou.attribData.Float)
+    frozen.setGlobalAttribValue(ATTR_WHORL_LOCKS, sorted(whorl))
+    frozen.setGlobalAttribValue(ATTR_WHORL_CENTRES, [v for lid in sorted(whorl) for v in whorl[lid]])
     frozen.createPoints(centroids)
     frozen.addArrayAttrib(hou.attribType.Point, ATTR_LOCK_OWNERS, hou.attribData.Int)
     frozen.addAttrib(hou.attribType.Point, config.ATTR_LOCK_OWNER, config.NO_OWNER)

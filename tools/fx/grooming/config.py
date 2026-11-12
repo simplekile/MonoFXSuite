@@ -37,7 +37,7 @@ ROOT_CONVERGE = 1.5
 ROOT_FAR_CM = 2.0
 ROOT_FAR_PULL = 0.7
 # Prim attributes only the per-lock loop needs (hairgen, fit_to_lock, hairclump): dropped before the cache
-LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_u0", "fit_c0", "fit_root", "fit_blend", "length_mult", "frizz",
+LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_u0", "fit_c0", "fit_root", "fit_blend", "root_at", "rx", "ry", "length_mult", "frizz",
                      "clumpid", "skinprim", "skinprimuv")
 # A slider drag grows the dragged locks at their real strand count, with fewer points a strand (a drag
 # tick on one Helen lock: 0.14 s, its largest 0.36 s); past this many strands (a group) a fraction of
@@ -77,7 +77,14 @@ REGION_FOOTPRINT = 0.5
 REGION_MESH_SHARE_CM = 0.1
 # Rule the stored split was made with (detail `region_rule` on the frozen regions): older splits are
 # marked out of date when the scene loads. 2 = footprint, then the mesh lying over the scalp
-REGION_RULE = 2
+REGION_RULE = 3     # 3: footprints on the skin, whorls recorded
+# Whorl (logic.whorls): a lock whose root has WHORL_MIN_LOCKS - 1 other roots within WHORL_RADIUS_CM starts
+# at a whorl; it gets extra roots inside WHORL_DISK_CM of the whorl's centre, enough for its start's
+# cross-section at the set density (build_hda root_spread). The approved Helen v006: 17.5 % of its roots
+# within 1 cm of its crown whorl, ~4,800 / cm2
+WHORL_RADIUS_CM = 1.5
+WHORL_MIN_LOCKS = 3
+WHORL_DISK_CM = 0.7
 REGION_SUBDIV = 2              # bilinear subdivisions of the scalp before the split (x4 points each)
 SECTION_MIN_THICK_RATIO = 0.3  # cross-section floor of a lock: thickness counted as >= 30 % of its width
 
