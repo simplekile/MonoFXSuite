@@ -239,7 +239,10 @@ class GroomController:
         self.view.show_tree(self.tree_rows(data))
         self.view.set_selection(self.selection)
         self.view.show_properties(self.properties(data))
-        self.view.set_regions_stale(data.regions_stale)
+        try:
+            self.view.set_regions_stale(data.regions_stale, data.stale_why)
+        except TypeError:   # a view without the reasons
+            self.view.set_regions_stale(data.regions_stale)
         if hasattr(self.view, "set_review"):
             self.view.set_review(*self.review_counts(data))
         self.view.set_isolate(self.isolate_text(data))
@@ -301,7 +304,9 @@ class GroomController:
                 "isolated_out": isolated is not None and lk.id not in isolated,
                 "isolated_in": isolated is not None and lk.id in isolated,
                 "root_flip": lk.root_flip, "excluded": lk.excluded,
-                "badges": (["edited"] if lk.overrides else []) + ([lk.match] if lk.match in ("unsure", "new") else []),
+                # "new" only while a missing lock's settings could go to it; "unsure" always asks
+                "badges": (["edited"] if lk.overrides else []) + ([lk.match] if lk.match == "unsure" or
+                                                                   (lk.match == "new" and data.orphans) else []),
             } for lk in locks]
             badges = ["edited"] if g and g.overrides else []
             if any("unsure" in c["badges"] for c in children):
@@ -373,8 +378,9 @@ class GroomController:
         data = data or self.data()
         kind, ids = self.selection
         if kind == SEL_NONE:
+            overview, attribs = self._with_geometry(self._overview(data), None)
             return {"kind": SEL_NONE, "title": "", "settings": [], "measured": [],
-                    "overview": self._overview(data), "shortcuts": SHORTCUTS}
+                    "overview": overview, "attribs": attribs, "shortcuts": SHORTCUTS}
         if kind == SEL_ORPHAN:
             o = next(o for o in data.orphans if o.id == ids[0])
             kept = ", ".join(f"{SETTING_LABELS[k]} {_fmt(v)}" for k, v in o.overrides.items()) or "none"
@@ -409,14 +415,37 @@ class GroomController:
             g = data.group(groups[0])
             in_group = (g.name if g else groups[0]) if len(groups) == 1 else f"{len(groups)} groups"
             subtitle = ("Lock · " if len(locks) == 1 else "Locks · ") + in_group
-            if len(locks) == 1 and locks[0].match != "ok":
+            if len(locks) == 1 and (locks[0].match == "unsure" or (locks[0].match == "new" and data.orphans)):
                 subtitle += f" · {MATCH_LABELS.get(locks[0].match, locks[0].match)}"
             infos = [self._infos[i] for i in ids if i in self._infos]
         state = self._state(data, kind, ids)
         if state.get("note"):
             subtitle += f" · {state['note']}"
+        measured, attribs = self._with_geometry(self._measured(kind, infos),
+                                                None if kind == SEL_DEFAULTS else self.lock_ids_of(data, self.selection))
         return {"kind": kind, "title": title, "subtitle": subtitle, "own": own, "state": state,
-                "settings": settings, "measured": self._measured(kind, infos)}
+                "settings": settings, "measured": measured, "attribs": attribs}
+
+    def _with_geometry(self, measured: list[tuple[str, str]], lock_ids) -> tuple[list[tuple[str, str]], str]:
+        """The measured cells plus what the hair geometry holds (adapter.geo_stats): the real strand
+        count replaces the estimate, then points, points a strand; and the attribute names, one line."""
+        read = getattr(self.adapter, "geo_stats", None)
+        if read is None or self.node is None:
+            return measured, ""
+        try:
+            st = read(self.node, lock_ids)
+        except Exception:
+            return measured, ""
+        if not st or not st.get("prims"):
+            return measured, ""
+        light = st.get("mode") not in ("", "hair")
+        label = "Strands (preview)" if light else "Strands"
+        cells = [(k, v) for k, v in measured if k != "Strands"]
+        cells += [(label, f"{st['prims']:,}"), ("Points", f"{st['points']:,}"),
+                  ("Points / strand", f"{st['points'] / st['prims']:.0f}")]
+        attribs = st.get("attribs") or {}
+        line = " · ".join(f"{cls}: {', '.join(names)}" for cls, names in attribs.items() if names)
+        return cells, line
 
     def _below(self, data: model.GroomData, key: str) -> dict | None:
         """On All locks or a group: the levels below that set their own *key* (so an edit here does not
@@ -485,11 +514,12 @@ class GroomController:
     def _overview(self, data: model.GroomData) -> list[tuple[str, str]]:
         """The whole groom, shown while nothing is selected."""
         infos = list(self._infos.values())
-        to_check = sum(lk.match != "ok" for lk in data.locks)
+        to_check = sum(lk.match == "unsure" or (lk.match == "new" and bool(data.orphans)) for lk in data.locks)
         hidden = len(self._unseen(data)[0])
         rows = [("Locks", f"{len(data.locks)}"), ("Groups", f"{len(data.groups)}"),
                 ("Strands", f"{sum(i.strands for i in infos):,}" if infos else "not cooked yet"),
-                ("Regions", "out of date" if data.regions_stale else "up to date"),
+                ("Regions", ("out of date: " + "; ".join(data.stale_why[-2:]) if data.stale_why else "out of date")
+                 if data.regions_stale else "up to date"),
                 ("To check", f"{to_check}" if to_check else "none"),
                 ("Hidden", f"{hidden}" if hidden else "none")]
         if data.orphans:
@@ -787,7 +817,8 @@ class GroomController:
 
     def review_counts(self, data: model.GroomData) -> tuple[int, int]:
         """(new locks, locks to check): what the tree's Confirm all line offers."""
-        return (sum(lk.match == "new" for lk in data.locks), sum(lk.match == "unsure" for lk in data.locks))
+        new = sum(lk.match == "new" for lk in data.locks) if data.orphans else 0
+        return new, sum(lk.match == "unsure" for lk in data.locks)
 
     def reassign_orphan(self, orphan_id: int, lock_id: int) -> bool:
         """An orphan's settings go to *lock_id* (usually a lock detect marked new), and the orphan
@@ -1211,7 +1242,7 @@ class GroomController:
             text = f"Moved {self._count(SEL_LOCKS, ids)} to {where_to}" if changed_group else \
                 f"Reordered {self._count(SEL_LOCKS, ids)}"
             if changed_group:
-                data.regions_stale = True
+                data.mark_stale(f"{self._count(SEL_LOCKS, ids)} moved to {where_to}")
                 diffs = []
                 for key in model.SETTING_KEYS:
                     olds = {before[i][key] for i in ids}

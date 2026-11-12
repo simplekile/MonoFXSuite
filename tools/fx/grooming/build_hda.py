@@ -389,7 +389,7 @@ if (npoints(1) == 0) {
 }
 """
 
-VEX_REGION_PRIMS = """// prim lock_owners: the frozen split ("Chia vùng": one frozen point per scalp prim, its centroid,
+VEX_REGION_PRIMS = """// prim lock_owners: the frozen split (Update regions: one frozen point per scalp prim, its centroid,
 // by prim number, or the nearest centroid when the scalp changed), else the majority of the
 // provisional point owners. Stacked locks share a prim: share = number of owners, density = their
 // mean (each owner grows its density / share there, so the prim's strand count stays the same).
@@ -1296,7 +1296,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                     script_callback_language=hou.scriptLanguage.Python)
     detect.setJoinWithNext(True)
     ptg.append(detect)
-    ptg.append(hou.ButtonParmTemplate("split_regions", "Chia vùng", script_callback=cb.format("split_regions"),
+    ptg.append(hou.ButtonParmTemplate("split_regions", "Update regions", script_callback=cb.format("split_regions"),
                                       script_callback_language=hou.scriptLanguage.Python))
     pub_v = hou.StringParmTemplate("publish_version", "Publish version", 1,
                                    help="Empty: the scene's _vNNN, or the next free version")
@@ -1348,7 +1348,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                                    "1-2) are read; only the animated hair mesh follows time"))
     adv.addParmTemplate(hou.IntParmTemplate("region_subdiv", "Region subdivisions", 1,
                                             default_value=(config.REGION_SUBDIV,), min=0, max=4,
-                                            help="Bilinear subdivisions of the scalp before Chia vùng "
+                                            help="Bilinear subdivisions of the scalp before Update regions "
                                                  "(x4 polygons each), so a lock's footprint covers several"))
     adv.addParmTemplate(hou.IntParmTemplate("spine_points", "Spine segments", 1, default_value=(48,),
                                             min=3, max=100, min_is_strict=True))

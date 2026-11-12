@@ -1441,7 +1441,7 @@ class GroomingUI(QWidget):
         self._detect_btn.clicked.connect(lambda: self._fire("detect"))
         groom.addWidget(self._detect_btn)
         self._split_btn = self._button("  Update regions", "layout-grid",
-                                       "Chia vùng: give each lock its growth region on the skin again. Regions stay"
+                                       "Give each lock its growth region on the skin again. Regions stay"
                                        " as they are until you update them, so an edit never moves another lock's hair")
         self._split_btn.clicked.connect(lambda: self._fire("split_regions"))
         groom.addWidget(self._split_btn)
@@ -1767,6 +1767,7 @@ class GroomingUI(QWidget):
             self._orphan_actions(props)
         if props.get("measured"):
             lay.addWidget(self._measured_box(props["measured"]))
+            self._attribs_line(props)
             lay.addSpacing(z.px(18))
         if props.get("settings"):
             head = QHBoxLayout()
@@ -1801,8 +1802,9 @@ class GroomingUI(QWidget):
         lay.addSpacing(z.px(14))
         if props.get("overview"):
             box = self._measured_box(props["overview"])
-            box.setToolTip("")
+            box.setToolTip("The whole groom as the node shows it now")
             lay.addWidget(box)
+            self._attribs_line(props)
             lay.addSpacing(z.px(18))
         if props.get("shortcuts"):
             lay.addWidget(_label("KEYS", "caps"))
@@ -1820,6 +1822,17 @@ class GroomingUI(QWidget):
             holder.setLayout(grid)
             lay.addWidget(holder)
         lay.addStretch(1)
+
+    def _attribs_line(self, props: dict) -> None:
+        """The hair's attribute names by class, under the measured cells (selectable, to copy one)."""
+        if not props.get("attribs"):
+            return
+        self._props_lay.addSpacing(self.z.px(8))
+        line = _label(f"Attributes · {props['attribs']}", "small")
+        line.setWordWrap(True)
+        line.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        line.setToolTip("Attributes on the strands as cooked now (Geometry Spreadsheet names)")
+        self._props_lay.addWidget(line)
 
     def _action_row(self, state: dict) -> QWidget:
         """What the viewport does with the selection, as toggles: on = the accent. Flip root and Exclude
@@ -1937,9 +1950,17 @@ class GroomingUI(QWidget):
     def is_busy(self) -> bool:
         return self._busy.isVisible()
 
-    def set_regions_stale(self, stale: bool) -> None:
-        """Out of date: a warning icon next to Update regions, and the button in the warning colour."""
+    def set_regions_stale(self, stale: bool, why: list[str] | None = None) -> None:
+        """Out of date: a warning icon next to Update regions, the button in the warning colour, and the
+        tooltip saying what changed since the last update."""
         self._stale.setPixmap(_lucide_pixmap("triangle-alert", self.z.px(16), WARN))
+        since = ("Since the last update: " + "; ".join(why) + ". ") if why else ""
+        tip = (f"Regions out of date. {since}Update regions gives each lock its growth area on the skin again"
+               " (until then the hair grows from the old split)")
+        self._stale.setToolTip(tip)
+        self._split_btn.setToolTip(tip if stale else "Give each lock its growth region on the skin again."
+                                   " Regions stay as they are until you update them, so an edit never moves"
+                                   " another lock's hair")
         self._stale.setVisible(stale)
         self._split_btn.setProperty("warn", bool(stale))
         self._split_btn.style().unpolish(self._split_btn)

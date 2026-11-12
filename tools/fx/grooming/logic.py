@@ -343,13 +343,13 @@ def publish_version(scene_name: str, existing: Sequence[str]) -> tuple[str, str]
     nxt = _fmt_version(newest + 1)
     found = _SCENE_VERSION_RE.findall(scene_name or "")
     if not found:
-        return nxt, f"Tên scene không có _vNNN nên dùng bản kế tiếp {nxt}."
+        return nxt, f"The scene name has no _vNNN: the next free version, {nxt}."
     n = int(found[-1])
     scene_v = _fmt_version(n)
     if n in taken:
-        return nxt, f"{scene_v} đã được publish, đề xuất {nxt} để không ghi đè."
+        return nxt, f"{scene_v} is already published: {nxt}, so nothing is overwritten."
     if n < newest:
-        return nxt, f"{scene_v} cũ hơn bản publish mới nhất {_fmt_version(newest)}, đề xuất {nxt}."
+        return nxt, f"{scene_v} is older than the newest publish {_fmt_version(newest)}: {nxt}."
     return scene_v, ""
 
 

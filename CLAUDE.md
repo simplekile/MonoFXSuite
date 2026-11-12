@@ -157,7 +157,7 @@
   Settings resolve built-in → `defaults` → group → lock.
 - A lock is spine + `lock_width` / `lock_thick` / `lock_twist` along `curveu`; the hair mesh is only an
   input. `lock_width` is the lock's width; Houdini's `width` stays the strand thickness.
-- Growth regions are frozen in the node and change only on "Chia vùng": editing one lock never changes
+- Growth regions are frozen in the node and change only on Update regions: editing one lock never changes
   another lock's look without telling. Rule (`logic.region_owners`): the scalp is subdivided bilinearly
   (`region_subdiv`), each prim belongs to every lock whose footprint (0.5 x widest head width) covers its
   centroid, else the nearest lock of its group; stacked locks share prims (`lock_owners`, `share`) and
@@ -187,7 +187,7 @@
   scene; isolated locks draw even with their eye off.
 - Per lock `root_flip` (root at the piece's other end) and `excluded` (no hair, not published, guide
   and mesh stay) are in the model, kept through re-Detect (matching uses the measured root, SPINES_RAW),
-  set by `set_root_flip` / `set_excluded` (one undo step, marks regions stale; Chia vùng skips excluded
+  set by `set_root_flip` / `set_excluded` (one undo step, marks regions stale; Update regions skips excluded
   locks). A flip reverses the spine after `assign_locks` (`spine_flip`); the surface cloud stays on the
   unflipped spine, so `fit_to_lock` reads it at 1 - u and the other thickness side. In the panel: the
   lock row's right-click menu ("Root at the other end", "Leave out of the hair", several locks at once);
@@ -391,6 +391,14 @@
   default" (`model.BUILTIN_DEFAULTS`). On All locks or a group a last column says whether the levels
   below follow ("all follow") or how many set their own ("2 set own", tooltip names them; narrow: "↓2"),
   and an edit there says who keeps their own value (`controller._below`).
+- Everything the artist reads is English (panel, status bar, node warnings, undo labels, publish notes); the
+  user found Vietnamese mixed in. Regions out of date say why: `GroomData.mark_stale(why)` keeps the last
+  `STALE_WHY_KEPT` reasons (Detect locks, a root flipped, excluded, locks moved to another group), shown in
+  the Update regions tooltip and the overview; Update regions clears them. "new" shows only while there are
+  missing locks whose settings could go to it; Detect with none missing marks nothing new.
+- The measured cells add what the geometry holds (`adapter.geo_stats`, intrinsics of the per-lock cache,
+  under 5 ms for the whole groom): real strand count (replacing the estimate; "(preview)" in preview
+  display), points, points a strand, and the attribute names by class under the cells.
 - Names as Houdini uses them (checked against SideFX's Hair Generate / Hair Clump pages): Thickness and
   `width` are one strand's, so the lock's cross-section is "Lock width" / "Lock thickness" (settings and
   measured); the scalp is "skin" (Skin area); Clump drives Hair Clump's Blend (tooltip); Guides; Hair /

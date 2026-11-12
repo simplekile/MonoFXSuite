@@ -1165,6 +1165,35 @@ def test_alt_click_on_an_eye_shows_only_that_and_again_puts_the_eyes_back(env) -
     assert sorted(lk.id for lk in data.locks if data.shown(lk.id)) == [1, 2]
 
 
+def test_the_measured_cells_say_what_the_geometry_holds(env, monkeypatch) -> None:
+    adapter, view, c = env
+    asked = []
+
+    def geo_stats(node, ids):
+        asked.append(ids)
+        return {"locks": 1, "prims": 2586, "points": 118956, "mode": "hair",
+                "attribs": {"point": ["P", "width"], "prim": ["lock_id", "name"], "vertex": [], "detail": []}}
+
+    monkeypatch.setattr(adapter, "geo_stats", geo_stats, raising=False)
+    c.select_locks([1])
+    cells = dict(view.props["measured"])
+    assert cells["Strands"] == "2,586" and cells["Points"] == "118,956" and cells["Points / strand"] == "46"
+    assert view.props["attribs"] == "point: P, width · prim: lock_id, name" and asked[-1] == [1]
+    c.select("none")
+    assert dict(view.props["overview"])["Points"] == "118,956" and asked[-1] is None
+
+
+def test_new_only_while_there_are_missing_locks_and_stale_says_why(env) -> None:
+    adapter, view, c = env
+    rows = {r["id"]: r for g in c.tree_rows(c.data()) for r in [g] + g.get("children", [])}
+    assert "new" in rows[4]["badges"]                    # back_old is missing: its settings could go here
+    c.delete_orphan(9)
+    rows = {r["id"]: r for g in c.tree_rows(c.data()) for r in [g] + g.get("children", [])}
+    assert "new" not in rows[4]["badges"] and c.review_counts(c.data()) == (0, 1)
+    c.drop([(ctl.SEL_LOCKS, 1)], (ctl.SEL_GROUP, "back"), ctl.DROP_ON)
+    assert c.data().stale_why == ["lock 1 moved to Back"]
+
+
 def test_confirm_all_clears_new_and_to_check(env) -> None:
     adapter, view, c = env
     assert c.review_counts(c.data()) == (1, 1)

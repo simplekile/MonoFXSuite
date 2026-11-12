@@ -14,7 +14,7 @@ copy-pasted hairgen/hairclump network of `char_Helen_grooming_v007` (about 60 ha
    animated hair mesh (same topology as the rest hair mesh).
 2. Detect locks: one lock per hair mesh piece, a stable `lock_id`, a name, a group from the region.
 3. Measure each lock: spine curve, width, thickness and twist along `curveu`.
-4. Split the scalp into growth regions (`lock_owner`), frozen until the user presses "Chia vùng".
+4. Split the scalp into growth regions (`lock_owner`), frozen until the user presses Update regions.
 5. Hairgen per lock from its own region, then clump, length, frizz. One node network, not one per lock.
 6. Settings: defaults → group → lock, edited in the panel or on the HDA. Each edit is one undo step.
 7. Display: Mesh / Guide / Hair preview (10%, at most 20 000 strands) / Hair full; colour by lock or group.
@@ -118,7 +118,7 @@ try later (publish animated guides only, deform the rest strands at render time)
 ## Rules every part follows
 
 - Region split is frozen: it is stored in the node (a stash) and changes only when the user presses
-  "Chia vùng". Adding, moving or deleting a lock never silently changes another lock's region; the panel
+  Update regions. Adding, moving or deleting a lock never silently changes another lock's region; the panel
   shows "regions out of date" instead.
 - Region rule (`logic.region_owners`, decided after the Helen test where nearest-root left 19/61 locks
   without hair): the scalp is subdivided bilinearly (`region_subdiv`, default 2) and each scalp prim
@@ -297,7 +297,7 @@ Panel
   own state. Hidden locks keep their region (also in the provisional split), so hiding never changes
   another lock. Isolated locks show even with the eye off; isolate is a hidden parm set with undo off,
   cleared on load (OnLoaded).
-- Excluded locks keep guide and mesh, grow no hair, are not published; Chia vùng gives their scalp to
+- Excluded locks keep guide and mesh, grow no hair, are not published; Update regions gives their scalp to
   the others. A root flip reverses the spine after the lock ids are known (Detect matches on the
   measured root, so the flag survives re-Detect); the lookup cloud stays on the measured spine.
 - Measured on Helen (hython, t20): see the session report; hair full one-lock edit 9.5 s -> about 1 s,

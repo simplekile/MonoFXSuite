@@ -77,6 +77,9 @@ class Orphan:
     excluded: bool = False
 
 
+STALE_WHY_KEPT = 6   # reasons the panel lists for regions out of date
+
+
 @dataclass
 class GroomData:
     asset: str = ""
@@ -85,8 +88,20 @@ class GroomData:
     locks: list[Lock] = field(default_factory=list)
     orphans: list[Orphan] = field(default_factory=list)
     regions_stale: bool = False  # set when locks change after the last region split
+    stale_why: list[str] = field(default_factory=list)   # what changed since (the panel says it)
     id_high: int = 0             # highest lock id ever given: deleting an orphan never frees its id
     schema: int = SCHEMA
+
+    # ---- regions out of date ----
+    def mark_stale(self, why: str) -> None:
+        """Regions out of date because of *why* ("hair_back_03 root flipped"); the last few are kept."""
+        self.regions_stale = True
+        if why and why not in self.stale_why:
+            self.stale_why = (self.stale_why + [why])[-STALE_WHY_KEPT:]
+
+    def clear_stale(self) -> None:
+        self.regions_stale = False
+        self.stale_why = []
 
     # ---- lookup ----
     def group(self, group_id: str) -> Group | None:
@@ -205,6 +220,7 @@ class GroomData:
                 for o in raw.get("orphans", [])
             ],
             regions_stale=bool(raw.get("regions_stale", False)),
+            stale_why=[str(w) for w in raw.get("stale_why", [])][-STALE_WHY_KEPT:],
             id_high=int(raw.get("id_high", 0)),
             schema=SCHEMA,
         )

@@ -319,7 +319,16 @@ def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_group
         if lk.group not in have:
             out.groups.append(model.Group(id=lk.group, name=lk.group, color=group_color(len(out.groups))))
             have.add(lk.group)
-    out.regions_stale = out.regions_stale or stale
+    if stale:
+        n_new = sum(m.status == "new" for m in report.matches)
+        parts = ([f"{n_new} new"] if n_new else []) + ([f"{len(report.orphaned)} missing"] if report.orphaned else [])
+        out.mark_stale("Detect locks: " + (", ".join(parts) if parts else "roots or lengths moved"))
+    if not out.orphans:
+        # "new" asks for a decision only while a missing lock's settings could go to it: with none
+        # missing, every lock Detect found is simply the groom
+        for lk in out.locks:
+            if lk.match == "new":
+                lk.match = "ok"
     out.note_ids()
     return out
 
@@ -547,8 +556,8 @@ def detect(node) -> DetectReport:
     new = apply_detect(data, pieces, groups, report, asset=asset)
     write_data(node, new, UNDO_PREFIX + "Detect")
     c = report.counts
-    _status(f"{config.HDA_LABEL}: {len(pieces)} lọn - ok {c['ok']}, chưa chắc {c['unsure']}, "
-            f"mới {c['new']}, mất {c['orphaned']}")
+    _status(f"{config.HDA_LABEL}: {len(pieces)} locks - ok {c['ok']}, to check {c['unsure']}, "
+            f"new {c['new']}, missing {c['orphaned']}")
     return report
 
 
@@ -600,14 +609,14 @@ def split_regions(node) -> None:
     for pt, own in zip(frozen.points(), owners):
         pt.setAttribValue(ATTR_LOCK_OWNERS, own)
         pt.setAttribValue(config.ATTR_LOCK_OWNER, own[0] if own else config.NO_OWNER)
-    data.regions_stale = False
-    with hou.undos.group(UNDO_PREFIX + "Chia vùng"):
+    data.clear_stale()
+    with hou.undos.group(UNDO_PREFIX + "Update regions"):
         node.parm(PARM_REGIONS).set(frozen)
         node.parm(config.DATA_PARM).set(data.to_json())
     grown = {lid for own in owners for lid in own}
     shared = sum(1 for own in owners if len(own) > 1)
-    _status(f"{config.HDA_LABEL}: chia vùng cho {len(grown)}/{len(roots)} lọn, {len(centroids)} prim da, "
-            f"{shared} prim dùng chung")
+    _status(f"{config.HDA_LABEL}: regions updated for {len(grown)}/{len(roots)} locks, {len(centroids)} skin"
+            f" prims, {shared} shared")
 
 
 def set_display(node, mode: str, color_by: str, preview: float = config.PREVIEW_FRACTION) -> None:
@@ -752,14 +761,16 @@ def strand_ids(node) -> list[int]:
 def _set_lock_flag(node, lock_ids: Iterable[int], field_name: str, value: bool, label: str) -> int:
     data = read_data(node)
     want = set(int(i) for i in lock_ids)
-    changed = 0
+    names = []
     for lk in data.locks:
         if lk.id in want and getattr(lk, field_name) != bool(value):
             setattr(lk, field_name, bool(value))
-            changed += 1
+            names.append(lk.name or f"lock {lk.id}")
+    changed = len(names)
     if changed:
         # the lock's root moves, or it stops taking scalp: regions are out of date, never re-split silently
-        data.regions_stale = True
+        who = names[0] if changed == 1 else f"{changed} locks"
+        data.mark_stale(f"{who}: {label.lower()}")
         write_data(node, data, UNDO_PREFIX + label)
     return changed
 
@@ -767,14 +778,14 @@ def _set_lock_flag(node, lock_ids: Iterable[int], field_name: str, value: bool, 
 def set_root_flip(node, lock_ids: Iterable[int], flip: bool) -> int:
     """Root at the mesh piece's other end (`flip`) or back at the end nearer the scalp, for these locks.
     One undo step; kept through re-Detect; marks regions out of date. Returns how many locks changed."""
-    return _set_lock_flag(node, lock_ids, "root_flip", flip, "Đổi đầu gốc" if flip else "Gốc mặc định")
+    return _set_lock_flag(node, lock_ids, "root_flip", flip, "Root flipped" if flip else "Root back at the scalp end")
 
 
 def set_excluded(node, lock_ids: Iterable[int], excluded: bool) -> int:
     """Leave these locks out of the hair (no strands, not published) or take them back. Mesh and guide
-    still show them. One undo step; kept through re-Detect; marks regions out of date (Chia vùng gives
+    still show them. One undo step; kept through re-Detect; marks regions out of date (Update regions gives
     their scalp to the other locks). Returns how many locks changed."""
-    return _set_lock_flag(node, lock_ids, "excluded", excluded, "Bỏ khỏi tóc" if excluded else "Mọc tóc lại")
+    return _set_lock_flag(node, lock_ids, "excluded", excluded, "Excluded from hair" if excluded else "Grows hair again")
 
 
 def _scene_viewer():
@@ -917,9 +928,9 @@ def publish(node, version: str | None = None) -> PublishResult:
         usd, tool_dir = logic.publish_paths(hip_dir, asset, version)
         version = os.path.basename(os.path.dirname(usd))  # the normalised spelling (v7 -> v007)
     except ValueError as exc:
-        return PublishResult(False, "", version or "", f"Không publish được: {exc}")
+        return PublishResult(False, "", version or "", f"Cannot publish: {exc}")
     if os.path.exists(usd) or os.path.exists(tool_dir):
-        return PublishResult(False, usd, version, f"{version} đã có bản publish, không ghi đè: {usd}")
+        return PublishResult(False, usd, version, f"{version} is already published, not overwritten: {usd}")
 
     exporter = _inner(node, NODE_PUBLISH_USD)
     old_mode = node.evalParm(PARM_DISPLAY)
@@ -950,10 +961,10 @@ def publish(node, version: str | None = None) -> PublishResult:
             json.dump(record, fh, ensure_ascii=False, indent=1)
     except Exception as exc:  # noqa: BLE001 - reported to the panel, never a dialog
         _remove_partial(usd, tool_dir, made)
-        return PublishResult(False, usd, version, f"Publish {version} lỗi: {exc}")
-    msg = f"Đã publish {asset} {version}: {strands} sợi, {len(data.locks)} lọn"
+        return PublishResult(False, usd, version, f"Publish {version} failed: {exc}")
+    msg = f"Published {asset} {version}: {strands:,} strands, {len(data.locks)} locks"
     if data.regions_stale:
-        msg += " (vùng mọc chưa chia lại)"
+        msg += " (regions out of date)"
     _status(f"{config.HDA_LABEL}: {msg}")
     return PublishResult(True, usd, version, msg)
 
@@ -983,7 +994,7 @@ def on_button(node, action: str) -> None:
             res = publish(node, node.evalParm(PARM_PUBLISH_VERSION).strip() or None)
             _status(f"{config.HDA_LABEL}: {res.message}", error=not res.ok)
     except Exception as exc:  # noqa: BLE001
-        _status(f"{config.HDA_LABEL}: {action} lỗi: {exc}", error=True)
+        _status(f"{config.HDA_LABEL}: {action} failed: {exc}", error=True)
 
 
 def cook_assign(sop) -> None:
@@ -1012,7 +1023,7 @@ def cook_assign(sop) -> None:
         geo.setPrimFloatAttribValues(key, attrs[key])
     missing = ids.count(-1)
     if missing:
-        sop.addWarning(f"{missing} lọn chưa có trong dữ liệu: bấm Detect")
+        sop.addWarning(f"{missing} locks are not in the groom data yet: press Detect locks")
 
 
 def on_loaded(node) -> None:
@@ -1210,7 +1221,50 @@ def _cached_hair(sop, with_prim: bool = False):
             name = p.stringAttribValue(config.ATTR_NAME) if named else ""
             yield (lid, name, g, p) if with_prim else (lid, name, g)
     if missing:
-        sop.addWarning(f"{missing} lọn chưa có tóc trong cache: đổi Display rồi đổi lại để nấu lại")
+        sop.addWarning(f"{missing} locks have no hair in the cache: change Display and back to cook them")
+
+
+def geo_stats(node, lock_ids: Sequence[int] | None = None) -> dict:
+    """What the hair of these locks (None: every lock that grows) holds as the node shows it now: locks,
+    prims (one strand each), points, and the attribute names by class. Read from the per-lock cache
+    (geometry intrinsics, no copy), so it costs nothing to ask on every selection."""
+    packed = _HAIR_PACKED_PATHS.get(node.sessionId())
+    sop = hou.node(packed) if packed else None
+    if sop is None:
+        sop = next((n for n in node.allSubChildren() if n.name() == "hair_packed"), None)
+        if sop is None:
+            return {}
+        _HAIR_PACKED_PATHS[node.sessionId()] = sop.path()
+    want = None if lock_ids is None else {int(i) for i in lock_ids}
+    cache = hair_cache()
+    sid = node.sessionId()
+    keyed = sop.inputs()[1].geometry()
+    if keyed is None or keyed.findPrimAttrib("cache_key") is None:
+        return {}
+    grows = keyed.findPrimAttrib("grows") is not None
+    out = {"locks": 0, "prims": 0, "points": 0, "attribs": {}, "mode": ""}
+    for p in keyed.iterPrims():
+        lid = p.intAttribValue(config.ATTR_LOCK_ID)
+        if (want is not None and lid not in want) or (grows and p.intAttribValue("grows") == 0):
+            continue
+        g = cache.get(sid, lid, p.stringAttribValue("cache_mode"), p.stringAttribValue("cache_key"))
+        if g is None:
+            continue
+        out["locks"] += 1
+        out["prims"] += g.intrinsicValue("primitivecount")
+        out["points"] += g.intrinsicValue("pointcount")
+        out["mode"] = out["mode"] or p.stringAttribValue("cache_mode")
+        if not out["attribs"]:
+            out["attribs"] = {
+                "point": sorted(a.name() for a in g.pointAttribs()),
+                "prim": sorted(a.name() for a in g.primAttribs()),
+                "vertex": sorted(a.name() for a in g.vertexAttribs()),
+                "detail": sorted(a.name() for a in g.globalAttribs()),
+            }
+    return out
+
+
+_HAIR_PACKED_PATHS: dict[int, str] = {}
 
 
 def cook_hair_cache(sop) -> None:
@@ -1298,6 +1352,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]
