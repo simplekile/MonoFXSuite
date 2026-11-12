@@ -477,12 +477,12 @@ def test_x_turns_the_xray_off_to_see_the_selection_in_the_real_groom(env, monkey
     assert adapter.strands == [2] and focus[-1] == [2]
 
 
-def test_more_locks_than_strands_max_stay_bands(env, monkeypatch) -> None:
+def test_any_number_of_selected_locks_shows_strands(env, monkeypatch) -> None:
+    """A group of 21 and a group of 20 behave the same (there is no cap)."""
     adapter, view, c = env
     _with_focus(adapter, monkeypatch)
-    monkeypatch.setattr(ctl.config, "STRANDS_MAX", 1)
-    c.select_locks([1, 2])
-    assert adapter.strands is None and "drawn as bands" in view.messages[-1][0]
+    c.select_locks([1, 2, 3])
+    assert adapter.strands == [1, 2, 3]
 
 
 def test_escape_leaves_isolate_then_the_selection(env, monkeypatch) -> None:

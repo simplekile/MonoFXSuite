@@ -1306,19 +1306,17 @@ class GroomController:
             look = not drawn or not self.xray or set(drawn) >= set(every)
             strands = getattr(self.adapter, "set_strands", None)
             whole = getattr(self.adapter, "STRANDS_ALL", "all")
-            too_many = not look and len(drawn) > config.STRANDS_MAX
+            # no cap on how many: a group of 21 drawn as bands while one of 20 showed strands read as two
+            # different behaviours (the user); the whole groom as strands costs only ~0.37 s anyway
 
             def show():
                 focus(self.node, None if look else drawn)
                 if strands is not None:
-                    strands(self.node, whole if look else (None if too_many else drawn))
+                    strands(self.node, whole if look else drawn)
                 return True
 
             self._run("Focus", show)
             self._viewport_ids = []
-            if too_many and not quiet:
-                self.view.set_message(f"{len(drawn)} locks selected: drawn as bands (strands for up to"
-                                      f" {config.STRANDS_MAX}). X shows every lock as strands")
             if lock_ids and not drawn and not quiet:
                 names = ", ".join(lk.name for lk in (data.lock(i) for i in lock_ids[:3]) if lk is not None)
                 more = f" and {len(lock_ids) - 3} more" if len(lock_ids) > 3 else ""

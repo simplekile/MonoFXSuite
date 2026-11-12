@@ -207,7 +207,7 @@
     (view bar X-ray) turns the bands into real strands to judge the selection inside the groom, the
     selection still edits; nothing selected, All locks, or a selection that is all that is drawn shows
     the whole groom as strands (`set_strands(node, STRANDS_ALL)`, hidden parm `strand_ids` = "all").
-    Over `config.STRANDS_MAX` (20) selected locks stay bands, the message says so. `controller.
+    No cap on how many (a cap of 20 drew hair_base's 21 as bands while hair_bang showed strands). `controller.
     _sync_viewport` sets focus and strands together on every selection change and refresh. Esc leaves
     isolate, then deselects. No strands icon, button, menu or Enter. Their packed prim stays, empty, so
     prim number = place among the packed prims for every lock. t41/t42 (GUI Helen): select 0.04-0.10 s,

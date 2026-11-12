@@ -720,15 +720,14 @@ def set_strands(node, lock_ids: Sequence[int] | str | None) -> None:
     """Draw these locks as their strands (None: every lock packed; STRANDS_ALL: the whole groom). The
     viewport draws a packed lock's strands as a flat band of one width; unpacked, it draws each strand's
     width, thinning to the tip. A view state like isolate: no undo step, cleared when the scene is loaded
-    again. It changes no lock's hair, only how `hair_packed` hands it to the viewport (a list holds at
-    most `config.STRANDS_MAX` locks)."""
+    again. It changes no lock's hair, only how `hair_packed` hands it to the viewport."""
     p = node.parm(PARM_STRANDS)
     if p is None:
         return
     if lock_ids == STRANDS_ALL:
         text = STRANDS_ALL
     else:
-        text = format_isolate(sorted(set(int(i) for i in (lock_ids or ())))[:config.STRANDS_MAX])
+        text = format_isolate(sorted(set(int(i) for i in (lock_ids or ()))))
     if p.eval() != text:
         with hou.undos.disabler():
             p.set(text)
