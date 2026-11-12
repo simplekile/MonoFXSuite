@@ -32,6 +32,10 @@ PREVIEW_FACTOR_STEP = 0.8      # a capped preview factor snaps down to 0.8^k (it
 # A strand gathers from its root on the region into its lock's shape over this many times the root's
 # distance from the mesh root (build_hda fit_root; at least root_blend of the lock, at most half)
 ROOT_CONVERGE = 1.5
+# Roots with no part of their lock within ROOT_FAR_CM over them move ROOT_FAR_PULL of the way toward the
+# skin under the lock's root (build_hda root_spread): Helen's fringe lies 1.8-2.3 cm above its skin
+ROOT_FAR_CM = 2.0
+ROOT_FAR_PULL = 0.7
 # Prim attributes only the per-lock loop needs (hairgen, fit_to_lock, hairclump): dropped before the cache
 LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_u0", "fit_c0", "fit_root", "fit_blend", "length_mult", "frizz",
                      "clumpid", "skinprim", "skinprimuv")

@@ -159,8 +159,9 @@
   input. `lock_width` is the lock's width; Houdini's `width` stays the strand thickness.
 - Growth regions are frozen in the node and change only on Update regions: editing one lock never changes
   another lock's look without telling. Rule (`logic.region_owners`): the scalp is subdivided bilinearly
-  (`region_subdiv`), each prim belongs to every lock whose footprint (0.5 x widest head width) covers its
-  centroid, else the lock of its group whose hair MESH lies nearest over it (HDA node `region_mesh`, layers
+  (`region_subdiv`), each prim belongs to every lock whose footprint (0.5 x widest head width, centred on
+  the root moved onto the skin: `_roots_on_skin`, a cap whose root lies on another cap sits ~1 cm up and
+  its footprint covered no skin) covers its centroid, else the lock of its group whose hair MESH lies nearest over it (HDA node `region_mesh`, layers
   within `REGION_MESH_SHARE_CM` share), else the nearest root; stacked locks share prims (`lock_owners`,
   `share`) and divide the density. Nearest-root alone left 19/61 Helen fringe locks bare (roots 1-4 mm
   apart), and past the footprints it gave scalp to locks lying elsewhere: 0.8 cm fringe locks owned 8 x 8
@@ -309,13 +310,15 @@
   and folds (grooming-check, 2026-11-12). `root_pull` (0.85 then) gathered each lock's roots into its mesh
   piece's root cross-section (hair_base_01: region 6.7 x 7.7 cm, roots in 1.1 x 1.9 cm): bases 20-30x
   denser than set, scalp between them bare, root_clumped 0.67, root spacing 0.14. The user chose roots at
-  the set density on regions that follow the meshes (root spread, below). Helen (t47, v006 ref):
-  root_clumped 0, spacing 0.97, other 0.8 %, density worst 15 %, folds 0.2 %, kink p95 25 deg, cook
-  11.9-13.6 s vs 12.1 s (machine load swings it). Still failing, OPEN: dmax p95 2.01 cm (limit 2.0,
-  back locks as before); layered caps whose root end lies on another cap (hair_base_08/11/17, root end
-  > 1 cm off the scalp) grow no hair on their first fifth (lock width 0.43): the scalp under it belongs to
-  the cap beneath, and a minimum footprint of 1 cm did not reach it; Helen's fringe meshes lie 1.5-2.4
-  cm above their scalp patch, so hair rising from it hangs under the arc (bang_09/10 width 2.1x mid).
+  the set density on regions that follow the meshes (root spread, below). Helen (t47, v006 ref), before ->
+  after: root_clumped 0.67 -> 0.03, spacing 0.14 -> 1.0, density worst 16 % -> 0 (hairgen `forcecount`),
+  dmax p95 1.25 -> 1.66 cm, other 0.6 -> 0.8 %, folds 0.02 -> 0.1 %, kink p95 26 deg, width mid worst
+  0.33 -> 0.37, cook 11.6 -> 12.3 s. OPEN: lock_width_ratio_worst 0.76 -> 0.60 (limit 0.7): ~12 crown caps
+  (hair_base_*) start at one whorl point (x 0, y 172 cm), whose ~15 skin prims they share, so their
+  first stretch gets few strands even at 12x the density there (`START_BOOST_MAX`; 40x changed nothing);
+  the approved v006 puts 15,139 roots (17.5 % of all) within 1 cm of that point, ~4,800 / cm2, so a
+  whorl denser than the set density is the approved look there. The fringe (hair_bang_09) still shows a
+  fan at its start and a small fin mid-arc (its mesh lies 1.8-2.3 cm above the skin it owns).
 - Workflow GUI check (t46): drag ticks ~0.43 s (the first 2.5 s), release 0.7 s, undo 0.47 s, Deform
   frames ~1.5 s (first 4.4 s), publish 0.7 s with 118,380 strands and only contract primvars. Playback
   with Deform off ~3.3 fps: open. GUI tests cannot play the timeline inside one step (Houdini's playback
@@ -352,7 +355,13 @@
   spread that keeps neighbours together: a random (s, t) crossed strands; ranking along the region's
   axes mixed along and across on caps). The strand runs u0 -> tip and leaves its root over
   `fit_blend` = max(`root_blend`, `root_converge` (1.5) x offset / length), at most half.
-  `root_reach_cm` (0) can bring far roots closer (Helen 1 cm: dmax 1.71, but 16 % bunched roots). Strand count uses the lock's widest band anywhere (the first quarter gave
+  Roots round the lock's root (region_frame footprint `fp_c` / `fp_r`) join at u 0 and get up to
+  `START_BOOST_MAX` x the density there (`fp_boost`: the start's cross-section over the footprint's area;
+  hairgen's count is fixed, so the rest of the region thins): a cap lifting off the skin onto another cap had
+  its own mid nearer those roots, and its first three tenths held 0 % of its hair. Roots with no part of
+  their lock within `root_far_cm` (2) over them move `root_far_pull` (0.7) of the way toward the skin under
+  the lock's root (Helen's fringe, 1.8-2.3 cm above its skin, hung a curtain under its arc: width mid 2.2x
+  -> 0.37; 1 cm bunched 20 % of roots). `root_reach_cm` (0) can bring every far root closer. Strand count uses the lock's widest band anywhere (the first quarter gave
   long hair_back ribbons 800 strands: see-through). Scenes keep the parm values they saved
   (`spine_points` 24 in older scenes): revert them to the defaults to get this result.
 - Hairclump runs per lock (inside the loop), `clumpid` = `lock_id` going in, so clumps stay in a lock. The lock's clump

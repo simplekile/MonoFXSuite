@@ -236,15 +236,28 @@ def width_ratios(hair_geo, mesh_geo, spine_geo):
     hp = np.array(hair_geo.pointFloatAttribValues("P")).reshape(-1, 3)
     counts = np.array([p.numVertices() for p in hair_geo.prims()])
     hl = np.repeat(np.array(hair_geo.primIntAttribValues("lock_id")), counts)
+    # each hair point weighs the length of strand it stands for: every strand has the same point count,
+    # so strands that join their lock part way along (root spread) packed their points toward the tip
+    # and the unweighted spread of a curved cap read 0.43 while every tenth of it read 0.65-1.0
+    seg = np.linalg.norm(np.diff(hp, axis=0), axis=1)
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    wgt = np.zeros(len(hp))
+    wgt[:-1] += 0.5 * seg
+    wgt[1:] += 0.5 * seg
+    wgt[starts[1:] - 1] -= 0.5 * seg[starts[1:] - 1]   # no segment from one strand's tip to the next root
+    wgt[starts[1:]] -= 0.5 * seg[starts[1:] - 1]
 
-    def spread(x):
-        x = x - x.mean(0)
-        return np.sqrt(np.maximum(np.sort(np.linalg.eigvalsh(np.cov(x.T)))[::-1], 0))
+    def spread(x, w=None):
+        w = np.ones(len(x)) if w is None else np.maximum(w, 0)
+        x = x - np.average(x, axis=0, weights=w)
+        cov = (x * w[:, None]).T @ x / max(w.sum(), 1e-12)
+        return np.sqrt(np.maximum(np.sort(np.linalg.eigvalsh(cov))[::-1], 0))
     out = {}
     for p in spine_geo.prims():
-        m, h = mp[mpc == p.attribValue("piece")], hp[hl == p.attribValue("lock_id")]
+        sel = hl == p.attribValue("lock_id")
+        m, h = mp[mpc == p.attribValue("piece")], hp[sel]
         if len(m) > 10 and len(h) > 10:
-            out[int(p.attribValue("lock_id"))] = float(spread(h)[1] / max(spread(m)[1], 1e-9))
+            out[int(p.attribValue("lock_id"))] = float(spread(h, wgt[sel])[1] / max(spread(m)[1], 1e-9))
     return out
 
 

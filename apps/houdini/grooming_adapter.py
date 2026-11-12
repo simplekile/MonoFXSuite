@@ -563,6 +563,22 @@ def detect(node) -> DetectReport:
     return report
 
 
+def _roots_on_skin(roots: dict[int, tuple[float, float, float]],
+                   centroids: list[tuple[float, float, float]]) -> dict[int, tuple[float, float, float]]:
+    """Each root moved to the nearest scalp prim centre: a cap whose root end lies on another cap sits
+    ~1 cm off the skin (Helen hair_base_08/11/17), so its footprint (0.7 cm) covered no skin, the cap
+    beneath took it, and the first quarter of the cap grew no hair."""
+    if not centroids:
+        return roots
+    import numpy as np
+    c = np.asarray(centroids, dtype=float)
+    out = {}
+    for lid, r in roots.items():
+        i = int(np.argmin(((c - np.asarray(r, dtype=float)) ** 2).sum(axis=1)))
+        out[lid] = tuple(float(v) for v in c[i])
+    return out
+
+
 def split_regions(node) -> None:
     """Recompute and freeze the growth regions, clear `regions_stale`. One undo step.
 
@@ -601,6 +617,7 @@ def split_regions(node) -> None:
             c[0] += pos[0]; c[1] += pos[1]; c[2] += pos[2]
         centroids.append((c[0] / n, c[1] / n, c[2] / n))
         prim_groups.append(pp[0].stringAttribValue(config.ATTR_GROUP) if has_group and pp else "")
+    roots = _roots_on_skin(roots, centroids)
     if has_group:
         groups_of = {lk.id: lk.group for lk in data.locks}
     else:  # scalp without regions: every prim may grow any lock
