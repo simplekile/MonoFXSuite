@@ -14,10 +14,10 @@ no Critical and few High findings gets a short review.
 2. **Contrast.** `python .claude/skills/dcc-panel-design/scripts/contrast_check.py --pairs
    .claude/skills/dcc-panel-design/references/palette_pairs.json --suggest`; add the panel's new pairs
    to the file (a new colour, a new fill) before judging.
-3. **Timings** from the CLAUDE.md numbers or a fresh measurement: open, refresh, select, an edit, a poll
+3. **Timings** from the numbers in `tools/fx/grooming/CLAUDE.md` or a fresh measurement: open, refresh, select, an edit, a poll
    (the review's `bench_panel.py` pattern: offscreen Qt, fake adapter, `time.perf_counter` around the
    controller call plus `processEvents`).
-4. **In the host (only when a GUI check is possible):** the harness from CLAUDE.md: Houdini started with
+4. **In the host (only when a GUI check is possible):** the harness from `tools/fx/grooming/CLAUDE.md`: Houdini started with
    a startup script on the secondary monitor, the panel grabbed after the viewport has drawn; compare
    timings against an action whose code did not change (select) before calling a regression; kill the
    session after. Other sessions may need the secondary monitor: ask first.

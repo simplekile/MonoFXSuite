@@ -1,6 +1,6 @@
 # Interaction rules for DCC panels
 
-Every rule here was paid for in this suite (CLAUDE.md, Auto Material and MONO Grooming sections) or comes
+Every rule here was paid for in this suite (the root CLAUDE.md's Auto Material section and `tools/fx/grooming/CLAUDE.md`) or comes
 from the host's own conventions. A panel is a tool the artist keeps open for hours next to a viewport:
 it must never make the viewport wait, lie about what the viewport shows, or take a key the host owns.
 
