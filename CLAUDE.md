@@ -440,6 +440,16 @@
 - Names follow the department: `grooming` (`04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`,
   tool data in `vNNN/_grooming/`). Publish version defaults to the scene's `_vNNN` and never overwrites.
 
+## Tool panels (skill `.claude/skills/dcc-panel-design`)
+
+- Any new or changed Qt panel inside a DCC (Houdini first) goes through the skill: artist tasks, the
+  host's patterns, 2-3 mockups the user picks from, then build on the shared palette and roles, then
+  offscreen grabs (`scripts/grab_offscreen.py`, 400 / 760 / 1100 px at scale 1 / 1.5) and the contrast
+  check (`scripts/contrast_check.py`, pairs in `references/palette_pairs.json`, guarded by
+  `tests/test_dcc_panel_design_scripts.py`) before screenshots go to the user. The panel rules above
+  (one accent, px fonts through `Sz`, view bar apart from action bar, no modals, one undo step, view
+  state apart from data) are collected there with the review checklist.
+
 ## Release (`release.ps1`, skill `.claude/skills/release`)
 
 - Two steps. `release.ps1 prepare` on the branch going to main: clean tree, tests pass, notes under
