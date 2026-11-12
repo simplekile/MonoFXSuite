@@ -15,7 +15,7 @@ as data in a sandbox (`E:/01 Dev/sandbox/claude/skills_study/`, cloned 2026-11-1
 
 ## This repository
 
-- `CLAUDE.md` sections *Auto Material* and *MONO Grooming*: fonts in px against Houdini's UI scale, one
+- The root `CLAUDE.md` section *Auto Material* and `tools/fx/grooming/CLAUDE.md`: fonts in px against Houdini's UI scale, one
   accent, status colours only for status, no modal dialogs, style rules prefixed with the window's
   objectName, opaque tree colours under Houdini's style sheet, show a widget only once it has a parent,
   the wheel never on sliders and combos, the narrow docked layout and width-dependent wrapping, names as

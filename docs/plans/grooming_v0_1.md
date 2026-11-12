@@ -18,7 +18,7 @@ copy-pasted hairgen/hairclump network of `char_Helen_grooming_v007` (about 60 ha
 5. Hairgen per lock from its own region, then clump, length, frizz. One node network, not one per lock.
 6. Settings: defaults → group → lock, edited in the panel or on the HDA. Each edit is one undo step.
 7. Display: Mesh / Guides / Hair preview (10%, at most 20 000 strands) / Hair; Color by lock or group (names as
-   Houdini uses them, listed in CLAUDE.md).
+   Houdini uses them, listed in `tools/fx/grooming/CLAUDE.md`).
 8. Optional deform by the animated hair mesh (Point Deform, as today), then cache per shot.
 9. Publish the asset groom to `04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`.
 
@@ -240,7 +240,7 @@ Panel and network, after testing the Helen sandbox scene:
   Settings ⚙ holds font size and X-ray strength.
 - Redesign 2026-11-12 (UI/UX review + Houdini names): view bar apart from actions, narrow docked layout,
   quiet icon columns, filter, Confirm all, the selection's action row, groom overview with keys, fading
-  result line, labels renamed as Houdini names things (CLAUDE.md lists them). Checked in GUI Houdini at
+  result line, labels renamed as Houdini names things (`tools/fx/grooming/CLAUDE.md` lists them). Checked in GUI Houdini at
   1240 / 700 / 500 px and UI size Largest (sandbox t39), with t36 / t37 again.
 
 ## Panel pass (2026-11-11, branch claude/grooming-panel-v2-d1d5c0)

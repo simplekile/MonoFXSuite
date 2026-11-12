@@ -42,7 +42,7 @@ detail lives in `references/`; read the file the step names, not all of them.
    state that matters; `scripts/contrast_check.py` with the panel's new colour pairs added to
    `references/palette_pairs.json`; then the checklist (`review-checklist.md`), written as a short report
    with numbers. Fix Critical and High, re-grab, and only then show the user screenshots. A GUI check
-   in the host (secondary monitor, CLAUDE.md harness) comes last and only when the monitor is free.
+   in the host (secondary monitor, the harness in `tools/fx/grooming/CLAUDE.md`) comes last and only when the monitor is free.
 
 ## The rules that matter most (the rest is in the references)
 
