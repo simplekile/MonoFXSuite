@@ -28,7 +28,7 @@ Per strand, over its polyline. `p95` = 95th percentile over strands. Reference =
 | lock_outside_worst | share of hair beyond its lock's cross-section (mesh 1-99 % extent on its two axes across the spine) by 2 mm, worst tenth 3-9, at most 0.10 | | hair crossing the gap between the skin and a lock floating over it, in bundles: the spike on hair_base_11, fuzz on _17, standing strands on _08 (7e33860 0.30, even roots 0.53, v0.1 0.25 at the back locks' tips). The turned check missed these once they rose gently |
 | skin_thin_share / lock_skin_thin_worst | scalp (and worst region) with under half the roots its regions ask for within 5 mm, whorl roots and start extras left out; at most 0.05 / 0.20 | | roots moved round lock roots leave the skin between thin: v0.1 0.84, 7e33860 0.23. Skin under an arch (every owner's root edge on the skin, its mesh over 1 cm above) is left out and reported apart: the tool moves those roots to the lock start on purpose |
 
-Roots, width profile and folds are numpy over the full HAIR (16 s on Helen). The per-lock table in
+Roots, width profile and folds are numpy over the full groom (output 1, `GROOM_REST`; 16 s on Helen). The per-lock table in
 the report lists the locks that miss most, each with its width ratio by tenth, root -> tip: a lock
 whose hair narrows before its mesh does reads as falling numbers at the end, a flare as a rise.
 

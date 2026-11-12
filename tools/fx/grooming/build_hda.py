@@ -12,8 +12,14 @@ The network follows the fixed processing order of docs/plans/grooming_v0_1.md:
 
 Partial cook: each lock's hair is cooked once per state of what it reads (`lock_keys`, a digest per
 lock) and kept in grooming_adapter.LockCache. Hidden locks (eye off, group hidden, isolated out) do
-not enter the loop; publish sets `cook_all`. So an edit recooks the locks it changes, hiding cooks
-nothing and showing a lock cooked before only merges it back.
+not enter the loop. So an edit recooks the locks it changes, hiding cooks nothing and showing a lock
+cooked before only merges it back.
+
+Two outputs. 0 "Display": what the viewport draws (hidden and isolated-out locks left out, packed,
+coloured, see-through out of focus, preview density). 1 "Groom": the groom itself, whatever the view:
+every lock not excluded, full density, only the contract attributes, at rest or deformed while Shot
+deform is on. It has its own keys and its own copy of the loop through the same cache, and cooks only
+when something reads it (publish does).
 
 Spine and measure (`spine_build`): a lock is cut into `spine_points` bands by the distance from its
 root measured along the mesh surface (distancealonggeometry from the points nearest the scalp), not
@@ -399,17 +405,15 @@ v@direction = normalize(P[0] - P[n - 1]);
 """
 
 VEX_LOCK_SHOWN = """// what the display draws (shown) and what grows hair (grows): the lock's eye with its group's
-// (visible, from groom_data), or exactly the isolated locks; every lock while publishing (cook_all).
-// Excluded locks keep their guide and mesh but grow no hair. Hidden locks are not cooked at all.
+// (visible, from groom_data), or exactly the isolated locks. Excluded locks keep their guide and mesh
+// but grow no hair. Hidden locks are not cooked for display at all (the Groom output has its own keys).
 int on = i@visible;
 string iso = chs("../isolate_ids");
 if (iso != "") on = find(split(iso), itoa(i@lock_id)) >= 0;
-if (chi("../cook_all")) on = 1;
 // the lock's display: its own (or its group's) Display, else the node's; lighter while playing with
-// the shot deform like the node's (display_eff); full hair while publishing
+// the shot deform like the node's (display_eff)
 int m = i@row_display >= 0 ? i@row_display : chi("../display_eff");
 if (chi("../playing") && chi("../deform_active") && chi("../play_display") > 0) m = min(m, chi("../play_display"));
-if (chi("../cook_all")) m = 3;
 i@disp = m;
 i@shown = on;
 i@grows = on && i@excluded == 0 && m >= 2;   // only preview and hair grow strands
@@ -1444,7 +1448,7 @@ def build_network(sub) -> None:
     settings = _wrangle(sub, "apply_settings", VEX_APPLY_SETTINGS, POINT, [spines_locks])
     to_skin = _wrangle(sub, "root_skin", VEX_ROOT_SKIN, PRIM, [settings])
     spines = _node(sub, "null", "SPINES", [to_skin])
-    # hidden locks (the panel's eye) are not cooked for display; publish (cook_all) cooks every lock
+    # hidden locks (the panel's eye) are not cooked for display; the Groom output (and publish) cooks every lock
     guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0", grouptype=4)
     shown = _wrangle(sub, "lock_shown", VEX_LOCK_SHOWN, PRIM, [guides_cut])
     roots = _wrangle(sub, "guide_roots", VEX_GUIDE_ROOT, POINT, [shown, in_scalp])
@@ -1556,6 +1560,7 @@ def build_network(sub) -> None:
                 attrib="lock_id", blockpath="../foreach_begin", templatepath="../foreach_begin")
     end.parm("class").set(0)
     section("Hair per lock (for each lock_id): hairgen, fit, clump, length, frizz")
+    loop = sections[-1][1]   # copied for the Groom output (_build_groom)
 
     # ---- every lock that grows, from the cache ----
     merged = _node(sub, "python", "hair_cache", [end, keys])
@@ -1649,7 +1654,88 @@ def build_network(sub) -> None:
     output.setDisplayFlag(True)
     output.setRenderFlag(True)
     section("Shot deform")
+    _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean)
+    section("Groom (output 1): every lock, full hair, whatever the view")
     _layout_sections(sub, sections)
+
+
+def _copy_loop(sub, nodes, prefix: str, first_input) -> dict:
+    """A second copy of the per-lock loop: same nodes, `prefix` + name, the first block begin fed by
+    `first_input`. Inputs from outside the loop stay; paths to loop nodes in parms ("../foreach_begin",
+    a block path, VEX) are renamed to the copies, so whatever the loop holds is copied the same way.
+    A channel reference (`ch("../strand_smooth")`, `chi(...)`) names a parm of the HDA, never a node,
+    even when a loop node has the same name: left as it is (renamed, strand_smooth read 0 and the
+    copy's strands were not smoothed: kink p95 26 -> 82 deg)."""
+    import re
+    names = {n.name() for n in nodes}
+    alt = "|".join(sorted(map(re.escape, names), key=len, reverse=True))
+    pat = re.compile(r"(\bch[a-z0-9]*\(\s*[\"'])?\.\./(%s)(?![A-Za-z0-9_])" % alt)
+
+    def rename(text: str) -> str:
+        return pat.sub(lambda m: m.group(0) if m.group(1) else "../" + prefix + m.group(2), text)
+
+    copies = {}
+    for n in nodes:
+        c = hou.copyNodesTo([n], sub)[0]
+        c.setName(prefix + n.name())
+        copies[n] = c
+    for n, c in copies.items():
+        for i, src in enumerate(n.inputs()):
+            if src is not None:
+                c.setInput(i, copies.get(src, src))
+        for p in c.parms():
+            try:
+                expr = p.expression()
+            except hou.OperationFailed:
+                expr = None
+            if expr is not None:
+                new = rename(expr)
+                if new != expr:
+                    p.setExpression(new, p.expressionLanguage())
+            elif p.parmTemplate().type() == hou.parmTemplateType.String:
+                raw = p.unexpandedString()
+                new = rename(raw)
+                if new != raw:
+                    p.set(new)
+    return copies
+
+
+def _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean) -> None:
+    """Output 1 "Groom": the groom itself, never what the view shows. Every lock that is not excluded
+    (hidden, isolated out, out of focus too), full density, only the contract attributes, at rest or
+    deformed by the animated hair mesh while Shot deform is on.
+
+    Its own keys (`groom_keys`: factor 1, no drag, every lock not excluded) and its own copy of the
+    per-lock loop, through the same LockCache: a lock the display shows as full hair has the same key,
+    so reading the groom after an edit cooks only the locks the display did not (hidden ones, preview
+    ones at full density). Nothing here cooks unless output 1 (or publish) is read: display edits,
+    hides and focus never pay for it, and no parm is set during a cook."""
+    gkeys = _node(sub, "python", "groom_keys", list(keys.inputs()))
+    gkeys.parm("python").set("from apps.houdini import grooming_adapter\n"
+                             "grooming_adapter.cook_lock_keys(hou.pwd(), groom=True)\n")
+    to_cook = _node(sub, "blast", "groom_to_cook", [gkeys], group="@grows==0 @cached==1", grouptype=4)
+    copies = _copy_loop(sub, loop, "groom_", to_cook)
+    copies[begin].setInput(0, to_cook)
+    merged = _node(sub, "python", "groom_cache", [copies[end], gkeys])
+    merged.parm("python").set("from apps.houdini import grooming_adapter\n"
+                              "grooming_adapter.cook_hair_cache(hou.pwd())\n")
+    # the contract only (the capture stays for the deform below)
+    keep = " ".join("^" + a for a in config.GROOM_ATTRIBS + ("pCaptPts", "pCaptWeights"))
+    strip = _node(sub, "attribdelete", "groom_attribs", [merged], ptdel="* " + keep, primdel="* " + keep,
+                  vtxdel="* " + keep, dtldel="* " + keep)
+    rest = _node(sub, "null", "GROOM_REST", [strip])
+    # publish writes the rest groom (its attribdelete also drops the capture)
+    pub_clean.setInput(0, rest)
+    deform = _node(sub, "pointdeform", "groom_deform", [rest, in_hair, anim_hair], mode="deform")
+    deform.parm("radius").setExpression('ch("../deform_radius")')
+    ok = _node(sub, "switch", "groom_deform_ok", [rest, deform])
+    ok.parm("input").setExpression('detail("../ANIM_HAIR", "deform_ok", 0)')
+    use = _node(sub, "switch", "groom_use_deform", [rest, ok])
+    use.parm("input").setExpression('ch("../deform_active")')
+    capt = _node(sub, "attribdelete", "groom_no_capture", [use], ptdel="pCaptPts pCaptWeights")
+    groom = _node(sub, "null", "GROOM", [capt])
+    out = _node(sub, "output", "output1", [groom])
+    out.parm("outputidx").set(1)
 
 
 def _layout_sections(sub, sections) -> None:
@@ -1678,10 +1764,10 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     cb = 'from apps.houdini import grooming_adapter; grooming_adapter.on_button(kwargs["node"], "{}")'
     ptg.append(hou.MenuParmTemplate(
         "display_mode", "Display", menu_items=config.DISPLAY_MODES,
-        menu_labels=("Mesh", "Guide", "Hair preview", "Hair full"), default_value=2))
+        menu_labels=("Mesh", "Guides", "Hair preview", "Hair"), default_value=2))
     ptg.append(hou.MenuParmTemplate(
         "play_display", "While playing", menu_items=config.PLAY_DISPLAY,
-        menu_labels=("Same as Display", "Guide", "Hair preview"), default_value=2,
+        menu_labels=("Same as Display", "Guides", "Hair preview"), default_value=2,
         help="Lighter display while the timeline plays with Shot deform on (hair full deforms 4 M points, "
              "~1 s a frame on Helen); back to Display on stop. Never heavier than Display. With Shot deform "
              "off nothing cooks while playing, so the display stays as it is"))
@@ -1696,9 +1782,9 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     playing = hou.ToggleParmTemplate("playing", "Playing", default_value=False)
     playing.hide(True)
     ptg.append(playing)
-    ptg.append(hou.MenuParmTemplate("color_by", "Colour by", menu_items=config.COLOR_BY,
+    ptg.append(hou.MenuParmTemplate("color_by", "Color by", menu_items=config.COLOR_BY,
                                     menu_labels=("Lock", "Group"), default_value=0))
-    detect = hou.ButtonParmTemplate("detect", "Detect", script_callback=cb.format("detect"),
+    detect = hou.ButtonParmTemplate("detect", "Detect locks", script_callback=cb.format("detect"),
                                     script_callback_language=hou.scriptLanguage.Python)
     detect.setJoinWithNext(True)
     ptg.append(detect)
@@ -1854,7 +1940,8 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     drag_f = hou.FloatParmTemplate("drag_factor", "Strand fraction of dragged locks", 1, default_value=(1.0,))
     drag_f.hide(True)
     ptg.append(drag_f)
-    cook_all = hou.ToggleParmTemplate("cook_all", "Cook every lock", default_value=False)
+    # unused since the Groom output; kept so scenes saved with it load without a warning
+    cook_all = hou.ToggleParmTemplate("cook_all", "Cook every lock (unused)", default_value=False)
     cook_all.hide(True)
     ptg.append(cook_all)
     return ptg
@@ -1888,6 +1975,13 @@ def build(out_path: str = DEFAULT_OUT) -> str:
         change_node_type=True, create_backup=False)
     definition = hda.type().definition()
     definition.setParmTemplateGroup(_parm_templates())
+    # two outputs, labelled in the DialogScript (hou has no setter for output labels)
+    definition.setMaxNumOutputs(len(config.OUTPUT_LABELS))
+    ds = definition.sections()["DialogScript"]
+    labels = "".join(f'    outputlabel\t{i + 1}\t"{t}"\n' for i, t in enumerate(config.OUTPUT_LABELS))
+    text = ds.contents()
+    at = text.index("    parm {")
+    ds.setContents(text[:at] + labels + "\n" + text[at:])
     definition.setIcon("SOP_hairgen")
     definition.setComment("MONO Grooming v0.1, built by tools/fx/grooming/build_hda.py")
     definition.addSection("OnLoaded", ON_LOADED)

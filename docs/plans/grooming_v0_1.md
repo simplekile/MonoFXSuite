@@ -17,13 +17,18 @@ copy-pasted hairgen/hairclump network of `char_Helen_grooming_v007` (about 60 ha
 4. Split the scalp into growth regions (`lock_owner`), frozen until the user presses Update regions.
 5. Hairgen per lock from its own region, then clump, length, frizz. One node network, not one per lock.
 6. Settings: defaults → group → lock, edited in the panel or on the HDA. Each edit is one undo step.
-7. Display: Mesh / Guide / Hair preview (10%, at most 20 000 strands) / Hair full; colour by lock or group.
+7. Display: Mesh / Guides / Hair preview (10%, at most 20 000 strands) / Hair; Color by lock or group (names as
+   Houdini uses them, listed in CLAUDE.md).
 8. Optional deform by the animated hair mesh (Point Deform, as today), then cache per shot.
 9. Publish the asset groom to `04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`.
 
-Not in v0.1: drawing locks, control points dragged in the viewport, Guide Groom brush layer, masks,
-colour layers and melanin, Karma live preview, shot mode reading a publish, batch over shots,
-custom team effects, Unreal export, sim and body collision.
+Not in v0.1: drawing locks, control points dragged in the viewport, Guide Groom brush layer, masks
+(density layers painted over the automatic one, blend modes like Substance Painter), colour layers and
+melanin, Karma live preview, shot mode reading a publish, batch over shots, several characters in one
+shot (cache paths per character and instance, see Publish and caches), custom team effects, Unreal
+export, sim and body collision. What v0.1 decides automatically (Root to skin, thin skin under floating
+mesh, the root spread) is the default that v0.2's redraw, brush and masks edit over, never a second
+system beside them.
 
 ## Code layout
 
@@ -47,7 +52,8 @@ own copy beyond the current edit. `model.GroomData.to_json()` / `from_json()` ow
 `schema` is an int, bumped with a migration in `model.migrate()` whenever the shape changes.
 
 Settings keys (`model.SETTING_KEYS`): `density` (strands/cm²), `width_mult`, `thick_mult`, `twist_add`,
-`clump`, `length_mult`, `frizz`. Resolution for a lock: built-in defaults → `data.defaults` → its
+`clump`, `length_mult`, `frizz`, `root_skin` (cm of the spine bent down to the skin, only on locks whose root
+floats: see the root rules). Resolution for a lock: built-in defaults → `data.defaults` → its
 group's `overrides` → its own `overrides`. Measured values (width, thickness, twist, length) come from the
 geometry and are multiplied / added by the resolved settings; they are never written into the JSON.
 
@@ -63,14 +69,23 @@ geometry and are multiplied / added by the resolved settings; they are never wri
 | scalp prims | `lock_owners` | int array | Locks growing hair on this prim (stacked locks share it) |
 | scalp prims | `lock_owner`, `share` | int | First owner (-1 none), number of owners |
 | scalp prims | `density` | float | Mean strands/cm² of the owners (each grows its density / share here) |
-| output strand prims | `lock_id`, `name`, `group`, `clump_id` | | For shading, selection, solo |
-| output strands | `Cd` | vector | Display colour only (a prim attribute since the partial cook: 116 k prims, not 4 M points) |
+| output strand prims | `lock_id`, `name`, `group`, `clump_id`, `id` | | For shading, selection, solo |
+| output strand points | `width` | float | Strand thickness (render) |
+| display output prims | `Cd`, `Alpha` | | Display only (output 0): colour, see-through out of focus; never on output 1 or the publish |
+
+Outputs: 0 **Display** is what the viewport draws: hidden and isolated-out locks are missing, the hair is
+packed per lock with its colour inside, locks out of focus are see-through ghosts, preview display lowers
+the density, and with Shot deform on it is the deformed display. 1 **Groom** is the groom itself and never
+depends on the view: every lock that is not excluded, full density, only P and the contract attributes
+above (`config.GROOM_ATTRIBS`), at rest, or deformed by the animated hair mesh while Shot deform is on.
+Downstream nodes (a File Cache for a shot, SOP Import, a ROP, Guide Process) and the publish read output 1.
 
 `lock_width` is the lock's width. Houdini's `width` stays the strand thickness for render. Never mix them.
 
 ## Processing order (fixed)
 
-source hair mesh → spine and measure → (v0.2: redraw, transform, brush) → settings applied → region split
+source hair mesh → spine and measure → Root to skin (v0.1, automatic; v0.2: redraw, transform, brush here) →
+settings applied → region split
 (frozen) → cache key per lock → hairgen, clump, length, frizz per lock (For-Each by `lock_id`, only the
 locks that grow and are not cached) → every growing lock from the cache → display colour → deform by
 animated hair mesh (optional) → output.
@@ -95,7 +110,7 @@ object with these functions, so its tests run with a fake adapter.
 | `publish_context(node) -> (scene_name, existing_versions)` | For the panel's version field (`logic.publish_version`) |
 | `display_state(node) -> (mode, color_by)` | The node's display parms, shown when the panel opens |
 | `set_isolate(node, lock_ids: list[int] \| None)` / `isolate_ids(node) -> list[int]` | Show only those locks (None / [] = all shown ones). No undo step, not restored with the scene |
-| `set_strands(node, lock_ids: list[int] \| None)` / `strand_ids(node) -> list[int]` | Draw those locks as strands, not packed (the viewport shows each strand's width ramp only unpacked). At most 20. No undo step, not restored with the scene |
+| `set_strands(node, lock_ids: list[int] \| None)` / `strand_ids(node) -> list[int]` | Draw those locks as strands, not packed (the viewport shows each strand's width ramp only unpacked); "all" = the whole groom. No cap (a cap of 20 drew hair_base's 21 locks as bands). No undo step, not restored with the scene |
 | `set_focus(node, lock_ids: list[int] \| None)` / `focus_ids(node) -> list[int]` | The panel's selection: those locks in their colour, the others see-through grey; clears the node's viewport selection. No undo step, not restored with the scene |
 | `set_drag_preview(node, lock_ids \| None, factor=1.0)` | While a slider drags: those locks at `factor` of their strands (1 = real count), coarser |
 | `undo(node, redo=False) -> str` | Houdini's undo / redo from the panel (Ctrl+Z, Ctrl+Shift+Z); the step's label, "" when none |
@@ -117,7 +132,8 @@ try later (publish animated guides only, deform the rest strands at render time)
 
 ## Rules every part follows
 
-- Region split is frozen: it is stored in the node (a stash) and changes only when the user presses
+- Region split is frozen: it is stored on the node's hidden geometry parm `regions` (inner nodes of a locked
+  HDA cannot be set, so not a stash) and changes only when the user presses
   Update regions. Adding, moving or deleting a lock never silently changes another lock's region; the panel
   shows "regions out of date" instead.
 - Region rule (`logic.region_owners`, decided after the Helen test where nearest-root left 19/61 locks
@@ -126,13 +142,34 @@ try later (publish animated guides only, deform the rest strands at render time)
   lock's measured root width), else to the nearest lock of its group. Stacked locks (Helen's fringe
   layers, roots 1-4 mm apart) share the patch and divide its density, so the scalp's strand count does
   not change; every lock gets at least its nearest prim. The root width is the widest cross-section
-  over the first 10% of the spine.
+  over the first 10% of the spine. Past the footprints (rule 3, `config.REGION_RULE`, decided
+  2026-11-13): a prim goes to the lock whose hair mesh lies nearest over it, and locks whose meshes are
+  within `REGION_MESH_SHARE_CM` of the nearest share it (layers lying on each other). A split made with an
+  older rule is marked out of date when the scene loads.
 - A lock's root is one end of its ribbon (the end nearer the scalp, found by two sweeps of distance
   along the mesh), not every mesh point near the scalp: that made Helen's curved caps grow strands in
   a cone. Scenes detected before this rule re-match "unsure" and need Detect again.
 - Strands follow the lock's own mesh surface (`fit_to_lock` looks the offset up in `SURFACE_CLOUD` by
   along/across position, the piece kept apart in z), not an ellipse around the spine; `root_blend`
   (default 0.05) eases each strand onto its scalp root.
+- Root spread (decided 2026-11-13, session 012; answers the OPEN `root_pull` question): roots lie evenly on
+  the lock's region at the set density, and each strand gathers into its lock's shape over
+  `ROOT_CONVERGE` x its root's distance from the mesh root. Where the lock's mesh floats over the skin
+  (no part of it within `ROOT_FAR_CM`), its roots move to the lock's start and that skin stays thin on
+  purpose, with a soft falloff, not a hard cut: a strand crossing the 1-2.5 cm gap is the spike / fuzz
+  seen on Helen. The hand groom v006 does the same (8 % of the density under floating caps, 2 % under
+  the fringe arches). The panel says so ("thin under floating mesh"), so the artist does not read it as a
+  fault; in v0.2 density masks paint over it.
+- A lock whose mesh root edge lies over `ROOT_GAP_CM` (0.3 cm) off the skin floats at its root (a mesh
+  fault): Detect lists those locks with the gap in cm, and Root to skin bends the start of their spine down
+  to the skin. It never changes a lock whose root touches the skin.
+- Crown whorls (`logic.whorls`): a lock starting where 3 or more roots meet within 1.5 cm gets extra
+  roots inside 0.7 cm of the whorl's centre, so the crown is as dense as v006 (~5,100 / cm²).
+- Start extras (strands added round a lock's root so its first 3/10 holds its share of the mesh): their
+  target follows v006 (start share worst 0.47), not a hand-set floor; OPEN until measured, since they
+  cost +24 % cook on Helen at 0.5.
+- QC limits (skill `grooming-check`) take the approved hand groom as the reference wherever it can be
+  measured; a limit stricter than v006 needs a reason written next to it.
 - The scalp and rest hair mesh are read at `rest_frame`, so only the shot deform cooks per frame.
 - Re-import keeps ids: match by name, then root position on the scalp, then shape. Unsure matches are
   marked and need a confirm; locks that disappear go to `orphans` with their settings kept.
@@ -159,7 +196,7 @@ Panel and network, after testing the Helen sandbox scene:
   No modal dialog (rule above): the warning sits in the panel next to the button.
 - Fonts and icons follow Houdini's UI size (its scale setting), plus a UI size setting of the panel's
   own. The current panel is too small to read comfortably.
-- Several characters in one shot: how each is groomed, deformed and cached (one MONO Grooming per
+- (v0.2) Several characters in one shot: how each is groomed, deformed and cached (one MONO Grooming per
   character, names and cache paths that cannot collide, caching them together or one by one).
 - Isolate: show one lock or group alone (and back).
 - Drag and drop to reorder in the layer tree, like Cinema 4D or Substance Painter: move locks
@@ -176,7 +213,8 @@ Panel and network, after testing the Helen sandbox scene:
   the real strand count (coarser strands while dragging); Ctrl+Z / Ctrl+Shift+Z work with the panel
   focused; I on another lock while isolated isolates it at once. Strands for the whole groom all the
   time was measured and left out: edits ~1.7x and hides ~5x slower.
-- Added 2026-11-11: strands. With Anim off the hair is packed, and the viewport draws a packed lock as
+- Added 2026-11-11, replaced 2026-11-12 by the view model below (selecting shows strands; no Enter,
+  double-click or Esc for strands): strands. With Anim off the hair is packed, and the viewport draws a packed lock as
   a flat band of one width. Enter or double-click on a lock or group (right-click › Show strands) draws
   those locks unpacked, each strand thinning to its tip; Esc packs them again. Selecting alone does not.
   Also fixed on the way: Ctrl+Z after an edit undid the panel's viewport selection instead of the edit;
@@ -253,6 +291,7 @@ Detect and the hair mesh
 - Piece touching the scalp at both ends (a loop, hair tied back) or at none (an accessory, a floating
   strand): Detect takes the nearer end and flags the lock; the user decides per lock: flip which end
   is the root, exclude the piece from hair, or (later, with drawn locks) give it a guide of their own.
+  A root that floats a little (a cap whose mesh starts in the air) is warned and bent by Root to skin.
   Done in the model and the HDA (`Lock.root_flip`, `Lock.excluded`, adapter `set_root_flip` /
   `set_excluded`), kept through re-Detect; the panel buttons are the panel's.
 - Scalp without UV, scaled or moved objects, scenes not in metres (`unit_cm`): detect warns.
@@ -263,8 +302,8 @@ Publish and caches
 - Publish always writes the full hair (not the preview, not the deformed shot pose, hidden and
   isolated locks included, with the warning), whatever the panel shows.
 - Version already published, scene name without a version, path not writable, disk full: say so in
-  the panel, nothing half written (write to a temp name, rename at the end).
-- Several characters in a shot: one node per character; cache paths carry the character (and an
+  the panel, nothing half written (write to a temp name, rename at the end). NOT DONE yet: v0.1 work.
+- (v0.2) Several characters in a shot: one node per character; cache paths carry the character (and an
   instance number when the same asset appears twice), so two Helens never write one file. Caching
   one, several or all; one failing does not stop or corrupt the others; frame ranges per character.
 - The same character several times in one shot (clones of one asset, same groom) is normal, and so
@@ -287,8 +326,10 @@ Panel
   undo finds the previous hair). The key (`lock_keys`) digests the lock's spine with its resolved
   settings, its frozen region (sums per lock computed in PREVIEW), its mesh piece's lookup cloud, the
   loop's parms, the display mode and the preview factor. Colour, visibility and isolate are not in it.
-- Only locks that grow (shown and not excluded, or every lock while publishing: `cook_all`) and miss
-  the cache go through the For-Each; `hair_cache` merges every growing lock. An edit of one lock recooks
+- Only locks that grow (shown and not excluded) and miss the cache go through the For-Each; `hair_cache`
+  merges every growing lock. Output 1 (Groom, and publish) has its own keys (every lock not excluded, full
+  density, no drag) and its own copy of the loop through the same cache, so it shares the strands of locks
+  the display shows as full hair and cooks only when read (decided 2026-11-12, t50). An edit of one lock recooks
   that lock; a group edit its locks; a default or an Advanced parm every lock.
 - Hairclump runs per lock on the lock's own region. Clumps never crossed locks (`clumpid` = lock),
   so the look is the same; `clump_id` = lock_id x 100 000 + the lock's clump keeps ids unique.

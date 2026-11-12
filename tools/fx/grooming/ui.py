@@ -140,7 +140,7 @@ SEPARATOR = "#2e2e36"
 ROW_LINE = "#1d1d22"
 SELECTED = "#273352"      # the accent at 24 % over PANE, opaque: Houdini paints the tree's own background
 DIM = "#62626c"           # names of hidden rows: still readable, clearly off
-FAINT = "#4a4a53"         # an eye decided by something else (a hidden group, isolate), not by this row
+FAINT = "#63636b"         # an eye decided by something else (a hidden group, isolate): 3.0:1 on PANE, under TEXT_LABEL
 WARN = STATUS_COLORS[STATUS_PINNED]
 STATUS_TEXT = {"unsure": WARN, "new": STATUS_COLORS[STATUS_NEW]}
 STATUS_HELP = {
@@ -342,7 +342,7 @@ def _sheet(z: Sz) -> str:
     QMenu::indicator:unchecked {{ image: none; }}
     QMenu::separator {{ height: 1px; background: {LINE}; margin: {p(4)}px {p(8)}px; }}
 
-    QSlider {{ min-height: {p(22)}px; }}
+    QSlider {{ min-height: {max(24, p(27))}px; }}
     QSlider::groove:horizontal {{ height: {p(4)}px; background: #2c2c34; border-radius: {p(2)}px; }}
     QSlider::sub-page:horizontal {{ background: #6e6e7a; border-radius: {p(2)}px; }}
     QSlider::handle:horizontal {{ background: {TEXT_PRIMARY}; width: {p(14)}px; height: {p(14)}px;
@@ -1072,6 +1072,9 @@ class GroomingUI(QWidget):
         root.addWidget(_line())
         root.addWidget(self._build_action_bar())
 
+        frame = QShortcut(QKeySequence("F"), self)
+        frame.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        frame.activated.connect(lambda: self._fire("frame"))
         xray = QShortcut(QKeySequence("X"), self)
         xray.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
         xray.activated.connect(lambda: self._fire("xray"))
@@ -1192,6 +1195,7 @@ class GroomingUI(QWidget):
         self._settings_btn.setToolTip("Settings: font size, X-ray strength (saved for you)")
         self._settings_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self._icon(self._settings_btn, "settings")
+        self._settings_btn.setMinimumSize(self.z.px(28), self.z.px(28))   # a 24 px target at least, like Houdini's own
         menu = QMenu(self._settings_btn)
         fonts = menu.addMenu("Font size")
         for name in UI_SIZES:
@@ -1492,6 +1496,7 @@ class GroomingUI(QWidget):
     def resizeEvent(self, event) -> None:  # noqa: N802
         super().resizeEvent(event)
         self._apply_layout()
+        self._fit_tree()
 
     def _apply_layout(self) -> None:
         """Below NARROW_PX the tree sits above the settings, and the view and action bars wrap."""
@@ -1503,7 +1508,8 @@ class GroomingUI(QWidget):
         self._body.setOrientation(Qt.Orientation.Vertical if narrow else Qt.Orientation.Horizontal)
         self._tree_pane.setMinimumWidth(0 if narrow else z.px(300))
         w, h = max(self.width(), 1), max(self.height(), 1)    # the body's own size is not laid out yet
-        self._body.setSizes([int(h * 0.45), int(h * 0.55)] if narrow else [int(w * 0.36), int(w * 0.64)])
+        tree_w = self._tree_width(w)
+        self._body.setSizes([int(h * 0.45), int(h * 0.55)] if narrow else [tree_w, max(w - tree_w, 1)])
         down = QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
         self._view_lay.setDirection(down)
         self._action_lay.setDirection(down)
@@ -1512,6 +1518,34 @@ class GroomingUI(QWidget):
         self._show_node_label()
         if self._props:
             self.show_properties(self._props)   # stat cells and setting rows in their narrow / wide sizes
+
+    def _tree_width(self, width: int) -> int:
+        """The tree pane's width beside the settings: wide enough for the longest name (a 300 px pane cut
+        hair_back_01 to "ha…01" while the settings had 400 px to spare), at most half the window, and never
+        so wide that the settings scroll sideways."""
+        z, tree = self.z, self._tree
+        best, todo = 0, [(tree.topLevelItem(i), 1) for i in range(tree.topLevelItemCount())]
+        while todo:
+            item, depth = todo.pop()
+            text = QFontMetrics(item.font(COL_NAME)).horizontalAdvance(item.text(COL_NAME))
+            best = max(best, depth * tree.indentation() + z.px(16 + 12) + text)
+            todo += [(item.child(k), depth + 1) for k in range(item.childCount())]
+        header = tree.header()
+        best += header.sectionSize(COL_STATUS) + header.sectionSize(COL_EYE)
+        best += tree.verticalScrollBar().sizeHint().width() + 16 + z.px(8)   # the pane's margins
+        # the settings' rows (name, slider, value, source, below) need ~540 px at scale 1 before they scroll
+        props = max(self._props_widget.minimumSizeHint().width(), z.px(540)) +             self._scroll.verticalScrollBar().sizeHint().width()
+        room = width - props - self._body.handleWidth() - 4
+        return max(min(best, width // 2, room), min(z.px(260), room), 1)
+
+    def _fit_tree(self) -> None:
+        """Rows changed: widen the tree pane when a name no longer fits (never narrows what the user set)."""
+        if self._narrow is not False:
+            return
+        sizes = self._body.sizes()
+        want = self._tree_width(max(self.width(), 1))
+        if len(sizes) == 2 and sizes[0] < want:
+            self._body.setSizes([want, max(sum(sizes) - want, 1)])
 
     def _button(self, text: str, icon: str, tip: str) -> QPushButton:
         btn = QPushButton(text)
@@ -1608,6 +1642,7 @@ class GroomingUI(QWidget):
         self._apply_filter()
         self._tree.verticalScrollBar().setValue(scroll)
         self._filling = False
+        self._fit_tree()
 
     def _apply_filter(self) -> None:
         """Hide the rows the filter does not match: a lock by its name or a filter word; a group shows when
@@ -2081,6 +2116,8 @@ class GroomingUI(QWidget):
                 .triggered.connect(lambda: self._fire("set_visible", kind, ids, not visible))
             menu.addAction(_lucide_icon("focus", z.px(15)), "Isolate    I").triggered.connect(
                 lambda: self._fire("isolate"))
+            menu.addAction(_lucide_icon("scan-search", z.px(15)), "Frame    F").triggered.connect(
+                lambda: self._fire("frame"))
             self._display_menu(row, menu.addMenu(_lucide_icon("monitor", z.px(15)), "Display"))
         if row["kind"] == SEL_LOCKS:
             unsure = [r["id"] for r in self._selected_rows() if r["kind"] == SEL_LOCKS

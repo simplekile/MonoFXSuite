@@ -42,9 +42,15 @@ ROOT_FAR_CM = 1.0
 ROOT_GAP_CM = 0.3
 # a lock's start extras lie on a disc round its root, wide enough to stay under this x the lock's density
 START_DENSITY_MAX = 6.0
+# A scalp's size across (cm) that Detect accepts without a units warning
+SCALP_SIZE_CM = (8.0, 60.0)
 # Prim attributes only the per-lock loop needs (hairgen, fit_to_lock, hairclump): dropped before the cache
 LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_u0", "fit_c0", "fit_root", "fit_blend", "root_at", "rx", "ry", "start_k", "start_cnt", "start_pos", "length_mult", "frizz",
                      "clumpid", "skinprim", "skinprimuv")
+# The HDA's output 1 "Groom" (and the publish) carry only these besides P, in whatever class the cache has
+# them (docs/plans/grooming_v0_1.md, Geometry contract); output 0 "Display" is what the viewport draws
+GROOM_ATTRIBS = ("width", "lock_id", "name", "group", "clump_id", "id")
+OUTPUT_LABELS = ("Display", "Groom")
 # A slider drag grows the dragged locks at their real strand count, with fewer points a strand (a drag
 # tick on one Helen lock: 0.14 s, its largest 0.36 s); past this many strands (a group) a fraction of
 # them, snapped to PREVIEW_FACTOR_STEP, and the panel says which fraction

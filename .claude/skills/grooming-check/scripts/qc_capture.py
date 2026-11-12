@@ -217,10 +217,10 @@ def s_open():
     geo = node.parent()
     node.setInput(2, None)                 # rest pose: the hair mesh is the target
     ga.set_display(node, "hair", "lock")
-    # the strands themselves (HAIR, unpacked), not the node's output: the display packs each lock with its
-    # colour inside, which the look's attribdelete / wrangle never reach (flat colour, no strand shading)
+    # the strands themselves (output 1 "Groom", GROOM; HAIR on a node built before it), not the display:
+    # it packs each lock with its colour inside, which the look's attribdelete / wrangle never reach
     hair = geo.createNode("object_merge", "qc_ours_hair")
-    hair.parm("objpath1").set(node.path() + "/HAIR")
+    hair.parm("objpath1").set(node.path() + ("/GROOM" if node.node("GROOM") is not None else "/HAIR"))
     S["ours"] = look_network(geo, hair, "ours")
     if REF:
         imp = geo.createNode("usdimport", "qc_ref_usd")

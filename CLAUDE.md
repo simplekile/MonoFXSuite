@@ -188,8 +188,36 @@
   made every edit pay for 116 k strands again. A capped preview factor snaps to 0.8^k steps (it is in
   every key; cap / total moved with any density edit). Helen hair full: one lock edit 9.5 -> ~1 s,
   hide 9.5 -> 0.3-0.4 s, isolate 0.03 s; a group edit still costs its locks (20 locks ~4.8 s).
+- Two outputs (labels in the DialogScript, `config.OUTPUT_LABELS`): 0 **Display**, what the viewport
+  draws (hidden / isolated-out locks left out, packed, coloured, ghosts with Alpha, preview density,
+  deformed with Shot deform on); 1 **Groom** (`GROOM`), the groom itself whatever the view: every lock
+  not excluded, full density, only P + `config.GROOM_ATTRIBS` (width, lock_id, name, group, clump_id,
+  id), at rest or deformed while Shot deform is on. Anything downstream (File Cache, SOP Import, a
+  ROP, Guide Process) reads output 1; the review (t48 P0-1) found output 0 changing with every hide,
+  isolate, focus and Display. Output 1 has its own keys (`groom_keys` = `cook_lock_keys(groom=True)`:
+  factor 1, no drag, every lock not excluded) and its own copy of the per-lock loop (`groom_*`,
+  `build_hda._copy_loop`: copies whatever the loop section holds and renames paths to its nodes, never
+  a `ch("../x")` channel reference: `ch("../strand_smooth")` names the HDA parm, renamed it read 0 and
+  the copy's strands came out unsmoothed, kink p95 26 -> 82 deg)
+  through the same LockCache: a lock the display shows as full hair has the same key, so both share
+  its strands. It cooks only when read: display cooks never touch it, no parm is set during a cook
+  (the old publish toggled `cook_all`, now unused and kept hidden for old scenes). Rejected: one loop
+  fed by the union of what both outputs miss (Houdini cooks a node once per state, so every display
+  edit in preview, or of a hidden lock, would also grow the full hair: +0.3-0.5 s a lock, t50).
+  `hair_cache` / `groom_cache` keep their last merge frozen by the locks and keys in it
+  (`MERGED_LOCK`): merging that one geometry costs 0.006 s against 0.23 s for 61 locks, so an eye,
+  isolate or Display change costs output 1 ~0.03 s. A node wired to output 1 cooks only output 1;
+  `node.geometry(1)` from Python cooks output 0 too (tests read through a downstream null). t50 (hython
+  Helen, `t50_groom.py`): hide, group eye, isolate, focus + strands, X-ray, all strands, colour by,
+  preview, guide, drag preview change no byte of output 1; reading it after them 0-0.05 s, 0 locks
+  cooked; after an edit in full display 0.25-0.3 s (the merge, 0 locks), in preview or of a hidden lock
+  0.3-0.6 s (1 lock); cold, its own loop cooks all 61 locks in 11 s, equal to the display loop's (ids
+  exact, P within 0.08 mm: the per-lock loop itself differs by up to 0.1 mm from one cook to the next,
+  so compare copies with a tolerance, never bytes); deformed it equals the previous deform within
+  0.5 mm; Deform on, a frame of output 1 costs ~1.1 s (hair full) and a view change ~0.9 s, only when
+  something reads it. Display timings unchanged (hide 0.04-0.06 s, select 0.01-0.05 s).
 - Hidden locks (the lock's eye, or its group's: `Lock.shown`, the group wins and the lock keeps its own
-  state) and locks isolated out are not cooked for display at all; publish sets `cook_all` and cooks
+  state) and locks isolated out are not cooked for display at all; the Groom output (below) cooks
   every lock. Hidden locks keep their region (the provisional split ignores visibility), so hiding never
   changes another lock's strands. Isolate (`set_isolate` / `isolate_ids`) is the hidden `isolate_ids`
   parm, set with undo off and cleared by the HDA's OnLoaded: a temporary view, not restored with the
@@ -206,8 +234,8 @@
   in the sandbox; hython numbers missed all of the below):
   - Display without a shot deform is one packed prim per lock (`hair_packed`, embedding the cached
     frozen strands, coloured per packed prim). The merged 4 M points re-uploaded the whole groom to the
-    viewport on every edit and hide. `HAIR` (merged) stays for publish and the deform; tests read
-    strands there, not from the node's output.
+    viewport on every edit and hide. `HAIR` (merged) stays for the display's deform; tests and QC read
+    strands from output 1 (`GROOM` / `GROOM_REST`), not from the display.
   - The viewport draws a packed lock as a flat band of one width: Houdini ignores curve width inside
     any packed prim (Pack SOP fragments, packed disk too). The view follows the work, nothing to switch
     or remember (the user: a strands set of its own, kept while the selection moved on, left grey solid
@@ -274,7 +302,7 @@
   - GUI Helen, hair full: select (focus) 0.06-0.13 s, hide / show 0.08 s, a drag tick ~0.3 s, release
     0.35 s, Ctrl+Z 0.03-0.04 s.
 - Per-lock Display: `assign_locks` writes `row_display` (the lock's own Display, else its group's, -1 =
-  the node's); `lock_shown` turns it into `disp` (lighter while playing, full hair while publishing) and
+  the node's); `lock_shown` turns it into `disp` (lighter while playing) and
   `grows` (only preview and hair grow). `lock_keys` gives each lock its `strand_factor` (preview or
   full; the node's mode is not in the key, so a lock keeps its cache when the node's Display changes).
   The display merges mesh, guide and packed hair (switches `mesh_in_use` / `guide_in_use` skip a branch
@@ -457,8 +485,8 @@
   OnLoaded, UI only) sets the hidden `playing`, undo off, only on nodes whose deform is on
   (`playing_flag`; `set_shot_deform` mid-play follows). With the deform off it changes nothing: playback
   cooks nothing per frame, and switching to preview recooked 24 nodes on Start and on Stop (0.3-0.6 s
-  each) and, the first time, regrew every lock's preview (Helen 2.8 s), for no gain. Publish clears
-  `playing`.
+  each) and, the first time, regrew every lock's preview (Helen 2.8 s), for no gain. Publish and the
+  Groom output never read it.
 - Shots: Karma's hair procedural (Generate) does not reproduce clump/frizz, so publishes carry full
   strands and shots Point Deform them (sandbox t02).
 - Panel (`ui.py` view, `controller.py` logic): three zones on their own surfaces with a line between (tree
@@ -500,7 +528,18 @@
 - The per-lock loop drops what only it needs (`config.LOOP_ONLY_ATTRIBS`: tightness, clumpblend, fit_*,
   length_mult, frizz, clumpid, skinprim / skinprimuv, which index the loop's region cut) in `lock_clean`
   before the cache: the cache, display and deform carry P, width, lock_id, name, group, clump_id, id (+ the
-  deform capture); `tightness` alone was 4 M floats on Helen. Publish (`publish_clean`) also drops the capture.
+  deform capture); `tightness` alone was 4 M floats on Helen. Publish writes `GROOM_REST` (output 1 at
+  rest: contract attributes only, every lock not excluded, whatever the view); `publish_clean` drops the capture.
+- From the review (t48), done here: Detect checks the scalp's size in cm against a head
+  (`config.SCALP_SIZE_CM`, catches a wrong `unit_cm`), its uv and the object's transform
+  (`adapter.preflight`, warnings on the result line) and, while no split exists, splits regions in the same
+  undo step (the first "regions out of date" only taught a click). Publish refuses pieces Detect has not
+  matched (they grow nothing) and warns, with the second-click rule, about locks to check, new locks while
+  some are missing, regions out of date, hidden / isolated locks (`_publish_risks`). **F** frames the
+  locks being edited, or the whole groom (`adapter.frame_locks`; Houdini's own F frames its selection,
+  which focus clears; an empty `hou.BoundingBox()` already holds the origin). One undo prefix,
+  "MONO Grooming: ", for the HDA's buttons and the panel's edits; the HDA's labels match the panel's
+  (Hair, Guides, Color by, Detect locks). The overview lists every key and gesture (`SHORTCUTS`).
 - Names as Houdini uses them (checked against SideFX's Hair Generate / Hair Clump pages): Thickness and
   `width` are one strand's, so the lock's cross-section is "Lock width" / "Lock thickness" (settings and
   measured); the scalp is "skin" (Skin area); Clump drives Hair Clump's Blend (tooltip); Guides; Hair /
@@ -528,6 +567,16 @@
   the button (names, count), a second click with the same locks hidden publishes everything.
 - Names follow the department: `grooming` (`04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`,
   tool data in `vNNN/_grooming/`). Publish version defaults to the scene's `_vNNN` and never overwrites.
+
+## Tool panels (skill `.claude/skills/dcc-panel-design`)
+
+- Any new or changed Qt panel inside a DCC (Houdini first) goes through the skill: artist tasks, the
+  host's patterns, 2-3 mockups the user picks from, then build on the shared palette and roles, then
+  offscreen grabs (`scripts/grab_offscreen.py`, 400 / 760 / 1100 px at scale 1 / 1.5) and the contrast
+  check (`scripts/contrast_check.py`, pairs in `references/palette_pairs.json`, guarded by
+  `tests/test_dcc_panel_design_scripts.py`) before screenshots go to the user. The panel rules above
+  (one accent, px fonts through `Sz`, view bar apart from action bar, no modals, one undo step, view
+  state apart from data) are collected there with the review checklist.
 
 ## Release (`release.ps1`, skill `.claude/skills/release`)
 

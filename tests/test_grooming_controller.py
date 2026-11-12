@@ -337,6 +337,7 @@ def test_detect_warns_about_roots_off_the_skin(env) -> None:
 
 def test_publish_refusal_message_is_shown(env) -> None:
     adapter, view, c = env
+    c.confirm_all()                                 # nothing at risk: Publish goes on at once
     adapter.publish_result = PublishResult(False, "", "v007", "v007 already exists; next free is v008")
     c.publish(" v007 ")
     assert adapter.published_version == "v007"
@@ -362,7 +363,7 @@ def test_adapter_error_goes_to_the_message_line(env) -> None:
 
     adapter.detect = broken
     assert c.detect() is None
-    assert view.messages[-1] == ("Detect failed: hair mesh input is empty", True)
+    assert view.messages[-1] == ("Detect locks failed: hair mesh input is empty", True)
 
 
 def test_viewport_selection_and_outside_changes_are_polled(env) -> None:
@@ -650,10 +651,10 @@ def test_focus_only_on_drawn_locks(env, monkeypatch) -> None:
 
 def test_undo_from_the_panel_runs_houdinis_undo_and_shows_it(env) -> None:
     adapter, view, c = env
-    adapter.undo_labels = ["Grooming: Density on fringe_01"]
+    adapter.undo_labels = ["MONO Grooming: Density on fringe_01"]
     assert c.undo()
-    assert adapter.undone == ("undo", "Grooming: Density on fringe_01")
-    assert view.messages[-1][0] == "Undone: Grooming: Density on fringe_01"
+    assert adapter.undone == ("undo", "MONO Grooming: Density on fringe_01")
+    assert view.messages[-1][0] == "Undone: MONO Grooming: Density on fringe_01"
     assert not c.undo(redo=True) and view.messages[-1][0] == "Nothing to redo"
 
 
@@ -720,8 +721,23 @@ def test_publish_warns_about_hidden_and_isolated_then_second_click_goes(env) -> 
 
 def test_nothing_hidden_publishes_at_once(env) -> None:
     adapter, view, c = env
+    c.confirm_all()
     c.publish("v008")
     assert adapter.published_version == "v008" and view.publish_warning == ""
+
+
+def test_publish_warns_about_locks_to_check_new_and_stale_regions_and_refuses_undetected(env) -> None:
+    """Review t48 P1-1: what would publish wrong without a word."""
+    adapter, view, c = env
+    c.publish("v008")                               # back_01 to check, back_02 new while back_old is missing
+    assert getattr(adapter, "published_version", None) is None
+    assert "to check (back_01)" in view.publish_warning and "new while 1 missing" in view.publish_warning
+    c.publish("v008")                               # the same risks: the second click goes on
+    assert adapter.published_version == "v008"
+    adapter.preflight = lambda node: {"undetected": 2, "warnings": []}
+    adapter.published_version = None
+    c.publish("v009")
+    assert adapter.published_version is None and "2 pieces of the hair mesh are not detected" in view.messages[-1][0]
 
 
 def test_drop_reorders_and_moves_locks_between_groups(env) -> None:
@@ -821,6 +837,8 @@ def test_panel_smoke(app, prefs) -> None:
     assert "density" in adapter.read_data(None).lock(2).overrides
     adapter.publish_result = PublishResult(False, "", "v007", "v007 already exists")
     ui._version_edit.setText("v007")
+    ui._publish_btn.click()                          # first click: the risks (locks to check, new) are shown
+    assert "Click again" in ui.publish_warning()
     ui._publish_btn.click()
     assert "already exists" in ui.message()
     ui.set_regions_stale(True)
@@ -1075,10 +1093,10 @@ def test_ctrl_z_in_the_panel_and_the_loading_line(app, prefs) -> None:
     from PySide6.QtTest import QTest
 
     adapter, ui, c = _panel(app)
-    adapter.undo_labels = ["Grooming: Clump on back_01"]
+    adapter.undo_labels = ["MONO Grooming: Clump on back_01"]
     ui._tree.setFocus()
     QTest.keyClick(ui._tree, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
-    assert adapter.undone == ("undo", "Grooming: Clump on back_01")
+    assert adapter.undone == ("undo", "MONO Grooming: Clump on back_01")
     ui.set_busy("Clump")                                  # the loading line waits a moment
     assert not ui.is_busy()
     QTest.qWait(ui.BUSY_DELAY_MS + 100)
@@ -1205,6 +1223,17 @@ def test_new_only_while_there_are_missing_locks_and_stale_says_why(env) -> None:
     assert c.data().stale_why == ["lock 1 moved to Back"]
 
 
+def test_f_frames_the_locks_being_edited(env, monkeypatch) -> None:
+    adapter, view, c = env
+    framed = []
+    monkeypatch.setattr(adapter, "frame_locks", lambda node, ids: framed.append(ids), raising=False)
+    c.select_locks([1, 2])
+    assert c.frame() and framed[-1] == [1, 2]
+    c.select("none")
+    assert c.frame() and framed[-1] is None                    # nothing selected: the whole groom
+    assert any(k == "F" for k, _ in ctl.SHORTCUTS) and any("Alt+click" in k for k, _ in ctl.SHORTCUTS)
+
+
 def test_confirm_all_clears_new_and_to_check(env) -> None:
     adapter, view, c = env
     assert c.review_counts(c.data()) == (1, 1)
@@ -1241,6 +1270,15 @@ def test_panel_filter_review_line_narrow_layout_and_fading_message(app, prefs) -
     ui.resize(1200, 800)
     app.processEvents()
     assert not ui._narrow and ui._body.orientation() == Qt.Orientation.Horizontal
+    # wide: the tree pane fits the longest name (300 px cut hair_back_01 to "ha…01")
+    from PySide6.QtGui import QFontMetrics
+    tree = ui._tree
+    for (kind, _), item in ui._rows.items():
+        depth, up = 1, item.parent()
+        while up is not None:
+            depth, up = depth + 1, up.parent()
+        need = depth * tree.indentation() + QFontMetrics(item.font(0)).horizontalAdvance(item.text(0))
+        assert tree.header().sectionSize(0) >= need, (item.text(0), tree.header().sectionSize(0), need)
     # the selection's actions: a toggle fires the controller
     adapter.deform = (True, False)
     c.select_locks([1])

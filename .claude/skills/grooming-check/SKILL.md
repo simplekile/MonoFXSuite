@@ -24,7 +24,8 @@ root detection, spines or regions, since a scene keeps what was detected with th
 A scene also keeps the parm values it was saved with, so after changing an HDA default the old
 value still applies there: for Helen, rebuild the check scene with
 `tests/t17_check/t17_make.py <suite>` (reverts every parm, fresh Detect and Split).
-It measures the HDA's `HAIR` node at rest (the shot deform is ignored) against its own hair mesh and
+It measures the HDA's output 1 "Groom" at rest (`GROOM_REST`: every lock not excluded, full, whatever
+the view; `HAIR` on a node built before it) against its own hair mesh and
 writes `qc_report.md` / `.json`:
 
 - **checks**: each with ours, the reference, the limit and what it catches. A limit is an absolute
@@ -46,7 +47,7 @@ before changing code for a failure.
 ## 2. Look (`qc_capture.py`, Houdini GUI on the secondary monitor, ~3 min)
 
 Images come from a viewport flipbook, never a screen grab (a grab took whatever window covered the
-screen: a browser video once). "Ours" is the HDA's `HAIR` (the strands), not the node's output, which
+screen: a browser video once). "Ours" is the HDA's output 1 "Groom" (`GROOM`, the strands), not output 0 "Display", which
 packs each lock with its colour inside, so the XGen look could not reach the strands and every "ours"
 image before 2026-11-12 was flat colour per lock: they show lock shapes only, not strands.
 
