@@ -317,6 +317,13 @@
   (`shot_anim_usd` unpacking the whole character 86 ms + a blast 37 ms), `deform` 101 ms, GPU draw
   ~21 ms: 3.7 fps; with the USD Import left packed (the node unpacks only the hair gprims) 6.1 fps;
   While playing Guide 5.4 fps; hair full 1.0 fps (the deform of 4 M points ~0.76 s).
+- The first drag tick's 2.5 s did not come back (t47, same scene, lock hair_back_04, same commit; 5 GUI
+  runs: t46's order with the hip saved first, a freshly built HDA, two drags a run): first tick 0.32-0.38 s
+  (cook 0.19-0.24 s, the same as later ticks; hython 0.25 vs 0.21 s), later ticks 0.17-0.28 s, release
+  0.5-0.6 s. What the first tick does add, every drag, is ~0.13 s of viewport draw (strands going from 46 to
+  13 points). The 2.5 s was most likely the machine (t46's later ticks were 1.8x slower too): measure a tick
+  against select before calling it a regression. A real mouse drag in a GUI test does not cook: the viewport
+  cooks on Houdini's own idle loop, which a test's `processEvents` pump never reaches.
 - Hair quality is judged by the skill `.claude/skills/grooming-check` (numbers per strand and per lock
   against the approved groom, plus XGen-style shaded viewport shots); run it after any change to the
   network. Medians and averages passed a groom whose every strand had a 150 deg corner and half of
