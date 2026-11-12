@@ -1186,7 +1186,10 @@ def cook_lock_keys(sop) -> None:
         # a dragged lock's strands are coarser (DRAG_SEGMENTS): kept apart from its full hair
         lock_mode = "drag" if drag else "hair" if f >= 1.0 else "hair_preview"
         modes.append(lock_mode)
-        cap = int(wired and (deforming or f >= 1.0))   # publish (full) reuses these; it drops the capture
+        # captured only while the shot deform runs. Capturing every full-hair lock whenever the anim was
+        # wired (so that turning the deform on regrew nothing) held ~800 B a point: Helen 5.9 GB after a
+        # cook, 9.5 GB after an edit (review t48). Now the first Deform on regrows the groom once.
+        cap = int(wired and deforming)
         captures.append(cap)
         piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
         idx = [p.number() for p in prim.points()]
@@ -1298,6 +1301,19 @@ def cook_hair_cache(sop) -> None:
         geo.merge(g)
 
 
+def _display_copy(g):
+    """A lock's cached strands for the packed display, without the shot deform's capture: the packed
+    display is never deformed, and pCaptPts / pCaptWeights (~800 B a point at maxpt 100) copied into the
+    coloured and see-through versions took Helen to 5.9-9.5 GB with the anim wired (review t48)."""
+    out = hou.Geometry()
+    out.merge(g)
+    for name in ("pCaptPts", "pCaptWeights"):
+        a = out.findPointAttrib(name)
+        if a is not None:
+            a.destroy()
+    return out
+
+
 def cook_hair_packed(sop) -> None:
     """Python SOP "hair_packed": the display's hair, one packed primitive per lock embedding its cached
     strands (no copy). Merging 4 M points into one geometry made every edit and every hide re-upload the
@@ -1326,8 +1342,7 @@ def cook_hair_packed(sop) -> None:
         mode, key = sp.stringAttribValue("cache_mode") + "#cd", f"{sp.stringAttribValue('cache_key')}|{cd}"
         coloured = cache.get(sid, lid, mode, key)
         if coloured is None:
-            tinted = hou.Geometry()
-            tinted.merge(g)
+            tinted = _display_copy(g)
             tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
             tinted.setPrimFloatAttribValues("Cd", cd * len(tinted.iterPrims()))
             coloured = tinted.freeze(read_only=True)
@@ -1343,8 +1358,7 @@ def cook_hair_packed(sop) -> None:
             if ghost is None:
                 m = config.GHOST_MIX
                 gcd = tuple(c * (1 - m) + t * m for c, t in zip(cd, config.GHOST_TINT))
-                tinted = hou.Geometry()
-                tinted.merge(g)
+                tinted = _display_copy(g)
                 tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
                 tinted.addAttrib(hou.attribType.Prim, "Alpha", 1.0)
                 n = len(tinted.iterPrims())

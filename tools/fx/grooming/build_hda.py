@@ -1148,8 +1148,8 @@ def build_network(sub) -> None:
     lock_capture = _node(sub, "pointdeform", "lock_capture", [has_region, in_hair], mode="capture")
     lock_capture.parm("radius").setExpression('ch("../deform_radius")')
     captured = _node(sub, "switch", "captured", [has_region, lock_capture])
-    # per lock (lock_keys): always with Shot deform on; with it off, full-hair locks only, so turning it on
-    # recooks nothing, while a preview lock or a drag tick skips the capture (~0.3 s a lock)
+    # per lock (lock_keys): only while Shot deform runs (the capture held ~800 B a point in the cache);
+    # the first Deform on regrows the groom once
     captured.parm("input").setExpression('prim("../foreach_begin", 0, "do_capture", 0)')
     store = _node(sub, "python", "cache_store", [captured, begin])
     store.parm("python").set("from apps.houdini import grooming_adapter\n"

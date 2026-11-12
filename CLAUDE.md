@@ -277,8 +277,11 @@
   saved with it on: every lock drawn as strands, focus only dimming, so select looked like strands /
   isolate). GUI tests open scenes as saved (t36), not with the deform forced off. Hidden `anim_wired` / `deform_active`. With it on, every edit deforms all 4 M points
   (~1.2 s), so grooming is done with it off (edits 0.1 s); with it on a drag applies on release. Each lock is captured to the rest hair mesh inside the per-lock loop and cached
-  with its strands (`lock_capture`, per-lock `do_capture` in the key: always with deform on, full-hair
-  locks only with it off, so turning it on regrows nothing and drag ticks skip the ~0.3 s capture);
+  with its strands (`lock_capture`, per-lock `do_capture` in the key) **only while the deform runs**:
+  capturing every full-hair lock whenever the anim was wired held ~800 B a point (Helen, anim wired:
+  5.8 GB after a cook, 9.5 GB after an All-locks edit; now 2.1 / 2.7 GB, t49). The first Deform on
+  regrows the groom once (~12 s, was 1.7 s); frames and the deformed hair are the same (max 0.5 mm off).
+  The packed display's coloured / see-through copies never carry the capture (`_display_copy`);
   capturing the merged 4 M points cost 3-9 s per hide or show. Only mesh / guide parts are captured at
   display time. Two switches (`use_deform`, `deform_ok`): one hscript if() evaluated both sides and
   unpacked the anim USD on every frame with the deform off. Publish strips `pCaptPts` / `pCaptWeights`.
