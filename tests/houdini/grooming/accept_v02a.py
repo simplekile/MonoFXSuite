@@ -360,50 +360,55 @@ def d2_black():
           "every root is where the automatic groom has it (difference 0), and every rest point byte for byte")
 
 
-def _nearest(a, b):
-    """For each of `a` (n, 3) the distance to the nearest of `b` (m, 3); inf when `b` is empty."""
-    if not len(b):
-        return np.full(len(a), np.inf)
-    out = np.empty(len(a))
-    for i in range(0, len(a), 400):
-        out[i:i + 400] = np.sqrt(((a[i:i + 400, None, :] - b[None, :, :]) ** 2).sum(-1).min(1))
-    return out
+LAYER_ID0 = 10000000      # the layers' own strands are numbered from here (build_hda VEX_MASK_TAG)
 
 
 def d2_tiny():
-    """A leftover mask of 0.028 (round 2: it re-placed every root of two locks, points up to 20 mm away)."""
+    """A leftover mask of 0.028 (round 2: it re-placed every root of two locks, points up to 20 mm away).
+    Strands are followed by their id: a strand's number in its lock's automatic scatter."""
     rows = {}
-    r0, l0 = G.roots()
-    counts0 = G.strands_by_lock()
+    before = G.strands_by_id()
     for zname in ("ordinary_hair_back_06", "most_stacked", "crown_whorl"):
         lid = ga.mask_add(node, "tiny", value=300.0)
         K.paint_disc(lid, Z[zname], 1.3, level=0.028)
         s, locks, _r = cook_all()
-        r1, l1 = G.roots()
-        kept = gone = new = 0
-        far = 0.0
+        after = G.strands_by_id()
+        total = kept = gone = new = strangers = 0
+        root_move, tip_move = [], []
         for k in locks:
-            a, b = r0[l0 == k], r1[l1 == k]
-            near = _nearest(a, b)
-            here = near <= 0.01                         # cm: the same root (a root's own float noise is 0.002)
-            kept += int(here.sum())
-            gone += int((~here).sum())
-            new += int((_nearest(b, a) > 0.01).sum())
-            far = max(far, float(near[here].max()) if here.any() else 0.0)
-        total0 = int(sum((l0 == k).sum() for k in locks))
-        now = G.strands_by_lock()
-        rows[zname] = {"locks": len(locks), "roots_before": total0, "roots_at_the_same_place": kept, "roots_gone": gone,
-                       "roots_new_the_layers": new, "share_gone": r3(gone / max(total0, 1)),
-                       "a_kept_root_moved_at_most_cm": round(far, 5),
-                       "strands": [int(sum(counts0[k] for k in locks)), int(sum(now.get(k, 0) for k in locks))]}
+            id0, r0, t0 = before[k]
+            id1, r1, t1 = after.get(k, (np.zeros(0, np.int32), np.zeros((0, 3)), np.zeros((0, 3))))
+            total += len(id0)
+            own = id1 < LAYER_ID0
+            new += int((~own).sum())
+            at0 = {int(i): n for n, i in enumerate(id0)}
+            idx1 = np.nonzero(own)[0]
+            match = np.array([at0.get(int(i), -1) for i in id1[idx1]], dtype=int)
+            strangers += int((match < 0).sum())             # an automatic strand that was not there before
+            ok = match >= 0
+            kept += int(ok.sum())
+            gone += len(id0) - int(ok.sum())
+            if ok.any():
+                root_move.append(np.sqrt(((r1[idx1[ok]] - r0[match[ok]]) ** 2).sum(1)))
+                tip_move.append(np.sqrt(((t1[idx1[ok]] - t0[match[ok]]) ** 2).sum(1)))
+        rm = np.concatenate(root_move) if root_move else np.zeros(1)
+        tm = np.concatenate(tip_move) if tip_move else np.zeros(1)
+        rows[zname] = {"locks": len(locks), "automatic_strands_before": total, "kept": kept, "gone": gone,
+                       "share_gone": r3(gone / max(total, 1)), "the_layers_new_strands": new,
+                       "automatic_strands_not_there_before": strangers,
+                       "a_kept_root_moved_cm": {"max": round(float(rm.max()), 4), "p99": round(float(np.percentile(rm, 99)), 4)},
+                       "a_kept_tip_moved_cm": {"max": round(float(tm.max()), 3), "p99": round(float(np.percentile(tm, 99)), 3),
+                                               "median": round(float(np.median(tm)), 4)}}
         ga.mask_remove(node, lid)
         cook_all()
-    ok = all(r["share_gone"] <= 0.028 + 0.02 and r["roots_at_the_same_place"] + r["roots_gone"] == r["roots_before"]
-             and r["a_kept_root_moved_at_most_cm"] <= 0.01 for r in rows.values())
+    ok = all(r["share_gone"] <= 0.028 + 0.02 and r["automatic_strands_not_there_before"] == 0
+             and r["a_kept_root_moved_cm"]["max"] <= 0.05 for r in rows.values())
     C.add("d2_a_tiny_mask_moves_no_root", ok, rows,
-          "mask 0.028 of a \"= 300\" layer on a disc (ordinary skin, stacked skin, the whorl): every root of the locks "
-          "under it is at its place (within 0.01 cm) or gone, at most 0.028 + 0.02 of them gone; the new roots are "
-          "the layer's own")
+          "mask 0.028 of a \"= 300\" layer on a disc (ordinary skin, stacked skin, the whorl), strands followed by "
+          "id: no automatic strand appears, at most 0.028 + 0.02 of them are gone, and every kept root is within "
+          "0.05 cm of where it was (round 2: every root of the locks re-placed, up to 2 cm)",
+          note="tips are reported: a kept strand's place across its lock is its rank among the lock's strands, "
+               "so it shifts a little when a neighbour goes")
 
 
 def d3_grey():

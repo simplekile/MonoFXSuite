@@ -89,7 +89,8 @@ class Groom:
         self._roots = node.parent().createNode("attribwrangle", "accept_roots")
         self._roots.setInput(0, merge)
         self._roots.parm("class").set(1)
-        self._roots.parm("snippet").set('v@r = point(0, "P", primpoint(0, @primnum, 0));')
+        self._roots.parm("snippet").set('v@r = point(0, "P", primpoint(0, @primnum, 0));' + chr(10)
+                                         + 'v@tip = point(0, "P", primpoint(0, @primnum, primvertexcount(0, @primnum) - 1));')
         self._scalp = None
 
     # ---- cooks ----
@@ -126,6 +127,21 @@ class Groom:
         r = np.frombuffer(geo.primFloatAttribValuesAsString("r"), np.float32).reshape(-1, 3) * self.unit
         return r.astype(np.float64), np.frombuffer(geo.primIntAttribValuesAsString("lock_id"), np.int32)
 
+    def strands_by_id(self) -> dict:
+        """Per lock id: {strand id: (root cm, tip cm)} of the rest groom. A strand's `id` is its number in the
+        lock's automatic scatter (the same from cook to cook); the layers' own strands are numbered from
+        10,000,000."""
+        geo = self._roots.geometry()
+        r = np.frombuffer(geo.primFloatAttribValuesAsString("r"), np.float32).reshape(-1, 3) * self.unit
+        t = np.frombuffer(geo.primFloatAttribValuesAsString("tip"), np.float32).reshape(-1, 3) * self.unit
+        lock = np.frombuffer(geo.primIntAttribValuesAsString("lock_id"), np.int32)
+        ids = np.frombuffer(geo.primIntAttribValuesAsString("id"), np.int32)
+        out = {}
+        for k in np.unique(lock):
+            sel = lock == k
+            out[int(k)] = (ids[sel].copy(), r[sel].astype(np.float64), t[sel].astype(np.float64))
+        return out
+
     # ---- the skin ----
     def scalp(self) -> dict:
         """The fine scalp with its split, read once (the split does not change during a run unless a check
@@ -141,10 +157,11 @@ class Groom:
             cen = np.zeros((n, 3))
             for k in range(3):
                 cen[:, k] = np.bincount(vprim, weights=P[vpoint, k], minlength=n) / np.maximum(counts, 1)
+            by_prim = vpoint[order]        # once: indexed inside the list below it made 24 k copies (20 GB)
             self._scalp = {"P": P, "P_cm": P * self.unit, "cen_cm": cen * self.unit, "vprim": vprim, "vpoint": vpoint,
                            "owners": geo.primIntListAttribValues("lock_owners"),
                            "area": np.frombuffer(geo.primFloatAttribValuesAsString("area_cm2"), np.float32).astype(float),
-                           "prim_points": [vpoint[order][s:s + c] for s, c in
+                           "prim_points": [by_prim[s:s + c] for s, c in
                                            zip(np.concatenate(([0], np.cumsum(counts)[:-1])), counts)]}
         return self._scalp
 
