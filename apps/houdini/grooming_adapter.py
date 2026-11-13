@@ -24,6 +24,12 @@ try:
 except ImportError:
     hou = None  # type: ignore[assignment]
 
+from apps.houdini import grooming_masks
+from apps.houdini.grooming_masks import (  # noqa: F401  (the adapter API's mask functions; the HDA's mask_read)
+    brush, cook_mask_read, import_masks, mask_add, mask_clear, mask_factor, mask_fill, mask_move, mask_problem,
+    mask_rebake, mask_remove, mask_set, mask_stroke, mask_values, masks_from_publish, paint_enter, paint_exit,
+    paint_layer, set_brush,
+)
 from tools.fx.grooming import config, logic, model
 from tools.fx.grooming.logic import DetectReport, LockInfo, MeshPiece, PublishResult
 
@@ -63,7 +69,7 @@ PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playb
 
 # Parms whose value never reaches the per-lock hair cook (display, publish, deform, what the geometry
 # already carries): left out of the cache key, so changing them recooks no lock.
-_KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
+_KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, config.MASK_PARM, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
                    PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_STRANDS,
                    PARM_FOCUS, PARM_DRAG_FACTOR, PARM_COOK_ALL, PARM_XRAY,
                    "shot_deform", "deform_active", "anim_wired",   # per lock: do_capture; deform_radius stays
@@ -71,12 +77,13 @@ _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, 
                    "rest_frame", "detect", "split_regions", "publish"}
 # Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
 _KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_match", "cached", "cache_key",
-                     "cache_mode", "disp", "row_display"}   # a lock's display reaches its key as its factor
+                     "cache_mode", "disp", "row_display",   # a lock's display reaches its key as its factor
+                     "mask_set"}                            # its mask reaches it as the digest of its values
 _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 MERGED_LOCK = -1                     # LockCache slot of a whole merge (hair_cache / groom_cache), not a lock
 MERGED_MODE = "merged:"
-CACHE_NET_VERSION = "partial-1-root-spread-6"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "partial-1-root-spread-6-mask-1"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -372,9 +379,11 @@ def lock_display_attribs(data: model.GroomData, lock_ids: Sequence[int]) -> dict
 
 
 def publish_record(asset: str, version: str, usd: str, scene: str, data: model.GroomData,
-                   strands: int, node_path: str, houdini: str = "") -> dict[str, Any]:
-    """What publish.json holds next to grooming_data.json."""
+                   strands: int, node_path: str, houdini: str = "", masks: dict | None = None) -> dict[str, Any]:
+    """What publish.json holds next to grooming_data.json. `masks`: where the painted mask layers are
+    (grooming_masks.publish_masks: file, layer ids, points), {} when the groom has none."""
     return {
+        "masks": dict(masks or {}),
         "asset": asset, "version": version, "department": "grooming", "usd": usd, "scene": scene,
         "node": node_path, "houdini": houdini, "user": getpass.getuser(),
         "date": _dt.datetime.now().isoformat(timespec="seconds"),
@@ -1139,8 +1148,10 @@ def publish(node, version: str | None = None) -> PublishResult:
         if errors or not os.path.isfile(usd_tmp):
             raise RuntimeError("; ".join(errors) or "USD export wrote no file")
         staged.write_text(os.path.join(tool_dir, "grooming_data.json").replace("\\", "/"), data.to_json())
+        # the mask layers' painted values, so a later version (or another scene) can read them back
+        mask_record = grooming_masks.publish_masks(node, staged, tool_dir)
         record = publish_record(asset, version, usd, hou.hipFile.path(), data, strands, node.path(),
-                                hou.applicationVersionString())
+                                hou.applicationVersionString(), masks=mask_record)
         staged.write_text(os.path.join(tool_dir, "publish.json").replace("\\", "/"),
                           json.dumps(record, ensure_ascii=False, indent=1))
         staged.commit()
@@ -1384,6 +1395,9 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     # built before drag_factor: the preview fraction
     drag_f = top.evalParm(PARM_DRAG_FACTOR) if top.parm(PARM_DRAG_FACTOR) is not None else light
     rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
+    # density masks (mask_read): per lock its scope set and a digest of the factor on its own skin; the 9
+    # region sums would miss a stroke that moves density inside a region
+    mask_sets, mask_hashes = grooming_masks.lock_mask_keys(preview)
     sk = surface.floatListAttribValue("surface_keys") if surface.findGlobalAttrib("surface_keys") else ()
     # the mode is per lock (its `disp`, lock_shown): only its strand factor reaches the hair, so the
     # node's mode is not in the key and a lock keeps its cache when the node's Display changes
@@ -1404,7 +1418,7 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     sid = top.sessionId()
     has_disp = geo.findPrimAttrib("disp") is not None
     preview_mode = config.DISPLAY_MODES.index("hair_preview")
-    keys, flags, factors, modes, captures, drags, grows = [], [], [], [], [], [], []
+    keys, flags, factors, modes, captures, drags, grows, msets = [], [], [], [], [], [], [], []
     has_excluded = geo.findPrimAttrib("excluded") is not None
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
@@ -1439,6 +1453,9 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
         parts.append(f)
         parts.append(cap)
         parts.append(int(drag))
+        mset = mask_sets[lid] if 0 <= lid < len(mask_sets) else -1
+        msets.append(mset)
+        parts.append(mask_hashes[lid] if mset >= 0 else "")
         key = lock_key(parts)
         keys.append(key)
         flags.append(int(cache.has(sid, lid, lock_mode, key)))
@@ -1448,6 +1465,8 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     geo.setPrimIntAttribValues("do_capture", captures)
     geo.setPrimIntAttribValues("drag_seg", drags)
     geo.setPrimIntAttribValues("cached", flags)
+    geo.addAttrib(hou.attribType.Prim, "mask_set", -1)      # region_cut reads mask_<set> for the lock
+    geo.setPrimIntAttribValues("mask_set", msets)
     if groom:
         geo.setPrimIntAttribValues("grows", grows)
 
@@ -1648,4 +1667,8 @@ __all__ = [
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
     "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "deform_problem", "capture_flag", "set_shot_deform", "set_root_flip",
     "set_excluded",
+    # v0.2a density masks (apps/houdini/grooming_masks.py)
+    "mask_add", "mask_remove", "mask_move", "mask_set", "mask_fill", "mask_clear", "mask_values", "mask_factor",
+    "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush", "paint_enter", "paint_exit", "paint_layer",
+    "import_masks", "masks_from_publish",
 ]

@@ -248,13 +248,22 @@ def test_publish_record_fields():
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1234, "/obj/g/n", "22.0")
     assert rec["asset"] == "char_Helen" and rec["version"] == "v007"
     assert rec["locks"] == 1 and rec["strands"] == 1234 and rec["department"] == "grooming"
+    assert rec["masks"] == {} and rec["schema"] == 2
+    rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1, "/obj/g/n", masks={"file": "m.bgeo"})
+    assert rec["masks"] == {"file": "m.bgeo"}
 
 
 def test_adapter_api_is_complete():
     for name in ("find_nodes", "create_node", "read_data", "write_data", "lock_infos", "detect",
                  "split_regions", "set_display", "selected_lock_ids", "select_locks", "publish",
-                 "set_isolate", "isolate_ids", "set_root_flip", "set_excluded"):
+                 "set_isolate", "isolate_ids", "set_root_flip", "set_excluded",
+                 # v0.2a density masks
+                 "mask_add", "mask_remove", "mask_move", "mask_set", "mask_fill", "mask_clear", "mask_values",
+                 "mask_factor", "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush",
+                 "paint_enter", "paint_exit", "paint_layer", "import_masks", "masks_from_publish",
+                 "cook_mask_read"):
         assert callable(getattr(ga, name))
+        assert name in ga.__all__ or name == "cook_mask_read"
     assert logic.LockInfo is ga.LockInfo
 
 
@@ -327,3 +336,107 @@ def test_captured_strands_have_a_cache_slot_of_their_own():
     c.put(1, 7, plain, "after", "hair after")          # the edit: the display, then output 1
     c.put(1, 7, captured, "after", "captured after")
     assert c.has(1, 7, plain, "before") and c.has(1, 7, captured, "before")   # the undo finds both
+
+
+# ---- v0.2a density masks (apps/houdini/grooming_masks.py, the parts without hou) ----
+
+def _grid_brush(n=9, step=0.01):
+    """A flat n x n grid of scalp points facing +y, each joined to its 4 neighbours."""
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    P = np.array([(x * step, 0.0, z * step) for z in range(n) for x in range(n)], np.float32)
+    N = np.tile(np.array([0.0, 1.0, 0.0], np.float32), (n * n, 1))
+    nb = []
+    for z in range(n):
+        for x in range(n):
+            nb.append([zz * n + xx for xx, zz in ((x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1))
+                       if 0 <= xx < n and 0 <= zz < n])
+    return gm, np, P, N, nb
+
+
+def test_mask_digest_is_empty_for_skin_at_one_and_changes_with_any_value():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    ones = np.ones(50, np.float32)
+    assert gm.values_digest(ones) == "" and gm.values_digest(np.zeros(0, np.float32)) == ""
+    a = ones.copy(); a[7] = 0.5
+    b = ones.copy(); b[8] = 0.5          # the same sum, another place: the 9 region sums could not tell
+    assert gm.values_digest(a) and gm.values_digest(a) != gm.values_digest(b)
+    assert gm.values_digest(a) == gm.values_digest(a.copy())
+
+
+def test_points_by_lock_gives_shared_points_to_each_owner():
+    from apps.houdini import grooming_masks as gm
+    got = gm.points_by_lock([(3,), (3, 5), (), (5,)])
+    assert sorted(got) == [3, 5] and list(got[3]) == [0, 1] and list(got[5]) == [1, 3]
+
+
+def test_neighbours_are_the_points_sharing_a_prim_in_any_vertex_order():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    # two quads sharing the edge 1-2 and a triangle on point 5, vertices listed out of order
+    vertex_prim = [1, 0, 0, 1, 0, 1, 0, 1, 2, 2, 2]
+    vertex_point = [1, 0, 1, 2, 2, 4, 3, 5, 5, 6, 7]
+    table = gm.shared_prim_neighbours(vertex_prim, vertex_point, 9)
+    nb = [sorted(int(i) for i in row if i >= 0) for row in table]
+    assert nb[0] == [1, 2, 3] and nb[1] == [0, 2, 3, 4, 5] and nb[5] == [1, 2, 4, 6, 7]
+    assert nb[6] == [5, 7] and nb[8] == []                      # a point in no prim has no neighbour
+    assert gm.shared_prim_neighbours([], [], 3).shape == (3, 1)
+
+
+def test_brush_reaches_only_joined_skin_facing_the_same_way():
+    gm, np, P, N, nb = _grid_brush()
+    brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
+    idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
+    assert 40 in idx and len(idx) == 21 and float(dist.max()) < 0.025     # a disc on the open grid
+    # the same points, but the right half faces away (skin behind an ear): the dab stays on its side
+    N2 = N.copy(); N2[P[:, 0] > 0.045] = (0.0, -1.0, 0.0)
+    idx2, _ = gm.ScalpBrush(P, N2, gm.neighbour_table(nb)).reach((0.04, 0.0, 0.04), 0.025)
+    assert len(idx2) < 21 and float(P[idx2][:, 0].max()) < 0.045
+    # a wall of removed neighbours (two sheets lying close): skin beyond it is inside the radius, not reached
+    cut = [[j for j in row if (P[i, 0] > 0.045) == (P[j, 0] > 0.045)] for i, row in enumerate(nb)]
+    idx3, _ = gm.ScalpBrush(P, N, gm.neighbour_table(cut)).reach((0.03, 0.0, 0.04), 0.025)
+    assert float(P[idx3][:, 0].max()) < 0.045 and len(idx3) > 5
+    assert len(brush.reach((5.0, 0.0, 5.0), 0.025)[0]) == 0             # off the scalp: nothing
+
+
+def test_mask_data_dab_and_factor():
+    gm, np, P, N, nb = _grid_brush()
+    from tools.fx.grooming.model import MaskLayer
+    md = gm.MaskData(P)
+    brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
+    idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
+    md.dab(0, idx, logic.brush_weights(dist, 0.025, 0.5), 0.0)
+    assert md.painted(0) == int((logic.brush_weights(dist, 0.025, 0.5) > 0).sum())
+    layer = MaskLayer(0, "a")
+    f = md.factor([layer])
+    assert f[40] == 0.0 and f[0] == 1.0 and f.dtype == np.float32
+    assert md.factor([MaskLayer(0, "a", on=False)]).min() == 1.0
+    assert md.factor([MaskLayer(1, "never painted")]).min() == 1.0
+    md.dab(0, idx, np.ones(len(idx), np.float32), 99.0)                   # a value is kept inside 0..MAX
+    assert float(md.v[0].max()) == config.MASK_VALUE_MAX
+    md.dab(0, idx, np.ones(len(idx), np.float32), 0.0, erase=True)
+    assert md.painted(0) == 0
+
+
+def test_layers_for_view_shows_what_a_lock_of_the_painted_scope_gets():
+    from apps.houdini import grooming_masks as gm
+    from tools.fx.grooming.model import MaskLayer
+    masks = [MaskLayer(0, "all"), MaskLayer(1, "bang", scope="group", group="bang"),
+             MaskLayer(2, "back", scope="group", group="back")]
+    assert [m.id for m in gm.layers_for_view(masks, 0)] == [0]
+    assert [m.id for m in gm.layers_for_view(masks, 1)] == [0, 1]
+    assert [m.id for m in gm.layers_for_view(masks, None)] == [0]
+
+
+def test_brush_settings_are_clamped_and_kept_for_the_session():
+    from apps.houdini import grooming_masks as gm
+    before = gm.brush()
+    try:
+        got = ga.set_brush(radius_cm=2.5, value=99, soft=3, erase=True)
+        assert got["radius_cm"] == 2.5 and got["value"] == config.MASK_VALUE_MAX and got["soft"] == 1.0
+        assert got["erase"] is True and ga.brush() == got
+        assert ga.set_brush(radius_cm=0)["radius_cm"] == 0.05
+        assert ga.paint_layer(None) is None
+    finally:
+        gm.BRUSH.update(before)
