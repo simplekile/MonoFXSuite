@@ -34,6 +34,21 @@ Goal: agents test and check every step themselves; the user is asked only where 
 The executor never grades its own work for the gate: a "done when" item counts only when the checker
 passed it and the manager saw the evidence.
 
+### Models (the manager sets `model` and `effort` when it starts a session)
+
+| Work | Model | Effort | Why |
+|---|---|---|---|
+| Manager (plan, briefs, diff review, gate decisions) | Fable 5.2 | high | The decisions every other session builds on |
+| Spike; build of the hard core (viewport state, HDA network, root and density logic, storage and cache keys) | Fable 5.2 | high | Design under open questions; a wrong choice costs the whole part |
+| Build of a task the spike already settled (panel from the picked mockup, adapter functions, unit tests, the acceptance script) | Opus 5.5 | high | Careful work with a clear target |
+| Checker | Opus 5.5 | high | A different model from the hard-core executor, so it does not share its blind spots; strong enough to try to break each item |
+| Mechanical runs (rebuild the HDA, run the acceptance script and QC again, flipbooks, changelog and release steps, moving notes) | Sonnet 5.5 | medium | Follows written steps; nothing to design |
+| Read-only look-ups (find a function, list sessions, read a log) | Haiku 5.5, as a subagent | low | Cheap and fast; the result comes back in the same turn |
+
+A session never gets a model above the manager's (the app ignores it). When a cheaper model fails a
+task twice, the manager restarts the task one row up, not a third try. The checker of a task built on
+Opus 5.5 runs on Fable 5.2 for the same reason as above: never the executor's own model.
+
 ### Gates of one part (a, b, c)
 
 1. **Spike** (executor): answers the part's OPEN questions with measurements, writes the decisions into
