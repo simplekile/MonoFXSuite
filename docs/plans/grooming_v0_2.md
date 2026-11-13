@@ -12,7 +12,7 @@ their lock) are answered here by edits the artist makes, not by more tuning of t
 
 | Part | What the artist gets | Why this order |
 |---|---|---|
-| **v0.2a Density masks** | Paint more or less hair on the scalp, in layers with blend modes (Substance Painter style) | Fixes most known issues (crown, thin skin) with the least new machinery; the layer system is reused by b and c |
+| **v0.2a Density masks** | Paint more or less hair on the scalp, in layers with blend modes (Substance Painter style); the tool's own workspace and pie menu | Fixes most known issues (crown, thin skin) with the least new machinery; the layer system is reused by b and c |
 | **v0.2b Lock redraw** | Move a lock's control points, redraw its curve, draw a new lock where the mesh has none | The plan's reserved slot (after spine and measure); changes shape, not density |
 | **v0.2c Brush** | Comb, lift, cut and length brushes on the hair in the viewport | Most work and the most risk (edits must survive recooks); comes last, on what a and b settle |
 
@@ -285,6 +285,38 @@ redraw its spine; the brushed look must stay. If fields cannot give the look, th
 guide-level edits (lost on some changes, with a warning) and stopping at a and b.
 
 **Done when.** Decided after the spike; written here before the build starts.
+
+## v0.2a, last task: the tool's own workspace and pie menu (asked by the user 2026-11-13)
+
+A place of its own for grooming, so the artist does not rebuild a layout or hunt for commands. Built
+after the mask panel, since the pie menu's entries are that panel's commands. One session.
+
+**What.**
+- **Desktop "MONO Grooming"** (a `.desk` file in the suite's `desktop/`, listed next to Build): a large
+  viewport, the Grooming panel docked on the right, a small network editor, the shelves that do not
+  matter here hidden. The user's other desktops are not changed.
+- **Radial menu "MONO Grooming"** (a file in the suite's `radialmenu/`, listed next to Main, key C in the
+  viewport): Paint / Erase, Guides / Hair preview / Hair, Isolate the selected locks, Scalp X-ray, Update
+  regions, Detect locks. Each entry calls the same controller function as the panel's button (no second
+  code path). In the Paint state: brush hotkeys and a right-click menu (radius, value) belong to the
+  viewer state.
+- Installer: `MonoFXSuite.iss` ships `desktop/` and `radialmenu/` (in the same change).
+
+**Spike first (OPEN).**
+1. Can the tool switch the viewport to its radial menu when the panel opens and put the user's back when
+   it closes, by script, in Houdini 22? If not: the user picks it in the menu, and the panel says so once.
+2. Does a `.desk` file keep the Python panel (by its interface name) on another machine and survive a
+   Houdini build update? If fragile: build the layout by script from a shelf tool ("Grooming workspace")
+   and ship no `.desk`.
+
+**Done when.**
+- From a fresh Houdini with the suite installed: the desktop is in the list, choosing it shows the
+  viewport and the docked panel on the node in the scene (checked by script: pane types and the panel's
+  interface); switching back restores the earlier desktop unchanged.
+- Every radial entry does what its panel button does (same resulting node state, checked by script for
+  each entry); none raises when no MONO Grooming node exists (a status line message instead).
+- The installer build contains both folders (ISCC log).
+- The user's own try of the pie menu and the layout is the User look gate.
 
 ## Not in v0.2 (later, when production needs it)
 
