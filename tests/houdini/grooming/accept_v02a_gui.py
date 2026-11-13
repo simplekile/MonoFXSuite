@@ -97,10 +97,18 @@ def centre_px() -> QtCore.QPoint:
     return viewer().qtScreenGeometry().center()
 
 
+def gl_widget():
+    """The viewport's widget. Looked up inside Houdini's own window, so another window lying over it (the
+    user's own Houdini on the same screen) does not hide it from the test."""
+    c = centre_px()
+    mw = hou.qt.mainWindow()
+    return app.widgetAt(c) if app.widgetAt(c) is not None and app.widgetAt(c).window() is mw         else mw.childAt(mw.mapFromGlobal(c))
+
+
 def _send(kind, pt, buttons, modifiers=QtCore.Qt.NoModifier):
     """A Qt mouse event to the viewport widget at global point `pt` (the user's own cursor is not touched)."""
     gp = QtCore.QPoint(int(round(pt[0])), int(round(pt[1])))
-    w = S.get("gl") or app.widgetAt(centre_px())
+    w = S.get("gl") or gl_widget()
     S["gl"] = w
     lp = QtCore.QPointF(w.mapFromGlobal(gp))
     button = QtCore.Qt.LeftButton if kind != QtCore.QEvent.MouseMove else QtCore.Qt.NoButton
@@ -274,6 +282,7 @@ def s1_strokes():
     S["lid"] = lid
     ga().set_brush(radius_cm=1.0, value=0.0, soft=0.5, erase=False)
     shots = [shot("s1_0_before")]
+    S["undo_before_paint"] = list(hou.undos.undoLabels()[:3])
     entered = ga().paint_enter(node, lid)
     st = state_mod().running()
     C.add("gui_paint_enter", bool(entered and st is not None and st.session is not None),
@@ -365,6 +374,63 @@ def s1_strokes():
     later(500, lambda: calibrate(go))
 
 
+def image_diff(a, b) -> float:
+    """Mean absolute difference of two shots (0..255), on a 160 px wide copy."""
+    ia = QtGui.QImage(OUT + "/" + a).convertToFormat(QtGui.QImage.Format_RGB888).scaledToWidth(160)
+    ib = QtGui.QImage(OUT + "/" + b).convertToFormat(QtGui.QImage.Format_RGB888).scaledToWidth(160)
+    n = ia.width() * ia.height() * 3
+    pa = np.frombuffer(bytes(ia.constBits())[:ia.sizeInBytes()], np.uint8).reshape(ia.height(), ia.bytesPerLine())[:, :ia.width() * 3]
+    pb = np.frombuffer(bytes(ib.constBits())[:ib.sizeInBytes()], np.uint8).reshape(ib.height(), ib.bytesPerLine())[:, :ib.width() * 3]
+    return float(np.abs(pa.astype(int) - pb.astype(int)).sum() / n)
+
+
+@step
+def s1b_undo_look():
+    """What the artist sees over a Ctrl+Z: the coloured scalp stays (Guides display, so the skin is in view)."""
+    node = S["node"]
+    lid = S["lid"]
+    ga().set_display(node, "guide", "lock")
+    node.cook()
+    set_view(S["zone"]["normal"], node.inputs()[0].geometry().boundingBox())
+    ga().set_brush(value=0.0, radius_cm=2.0, erase=False)
+    shots = {}
+
+    def before():
+        shots["before"] = shot("s1b_0_before_stroke")
+        drag(line(-60, 0, 60, n=20), after_stroke)
+
+    def after_stroke():
+        shots["stroke"] = shot("s1b_1_after_stroke")
+        hou.undos.performUndo()
+        later(700, after_undo)
+
+    def after_undo():
+        shots["undo"] = shot("s1b_2_after_undo")
+        st = state_mod().running()
+        on = st is not None and ga().paint_layer(node) == lid
+        ga().paint_exit(node)
+        later(500, lambda: off(on))
+
+    def off(on):
+        shots["off"] = shot("s1b_3_paint_off")
+        d = {"stroke_vs_before": image_diff(shots["stroke"], shots["before"]),
+             "undo_vs_before": image_diff(shots["undo"], shots["before"]),
+             "undo_vs_paint_off": image_diff(shots["undo"], shots["off"])}
+        C.add("gui_scalp_stays_drawn_after_undo",
+              on and d["undo_vs_before"] < 0.5 * d["stroke_vs_before"] and d["undo_vs_paint_off"] > 4 * max(d["undo_vs_before"], 0.05),
+              {"paint_still_on_after_undo": on, "image_mean_abs_diff": {k: round(v, 3) for k, v in d.items()}, "shots": shots},
+              "after the undo the picture is the one before the stroke (scalp drawn, paint gone), not the one "
+              "with Paint off (no scalp)", evidence=shots["undo"])
+        ga().set_display(node, "hair", "lock")
+        node.cook()
+        set_view(S["zone"]["normal"], box_round(S["zone"]["centre_cm"], 3.5))
+        ga().set_brush(value=0.0, radius_cm=1.0)
+        ga().paint_enter(node, lid)
+        later(600, lambda: calibrate(S["next"]))
+
+    later(1200, before)
+
+
 @step
 def s2_reselect():
     """Selecting the node again must not lose the brush (Houdini enters the node's own state then)."""
@@ -373,6 +439,10 @@ def s2_reselect():
     before = lib.mask_arrays(node, lid)
     sm = state_mod()
     back0 = sm.STATS["came_back"]
+    stack = list(hou.undos.undoLabels())
+    since = stack[:next((i for i, x in enumerate(stack) if "Add mask layer" in x), len(stack))]
+    S["undo_s1"], S["undo_s1_clean"] = since[:10], bool(since) and all(x.startswith("MONO Grooming: ") for x in since)
+    S["undo_s2"], S["undo_s2_count"] = stack[:12], len(stack)
     node.setSelected(False, clear_all_selected=True)
     node.setCurrent(True, clear_all_selected=True)
     right_after = viewer().currentState()
@@ -384,6 +454,16 @@ def s2_reselect():
         def painted():
             after = lib.mask_arrays(node, lid)
             grew = int((after[1] > before[1] + 1e-6).sum())
+            labels = list(hou.undos.undoLabels()[:12])
+            new = labels[:len(labels) - len([x for x in labels if x in S["undo_s2"]])] if False else labels
+            added = len(hou.undos.undoLabels()) - S["undo_s2_count"]
+            C.add("gui_paint_adds_no_undo_step_of_its_own",
+                  S["undo_s1_clean"] and added <= 3 and labels[0].endswith("Paint mask"),
+                  {"steps_since_the_layer_was_added": S["undo_s1"], "all_ours": S["undo_s1_clean"],
+                   "steps_added_by_select_again_and_one_stroke": added, "undo_stack_top": labels[:4]},
+                  "entering Paint records nothing (every step since the layer's Add is a stroke); selecting the "
+                  "node again adds only Houdini's own two selection steps, the brush coming back none",
+                  note="a tool change recorded as 'Change selection' between strokes made Ctrl+Z drop the brush")
             C.add("gui_no_stroke_lost_after_selecting_the_node_again",
                   viewer().currentState() == sm.STATE and sm.running() is not None and grew > 20
                   and ga().paint_layer(node) == lid,
@@ -404,7 +484,7 @@ def s3_leave():
     node = S["node"]
     lid = S["lid"]
     sm = state_mod()
-    w = S.get("gl") or app.widgetAt(centre_px())
+    w = S.get("gl") or gl_widget()
     tried = []
 
     def esc_to(name, target):

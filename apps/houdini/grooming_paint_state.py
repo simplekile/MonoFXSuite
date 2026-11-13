@@ -170,8 +170,11 @@ class MaskPaint(object):
         try:
             self.stale = False
             self.session.reload()
-            if self.session.layer() is None:      # the layer is gone (its Add was undone)
+            if self.session.layer() is None:      # the layer is gone (its Add was undone, or it was deleted)
                 gm.paint_exit()
+                # said out loud: the scalp's colours vanish with the brush, which reads as a fault
+                hou.ui.setStatusMessage("MONO Grooming: Paint ended, the layer being painted is gone "
+                                        "(undone or deleted); redo brings it back", hou.severityType.ImportantMessage)
                 return
             self.recolour()
         except Exception:
@@ -308,18 +311,21 @@ def enter(node) -> bool:
     if viewer is None:
         return False
     register()
-    if viewer.pwd() != node.parent():
-        viewer.setPwd(node.parent())           # a SOP state needs the viewer inside the node's network
-    current = viewer.currentState()
-    if current != STATE:
-        LIVE["prev"] = current
-    state = running()
-    if state is not None:                      # already painting: another layer, or another node
-        state._close()
-        state.__init__(state.state_name, state.scene_viewer)
-        state._setup()
-    else:
-        viewer.setCurrentState(STATE, request_new_on_generate=False)
+    # no undo step for changing tool: Houdini records "Change selection" for these, and such a step between
+    # two strokes made Ctrl+Z undo a tool change (dropping the brush) and, recorded after an undo, emptied redo
+    with hou.undos.disabler():
+        if viewer.pwd() != node.parent():
+            viewer.setPwd(node.parent())           # a SOP state needs the viewer inside the node's network
+        current = viewer.currentState()
+        if current != STATE:
+            LIVE["prev"] = current
+        state = running()
+        if state is not None:                      # already painting: another layer, or another node
+            state._close()
+            state.__init__(state.state_name, state.scene_viewer)
+            state._setup()
+        else:
+            viewer.setCurrentState(STATE, request_new_on_generate=False)
     return running() is not None and running().session is not None
 
 
@@ -331,10 +337,11 @@ def leave() -> None:
     LIVE["leaving"] = True
     try:
         prev = LIVE.get("prev") or "select"
-        try:
-            viewer.setCurrentState(prev)
-        except hou.Error:
-            viewer.setCurrentState("select")
+        with hou.undos.disabler():
+            try:
+                viewer.setCurrentState(prev)
+            except hou.Error:
+                viewer.setCurrentState("select")
     finally:
         LIVE["leaving"] = False
     hook = gm.HOOKS.get("exit")
@@ -370,6 +377,7 @@ def _came_back() -> None:
         LIVE["reenters"] = recent + [now]
         STATS["came_back"] += 1
         STATS["came_back_from"] = current
-        viewer.setCurrentState(STATE, request_new_on_generate=False)
+        with hou.undos.disabler():
+            viewer.setCurrentState(STATE, request_new_on_generate=False)
     except Exception:
         _note(traceback.format_exc())
