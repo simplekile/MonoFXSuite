@@ -463,7 +463,8 @@ def s1c_views():
         base, reference, point_area = ses.base_density()
         dens = ses.density()
         pick = np.linspace(0, len(dens) - 1, 300).astype(int)
-        want = np.array([logic.density_color(float(dens[i]), reference) for i in pick])
+        mask = ses.md.mask(ses.layer())
+        want = np.array([logic.mask_tint(logic.density_color(float(dens[i]), reference), float(mask[i])) for i in pick])
         err = float(np.abs(cds["density"][pick] - want).max())
         strands = S["G"].strands()
         counted = float((ses.actual * point_area).sum()) if ses.actual is not None else 0.0

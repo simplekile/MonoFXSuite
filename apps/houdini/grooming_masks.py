@@ -179,7 +179,11 @@ def view_colours(view: str, factor, value=None, coverage=None, density=None, ref
         t = np.clip(np.asarray(density, np.float32) / max(reference, 1e-9), 0.0, stops[-1])
         i = np.clip(np.searchsorted(stops, t, side="right") - 1, 0, len(stops) - 2)
         f = ((t - stops[i]) / (stops[i + 1] - stops[i]))[:, None]
-        return (ramp[i] + (ramp[i + 1] - ramp[i]) * f).astype(np.float32)
+        out = ramp[i] + (ramp[i + 1] - ramp[i]) * f
+        if coverage is not None:      # where the painted layer's mask is: tinted (logic.mask_tint)
+            k = np.clip(np.asarray(coverage, np.float32), 0.0, 1.0)[:, None] * logic.MASK_TINT_STRENGTH
+            out = out + (np.array(logic.MASK_TINT, np.float32) - out) * k
+        return out.astype(np.float32)
     return by_factor(factor).astype(np.float32)
 
 

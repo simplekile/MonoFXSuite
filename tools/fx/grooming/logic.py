@@ -770,6 +770,18 @@ def density_color(density: float, reference: float) -> tuple[float, float, float
     return tuple(x + (y - x) * f for x, y in zip(DENSITY_RAMP[i], DENSITY_RAMP[i + 1]))   # type: ignore[return-value]
 
 
+# In the density view the skin the painted layer's mask covers is tinted, so the artist sees where the layer
+# applies even where the density does not move (skin with no roots stays dark whatever it is multiplied by)
+MASK_TINT = (1.00, 0.25, 0.80)
+MASK_TINT_STRENGTH = 0.55
+
+
+def mask_tint(color, mask: float):
+    """`color` mixed towards MASK_TINT by the mask there x MASK_TINT_STRENGTH."""
+    k = min(max(mask, 0.0), 1.0) * MASK_TINT_STRENGTH
+    return tuple(c + (t - c) * k for c, t in zip(color, MASK_TINT))
+
+
 def layer_color(value: float, coverage: float) -> tuple[float, float, float]:
     """Colour of the scalp in the "layer" view (one mask alone): the layer's value as `mask_color` shows a
     factor, faded into LAYER_UNPAINTED by its coverage."""

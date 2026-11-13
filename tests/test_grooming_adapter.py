@@ -444,6 +444,12 @@ def test_view_colours_factor_density_and_one_layer_alone():
     d = gm.view_colours("density", factor, density=dens, reference=150.0)
     for i in range(4):
         assert d[i] == pytest.approx(logic.density_color(float(dens[i]), 150.0), abs=1e-5)
+    tinted = gm.view_colours("density", factor, coverage=cover, density=dens, reference=150.0)
+    assert tinted[0] == pytest.approx(d[0], abs=1e-6)                   # mask 0: the density's own colour
+    for i in (1, 3):
+        want = logic.mask_tint(logic.density_color(float(dens[i]), 150.0), float(cover[i]))
+        assert tinted[i] == pytest.approx(want, abs=1e-5)
+    assert abs(tinted[1] - d[1]).max() > 0.3                            # painted skin with no roots still shows
     plain = gm.view_colours("roots", factor)
     assert plain.shape == (4, 3) and np.allclose(plain, plain[0])       # the dots carry the roots view
     one = gm.view_colours("layer", factor, value, cover)
