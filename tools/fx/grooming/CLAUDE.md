@@ -40,8 +40,8 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   per lock from PREVIEW), its mesh piece (`surface_keys`), the loop's parms, display mode and preview
   factor; colour and visibility are left out, so they recook nothing. Only locks that grow and miss go
   through the For-Each (`to_cook`); `cache_store` keeps each, `hair_cache` merges every growing lock
-  (one copy: 4 M points in ~0.25 s, most of what a hide costs). Last 2 keys per lock and mode are
-  kept, so undo finds the previous hair. Hairclump, length, frizz run inside the loop on the lock's own
+  (one copy: 4 M points in ~0.25 s, most of what a hide costs). Earlier states of a lock are kept while
+  the node's "Undo cache, GB" lasts (round 3 below; it was the last 2 keys), so undo finds the previous hair. Hairclump, length, frizz run inside the loop on the lock's own
   region (`clump_id` = lock_id x `CLUMP_ID_STRIDE` + its clump): a whole-groom node after the cache
   made every edit pay for 116 k strands again. A capped preview factor snaps to 0.8^k steps (it is in
   every key; cap / total moved with any density edit). Helen hair full: one lock edit 9.5 -> ~1 s,
@@ -52,7 +52,8 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   not excluded, full density, only P + `config.GROOM_ATTRIBS` (width, lock_id, name, group, clump_id,
   id), deformed whenever a matching anim is wired (Shot deform drives only output 0; `groom_use_deform`
   reads `anim_wired`, `capture_flag(groom=True)` captures its locks whenever wired), else at rest; it
-  cooks only when read. Anything downstream (File Cache, SOP Import, a
+  cooks only when read (since round 3 its locks are never captured in the loop: see "Undo cache" below; the
+  sentence above about `capture_flag(groom=True)` is how v0.1 did it). Anything downstream (File Cache, SOP Import, a
   ROP, Guide Process) reads output 1; the review (t48 P0-1) found output 0 changing with every hide,
   isolate, focus and Display. Output 1 has its own keys (`groom_keys` = `cook_lock_keys(groom=True)`:
   factor 1, no drag, every lock not excluded) and its own copy of the per-lock loop (`groom_*`,
@@ -553,3 +554,40 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - Timing checks are absolute limits: with Blender and Resolve running the whole machine was 1.45x slower
     (v0.1's own full cook 14.4 s instead of 9.7) and `dw3_stroke_speed` missed one stroke. Time v0.1 right
     before (`--time-only`) and read stroke limits only from a quiet run.
+- Undo cache by memory, and output 1's capture apart from the hair (round 3, t62; the user's decision 2):
+  - `LockCache` holds states while memory lasts, not a count of 2: per node a limit (parm `undo_cache_gb`,
+    "Undo cache, GB", default 2, in `_KEY_SKIP_PARMS`, read by `lock_keys` every cook), each entry sized by its
+    geometry's `memoryusage` intrinsic, the states used longest ago dropped when a store goes over. Never
+    dropped: the key used last in each (node, lock, mode) slot and everything touched since the node's keys
+    last cooked (`begin`; `has` counts as a touch, so what `lock_keys` saw is there when `hair_cache` merges).
+    `undo_cache_usage(node)` gives the panel bytes / live / undo / limit / dropped / capture_bytes.
+  - `put` is a cook of a lock's hair by the loop (`cache_store`) and nothing else; copies made from cached
+    hair go through `put_derived` (the display's coloured copy, the whole merges, output 1's captures), so a
+    test wrapping `put` counts hair grown. The display's coloured / ghost copies of earlier states are not
+    kept (`keep_only`): by `memoryusage` they are as large as the hair and halved what the limit held, and
+    making one again costs ~1 ms a lock (Houdini shares the attribute data of a copy: 6-11 MB real for a
+    78 MB geometry, t62 `cow.py`, which the intrinsic does not show; the count stays the careful one).
+  - Output 1 with an anim wired no longer captures inside the per-lock loop (`capture_flag(groom=True)` is
+    0): `groom_keys` gives the same keys as the display's full hair, so GROOM_REST, publish and the density
+    view read the display's strands (GROOM_REST after a display cook: 13.6 s in v0.1, 0.34 s now). The
+    capture the deform needs is a second loop after `groom_cache` (`groom_capture_keys` -> `groom_capture_load`
+    (the lock's cached strands, contract attributes) -> `groom_capture_lock` (Point Deform, capture) ->
+    `groom_capture_store` -> `groom_capture_all`), cooked only when the deformed output is read. Why: captured
+    strands are 800 B a point (Helen 3.3 GB for one state of the groom, 400 MB for one stroke over 6 locks),
+    so no limit could hold undo states of them, and they pushed the hair's own states out. One capture a
+    lock is kept, outside the limit's count (size 0, reported as `capture_bytes`); an undo with the deformed
+    output read captures its locks again from cached strands (5 locks: counted apart, no hair regrown).
+    The deformed output is point for point v0.1's (frames 0 / 24 / 48, max difference 0.0 cm); its first
+    read after a display cook 4.5 s (v0.1 ~15 s), a frame 1.2 s as before.
+  - Point Deform is an HDA of wrangles: it has no SOP verb (`nodeVerb("pointdeform")` is None), hence a
+    loop of nodes for the capture, not a Python verb call. A node copied by `_copy_loop` takes the prefix
+    `groom_`: a new node named `groom_captured` collided with the copy of the loop's `captured` switch.
+  - Numbers (Helen, hython, anim wired, limit 2 GB, t62 `undo*/`): live 520 MB (hair 124, coloured copies
+    126, the display's and output 1's merges 270); a stroke over 5 locks of ordinary skin holds 26 MB (a
+    limit of 2 GB: ~58 such strokes), a whorl stroke over 26-35 locks 55 MB (~28 strokes). 30 strokes then
+    30 undos and 30 redos on ordinary skin: 0 locks cooked for the display and for GROOM_REST, undo + display
+    cook 0.025-0.071 s, redo 0.028-0.083 s, peak 1.27 GB. Whorl: the first 28 undos 0.04-0.07 s with 0 locks,
+    the last 2 regrow (the cache was full: 190 states dropped), still the right hair. Limit 0.3 GB (under the
+    live set): every undo regrows its locks (1.0-1.2 s for 5), every state still equal to the stroke's.
+  - `PREVIEW` no longer sums `region_keys` on every stroke (new wrangle `region_keys` on the split before
+    `mask_read`): 20 of its 26 ms, paid by every stroke and every undo.

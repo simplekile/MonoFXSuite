@@ -508,7 +508,12 @@ if (total * f > cap && total > 0) {
 }
 f@factor = chi("../display_eff") == 2 ? f : 1.0;   // display_eff: the display mode, lighter while playing
 f@preview_factor = f;   // the locks a slider is dragging (preview_ids) grow at this, whatever the display
-// fingerprints of each lock's region for the hair cache (adapter.cook_lock_keys): per lock id 9 floats
+// each lock's region fingerprint (region_keys: it changes only with the split, so it is not summed again
+// on every stroke: that was 20 of the 26 ms this node cost)
+f[]@region_keys = detail(1, "region_keys");
+""" % {"step": config.PREVIEW_FACTOR_STEP}
+
+VEX_REGION_KEYS = """// fingerprints of each lock's region for the hair cache (adapter.cook_lock_keys): per lock id 9 floats
 // summing what the per-lock loop reads of its prims (count, area / share, share, centre, centre x a
 // weight by prim number, so a moved or swapped prim changes it)
 int mx = -1;
@@ -523,7 +528,7 @@ for (int pr = 0; pr < nprimitives(0); pr++) {
     float a = prim(0, "area_cm2", pr);
     int sh = prim(0, "share", pr);
     vector c = primuv(0, "P", pr, {0.5, 0.5, 0});
-    float wq = 1 + (pr %% 13) * 0.37;
+    float wq = 1 + (pr % 13) * 0.37;
     foreach (int o; own) {
         int k = o * 9;
         rk[k] += 1; rk[k + 1] += a / max(sh, 1); rk[k + 2] += sh;
@@ -532,7 +537,7 @@ for (int pr = 0; pr < nprimitives(0); pr++) {
     }
 }
 f[]@region_keys = rk;
-""" % {"step": config.PREVIEW_FACTOR_STEP}
+"""
 
 VEX_SURFACE_KEYS = """// fingerprints of each piece's lookup cloud for the hair cache: per piece 9 floats (count, cloud
 // position, ds, dt, position x a weight by point number)
@@ -1528,7 +1533,9 @@ def build_network(sub) -> None:
     mask_read.parm("python").set("from apps.houdini import grooming_adapter\n"
                                  "grooming_adapter.cook_mask_read(hou.pwd())\n")
     regions = _node(sub, "null", "SCALP_REGIONS", [mask_read])
-    preview = _wrangle(sub, "PREVIEW", VEX_PREVIEW, DETAIL, [regions])
+    # on the split before mask_read: a stroke changes no lock's region
+    rkeys = _wrangle(sub, "region_keys", VEX_REGION_KEYS, DETAIL, [rprims])
+    preview = _wrangle(sub, "PREVIEW", VEX_PREVIEW, DETAIL, [regions, rkeys])
     section("Frozen regions")
 
     # ---- hair cache: only locks that grow and are not cached go through the loop ----
@@ -1813,14 +1820,38 @@ def _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean) -> 
     merged = _node(sub, "python", "groom_cache", [copies[end], gkeys])
     merged.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_hair_cache(hou.pwd())\n")
-    # the contract only (the capture stays for the deform below)
+    # the contract only
     keep = " ".join("^" + a for a in config.GROOM_ATTRIBS + ("pCaptPts", "pCaptWeights"))
     strip = _node(sub, "attribdelete", "groom_attribs", [merged], ptdel="* " + keep, primdel="* " + keep,
                   vtxdel="* " + keep, dtldel="* " + keep)
     rest = _node(sub, "null", "GROOM_REST", [strip])
-    # publish writes the rest groom (its attribdelete also drops the capture)
+    # publish writes the rest groom
     pub_clean.setInput(0, rest)
-    deform = _node(sub, "pointdeform", "groom_deform", [rest, in_hair, anim_hair], mode="deform")
+    # the deform's capture, per lock, apart from the hair (grooming_adapter.cook_capture_*): the loop above
+    # never captures, so the rest groom and the display share each lock's strands, and a lock's capture
+    # (800 B a point) exists only once the deformed output is read. A second loop, over the locks whose
+    # capture for this state of their hair is not in the cache: its strands from the cache -> Point Deform
+    # capture -> the cache
+    ckeys = _node(sub, "python", "groom_capture_keys", [gkeys, merged])
+    ckeys.parm("python").set("from apps.houdini import grooming_adapter\n"
+                             "grooming_adapter.cook_capture_keys(hou.pwd())\n")
+    c_cook = _node(sub, "blast", "groom_capture_to_cook", [ckeys], group="@grows==0 @capt_cached==1", grouptype=4)
+    c_begin = _node(sub, "block_begin", "groom_capture_begin", [c_cook], method=1, blockpath="../groom_capture_end")
+    c_load = _node(sub, "python", "groom_capture_load", [c_begin])
+    c_load.parm("python").set("from apps.houdini import grooming_adapter\n"
+                              "grooming_adapter.cook_capture_load(hou.pwd())\n")
+    c_capt = _node(sub, "pointdeform", "groom_capture_lock", [c_load, in_hair], mode="capture")
+    c_capt.parm("radius").setExpression('ch("../deform_radius")')
+    c_store = _node(sub, "python", "groom_capture_store", [c_capt, c_begin])
+    c_store.parm("python").set("from apps.houdini import grooming_adapter\n"
+                               "grooming_adapter.cook_capture_store(hou.pwd())\n")
+    c_end = _node(sub, "block_end", "groom_capture_end", [c_store], itermethod=1, method=1, useattrib=1,
+                  attrib="lock_id", blockpath="../groom_capture_begin", templatepath="../groom_capture_begin")
+    c_end.parm("class").set(0)
+    captured = _node(sub, "python", "groom_capture_all", [c_end, ckeys])
+    captured.parm("python").set("from apps.houdini import grooming_adapter\n"
+                                "grooming_adapter.cook_groom_captured(hou.pwd())\n")
+    deform = _node(sub, "pointdeform", "groom_deform", [captured, in_hair, anim_hair], mode="deform")
     deform.parm("radius").setExpression('ch("../deform_radius")')
     ok = _node(sub, "switch", "groom_deform_ok", [rest, deform])
     ok.parm("input").setExpression('detail("../ANIM_HAIR", "deform_ok", 0)')
@@ -2005,6 +2036,14 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     adv.addParmTemplate(active)
     adv.addParmTemplate(hou.FloatParmTemplate("deform_radius", "Deform radius", 1, default_value=(0.02,),
                                               min=0.0, max=1.0))
+    # how much hair the per-lock cache may hold: the states an undo or redo returns to without a recook.
+    # Saved with the hip; not in any lock's cache key (changing it regrows nothing)
+    adv.addParmTemplate(hou.FloatParmTemplate(
+        config.UNDO_CACHE_PARM, "Undo cache, GB", 1, default_value=(config.UNDO_CACHE_GB,), min=0.0, max=64.0,
+        min_is_strict=True,
+        help="Memory the node may use to keep the hair of earlier states (strokes, edits), so undo and redo "
+             "show them at once. When full the oldest states are dropped: an undo past them still gives the "
+             "right hair, it is grown again. What the node shows now is always kept."))
     ptg.append(adv)
 
     data = hou.StringParmTemplate(config.DATA_PARM, "Groom data", 1, tags={"editor": "1"})

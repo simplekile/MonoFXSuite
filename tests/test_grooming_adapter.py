@@ -195,20 +195,83 @@ def test_lock_key_changes_with_any_part():
     assert k != ga.lock_key(["a", 1.0000001, b"\x00\x01"]) and k != ga.lock_key(["a", 1.0, b"\x00\x02"])
 
 
-def test_lock_cache_keeps_last_two_keys_per_lock_and_mode():
-    c = ga.LockCache()
-    c.put(7, 1, "3", "k1", "g1")
-    c.put(7, 1, "3", "k2", "g2")
-    c.put(7, 2, "3", "k1", "other lock")
-    c.put(7, 1, "2", "k1", "preview")
-    assert c.has(7, 1, "3", "k1") and c.get(7, 1, "3", "k2") == "g2"
-    assert c.get(7, 1, "3", "k1") == "g1"          # undo back to k1: found, now most recent
-    c.put(7, 1, "3", "k3", "g3")                   # drops the least recently used: k2
-    assert not c.has(7, 1, "3", "k2") and c.has(7, 1, "3", "k1") and c.has(7, 1, "3", "k3")
-    assert c.get(7, 2, "3", "k1") == "other lock" and c.get(7, 1, "2", "k1") == "preview"
-    assert c.get(7, 9, "3", "k1") is None
+def test_lock_cache_keeps_every_state_while_memory_lasts():
+    c = ga.LockCache(limit=1000)
+    for i in range(30):                              # 30 strokes on one lock, 10 bytes a state
+        c.put(7, 1, "hair", f"k{i}", f"g{i}", size=10)
+    assert all(c.has(7, 1, "hair", f"k{i}") for i in range(30))      # a count of states is no limit any more
+    assert c.get(7, 1, "hair", "k3") == "g3" and c.get(7, 9, "hair", "k1") is None
+    use = c.usage(7)
+    assert use["bytes"] == 300 and use["limit_bytes"] == 1000 and use["dropped"] == 0
+    assert use["live_bytes"] > 0 and use["undo_bytes"] == use["bytes"] - use["live_bytes"]
     c.drop_node(7)
-    assert len(c) == 0 and c.nodes() == set()
+    assert len(c) == 0 and c.nodes() == set() and c.usage(7)["bytes"] == 0
+
+
+def test_lock_cache_drops_the_states_used_longest_ago_when_full():
+    c = ga.LockCache(limit=100)
+    c.begin(7)
+    for i in range(10):
+        c.put(7, 1, "hair", f"k{i}", i, size=10)
+    c.begin(7)
+    assert c.usage(7)["bytes"] == 100
+    assert c.get(7, 1, "hair", "k0") == 0            # an undo all the way back: k0 is now the state in use
+    c.begin(7)
+    c.put(7, 1, "hair", "k10", 10, size=30)          # 30 bytes more: the three used longest ago go
+    assert [i for i in range(11) if c.has(7, 1, "hair", f"k{i}")] == [0, 4, 5, 6, 7, 8, 9, 10]
+    assert c.usage(7)["bytes"] == 100 and c.usage(7)["dropped"] == 3
+    # another node has its own limit and is not touched
+    c.put(8, 1, "hair", "x", "other", size=5000)
+    assert c.has(8, 1, "hair", "x") and c.usage(7)["bytes"] == 100
+    c.begin(7)                                       # (asking above counted as using: a new cook)
+    c.set_limit(7, 40)                               # the artist lowers the limit: trimmed at once
+    assert c.usage(7)["bytes"] <= 40 and c.limit(7) == 40
+
+
+def test_lock_cache_never_drops_the_state_in_use():
+    c = ga.LockCache(limit=25)
+    c.begin(7)
+    c.put(7, 1, "hair", "a", "lock 1", size=20)
+    c.put(7, 2, "hair", "a", "lock 2", size=20)       # over the limit, but both are what the node shows
+    c.put(7, 3, "hair", "a", "lock 3", size=20)
+    assert all(c.has(7, k, "hair", "a") for k in (1, 2, 3)) and c.usage(7)["bytes"] == 60
+    c.begin(7)                                        # the next cook: lock_keys asks for what it will read
+    assert c.has(7, 1, "hair", "a")
+    c.put(7, 1, "hair", "b", "lock 1 edited", size=20)
+    # "a" of lock 1 was asked for in this cook and may still be read: kept until the next one
+    assert c.has(7, 1, "hair", "a") and c.get(7, 1, "hair", "b") == "lock 1 edited"
+    c.begin(7)
+    c.put(7, 2, "hair", "b", "lock 2 edited", size=20)
+    assert not c.has(7, 1, "hair", "a")               # an older state: the first to go
+    assert c.get(7, 1, "hair", "b") == "lock 1 edited" and c.get(7, 3, "hair", "a") == "lock 3"
+    # a limit of 0 keeps what the node shows and nothing else: undo is then a recook, still right
+    z = ga.LockCache(limit=0)
+    z.put(7, 1, "hair", "a", "x", size=20)
+    z.begin(7)
+    z.put(7, 1, "hair", "b", "y", size=20)
+    z.begin(7)
+    z.put(7, 1, "hair", "c", "z", size=20)
+    assert z.get(7, 1, "hair", "c") == "z" and not z.has(7, 1, "hair", "a") and z.usage(7)["bytes"] <= 40
+
+
+def test_lock_cache_sizes_values_with_its_sizer_and_keeps_only_named_copies():
+    c = ga.LockCache(sizer=len, limit=10 ** 6)
+    c.put(7, 1, "hair", "k", "12345")
+    c.put(7, 1, "hair", "k", "123")                  # the same key again replaces it
+    assert c.usage(7)["bytes"] == 3
+    c.put(7, 1, "hair#cd", "k|red", "copy one")
+    c.put(7, 1, "hair#cd", "k|red|ghost", "copy two")
+    c.put(7, 1, "hair#cd", "old|red", "an earlier state's copy")
+    c.keep_only(7, 1, "hair#cd", ("k|red", "k|red|ghost"))
+    assert not c.has(7, 1, "hair#cd", "old|red") and c.has(7, 1, "hair#cd", "k|red|ghost")
+    assert c.usage(7)["bytes"] == 3 + len("copy one") + len("copy two")
+    c.put_derived(7, 1, "hair#cd", "k|blue", "a copy is stored like anything else")
+    assert c.get(7, 1, "hair#cd", "k|blue") and c.usage(7)["entries"] == 4
+    assert sorted(c.values(7, "hair#cd")) == ["a copy is stored like anything else", "copy one", "copy two"]
+    assert c.values(7, "nothing") == [] and c.values(8, "hair#cd") == []
+    assert ga._geo_bytes("not a geometry") == 0
+    assert ga.LockCache().limit(1) == int(config.UNDO_CACHE_GB * 2 ** 30) and config.UNDO_CACHE_GB == 2.0
+    assert config.UNDO_CACHE_PARM in ga._KEY_SKIP_PARMS      # changing the limit regrows nothing
 
 
 def test_lock_cache_drop_forgets_one_slot_only():
@@ -313,18 +376,19 @@ def test_anim_mismatch_text():
     assert callable(ga.deform_problem)
 
 
-def test_groom_output_captures_whenever_an_anim_is_wired_the_display_only_while_deforming():
-    """Output 1 deforms whenever a matching anim is wired (a File Cache on it caches the shot whatever
-    the view toggle); the display captures only with Shot deform on (memory, review t48)."""
-    assert ga.capture_flag(groom=True, wired=True, deforming=False) == 1
+def test_only_the_display_captures_in_the_loop_and_only_while_deforming():
+    """Output 1's locks are the rest strands, shared with the display; the capture its deform needs is made
+    apart (cook_groom_captured). In the loop it held 800 B a point for every state of every lock."""
+    assert ga.capture_flag(groom=True, wired=True, deforming=False) == 0
+    assert ga.capture_flag(groom=True, wired=True, deforming=True) == 0
     assert ga.capture_flag(groom=False, wired=True, deforming=False) == 0
     assert ga.capture_flag(groom=False, wired=True, deforming=True) == 1
-    assert ga.capture_flag(groom=True, wired=False, deforming=False) == 0
+    assert ga.capture_flag(groom=False, wired=False, deforming=True) == 0
+    assert ga.GROOM_CAPTURE_MODE != ga.cache_mode(False, 1.0, 1) and callable(ga.cook_groom_captured)
+    assert callable(ga.cook_capture_keys) and callable(ga.cook_capture_load) and callable(ga.cook_capture_store)
 
 
 def test_captured_strands_have_a_cache_slot_of_their_own():
-    # anim wired, display at rest: output 1 captures and the display does not, so a lock has two keys at
-    # once; in one slot of KEEP 2 they pushed out the hair an undo goes back to (v0.2 plan, Not sure 6)
     assert ga.cache_mode(drag=False, factor=1.0, capture=0) == "hair"
     assert ga.cache_mode(drag=False, factor=1.0, capture=1) == "hair" + ga.CAPTURE_MODE
     assert ga.cache_mode(drag=False, factor=0.1, capture=0) == "hair_preview"
@@ -333,7 +397,7 @@ def test_captured_strands_have_a_cache_slot_of_their_own():
     plain, captured = ga.cache_mode(False, 1.0, 0), ga.cache_mode(False, 1.0, 1)
     c.put(1, 7, plain, "before", "hair before")
     c.put(1, 7, captured, "before", "captured before")
-    c.put(1, 7, plain, "after", "hair after")          # the edit: the display, then output 1
+    c.put(1, 7, plain, "after", "hair after")
     c.put(1, 7, captured, "after", "captured after")
     assert c.has(1, 7, plain, "before") and c.has(1, 7, captured, "before")   # the undo finds both
 

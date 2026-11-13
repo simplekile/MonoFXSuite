@@ -241,6 +241,17 @@ paint layers they no longer hold.**
   named in `publish.json` (`masks`: file, layer ids, points, painted points a layer); `masks_from_publish` /
   `import_masks` read them back. The published USD is the groom with its layers.
 
+**Undo cache (round 3, the user's decision 2026-11-13).** The per-lock hair cache keeps earlier states by
+memory, not by a count (it kept 2, so the second undo of a row of strokes regrew its locks): parm "Undo
+cache, GB" on the node (`undo_cache_gb`, default 2, saved with the hip, in no lock's key), the states used
+longest ago dropped when full, what the node shows now never dropped. An undo past what the cache holds
+gives the same hair, grown again. `undo_cache_usage(node)` reads what is in use (bytes, live, undo states,
+limit, dropped) for the panel. Output 1's Point Deform captures are held apart from that count, one a lock,
+and its locks are no longer captured inside the per-lock loop (800 B a point: one state of Helen's groom is
+3.3 GB): the rest groom and publish share the display's strands, and the capture is made per lock from
+cached strands only when the deformed output is read. The deformed groom is point for point v0.1's.
+Helen, 2 GB: ~58 strokes on ordinary skin (26 MB each, 5 locks), ~28 on the whorl (55 MB, 26-35 locks).
+
 **Why two sets of roots, and not one scatter by a density map (round 3).** The first builds multiplied
 hairgen's density attribute by a factor and thinned the roots the tool relocates. Two checkers measured what
 that gave: x2 was x1.08 on the whorl and x5.3 under floating mesh, "= D" ran 11-19 % short where relocated
@@ -266,6 +277,7 @@ function that changes something is one undo step named "MONO Grooming: ..."; the
 | `mask_dropped(node) -> str` | The sentence for the message line when the scene held layers of a removed kind ("" when none) |
 | `paint_enter(node, layer_id) -> bool` / `paint_exit(node=None)` / `paint_layer(node) -> int \| None` | Paint on (the viewport's tool is the brush; False without a viewport) / off / the layer being painted |
 | `set_brush(radius_cm=, soft=, erase=, xray=, view=, level=) -> dict` / `brush() -> dict` | Brush of the session (not saved, no undo): radius cm, soft share of the radius, `level` painted on the mask (1 white, 0 black; erase = black), scalp X-ray, `view` (density / layer / roots) |
+| `undo_cache_usage(node) -> dict` | What the node's hair cache holds against "Undo cache, GB": `bytes`, `live_bytes`, `undo_bytes`, `undo_states`, `limit_bytes`, `dropped`, `gb`, `limit_gb`, `capture_bytes` (the adapter's, not a mask function) |
 | `mask_problem(node) -> str` / `mask_rebake(node) -> bool` | "moved over by UV" while the layers sit on another scalp / store them on the current one |
 | `import_masks(node, tool_dir) -> int` / `masks_from_publish(tool_dir)` | Layers of a publish's `_grooming/` folder into the node / read only |
 | `grooming_masks.HOOKS["stroke"](node)`, `HOOKS["exit"]()` | Set by the panel: after a stroke is stored (it cooks in its loading line); Paint ended without the panel |

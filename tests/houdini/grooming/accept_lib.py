@@ -316,23 +316,38 @@ def same_arrays(a, b) -> bool:
 # ---------------------------------------------------------------------------
 
 class CookCount:
-    """Locks really cooked: wraps LockCache.put (hair cooked and stored), not `to_cook`."""
+    """Locks really cooked: wraps LockCache.put (hair grown by the per-lock loop and stored), not `to_cook`.
+    `captures`: locks whose Point Deform capture for output 1 was made again (`put_derived`, the capture
+    slot): a capture from cached strands, no hair is grown for it."""
 
     def __init__(self, ga):
         self.cache = ga.hair_cache()
         self.puts: list[tuple[int, str]] = []
-        self._orig = self.cache.put
+        self.caps: list[int] = []
+        self._orig, self._orig_derived = self.cache.put, self.cache.put_derived
+        capture = ga.GROOM_CAPTURE_MODE
 
         def put(node_id, lock_id, mode, key, value, *a, **kw):
             if lock_id >= 0:
                 self.puts.append((int(lock_id), mode))
             return self._orig(node_id, lock_id, mode, key, value, *a, **kw)
 
+        def put_derived(node_id, lock_id, mode, key, value, *a, **kw):
+            if lock_id >= 0 and mode == capture:
+                self.caps.append(int(lock_id))
+            return self._orig_derived(node_id, lock_id, mode, key, value, *a, **kw)
+
         self.cache.put = put
+        self.cache.put_derived = put_derived
 
     def take(self) -> list[int]:
         out = sorted({p[0] for p in self.puts})
         self.puts.clear()
+        return out
+
+    def captures(self) -> list[int]:
+        out = sorted(set(self.caps))
+        self.caps.clear()
         return out
 
 

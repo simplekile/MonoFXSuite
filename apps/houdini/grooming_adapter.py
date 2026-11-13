@@ -71,7 +71,7 @@ PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playb
 
 # Parms whose value never reaches the per-lock hair cook (display, publish, deform, what the geometry
 # already carries): left out of the cache key, so changing them recooks no lock.
-_KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, config.MASK_PARM, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
+_KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, config.MASK_PARM, config.UNDO_CACHE_PARM, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
                    PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_STRANDS,
                    PARM_FOCUS, PARM_DRAG_FACTOR, PARM_COOK_ALL, PARM_XRAY,
                    "shot_deform", "deform_active", "anim_wired",   # per lock: do_capture; deform_radius stays
@@ -182,54 +182,189 @@ class LockCache:
     """Hair of each lock, cooked once per input state (`lock_key`), per MONO Grooming node and display
     mode. Pure Python: the values are whatever the adapter stores (frozen hou.Geometry in Houdini).
 
-    Per (node, lock, mode) the last KEEP keys are kept, most recently used last: an undo of an edit goes
-    back to the previous key and finds it. Entries of the key in use are never dropped by a store of
-    another lock, so what `lock_keys` saw as cached is still there when `hair_cache` merges it."""
+    Limited by memory, not by a count of states (the user, 2026-11-13: a count of 2 made the second undo
+    of a row of strokes regrow its locks). Each entry has a size in bytes (`put(size=)`, else `sizer(value)`);
+    per node the cache holds at most its limit (`set_limit`, the node's "Undo cache, GB") and drops the
+    states used longest ago when a store goes over it. Never dropped, whatever the limit: the state in use,
+    which is the key used last in each (node, lock, mode) slot and everything touched since the node's
+    cook began (`begin`), so what `lock_keys` saw as cached is still there when `hair_cache` merges it.
+    An undo past what the cache holds finds nothing and the lock is cooked again: slower, never wrong."""
 
-    KEEP = 2
-
-    def __init__(self) -> None:
+    def __init__(self, sizer=None, limit: int | None = None) -> None:
         self._d: dict[tuple[int, int, str], dict[str, Any]] = {}
+        self._meta: dict[tuple[int, int, str], dict[str, list]] = {}    # slot -> key -> [bytes, tick, generation]
+        self._bytes: dict[int, int] = {}
+        self._limit: dict[int, int] = {}
+        self._gen: dict[int, int] = {}
+        self._dropped: dict[int, int] = {}
+        self._tick = 0
+        self._sizer = sizer
+        self._default = int(config.UNDO_CACHE_GB * 2 ** 30) if limit is None else int(limit)
+
+    # ---- use ----
+    def _touch(self, slot: tuple[int, int, str], key: str) -> None:
+        self._tick += 1
+        m = self._meta[slot][key]
+        m[1], m[2] = self._tick, self._gen.get(slot[0], 0)
+        d = self._d[slot]
+        d[key] = d.pop(key)             # most recently used last
 
     def has(self, node_id: int, lock_id: int, mode: str, key: str) -> bool:
-        return key in self._d.get((node_id, lock_id, mode), {})
+        """The state is held. Asking counts as using it: it is not dropped before this cook reads it."""
+        slot = (node_id, lock_id, mode)
+        if key not in self._d.get(slot, {}):
+            return False
+        self._touch(slot, key)
+        return True
 
     def get(self, node_id: int, lock_id: int, mode: str, key: str) -> Any:
-        slot = self._d.get((node_id, lock_id, mode))
-        if slot is None or key not in slot:
+        slot = (node_id, lock_id, mode)
+        d = self._d.get(slot)
+        if d is None or key not in d:
             return None
-        slot[key] = slot.pop(key)  # most recently used last
-        return slot[key]
+        self._touch(slot, key)
+        return d[key]
 
-    def put(self, node_id: int, lock_id: int, mode: str, key: str, value: Any) -> None:
-        slot = self._d.setdefault((node_id, lock_id, mode), {})
-        slot.pop(key, None)
-        slot[key] = value
-        while len(slot) > self.KEEP:
-            del slot[next(iter(slot))]
+    def put(self, node_id: int, lock_id: int, mode: str, key: str, value: Any, size: int | None = None) -> None:
+        slot = (node_id, lock_id, mode)
+        self._forget(slot, key)
+        if size is None:
+            size = int(self._sizer(value)) if self._sizer is not None else 0
+        self._d.setdefault(slot, {})[key] = value
+        self._meta.setdefault(slot, {})[key] = [int(size), 0, 0]
+        self._bytes[node_id] = self._bytes.get(node_id, 0) + int(size)
+        self._touch(slot, key)
+        self._trim(node_id)
+
+    def put_derived(self, node_id: int, lock_id: int, mode: str, key: str, value: Any, size: int | None = None) -> None:
+        """Store something made from a lock's cooked hair, not a cook of the lock: the display's coloured
+        copy, a whole merge, output 1's capture. The same store as `put`, under another name so that what
+        counts cooks (tests wrap `put`) counts hair grown by the loop and nothing else."""
+        LockCache.put(self, node_id, lock_id, mode, key, value, size)
+
+    def _forget(self, slot: tuple[int, int, str], key: str) -> None:
+        d = self._d.get(slot)
+        if d is None or key not in d:
+            return
+        del d[key]
+        self._bytes[slot[0]] = self._bytes.get(slot[0], 0) - self._meta[slot].pop(key)[0]
+        if not d:
+            del self._d[slot]
+            del self._meta[slot]
+
+    # ---- the limit ----
+    def begin(self, node_id: int) -> None:
+        """A cook of the node's keys starts: what is touched from here on is in use until the next one."""
+        self._gen[node_id] = self._gen.get(node_id, 0) + 1
+
+    def set_limit(self, node_id: int, limit_bytes: float) -> None:
+        self._limit[node_id] = max(0, int(limit_bytes))
+        self._trim(node_id)
+
+    def limit(self, node_id: int) -> int:
+        return self._limit.get(node_id, self._default)
+
+    def _in_use(self, slot: tuple[int, int, str], key: str) -> bool:
+        return next(reversed(self._d[slot])) == key or self._meta[slot][key][2] == self._gen.get(slot[0], 0)
+
+    def _trim(self, node_id: int) -> None:
+        over = self._bytes.get(node_id, 0) - self.limit(node_id)
+        if over <= 0:
+            return
+        old = sorted((m[1], slot, key) for slot, keys in self._meta.items() if slot[0] == node_id
+                     for key, m in keys.items() if not self._in_use(slot, key))
+        for _tick, slot, key in old:
+            if self._bytes.get(node_id, 0) <= self.limit(node_id):
+                break
+            self._forget(slot, key)
+            self._dropped[node_id] = self._dropped.get(node_id, 0) + 1
+
+    def usage(self, node_id: int) -> dict:
+        """What the node's cache holds: `bytes` in all, of which `live_bytes` the state in use (never
+        dropped) and `undo_bytes` the older states an undo or redo can return to (`undo_states` of them);
+        `limit_bytes`; `dropped`: states dropped so far to stay inside the limit."""
+        live = undo = states = entries = 0
+        for slot, keys in self._meta.items():
+            if slot[0] != node_id:
+                continue
+            for key, m in keys.items():
+                entries += 1
+                if self._in_use(slot, key):
+                    live += m[0]
+                else:
+                    undo += m[0]
+                    states += 1
+        return {"bytes": live + undo, "live_bytes": live, "undo_bytes": undo, "undo_states": states,
+                "entries": entries, "limit_bytes": self.limit(node_id), "dropped": self._dropped.get(node_id, 0)}
+
+    # ---- housekeeping ----
+    def keep_only(self, node_id: int, lock_id: int, mode: str, keys) -> None:
+        """Drop every state of the slot but `keys`: for what is made from another entry in a moment (the
+        display's coloured copy of a lock's strands), which is not worth undo memory."""
+        slot = (node_id, lock_id, mode)
+        for key in [k for k in self._d.get(slot, {}) if k not in keys]:
+            self._forget(slot, key)
 
     def drop(self, node_id: int, lock_id: int, mode: str) -> None:
-        self._d.pop((node_id, lock_id, mode), None)
+        slot = (node_id, lock_id, mode)
+        for key in list(self._d.get(slot, {})):
+            self._forget(slot, key)
+
+    def values(self, node_id: int, mode: str) -> list:
+        """Everything held for a node under one mode, every lock and state."""
+        return [v for slot, keys in self._d.items() if slot[0] == node_id and slot[2] == mode for v in keys.values()]
 
     def nodes(self) -> set[int]:
         return {k[0] for k in self._d}
 
     def drop_node(self, node_id: int) -> None:
-        for k in [k for k in self._d if k[0] == node_id]:
-            del self._d[k]
+        for slot in [k for k in self._d if k[0] == node_id]:
+            self.drop(*slot)
+        for table in (self._bytes, self._limit, self._gen, self._dropped):
+            table.pop(node_id, None)
 
     def __len__(self) -> int:
         return sum(len(s) for s in self._d.values())
+
+
+def _geo_bytes(value: Any) -> int:
+    """Memory a cached geometry holds, bytes (its `memoryusage` intrinsic); 0 for anything else."""
+    try:
+        return int(value.intrinsicValue("memoryusage"))
+    except Exception:
+        return 0
 
 
 def hair_cache() -> LockCache:
     """The session's one LockCache. Kept on `sys`, not in this module: reloading the adapter (or
     hou.session code) must not lose it while lock_keys still says a lock is cached."""
     cache = getattr(sys, _CACHE_ATTR, None)
-    if cache is None:
-        cache = LockCache()
+    if cache is None or not hasattr(cache, "usage"):      # none yet, or one of a build before the memory limit
+        cache = LockCache(sizer=_geo_bytes)
         setattr(sys, _CACHE_ATTR, cache)
     return cache
+
+
+def undo_cache_usage(node) -> dict:
+    """How much hair the node's cache holds against its limit (the node's "Undo cache, GB"), for the panel:
+    `bytes`, `live_bytes` (what the node shows now: never dropped), `undo_bytes` / `undo_states` (older
+    states an undo or redo returns to without a recook), `limit_bytes`, `dropped`, `gb` / `limit_gb`, and
+    `capture_bytes` (output 1's deform captures, held apart from the limit)."""
+    cache = hair_cache()
+    use = cache.usage(node.sessionId())
+    use["gb"] = use["bytes"] / 2 ** 30
+    use["limit_gb"] = use["limit_bytes"] / 2 ** 30
+    # output 1's Point Deform captures (one a lock, only once the deformed output was read): not hair, not
+    # in the limit's count
+    use["capture_bytes"] = sum(_geo_bytes(g) for g in cache.values(node.sessionId(), GROOM_CAPTURE_MODE))
+    return use
+
+
+def undo_cache_limit(top) -> int:
+    """The node's undo cache limit in bytes (its `undo_cache_gb`; a node built before the parm: the default)."""
+    parm = top.parm(config.UNDO_CACHE_PARM)
+    gb = float(parm.eval()) if parm is not None else config.UNDO_CACHE_GB
+    return int(max(gb, 0.0) * 2 ** 30)
 
 
 def classify_inputs(cands: Sequence[tuple[str, int]]) -> tuple[int, int] | None:
@@ -1364,13 +1499,18 @@ def _key_parms(top) -> list[tuple[str, str]]:
 
 
 def capture_flag(groom: bool, wired: bool, deforming: bool) -> int:
-    """Whether a lock's strands are cooked with the Point Deform capture (`do_capture`, in the key).
-    Output 1 (Groom, groom=True) deforms whenever an animated hair mesh is wired (decided 2026-11-13:
-    a File Cache on it caches the shot whatever the view toggle); the display only while Shot deform is
-    on. Capturing every lock whenever the anim was wired, for the display too, held ~800 B a point
-    (Helen 5.9 GB after a cook, 9.5 GB after an edit, review t48), so the display's first Deform on
-    regrows its locks once."""
-    return int(wired and (groom or deforming))
+    """Whether a lock's strands are cooked with the Point Deform capture inside the per-lock loop
+    (`do_capture`, in the key): the display's, only while Shot deform is on (capturing every lock whenever
+    the anim was wired held ~800 B a point: Helen 5.9 GB after a cook, 9.5 GB after an edit, review t48; so
+    the display's first Deform on regrows its locks once).
+
+    Output 1 (Groom, groom=True) never captures in the loop (round 3, t62): its locks are the rest strands,
+    the same cache entries as the display's full hair, and the capture its deform needs is made per lock
+    from them by `cook_groom_captured`, kept apart (CAPTURE_MODE) and only when the deformed output is read.
+    Captured in the loop, every state of every lock held 800 B a point (Helen: 3.3 GB live, 400 MB a stroke
+    over 6 locks), which no undo cache limit could hold, and reading the rest groom or publishing regrew
+    all 61 locks to capture them."""
+    return int(wired and deforming and not groom)
 
 
 CAPTURE_MODE = "+capture"
@@ -1438,6 +1578,8 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
         if hou.nodeBySessionId(nid) is None:
             cache.drop_node(nid)
     sid = top.sessionId()
+    cache.begin(sid)                    # what this cook touches is in use: never dropped to make room
+    cache.set_limit(sid, undo_cache_limit(top))
     has_disp = geo.findPrimAttrib("disp") is not None
     preview_mode = config.DISPLAY_MODES.index("hair_preview")
     keys, flags, factors, modes, captures, drags, grows, msets, madds = [], [], [], [], [], [], [], [], []
@@ -1602,7 +1744,7 @@ def cook_hair_cache(sop) -> None:
             merged.merge(g)
         whole = merged.freeze(read_only=True)
         cache.drop(sid, MERGED_LOCK, which)
-        cache.put(sid, MERGED_LOCK, which, key, whole)
+        cache.put_derived(sid, MERGED_LOCK, which, key, whole)
     geo.merge(whole)
 
 
@@ -1617,6 +1759,92 @@ def _display_copy(g):
         if a is not None:
             a.destroy()
     return out
+
+
+GROOM_CAPTURE_MODE = "groom:capture"     # LockCache slot of a lock's captured strands for output 1's deform
+
+
+def cook_capture_keys(sop) -> None:
+    """Python SOP "groom_capture_keys": the keyed spines of output 1 (input 0, `groom_keys`) with
+    `capt_cached` per lock: its captured strands for this state of its hair are in the cache. Input 1 is
+    `groom_cache`: read so that every lock's hair is in the cache before the capture loop asks for it."""
+    geo = sop.geometry()
+    sop.inputs()[1].geometry()
+    cache = hair_cache()
+    sid = sop.parent().sessionId()
+    geo.addAttrib(hou.attribType.Prim, "capt_cached", 0)
+    geo.setPrimIntAttribValues("capt_cached", [
+        int(cache.has(sid, p.intAttribValue(config.ATTR_LOCK_ID), GROOM_CAPTURE_MODE, p.stringAttribValue("cache_key")))
+        for p in geo.iterPrims()])
+
+
+def cook_capture_load(sop) -> None:
+    """Python SOP "groom_capture_load", first node of the capture loop: this lock's cached strands with the
+    contract's attributes only (what GROOM_REST keeps). Input 0 is the lock's keyed spine."""
+    geo = sop.geometry()
+    prims = geo.prims()
+    spine = prims[0] if prims else None
+    key = (spine.intAttribValue(config.ATTR_LOCK_ID), spine.stringAttribValue("cache_mode"),
+           spine.stringAttribValue("cache_key")) if spine is not None else None
+    geo.clear()
+    if key is None:
+        return
+    g = hair_cache().get(sop.parent().sessionId(), *key)
+    if g is None:
+        sop.addWarning("a lock's hair is not in the cache: read output 1 again")
+        return
+    geo.merge(g)
+    keep = set(config.GROOM_ATTRIBS)
+    for attribs in (geo.pointAttribs(), geo.primAttribs(), geo.vertexAttribs(), geo.globalAttribs()):
+        for a in attribs:
+            if a.name() != "P" and a.name() not in keep:
+                a.destroy()
+
+
+def cook_capture_store(sop) -> None:
+    """Python SOP "groom_capture_store", last node of the capture loop: keep this lock's captured strands
+    under its hair's key (GROOM_CAPTURE_MODE), then output nothing. Input 1 is the lock's keyed spine.
+    Stored with `put_derived`: a capture from cached strands, not a cook of the lock's hair."""
+    geo = sop.geometry()
+    prims = sop.inputs()[1].geometry().prims()
+    if prims:
+        p = prims[0]
+        sid, lid, key = sop.parent().sessionId(), p.intAttribValue(config.ATTR_LOCK_ID), p.stringAttribValue("cache_key")
+        # one capture a lock, outside the undo cache's count (size 0): the captures of a whole groom are
+        # larger than any sensible limit (Helen 3.3 GB) and would push every hair state out of it, while a
+        # capture is made again from cached strands in a moment. `undo_cache_usage` reports them apart
+        cache = hair_cache()
+        cache.put_derived(sid, lid, GROOM_CAPTURE_MODE, key, geo.freeze(read_only=True), size=0)
+        cache.keep_only(sid, lid, GROOM_CAPTURE_MODE, (key,))
+    geo.clear()
+
+
+def cook_groom_captured(sop) -> None:
+    """Python SOP "groom_capture_all" (output 1's deform reads it; it cooks only when the deformed output is
+    read): every lock of the rest groom with its Point Deform capture to the rest hair mesh, merged.
+    Input 0 the capture loop (it stored what was missing), 1 the keyed spines (`groom_capture_keys`).
+
+    A lock is captured once per state of its hair (its cache key) and kept under GROOM_CAPTURE_MODE: an edit
+    captures the locks it changed, a frame change nothing. These entries are 800 B a point: only the one of
+    the hair's current state is kept per lock (an undo captures its locks again from their cached strands,
+    it regrows nothing)."""
+    geo = sop.geometry()
+    geo.clear()
+    keyed = sop.inputs()[1].geometry()
+    cache = hair_cache()
+    sid = sop.parent().sessionId()
+    grows = keyed.findPrimAttrib("grows") is not None
+    missing = 0
+    for p in keyed.iterPrims():
+        if grows and p.intAttribValue("grows") == 0:
+            continue
+        got = cache.get(sid, p.intAttribValue(config.ATTR_LOCK_ID), GROOM_CAPTURE_MODE, p.stringAttribValue("cache_key"))
+        if got is None:
+            missing += 1
+        else:
+            geo.merge(got)
+    if missing:
+        sop.addWarning(f"{missing} locks have no capture in the cache: read output 1 again")
 
 
 def cook_hair_packed(sop) -> None:
@@ -1651,14 +1879,18 @@ def cook_hair_packed(sop) -> None:
             tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
             tinted.setPrimFloatAttribValues("Cd", cd * len(tinted.iterPrims()))
             coloured = tinted.freeze(read_only=True)
-            cache.put(sid, lid, mode, key, coloured)
+            cache.put_derived(sid, lid, mode, key, coloured)
         prim = geo.createPacked("PackedGeometry")
+        gkey = f"{key}|ghost|{alpha}"
+        # only the copies of the hair shown now are kept: a copy is made in a few ms from the lock's cached
+        # strands, so the copies of earlier states (as large as the hair itself, by the count) would only
+        # halve what the undo cache holds
+        cache.keep_only(sid, lid, mode, (key, gkey))
         if every or lid in strands:   # hair_packed_color gives them their colour, or the see-through grey
             prim.setEmbeddedGeometry(empty)
             unpacked.append(coloured)
         elif focus and lid not in focus:
             # out of focus: see-through grey, a copy made once per colour and kept like the coloured one
-            gkey = f"{key}|ghost|{alpha}"
             ghost = cache.get(sid, lid, mode, gkey)
             if ghost is None:
                 m = config.GHOST_MIX
@@ -1670,7 +1902,7 @@ def cook_hair_packed(sop) -> None:
                 tinted.setPrimFloatAttribValues("Cd", gcd * n)
                 tinted.setPrimFloatAttribValues("Alpha", (alpha,) * n)
                 ghost = tinted.freeze(read_only=True)
-                cache.put(sid, lid, mode, gkey, ghost)
+                cache.put_derived(sid, lid, mode, gkey, ghost)
             prim.setEmbeddedGeometry(ghost)
         else:
             prim.setEmbeddedGeometry(coloured)
@@ -1690,6 +1922,7 @@ def cook_frozen_regions(sop) -> None:
 
 
 __all__ = [
+    "undo_cache_usage",
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
     "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "deform_problem", "capture_flag", "set_shot_deform", "set_root_flip",
