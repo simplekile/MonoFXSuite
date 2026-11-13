@@ -429,6 +429,43 @@ def test_layers_for_view_shows_what_a_lock_of_the_painted_scope_gets():
     assert [m.id for m in gm.layers_for_view(masks, None)] == [0]
 
 
+def test_view_colours_factor_density_and_one_layer_alone():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    factor = np.array([1.0, 0.0, 2.0, 0.5], np.float32)
+    value = np.array([1.0, 0.0, 2.0, 0.0], np.float32)
+    cover = np.array([0.0, 1.0, 1.0, 0.5], np.float32)
+    base = np.array([150.0, 150.0, 150.0, 300.0], np.float32)
+    f = gm.view_colours("factor", factor)
+    assert f.shape == (4, 3) and f.dtype == np.float32
+    for i, m in enumerate(factor):
+        assert f[i] == pytest.approx(logic.mask_color(float(m)), abs=1e-6)
+    d = gm.view_colours("density", factor, base_density=base, reference=150.0)
+    for i in range(4):
+        assert d[i] == pytest.approx(logic.density_color(float(base[i] * factor[i]), 150.0), abs=1e-5)
+    # the same factor on skin with another automatic density is another colour: what "density" is for
+    assert not np.allclose(gm.view_colours("density", np.ones(2, np.float32), base_density=np.array([50.0, 300.0]),
+                                           reference=150.0)[0],
+                           gm.view_colours("density", np.ones(2, np.float32), base_density=np.array([50.0, 300.0]),
+                                           reference=150.0)[1])
+    one = gm.view_colours("layer", factor, value, cover)
+    for i in range(4):
+        assert one[i] == pytest.approx(logic.layer_color(float(value[i]), float(cover[i])), abs=1e-6)
+    assert gm.view_colours("density", factor) == pytest.approx(f)        # no density known: the factor
+    with pytest.raises(ValueError):
+        ga.set_brush(view="wireframe")
+
+
+def test_strand_roots_are_each_strands_first_point():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    pts = np.arange(4 * 3 * 3, dtype=np.float32).reshape(-1, 3)        # 4 strands of 3 points
+    roots = gm.strand_roots(pts.ravel(), 4)
+    assert roots.shape == (4, 3) and roots[1] == pytest.approx(pts[3]) and roots[3] == pytest.approx(pts[9])
+    assert gm.strand_roots(pts.ravel(), 5) is None and gm.strand_roots(pts.ravel(), 0) is None
+    assert ga.set_brush(roots=True)["roots"] is True and ga.set_brush(roots=False)["roots"] is False
+
+
 def test_brush_settings_are_clamped_and_kept_for_the_session():
     from apps.houdini import grooming_masks as gm
     before = gm.brush()

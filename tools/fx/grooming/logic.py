@@ -692,3 +692,25 @@ def far_chance(far_w: float, mask: float) -> float:
     (less hair there, less at the start); painted above 1, the automatic share moves and what the mask
     adds stays, so the skin fills to (mask - far_w) x the set density (the HDA's region_join, same rule)."""
     return far_w / max(mask, 1.0)
+
+
+# density (strands / cm2) -> colour, as a share of a reference density: 0, 0.5, 1, 1.5, 2 and over
+DENSITY_RAMP = ((0.02, 0.02, 0.10), (0.10, 0.25, 0.75), (0.15, 0.70, 0.45), (0.95, 0.85, 0.20), (1.00, 1.00, 1.00))
+LAYER_UNPAINTED = (0.12, 0.12, 0.13)   # "layer" view: skin the layer does not cover
+
+
+def density_color(density: float, reference: float) -> tuple[float, float, float]:
+    """Colour of the scalp in the "density" view: `density` over `reference` (the groom's default density)
+    along DENSITY_RAMP, near black at 0, green at the reference, white from twice it."""
+    t = min(max(density / max(reference, 1e-9), 0.0), 2.0) * 2.0      # 0..4 along the ramp
+    i = min(int(t), len(DENSITY_RAMP) - 2)
+    f = t - i
+    return tuple(a + (b - a) * f for a, b in zip(DENSITY_RAMP[i], DENSITY_RAMP[i + 1]))   # type: ignore[return-value]
+
+
+def layer_color(value: float, coverage: float) -> tuple[float, float, float]:
+    """Colour of the scalp in the "layer" view (one mask alone): the layer's value as `mask_color` shows a
+    factor, faded into LAYER_UNPAINTED by its coverage."""
+    c = mask_color(value)
+    k = min(max(coverage, 0.0), 1.0)
+    return tuple(u + (x - u) * k for u, x in zip(LAYER_UNPAINTED, c))   # type: ignore[return-value]

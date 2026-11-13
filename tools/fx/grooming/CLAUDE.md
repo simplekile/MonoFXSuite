@@ -504,3 +504,12 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     alone cooks nothing: 0.0 s). Single cold cooks swing 9.5-13.4 s on this machine: compare medians of 5.
   - `lock_infos` counts a lock's strands on its masked area (`LockInfo.mask_share`), and grooming-check's skin
     check multiplies what a prim asks by `mask_mean`, so a painted groom is judged against what was asked.
+  - After the user's own try (2026-11-13): a factor colour does not show the density. `set_brush(view=)`
+    (`factor` / `density` / `layer`, Painter's "result or one mask alone") and `set_brush(roots=True)` (a dot
+    a root of the full groom, `grooming_masks.display_roots`; in Guides display on the bare skin) are in the
+    state; the base row and Alt+click are the panel's. A `hou.GeometryDrawable` of type Point with
+    `params={"radius", "style": hou.drawableGeometryPointStyle.LinearCircle}` draws 119 k dots fine.
+    Tool changes made by our code run inside `hou.undos.disabler()`: Houdini records them as "Change
+    selection", which sat between strokes in the undo stack. `set_display` still records its own step.
+    A GUI test finds the viewport widget inside Houdini's own window (`mw.childAt`): `QApplication.widgetAt`
+    is None when another window (the user's Houdini) lies over it.

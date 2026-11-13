@@ -125,4 +125,10 @@ BRUSH_VALUE = 0.0
 # A dab reaches only skin connected to the point under the cursor and facing its way: the angle between a
 # point's normal and the hit's stays under this (the skin behind an ear is not painted through it)
 BRUSH_FACING_DEG = 75.0
+# What the scalp shows while painting (set_brush(view=...)); decided with the user, 2026-11-13 (Substance
+# Painter's way: the final result, or one mask alone by Alt+click on it):
+#   "factor"  the final factor on the automatic density: grey 1, blue towards 0, red towards 2+
+#   "density" the final density asked there, strands / cm2 (the automatic density x the factor)
+#   "layer"   the painted layer alone: its value where it has coverage, dark where it has none
+MASK_VIEWS: tuple[str, ...] = ("factor", "density", "layer")
 PAINT_STATE = "mono_grooming_mask_paint"   # the Python viewer state (apps/houdini/grooming_paint_state.py)

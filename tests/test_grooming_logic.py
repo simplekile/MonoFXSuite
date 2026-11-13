@@ -680,3 +680,23 @@ def test_far_chance_moves_the_automatic_share_and_keeps_what_the_mask_adds():
     assert logic.far_chance(0.8, 2.0) == pytest.approx(0.4)      # 2 x roots, 0.8 of the set density moves
     # skin density left over the set density: mask x (1 - chance) = mask - far_w above 1
     assert 2.0 * (1 - logic.far_chance(0.8, 2.0)) == pytest.approx(2.0 - 0.8)
+
+
+def test_density_color_runs_from_dark_to_white_at_twice_the_reference():
+    assert logic.density_color(0.0, 150.0) == pytest.approx(logic.DENSITY_RAMP[0])
+    assert logic.density_color(150.0, 150.0) == pytest.approx(logic.DENSITY_RAMP[2])
+    assert logic.density_color(300.0, 150.0) == pytest.approx(logic.DENSITY_RAMP[4])
+    assert logic.density_color(9999.0, 150.0) == pytest.approx(logic.DENSITY_RAMP[4])
+    mid = logic.density_color(37.5, 150.0)                      # a quarter: halfway between the first two
+    assert mid == pytest.approx([(a + b) / 2 for a, b in zip(logic.DENSITY_RAMP[0], logic.DENSITY_RAMP[1])])
+    lum = [sum(logic.density_color(d, 100.0)) for d in (0, 25, 50, 100, 150, 200)]
+    assert lum == sorted(lum)                                   # brighter means denser, all the way
+
+
+def test_layer_color_shows_one_mask_alone():
+    assert logic.layer_color(0.0, 0.0) == pytest.approx(logic.LAYER_UNPAINTED)      # not painted there
+    assert logic.layer_color(0.0, 1.0) == pytest.approx(logic.MASK_COLOR_ZERO)
+    assert logic.layer_color(2.0, 1.0) == pytest.approx(logic.MASK_COLOR_MORE)
+    half = logic.layer_color(2.0, 0.5)                                              # a dab's soft edge
+    assert half == pytest.approx([(u + c) / 2 for u, c in zip(logic.LAYER_UNPAINTED, logic.MASK_COLOR_MORE)])
+    assert set(config.MASK_VIEWS) == {"factor", "density", "layer"}

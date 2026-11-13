@@ -73,6 +73,8 @@ class MaskPaint(object):
         self.draw = None
         self.ring = None
         self.last_hit = None      # where the cursor's ray last met the skin (object space), None off it
+        self.dots = None
+        self.root_count = 0
 
     # ---- entering and leaving ----
     def onEnter(self, kwargs):
@@ -122,6 +124,12 @@ class MaskPaint(object):
                                          params={"color1": hou.Vector4(1, 1, 1, 1), "line_width": 2.0})
         self.ring.setGeometry(ring)
         self.ring.show(False)
+        # the roots the display grew, as dots on the skin (set_brush(roots=True))
+        self.dots = hou.GeometryDrawable(self.scene_viewer, hou.drawableGeometryType.Point, STATE + "_roots",
+                                         params={"color1": hou.Vector4(1.0, 1.0, 1.0, 1.0), "radius": 2.0,
+                                                 "style": hou.drawableGeometryPointStyle.LinearCircle})
+        self.dots.setTransform(self.xform)
+        self.reroot()
         self.recolour()
         node.addEventCallback((hou.nodeEventType.ParmTupleChanged,), self._parm_changed)
         STATS["enter_s"] = time.perf_counter() - t0
@@ -144,7 +152,7 @@ class MaskPaint(object):
                 self.node.removeEventCallback((hou.nodeEventType.ParmTupleChanged,), self._parm_changed)
             except (hou.Error, ValueError):
                 pass
-        for d in (self.draw, self.ring):
+        for d in (self.draw, self.ring, getattr(self, "dots", None)):
             if d is not None:
                 d.show(False)
         if self.draw is not None:
@@ -177,21 +185,48 @@ class MaskPaint(object):
                                         "(undone or deleted); redo brings it back", hou.severityType.ImportantMessage)
                 return
             self.recolour()
+            if self.node.isDisplayFlagSet() and gm.BRUSH["roots"]:
+                self.node.cook()               # an undo from outside: the display's hair, then its roots
+                self.reroot()
         except Exception:
             _note(traceback.format_exc())
 
     def recolour(self) -> None:
-        self.geo.setPointFloatAttribValuesFromString("Cd", colours(self.session.factor()).tobytes())
+        self.geo.setPointFloatAttribValuesFromString("Cd", self.session.colours(gm.BRUSH["view"]).tobytes())
         # a fresh copy: handed the same hou.Geometry again the drawable keeps the old colours
         self.draw.setGeometry(hou.Geometry(self.geo))
+
+    def reroot(self) -> None:
+        """The root dots again, from what the display has cooked (after a stroke's cook, an undo, entering)."""
+        dots = getattr(self, "dots", None)
+        if dots is None or self.node is None:
+            return
+        if not gm.BRUSH["roots"]:
+            self.root_count = 0
+            dots.show(False)
+            return
+        roots = gm.display_roots(self.node)
+        self.root_count = int(len(roots))
+        geo = hou.Geometry()
+        if len(roots):
+            geo.createPoints(((0.0, 0.0, 0.0),) * len(roots))
+            geo.setPointFloatAttribValuesFromString("P", roots.tobytes())
+        self.root_geo = geo
+        dots.setGeometry(geo)
+        dots.show(bool(len(roots)))
 
     def brush_changed(self) -> None:
         if self.draw is not None:
             self.draw.setXray(bool(gm.BRUSH["xray"]))
+            if self.session is not None and not self.down:
+                self.recolour()                 # the view may have changed
+                self.reroot()
             self.scene_viewer.curViewport().draw()
 
     # ---- drawing and input ----
     def onDraw(self, kwargs):
+        if getattr(self, "dots", None) is not None:
+            self.dots.draw(kwargs["draw_handle"])
         if self.ring is not None:
             self.ring.draw(kwargs["draw_handle"])
 
@@ -274,6 +309,7 @@ class MaskPaint(object):
             except hou.Error:
                 pass                           # a cook error stays on the node
             c["cook_s"] = time.perf_counter() - t
+            self.reroot()
         hm = c.pop("handler_ms")
         c["drag_s"] = t - c.pop("t0")
         c["handler_ms_median"] = float(sorted(hm)[len(hm) // 2]) if hm else 0.0

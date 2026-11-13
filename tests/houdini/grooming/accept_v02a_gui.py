@@ -432,6 +432,65 @@ def s1b_undo_look():
 
 
 @step
+def s1c_views():
+    """What the scalp shows: the final factor, the final density, or the painted layer alone."""
+    from tools.fx.grooming import logic
+    node = S["node"]
+    lid = S["lid"]
+    st = state_mod().running()
+    ga().set_display(node, "guide", "lock")
+    node.cook()
+    set_view(S["zone"]["normal"], node.inputs()[0].geometry().boundingBox())
+    v, a = lib.mask_arrays(node, lid)
+    cds, shots = {}, {}
+
+    def go(i):
+        views = ("factor", "density", "layer")
+        if i > 0:
+            cds[views[i - 1]] = np.frombuffer(st.geo.pointFloatAttribValuesAsString("Cd"), np.float32).reshape(-1, 3).copy()
+            shots[views[i - 1]] = shot("s1c_view_" + views[i - 1])
+        if i >= len(views):
+            return finish()
+        ga().set_brush(view=views[i])
+        later(500, lambda: go(i + 1))
+
+    def finish():
+        ga().set_brush(view="factor")
+        unpainted = a <= 0
+        ok_layer = bool(np.allclose(cds["layer"][unpainted], logic.LAYER_UNPAINTED, atol=1e-5)) and int(unpainted.sum()) > 1000
+        base, reference = st.session.base_density()
+        factor = st.session.factor()
+        pick = np.linspace(0, len(factor) - 1, 300).astype(int)
+        want = np.array([logic.density_color(float(base[i] * factor[i]), reference) for i in pick])
+        err = float(np.abs(cds["density"][pick] - want).max())
+        painted = a > 0.5
+        differs = float(np.abs(cds["density"][painted] - cds["factor"][painted]).mean()) if painted.any() else 0.0
+        # ---- the roots as dots on the bare skin (Guides display): one a strand of the full groom
+        ga().set_brush(roots=True)
+        dots = state_mod().running().root_count
+        strands = S["G"].strands()
+        shots["roots"] = shot("s1c_roots_as_dots_guides")
+        ga().set_brush(roots=False)
+        C.add("gui_views_factor_density_and_one_layer",
+              ok_layer and err < 1e-4 and differs > 0.05 and ga().brush()["view"] == "factor" and dots == strands > 1000,
+              {"layer_view_unpainted_skin_is_dark": ok_layer, "density_view_max_error_against_the_rule": err,
+               "density_reference_per_cm2": reference, "density_view_differs_from_factor_view_on_paint": round(differs, 3),
+               "unpainted_points": int(unpainted.sum()), "root_dots": dots, "strands_of_the_groom": strands,
+               "shots": shots},
+              "layer view: skin the layer does not cover is dark; density view: the colour of density x factor "
+              "on the ramp (300 points); roots: one dot a strand of the groom, on the bare skin in Guides display",
+              evidence=shots["density"],
+              note="on Helen every lock has the default density, so the density view is the factor view on "
+                   "another ramp; the dots show the roots as they are (relocated roots included)")
+        ga().set_display(node, "hair", "lock")
+        node.cook()
+        set_view(S["zone"]["normal"], box_round(S["zone"]["centre_cm"], 3.5))
+        later(600, lambda: calibrate(S["next"]))
+
+    later(800, lambda: go(0))
+
+
+@step
 def s2_reselect():
     """Selecting the node again must not lose the brush (Houdini enters the node's own state then)."""
     node = S["node"]
