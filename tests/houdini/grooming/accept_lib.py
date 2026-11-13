@@ -309,3 +309,191 @@ def same_arrays(a, b) -> bool:
         if (x is None) != (y is None) or (x is not None and not np.array_equal(x, y)):
             return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Places on the skin and counts there (v0.2a round 3: every check is graded at several kinds of skin)
+# ---------------------------------------------------------------------------
+
+class CookCount:
+    """Locks really cooked: wraps LockCache.put (hair cooked and stored), not `to_cook`."""
+
+    def __init__(self, ga):
+        self.cache = ga.hair_cache()
+        self.puts: list[tuple[int, str]] = []
+        self._orig = self.cache.put
+
+        def put(node_id, lock_id, mode, key, value, *a, **kw):
+            if lock_id >= 0:
+                self.puts.append((int(lock_id), mode))
+            return self._orig(node_id, lock_id, mode, key, value, *a, **kw)
+
+        self.cache.put = put
+
+    def take(self) -> list[int]:
+        out = sorted({p[0] for p in self.puts})
+        self.puts.clear()
+        return out
+
+
+class Skin:
+    """The fine scalp of a fresh groom with helpers to pick places, paint discs through the real brush and
+    count roots there. Everything in cm."""
+
+    def __init__(self, G: Groom):
+        self.G = G
+        self.reload()
+
+    def reload(self) -> None:
+        self.G.forget()
+        S = self.G.scalp()
+        self.S = S
+        self.own = S["owners"]
+        self.area = S["area"]
+        self.n = len(self.area)
+        self.vp, self.vpt = S["vprim"], S["vpoint"]
+        self.cen = S["cen_cm"]
+        self.P = S["P_cm"]
+        self.names = self.G.lock_names()
+        self.nown = np.array([len(o) for o in self.own])
+
+    def snap(self, c):
+        return self.cen[((self.cen - np.asarray(c)) ** 2).sum(1).argmin()]
+
+    def prim_minmax(self, f):
+        lo = np.full(self.n, np.inf)
+        hi = np.full(self.n, -np.inf)
+        np.minimum.at(lo, self.vp, f[self.vpt])
+        np.maximum.at(hi, self.vp, f[self.vpt])
+        return lo, hi
+
+    def core(self, mask, value: float = 1.0, margin: float = 0.35, atol: float = 1e-6) -> np.ndarray:
+        """Prims all of whose corners hold `value` of the per-point array `mask`, their centre at least
+        `margin` cm from any prim that does not."""
+        lo, hi = self.prim_minmax(np.asarray(mask, float))
+        inside = np.isclose(lo, value, atol=atol) & np.isclose(hi, value, atol=atol)
+        return self.G.inner_prims(inside, margin)
+
+    def roots_in(self, prims, roots):
+        """({lock id: roots}, positions, lock ids) of the roots whose nearest prim centre (within 0.4 cm) is
+        one of `prims`, all locks."""
+        r, lid = roots
+        if not len(prims):
+            return {}, np.zeros((0, 3)), np.zeros(0, int)
+        lo, hi = self.cen[prims].min(0) - 0.6, self.cen[prims].max(0) + 0.6
+        sel = np.nonzero((r >= lo).all(1) & (r <= hi).all(1))[0]
+        hood = np.nonzero((self.cen >= lo - 0.6).all(1) & (self.cen <= hi + 0.6).all(1))[0]
+        flag = np.isin(hood, prims)
+        got = np.zeros(len(sel), bool)
+        for i in range(0, len(sel), 400):
+            d = ((r[sel[i:i + 400], None] - self.cen[None, hood]) ** 2).sum(-1)
+            j = d.argmin(1)
+            got[i:i + 400] = flag[j] & (d[np.arange(len(j)), j] <= 0.16)
+        keep = sel[got]
+        ids, cnt = np.unique(lid[keep], return_counts=True)
+        return {int(a): int(b) for a, b in zip(ids, cnt)}, r[keep], lid[keep]
+
+    def lock_area_in(self, prims, lock_id: int) -> float:
+        """The lock's own skin among `prims`, cm2 (a shared prim counts 1 / its owners)."""
+        return float(sum(self.area[p] / len(self.own[p]) for p in prims if lock_id in self.own[p]))
+
+    def paint_disc(self, layer_id: int, centre_cm, radius_cm: float, level: float = 1.0, soft: float = 0.0,
+                   dab_r: float = 0.3, label: str = "Paint mask") -> dict:
+        """A disc painted through the real brush (PaintSession): hard dabs of `dab_r` cm on the scalp points
+        inside it (sub-sampled). One undo step."""
+        from apps.houdini import grooming_masks as gm
+        d = np.sqrt(((self.P - np.asarray(centre_cm)) ** 2).sum(1))
+        pts = np.nonzero(d <= radius_cm)[0]
+        step = max(1, len(pts) // 1500)
+        s = gm.PaintSession(self.G.node, layer_id)
+        landed = 0
+        for i in pts[::step]:
+            landed += int(s.dab(self.P[i] / self.G.unit, None, dab_r, soft, level=level) > 0)
+        s.commit(label)
+        return {"points_in_disc": int(len(pts)), "dabs": int(len(pts[::step])), "landed": landed}
+
+    def owners_of_changed(self, c0, c1) -> list[int]:
+        """Locks that grow and own skin where the cover (keep, add) changed between two reads of it."""
+        changed = np.zeros(len(c0[0]), bool)
+        for a, b in zip(c0, c1):
+            changed |= np.abs(np.asarray(a, float) - np.asarray(b, float)) > 0
+        touched = np.unique(self.vp[changed[self.vpt]])
+        grows = {lk.id for lk in self.G.ga.read_data(self.G.node).locks if not lk.excluded}
+        return sorted({o for p in touched for o in self.own[p]} & grows)
+
+    def zones(self, roots) -> dict:
+        """Eight kinds of skin (centres in cm), as the round 2 checker picked them: the crown whorl (densest
+        1 cm disc), the top of the head, a lock's start (hair_base_12's root), the most stacked skin, skin
+        under floating mesh with one owner, the widest fringe lock, ordinary skin (hair_back_06), and the
+        sliver band by the ear."""
+        G = self.G
+        data = G.ga.read_data(G.node)
+        owned = self.nown > 0
+        big = owned & (self.area > 0.002)
+        z = {}
+        c, _n, _per = densest_spot(roots[0], 1.0)
+        z["crown_whorl"] = self.snap(c)
+        i = np.nonzero(big)[0][self.cen[big][:, 1].argmax()]
+        z["top_of_head"] = self.cen[i]
+        lk = next(x for x in data.locks if x.name == "hair_base_12")
+        z["lock_start_hair_base_12"] = self.snap(np.array(lk.root) * G.unit)
+        cand = np.nonzero(big)[0]
+        best, bv = None, -1
+        for i in cand[::max(1, len(cand) // 600)]:
+            near = cand[((self.cen[cand] - self.cen[i]) ** 2).sum(1) <= 1.0]
+            v = self.nown[near].mean()
+            if v > bv:
+                best, bv = i, v
+        z["most_stacked"] = self.cen[best]
+        geo = G.node.node("SCALP_REGIONS").geometry()
+        dist = geo.primFloatListAttribValues("owner_dist")
+        far = float(G.node.evalParm("root_far_cm")) * 1.5 * 1.2 / G.unit
+        fl = np.nonzero(np.array([len(o) == 1 and len(d) == 1 and d[0] > far for o, d in zip(self.own, dist)]) & big)[0]
+        best, bn = fl[0], -1
+        for i in fl[::max(1, len(fl) // 300)]:
+            k = int((((self.cen[fl] - self.cen[i]) ** 2).sum(1) <= 1.44).sum())
+            if k > bn:
+                best, bn = i, k
+        z["under_floating_mesh"] = self.cen[best]
+        bangs = [k for k, v in self.names.items() if "bang" in v]
+        k = max(bangs, key=lambda b: len(G.region_prims(b)))
+        z["fringe_" + self.names[k]] = self.snap(self.cen[G.region_prims(k)].mean(0))
+        L = G.lock_id("hair_back_06")
+        z["ordinary_hair_back_06"] = self.snap(self.cen[G.region_prims(L)].mean(0))
+        tiny = np.nonzero(owned & (self.area < 0.001))[0]
+        if len(tiny):
+            z["ear_slivers"] = self.cen[tiny[len(tiny) // 2]]
+        return z
+
+    def region_path(self, name: str, n: int = 10, span: int = 40, shift: float = 0.0) -> list:
+        """A stroke path (scene units) across a lock's region."""
+        pr = self.G.region_prims(self.G.lock_id(name))
+        cen = self.cen[pr]
+        a = cen[len(cen) // 2]
+        b = cen[min(len(cen) - 1, len(cen) // 2 + span)]
+        off = np.array([shift, shift * 0.5, 0.0])
+        return [(a + (b - a) * t + off) / self.G.unit for t in np.linspace(0, 1, n)]
+
+    def disc_path(self, c, shift: float = 0.0, n: int = 8) -> list:
+        return [(np.asarray(c) + np.array([dx + shift, shift * 0.5, 0.0])) / self.G.unit
+                for dx in np.linspace(-0.6, 0.6, n)]
+
+
+def density_limit(D: float, area_cm2: float) -> float:
+    """The limit on |measured / D - 1| for a painted density: max(0.15, 2 / sqrt(N)), N = D x area (the
+    round 2 checker's: 15 %, or two standard deviations of a count of N)."""
+    n = max(D * area_cm2, 1e-9)
+    return float(max(0.15, 2.0 / np.sqrt(n)))
+
+
+def lock_even(roots_cm, lock_ids, skin: "Skin", prims, least: int = 30) -> dict:
+    """Per lock with at least `least` roots among `roots_cm`: spacing ratio and clumped share on the lock's
+    own skin among `prims` (a lock holding a strip of a patch is judged on that strip, not on the patch)."""
+    out = {}
+    for k in np.unique(lock_ids):
+        sel = lock_ids == k
+        if sel.sum() >= least:
+            st = spacing_stats(roots_cm[sel], skin.lock_area_in(prims, int(k)))
+            st["on_patch"] = spacing_stats(roots_cm[sel], float(skin.area[prims].sum())).get("clumped")
+            out[skin.names.get(int(k), str(k))] = {a: (round(b, 3) if isinstance(b, float) else b) for a, b in st.items()}
+    return out

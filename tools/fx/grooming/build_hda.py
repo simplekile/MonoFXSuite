@@ -488,13 +488,14 @@ i@owners_h = oh;
 
 VEX_PREVIEW = """// expected strands at full count and the hair_preview density factor
 float total = 0;
-// density masks (v0.2a): a prim grows its density x mask_mean, the factor there averaged over its owners
-// (mask_read writes it with numpy: looked up here per owner and point it cost 45 ms an edit); no layer on = x 1
-int hasm = hasprimattrib(0, "mask_mean");
+// density layers (v0.2a): a prim grows mask_dens there (strands / cm2: automatic x keep + the layers' density,
+// over its owners; mask_read writes it with numpy: looked up here per owner and point it cost 45 ms an
+// edit); no layer on = its density
+int hasm = hasprimattrib(0, "mask_dens");
 for (int pr = 0; pr < nprimitives(0); pr++) {
-    float d = prim(0, "density", pr), a = prim(0, "area_cm2", pr), mk = 1;
-    if (hasm) mk = prim(0, "mask_mean", pr);
-    total += d * a * mk;
+    float d = prim(0, "density", pr), a = prim(0, "area_cm2", pr);
+    if (hasm) d = prim(0, "mask_dens", pr);
+    total += d * a;
 }
 f@expected = total;
 float f = clamp(chf("../preview_fraction"), 0.0, 1.0);
@@ -552,30 +553,7 @@ f[]@surface_keys = sk;
 
 VEX_REGION_CUT = """// only this lock's region (the prims it owns alone or shares)
 int id = prim(1, "lock_id", 0);
-if (find(i[]@lock_owners, id) < 0) { removeprim(0, @primnum, 1); return; }
-// its density mask (v0.2a): the blended factor of the lock's scope set (mask_read's mask_<k>; lock_keys
-// gives the lock its mask_set, -1 = no layer reaches it) as point `mask` and its mean per prim `mask_prim`.
-// 1 everywhere without a mask, and every use below multiplies by it, so no layer = the v0.1 groom
-int k = prim(1, "mask_set", 0);
-string nm = sprintf("mask_%d", k);
-int has = k >= 0 && haspointattrib(0, nm);
-// ... and its absolute coverage (mask_abs_<k>): where a "= D strands / cm2" layer decided the density, 0
-// elsewhere. There the artist painted the final density: the roots of that skin stay where they are
-// scattered (region_join) and none of the roots the tool relocates land on it (root_pick, root_place)
-string an = sprintf("mask_abs_%d", k);
-int hasa = k >= 0 && haspointattrib(0, an);
-int pp[] = primpoints(0, @primnum);
-float s = 0, sa = 0;
-foreach (int p; pp) {
-    float m = 1, ca = 0;
-    if (has) m = point(0, nm, p);
-    if (hasa) ca = point(0, an, p);
-    s += m; sa += ca;
-    setpointattrib(0, "mask", p, m);
-    setpointattrib(0, "mask_abs", p, ca);
-}
-f@mask_prim = len(pp) > 0 ? s / len(pp) : 1.0;
-f@mask_abs_prim = len(pp) > 0 ? sa / len(pp) : 0.0;
+if (find(i[]@lock_owners, id) < 0) removeprim(0, @primnum, 1);
 """
 
 VEX_REGION_MESH = """// per scalp prim of SCALP_FINE: how far each lock's hair mesh (same group) lies from its centroid,
@@ -634,15 +612,11 @@ v@rc = c; v@ra = ra; v@rb = rb; f@rea = ea; f@reb = eb;
 // (Helen's fringe) and long locks that widen far from the root (hair_back: the first quarter gave
 // 800 strands to a 12 cm wide ribbon, see-through) get as many strands as their mesh shows.
 float dens = prim(1, "density", 0);
-float area = 0, amask = 0, aabs = 0;
+float area = 0;
 for (int pr = 0; pr < nprimitives(0); pr++) {
     float a = prim(0, "area_cm2", pr);   // typed: inside an int expression prim() would return int
     int sh = prim(0, "share", pr);
-    float mk = prim(0, "mask_prim", pr);
-    float ca = prim(0, "mask_abs_prim", pr);
     area += a / max(sh, 1);
-    amask += a * mk / max(sh, 1);
-    aabs += a * mk * ca / max(sh, 1);
 }
 int sp[] = primpoints(1, 0);
 float w = 0, t = 0;
@@ -655,14 +629,7 @@ float section = M_PI / 4 * (w * u) * (max(t, 0.3 * w) * u);
 f@region_cm2 = area;
 f@section_cm2 = section;
 f@lock_density = area > 0 ? dens * max(area, section) / area : 0.0;
-// density masks: the count follows the masked area (painted 0.5 = half the strands of that skin; the
-// density attribute below spreads them), so a lock painted 0 everywhere grows nothing, floor included
-f@lock_strands = dens * max(area, section) * (area > 0 ? amask / area : 1.0);
-// skin where the density was painted outright ("= D", mask_abs) grows D x its area, without the
-// cross-section floor: the floor is the tool's own guess, and there the artist said what the density is
-if (aabs > 0 && area > 0) f@lock_strands = dens * ((amask - aabs) * max(area, section) / area + aabs);
-f@lock_dens = dens;
-i@mask_empty = area > 0 && amask <= 0;
+f@lock_strands = dens * max(area, section);
 // the lock's start: the strands that make its first stretch are only those rooted round its root (the
 // footprint, REGION_FOOTPRINT x the widest band of the first tenth, centred on the root moved onto the
 // skin; the others join it further along, where its mesh lies over them). A lock starting at a whorl
@@ -717,12 +684,7 @@ if (distance(c, detail(0, "fp_c")) <= detail(0, "fp_r")) {
     float fc = chf("../root_far_cm") / u;
     if (fc > 0 && hp >= 0) fw = smooth(fc * (1 - %(soft)s), fc * (1 + %(soft)s), dm);
 }
-// density masks: skin painted above 1 under floating mesh keeps what the mask adds (logic.far_chance: the
-// automatic share far_w still starts the lock, the rest stays, so that skin fills to (mask - far_w) x the
-// density); the start-share estimate weighs each prim by its masked area
-// Where the density was painted outright (mask_abs) no root is moved away: that skin holds what was painted
-float mk = f@mask_prim;
-f@join_u = uj; f@join_a = a * mk; f@far_w = fw / max(mk, 1.0) * (1 - f@mask_abs_prim);
+f@join_u = uj; f@join_a = a; f@far_w = fw;
 """ % {"umax": JOIN_MAX_U, "soft": config.ROOT_FAR_SOFT}
 
 VEX_REGION_START = """// start_x extra strands (start extras), rooted round the lock's root ON TOP of its count, as many as its
@@ -783,12 +745,48 @@ int prs[] = pointprims(0, @ptnum);
 float s = 0;
 foreach (int pr; prs) { int sh = prim(0, "share", pr); s += sh; }
 s = len(prs) > 0 ? s / len(prs) : 1.0;
-f@density = detail(0, "lock_density") / max(s, 1.0) * f@mask;   // x the density mask (1 without one)
-// where the density was painted outright: the lock's own density x the mask (= D), not the floored one
-if (f@mask_abs > 0) {
-    float ld = detail(0, "lock_density"), d0 = detail(0, "lock_dens");
-    f@density = lerp(ld, d0, f@mask_abs) / max(s, 1.0) * f@mask;
+f@density = detail(0, "lock_density") / max(s, 1.0);
+"""
+
+VEX_MASK_SKIN = """// density layers (v0.2a), only for a lock a layer covers (lock_keys: mask_set >= 0). The lock's region
+// with what the layers say there (mask_read's mask_keep_<k> / mask_add_<k> of the lock's scope set):
+//   mask_keep  how much of the automatic groom stays (1 - coverage): mask_thin keeps each automatic root
+//              by that chance where the root ends up
+//   density    the layers' density there, strands / cm2, divided where the lock shares the skin: what the
+//              second scatter (hairgen_layers) spreads its roots by. So under a white mask the roots are
+//              the layers' alone, at D; under grey: automatic x keep + D x coverage.
+// The automatic groom itself (region_frame ... root_place) never reads a layer: with none it is v0.1's.
+int k = prim(1, "mask_set", 0);
+float keep = 1, add = 0;
+if (k >= 0) {
+    keep = point(0, sprintf("mask_keep_%d", k), @ptnum);
+    add = point(0, sprintf("mask_add_%d", k), @ptnum);
 }
+int prs[] = pointprims(0, @ptnum);
+float s = 0;
+foreach (int pr; prs) { int sh = prim(0, "share", pr); s += sh; }
+s = len(prs) > 0 ? s / len(prs) : 1.0;
+f@mask_keep = keep;
+f@density = add / max(s, 1.0);
+"""
+
+VEX_MASK_TAG = """// the layers' own roots: never thinned (mask_thin), never relocated (they come after root_pick), and
+// numbered past the automatic roots
+i@mask_root = 1;
+i@id = i@id + %(stride)d;
+""" % {"stride": 10000000}
+
+VEX_MASK_THIN = """// density layers: an automatic root stays by the chance mask_keep where it ends up (root_place's
+// root_at: a root the tool moved to the lock's start or to a whorl is judged where it landed), so skin
+// under a white mask holds none of them, wherever they were scattered. The chance is drawn per root from
+// its number in the automatic groom: a small change of the mask removes or returns a few roots and moves
+// no other (one scatter following a density map moved every root for a mask of 0.03).
+if (i@mask_root) return;
+int rp; vector ruv;
+xyzdist(1, v@root_at, rp, ruv);
+float keep = rp >= 0 ? primuv(1, "mask_keep", rp, ruv) : 1.0;
+if (keep >= 1) return;
+if (keep <= 0 || rand(set(@primnum, 4.7, prim(2, "lock_id", 0))) >= keep) removeprim(0, @primnum, 1);
 """
 
 VEX_SURFACE_PARAMS = """// every hair-mesh point: where it sits along its lock (pu, the spine's parameter) and its offset
@@ -1001,7 +999,6 @@ for (int k = wn + sn; k < n; k++) {
 }
 int m = sn + nf;
 vector sp[];
-float spm[];      // the density mask at each place
 if (m > 0) {
     float rho = max(detail(1, "lock_density"), 1e-6) * uc * uc;   // strands per scene unit^2
     float rad = sqrt(m / (M_PI * %(dmax)s * rho));
@@ -1015,7 +1012,7 @@ if (m > 0) {
     // (Helen hair_bang_03), whose strands ran back to the root in a hairpin
     float rmax = 3 * max(rad, detail(1, "fp_r"));
     for (int it = 0; it < 8; it++) {
-        resize(sp, 0); resize(spm, 0);
+        resize(sp, 0);
         int cand = int(ceil(m * R * R / (rad * rad)));
         for (int k = 0; k < cand; k++) {
             float a = k * 2.39996323 + a0, d = sqrt((k + 0.5) / cand) * R;
@@ -1025,13 +1022,7 @@ if (m > 0) {
             if (rp < 0) continue;
             // on the region a point moves onto it along the skin's normal; off it, sideways to its edge
             vector q = primuv(1, "P", rp, ruv), qn = prim_normal(1, rp, ruv), off = c - q;
-            if (length(off - dot(off, qn) * qn) < 0.5 * spc) {
-                float mq = primuv(1, "mask", rp, ruv);
-                float aq = primuv(1, "mask_abs", rp, ruv);
-                // skin whose density was painted outright takes none of these roots
-                if (aq > 0) mq = min(mq, 1.0) * (1 - aq);
-                append(sp, q); append(spm, mq);
-            }
+            if (length(off - dot(off, qn) * qn) < 0.5 * spc) append(sp, q);
         }
         if (len(sp) >= m || R >= rmax) break;
         R = min(rmax, R * sqrt(float(m) / max(len(sp), 1)) * 1.1);
@@ -1049,10 +1040,6 @@ for (int k = 0; k < n; k++) {
     int pr = o[k];
     int isw = k < wn, isx = k >= wn && k < wn + sn;
     if (isx && slot[k] < 0) { append(drop, pr); continue; }
-    // density masks: a root laid out round the lock's root is kept by the chance of the mask where it
-    // lands (painted 0 there = no root there; the layout itself does not move, so nothing piles up beside
-    // the paint). Hairgen's scatter never read that skin for these roots: they come from elsewhere
-    if (slot[k] >= 0 && rand(set(slot[k], 5.1, lid)) >= spm[slot[k]]) { append(drop, pr); continue; }
     int ist = slot[k] >= 0;
     setprimattrib(0, "whorl_root", pr, isw);
     setprimattrib(0, "start_extra", pr, isx);
@@ -1094,14 +1081,6 @@ if (extra) {
     xyzdist(1, wc + (e1 * cos(a) + e2 * sin(a)) * d, rp, ruv);
     if (rp >= 0) r = primuv(1, "P", rp, ruv);
     if (!atw) r = v@start_pos;               // root_pick laid the lock's start roots out on its region
-    // density masks: a whorl root is kept by the chance of the mask where it lands (the crown painted down)
-    if (atw && rp >= 0) {
-        float mq = primuv(1, "mask", rp, ruv);
-        float aq = primuv(1, "mask_abs", rp, ruv);
-        if (aq > 0) mq = min(mq, 1.0) * (1 - aq);     // painted outright: no whorl root lands there
-        int wl = prim(2, "lock_id", 0);
-        if (rand(set(pr, 9.3, wl)) >= mq) { removeprim(0, pr, 1); return; }
-    }
 }
 int hp; vector huv;
 xyzdist(3, own, r, hp, huv);
@@ -1542,9 +1521,9 @@ def build_network(sub) -> None:
     _wrangle(sub, "region_mesh", VEX_REGION_MESH, PRIM, [scalp_fine, mesh_pu, spines_locks])
     rpts = _wrangle(sub, "region_points", VEX_REGION_POINTS, POINT, [scalp_fine, frozen, spines])
     rprims = _wrangle(sub, "region_prims", VEX_REGION_PRIMS, PRIM, [rpts, spines, frozen])
-    # density masks (v0.2a): the layers of the hidden `mask_layers` parm blended per scope set into point
-    # attributes mask_<k>, and per lock its set and a digest of the factor on its own skin (the lock's
-    # cache key takes it). No layer on: nothing is added and the groom is v0.1's
+    # density layers (v0.2a): the layers of the hidden `mask_layers` parm composed per scope set into point
+    # attributes mask_keep_<k> / mask_add_<k>, and per lock its set, a digest of both on its own skin (the
+    # lock's cache key takes it) and the strands the layers add. No layer on: nothing is added, the groom is v0.1's
     mask_read = _node(sub, "python", "mask_read", [rprims])
     mask_read.parm("python").set("from apps.houdini import grooming_adapter\n"
                                  "grooming_adapter.cook_mask_read(hou.pwd())\n")
@@ -1595,8 +1574,37 @@ def build_network(sub) -> None:
         '+ detail("../region_frame", "whorl_n", 0) + detail("../region_start", "start_x", 0))')
     hairgen.parm("thickness").setExpression('ch("../strand_width")')
     pick = _wrangle(sub, "root_pick", VEX_ROOT_PICK, DETAIL, [hairgen, frame, begin])
-    place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [pick, frame, begin, mesh_pu])
-    spread = _wrangle(sub, "root_spread", VEX_ROOT_SPREAD, DETAIL, [place])
+    # density layers (v0.2a), only for a lock a layer covers (the switches read its mask_set; the others go
+    # through the v0.1 nodes alone). The automatic roots are grown as without layers and each is kept by
+    # the chance mask_keep where it ends up (mask_thin); a second scatter lays the layers' own roots on the
+    # region at their density (mask_skin's `density`), as many as mask_read counted (mask_add_n)
+    # points not shared between prims: a prim's corners then carry its own share, so the layers' density
+    # is exact per prim where stacked locks share the skin (averaged at shared points it ran 5-10 % off)
+    mask_split = _node(sub, "facet", "mask_split", [rdens], unique=1)
+    mask_skin = _wrangle(sub, "mask_skin", VEX_MASK_SKIN, POINT, [mask_split, begin])
+    hairgen_b = _node(sub, "hairgen::2.0", "hairgen_layers", [mask_skin], useguides=0, growunguided=1,
+                      useinitdirattrib=0, unguidedlength=0.01)
+    hairgen_b.parm("unguidedsegments").setExpression(hairgen.parm("unguidedsegments").expression())
+    hairgen_b.parm("densityoverride").set(1)
+    hairgen_b.parm("density").setExpression(hairgen.parm("density").expression())
+    hairgen_b.parm("scatterseed").setExpression('prim("../foreach_begin", 0, "lock_id", 0) + 7919')
+    hairgen_b.parm("forcecount").set(1)
+    layer_count = ('rint(prim("../foreach_begin", 0, "mask_add_n", 0) '
+                   '* prim("../foreach_begin", 0, "strand_factor", 0))')
+    hairgen_b.parm("count").setExpression('max(1, %s)' % layer_count)
+    hairgen_b.parm("thickness").setExpression('ch("../strand_width")')
+    mask_tag = _wrangle(sub, "mask_tag", VEX_MASK_TAG, PRIM, [hairgen_b])
+    no_layer_roots = _node(sub, "add", "no_layer_roots")
+    layer_roots = _node(sub, "switch", "layer_roots", [no_layer_roots, mask_tag])
+    layer_roots.parm("input").setExpression('if(%s >= 1, 1, 0)' % layer_count)
+    roots_ab = _node(sub, "merge", "roots_with_layers", [pick, layer_roots])     # the automatic roots first
+    roots_in = _node(sub, "switch", "roots_in", [pick, roots_ab])
+    roots_in.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
+    place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [roots_in, frame, begin, mesh_pu])
+    mask_thin = _wrangle(sub, "mask_thin", VEX_MASK_THIN, PRIM, [place, mask_skin, begin])
+    roots_out = _node(sub, "switch", "roots_out", [place, mask_thin])
+    roots_out.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
+    spread = _wrangle(sub, "root_spread", VEX_ROOT_SPREAD, DETAIL, [roots_out])
     fit_root = _wrangle(sub, "fit_root", VEX_FIT_ROOT, PRIM, [spread, begin, frame, surface])
     fit = _wrangle(sub, "fit_to_lock", VEX_FIT, POINT, [fit_root, begin, frame, surface])
     fit_mid = _wrangle(sub, "fit_mid", VEX_FIT_MID, POINT, [fit])
@@ -1623,10 +1631,14 @@ def build_network(sub) -> None:
     lock_clean = _node(sub, "attribdelete", "lock_clean", [hair_out],
                        primdel=" ".join(config.LOOP_ONLY_ATTRIBS), ptdel="tightness skinprim skinprimuv")
     nothing = _node(sub, "add", "no_strands")
-    has_region = _node(sub, "switch", "has_region", [nothing, lock_clean])
-    # no region, or a region masked to 0 everywhere (region_frame mask_empty): no strands
-    has_region.parm("input").setExpression(
-        'if(nprims("../region_cut") > 0 && detail("../region_frame", "mask_empty", 0) == 0, 1, 0)')
+    # a lock under layers that left it no root at all (its skin painted "= 0"): no strands. Asked only for
+    # a lock a layer covers, and only when it has a region (a switch cooks the input it takes alone)
+    has_hair = _node(sub, "switch", "has_hair", [nothing, lock_clean])
+    has_hair.parm("input").setExpression('if(nprims("../roots_out") > 0, 1, 0)')
+    masked = _node(sub, "switch", "masked", [lock_clean, has_hair])
+    masked.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
+    has_region = _node(sub, "switch", "has_region", [nothing, masked])
+    has_region.parm("input").setExpression('if(nprims("../region_cut") > 0, 1, 0)')
     # with the shot deform on, each lock is captured to the rest hair mesh here, once, and kept with its
     # strands: a capture of all 4 M points (and the merge it waits for) cost 3-9 s on every hide or show
     lock_capture = _node(sub, "pointdeform", "lock_capture", [has_region, in_hair], mode="capture")

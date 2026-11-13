@@ -248,7 +248,7 @@ def test_publish_record_fields():
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1234, "/obj/g/n", "22.0")
     assert rec["asset"] == "char_Helen" and rec["version"] == "v007"
     assert rec["locks"] == 1 and rec["strands"] == 1234 and rec["department"] == "grooming"
-    assert rec["masks"] == {} and rec["schema"] == 3
+    assert rec["masks"] == {} and rec["schema"] == 4
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1, "/obj/g/n", masks={"file": "m.bgeo"})
     assert rec["masks"] == {"file": "m.bgeo"}
 
@@ -259,7 +259,7 @@ def test_adapter_api_is_complete():
                  "set_isolate", "isolate_ids", "set_root_flip", "set_excluded",
                  # v0.2a density masks
                  "mask_add", "mask_remove", "mask_move", "mask_set", "mask_fill", "mask_clear", "mask_values",
-                 "mask_factor", "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush",
+                 "mask_cover", "mask_dropped", "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush",
                  "paint_enter", "paint_exit", "paint_layer", "import_masks", "masks_from_publish",
                  "cook_mask_read"):
         assert callable(getattr(ga, name))
@@ -400,22 +400,25 @@ def test_brush_reaches_only_joined_skin_facing_the_same_way():
     assert len(brush.reach((5.0, 0.0, 5.0), 0.025)[0]) == 0             # off the scalp: nothing
 
 
-def test_mask_data_dab_and_factor():
+def test_mask_data_dab_and_cover():
     gm, np, P, N, nb = _grid_brush()
     from tools.fx.grooming.model import MaskLayer
     md = gm.MaskData(P)
     brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
     idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
-    md.dab(0, idx, logic.brush_weights(dist, 0.025, 0.5), 0.0)
+    md.dab(0, idx, logic.brush_weights(dist, 0.025, 0.5))                 # white, soft edge
     assert md.painted(0) == int((logic.brush_weights(dist, 0.025, 0.5) > 0).sum())
-    layer = MaskLayer(0, "a", kind="paint")
-    f = md.factor([layer])
-    assert f[40] == 0.0 and f[0] == 1.0 and f.dtype == np.float32
-    assert md.factor([MaskLayer(0, "a", on=False, kind="paint")]).min() == 1.0
-    assert md.factor([MaskLayer(1, "never painted", kind="paint")]).min() == 1.0
-    md.dab(0, idx, np.ones(len(idx), np.float32), 99.0)                   # a value is kept inside 0..MAX
-    assert float(md.v[0].max()) == config.MASK_VALUE_MAX
-    md.dab(0, idx, np.ones(len(idx), np.float32), 0.0, erase=True)
+    layer = MaskLayer(0, "a", value=80.0)
+    keep, add = md.compose([layer])
+    assert keep[40] == 0.0 and add[40] == pytest.approx(80.0)             # white: the layer's density alone
+    assert keep[0] == 1.0 and add[0] == 0.0 and keep.dtype == np.float32  # black: the automatic groom
+    edge = int(idx[np.argmax(dist)])
+    assert 0.0 < keep[edge] < 1.0 and add[edge] == pytest.approx(80.0 * (1.0 - keep[edge]), rel=1e-5)
+    off = md.compose([MaskLayer(0, "a", on=False, value=80.0)])
+    assert off[0].min() == 1.0 and off[1].max() == 0.0
+    never = md.compose([MaskLayer(1, "never painted", value=80.0)])
+    assert never[0].min() == 1.0 and never[1].max() == 0.0
+    md.dab(0, idx, np.ones(len(idx), np.float32), erase=True)
     assert md.painted(0) == 0
 
 
@@ -429,31 +432,28 @@ def test_layers_for_view_shows_what_a_lock_of_the_painted_scope_gets():
     assert [m.id for m in gm.layers_for_view(masks, None)] == [0]
 
 
-def test_view_colours_factor_density_and_one_layer_alone():
+def test_view_colours_density_and_one_layer_alone():
     np = pytest.importorskip("numpy")
     from apps.houdini import grooming_masks as gm
-    factor = np.array([1.0, 0.0, 2.0, 0.5], np.float32)
-    value = np.array([1.0, 0.0, 2.0, 0.0], np.float32)
-    cover = np.array([0.0, 1.0, 1.0, 0.5], np.float32)
-    base = np.array([150.0, 150.0, 150.0, 300.0], np.float32)
-    f = gm.view_colours("factor", factor)
-    assert f.shape == (4, 3) and f.dtype == np.float32
-    for i, m in enumerate(factor):
-        assert f[i] == pytest.approx(logic.mask_color(float(m)), abs=1e-6)
+    mask = np.array([0.0, 1.0, 1.0, 0.5], np.float32)
     dens = np.array([0.0, 150.0, 7059.0, 40.0], np.float32)
-    d = gm.view_colours("density", factor, density=dens, reference=150.0)
+    d = gm.view_colours("density", density=dens, reference=150.0)
+    assert d.shape == (4, 3) and d.dtype == np.float32
     for i in range(4):
         assert d[i] == pytest.approx(logic.density_color(float(dens[i]), 150.0), abs=1e-5)
     # the density view is the final density map and nothing over it: the mask does not change a colour
-    assert gm.view_colours("density", factor, coverage=cover, density=dens, reference=150.0) == pytest.approx(d)
-    plain = gm.view_colours("roots", factor)
+    assert gm.view_colours("density", mask, density=dens, reference=150.0) == pytest.approx(d)
+    plain = gm.view_colours("roots", points=4)
     assert plain.shape == (4, 3) and np.allclose(plain, plain[0])       # the dots carry the roots view
-    one = gm.view_colours("layer", factor, value, cover)
+    one = gm.view_colours("layer", mask)
     for i in range(4):
-        assert one[i] == pytest.approx(logic.layer_color(float(value[i]), float(cover[i])), abs=1e-6)
-    assert gm.view_colours("density", factor) == pytest.approx(f)        # no density known: the factor
+        assert one[i] == pytest.approx(logic.layer_color(float(mask[i])), abs=1e-6)
+    assert one[1] == pytest.approx([1, 1, 1]) and one[0] == pytest.approx(logic.LAYER_UNPAINTED)
     with pytest.raises(ValueError):
         ga.set_brush(view="wireframe")
+    with pytest.raises(ValueError):
+        ga.set_brush(view="factor")                                     # no factor any more: only densities
+    assert "factor" not in config.MASK_VIEWS
 
 
 def test_strand_roots_are_each_strands_first_point():
@@ -489,8 +489,8 @@ def test_brush_settings_are_clamped_and_kept_for_the_session():
     from apps.houdini import grooming_masks as gm
     before = gm.brush()
     try:
-        got = ga.set_brush(radius_cm=2.5, value=99, soft=3, erase=True)
-        assert got["radius_cm"] == 2.5 and got["value"] == config.MASK_VALUE_MAX and got["soft"] == 1.0
+        got = ga.set_brush(radius_cm=2.5, level=7, soft=3, erase=True)
+        assert got["radius_cm"] == 2.5 and got["level"] == 1.0 and got["soft"] == 1.0 and "value" not in got
         assert got["erase"] is True and ga.brush() == got
         assert ga.set_brush(radius_cm=0)["radius_cm"] == 0.05
         assert ga.paint_layer(None) is None
@@ -498,24 +498,29 @@ def test_brush_settings_are_clamped_and_kept_for_the_session():
         gm.BRUSH.update(before)
 
 
-def test_fill_layer_is_one_number_and_a_mask_painted_white_or_black():
+def test_fill_layer_is_one_density_and_a_mask_painted_white_or_black():
     gm, np, P, N, nb = _grid_brush()
     from tools.fx.grooming.model import MaskLayer
     md = gm.MaskData(P)
     brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
     idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
     w = logic.brush_weights(dist, 0.025, 0.0)                      # a hard brush
-    fill = MaskLayer(0, "thin", mode="replace", value=80.0, unit="density")
-    assert md.factor([fill], 160.0).min() == 1.0                   # a new layer's mask is black: nothing yet
-    md.dab(0, idx, w, value=99.0, kind="fill", level=1.0)          # paint white (the brush value is not read)
-    f = md.factor([fill], 160.0)
-    assert f[40] == pytest.approx(0.5) and f[0] == 1.0             # 80 / cm2 on a lock set to 160
-    assert md.factor([fill], 40.0)[40] == pytest.approx(2.0)       # ... and on one set to 40
-    assert 0 not in md.v and md.painted(0) == len(idx)             # only the mask is stored
-    md.dab(0, idx, w * 0.5, value=0.0, kind="fill", level=0.0)     # half a dab of black
+    fill = MaskLayer(0, "thin", value=80.0)
+    keep, add = md.compose([fill])
+    assert keep.min() == 1.0 and add.max() == 0.0                  # a new layer's mask is black: nothing yet
+    md.dab(0, idx, w, level=1.0)                                   # paint white
+    keep, add = md.compose([fill])
+    assert keep[40] == 0.0 and add[40] == pytest.approx(80.0) and keep[0] == 1.0
+    # the painted density is the final density whatever the lock is set to: no lock density in the rule
+    assert logic.mask_density(150.0, keep[40], add[40]) == pytest.approx(80.0)
+    assert logic.mask_density(40.0, keep[40], add[40]) == pytest.approx(80.0)
+    assert md.painted(0) == len(idx)
+    md.dab(0, idx, w * 0.5, level=0.0)                             # half a dab of black: grey
     assert md.a[0][40] == pytest.approx(0.5)
-    md.dab(0, idx, w, value=0.0, erase=True, kind="fill")          # erase = black
-    assert md.painted(0) == 0 and md.factor([fill], 160.0).min() == 1.0
+    keep, add = md.compose([fill])
+    assert logic.mask_density(150.0, keep[40], add[40]) == pytest.approx(150.0 + (80.0 - 150.0) * 0.5)
+    md.dab(0, idx, w, erase=True)                                  # erase = black
+    assert md.painted(0) == 0 and md.compose([fill])[0].min() == 1.0
 
 
 def test_folder_mask_starts_white_and_gates_its_layers():
@@ -524,34 +529,32 @@ def test_folder_mask_starts_white_and_gates_its_layers():
     md = gm.MaskData(P)
     brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
     folder = MaskLayer(9, "crown", kind="folder")
-    child = MaskLayer(1, "less", mode="multiply", value=0.5, parent=9)
+    child = MaskLayer(1, "less", value=40.0, parent=9)
     md.ensure(1, "fill")
     md.a[1][:] = 1.0                                               # the child's mask: white everywhere
-    assert md.factor([folder, child]) == pytest.approx(np.full(len(P), 0.5))     # no folder mask: all of it
+    keep, add = md.compose([folder, child])
+    assert keep.max() == 0.0 and add == pytest.approx(np.full(len(P), 40.0))     # no folder mask: all of it
     idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
-    md.dab(9, idx, logic.brush_weights(dist, 0.025, 0.0), 0.0, kind="folder", level=0.0)   # black on the folder
-    f = md.factor([folder, child])
-    assert f[40] == 1.0 and f[0] == pytest.approx(0.5)             # the child is gone where the folder is black
+    md.dab(9, idx, logic.brush_weights(dist, 0.025, 0.0), kind="folder", level=0.0)   # black on the folder
+    keep, add = md.compose([folder, child])
+    assert keep[40] == 1.0 and add[40] == 0.0                      # the child is gone where the folder is black
+    assert keep[0] == 0.0 and add[0] == pytest.approx(40.0)
     assert md.mask(MaskLayer(8, "other folder", kind="folder")).min() == 1.0
     assert md.mask(MaskLayer(7, "fill")).max() == 0.0
     shown = gm.layers_for_view([folder, child, MaskLayer(2, "g", scope="group", group="x")], 1)
     assert [m.id for m in shown] == [9, 1]
-    white = gm.view_colours("layer", np.ones(3, np.float32), None, np.array([1.0, 0.0, 0.5], np.float32))
-    assert white[0] == pytest.approx([1, 1, 1]) and white[1] == pytest.approx(logic.LAYER_UNPAINTED)
 
 
-def test_absolute_layer_gives_the_coverage_the_network_reads():
-    gm, np, P, N, nb = _grid_brush()
-    from tools.fx.grooming.model import MaskLayer
-    md = gm.MaskData(P)
-    set80 = MaskLayer(0, "set", mode="replace", value=80.0, unit="density")
-    less = MaskLayer(1, "less", mode="multiply", value=0.5)
-    md.ensure(0, "fill"); md.ensure(1, "fill")
-    md.a[0][:40] = 1.0
-    md.a[1][20:60] = 1.0
-    f, c = md.factor_abs([set80, less], 160.0)
-    assert f[0] == pytest.approx(0.5) and c[0] == 1.0             # = 80 on a lock set to 160
-    assert f[30] == pytest.approx(0.25) and c[30] == 1.0          # ... x 0.5 on top: still decided
-    assert f[50] == pytest.approx(0.5) and c[50] == 0.0           # only the factor layer: not decided
-    assert f[70] == 1.0 and c[70] == 0.0
-    assert md.factor([set80, less], 160.0) == pytest.approx(f)
+def test_kept_share_follows_roots_to_where_they_end_up():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    n = np.array([100.0, 100.0, 100.0, 100.0])
+    none = np.zeros(4)
+    assert gm.kept_share(n, none, np.ones(4), 1.0) == pytest.approx(1.0)
+    assert gm.kept_share(n, none, np.array([1.0, 1.0, 0.0, 0.0]), 1.0) == pytest.approx(0.5)
+    # two prims under floating mesh send their roots to the lock's start: painting them changes nothing,
+    # painting the start removes them
+    far = np.array([0.0, 0.0, 1.0, 1.0])
+    assert gm.kept_share(n, far, np.array([1.0, 1.0, 0.0, 0.0]), 1.0) == pytest.approx(1.0)
+    assert gm.kept_share(n, far, np.ones(4), 0.0) == pytest.approx(0.5)
+    assert gm.kept_share(np.zeros(4), far, np.ones(4), 0.0) == 1.0          # a lock with no strands

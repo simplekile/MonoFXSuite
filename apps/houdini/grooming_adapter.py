@@ -17,6 +17,7 @@ import math
 import os
 import re
 import sys
+from dataclasses import replace
 from typing import Any, Iterable, Sequence
 
 try:
@@ -26,8 +27,8 @@ except ImportError:
 
 from apps.houdini import grooming_masks
 from apps.houdini.grooming_masks import (  # noqa: F401  (the adapter API's mask functions; the HDA's mask_read)
-    brush, cook_mask_read, import_masks, mask_add, mask_clear, mask_factor, mask_fill, mask_invert, mask_move,
-    mask_problem,
+    brush, cook_mask_read, import_masks, mask_add, mask_clear, mask_cover, mask_dropped, mask_fill, mask_invert,
+    mask_move, mask_problem,
     mask_rebake, mask_remove, mask_set, mask_stroke, mask_values, masks_from_publish, paint_enter, paint_exit,
     paint_layer, set_brush,
 )
@@ -79,12 +80,12 @@ _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, config.MASK_PARM, PARM_DISPLA
 # Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
 _KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_match", "cached", "cache_key",
                      "cache_mode", "disp", "row_display",   # a lock's display reaches its key as its factor
-                     "mask_set"}                            # its mask reaches it as the digest of its values
+                     "mask_set", "mask_add_n"}              # its layers reach it as the digest of their cover
 _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 MERGED_LOCK = -1                     # LockCache slot of a whole merge (hair_cache / groom_cache), not a lock
 MERGED_MODE = "merged:"
-CACHE_NET_VERSION = "partial-1-root-spread-6-mask-2"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "partial-1-root-spread-6-mask-3"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -543,8 +544,8 @@ def lock_infos(node) -> list[LockInfo]:
                     w = logic.falloff(dists[k][j] * unit, far, config.ROOT_FAR_SOFT)
                     if w > 0:
                         floating[lid] = floating.get(lid, 0.0) + w * a / len(own)
-    shares = grooming_masks.lock_mask_shares(node, scalp)    # density masks: strands follow the masked area
     infos = []
+    rows: dict[int, dict] = {}
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
         if lid < 0:
@@ -555,14 +556,28 @@ def lock_infos(node) -> list[LockInfo]:
         a = area.get(lid, 0.0)
         # the widest band anywhere: same rule as the HDA's region_frame
         section = logic.section_cm2(max(widths, default=0.0), max(thicks, default=0.0), node.evalParm("unit_cm"))
+        strands = logic.lock_strands(prim.floatAttribValue("density"), a, section)
+        root = tuple(prim.attribValue("root"))
+        # region_frame's footprint: REGION_FOOTPRINT x the widest band of the lock's first tenth
+        rows[lid] = {"strands": strands, "root": root,
+                     "foot": config.REGION_FOOTPRINT * max(widths[:max(1, len(widths) // 10) + 1], default=0.0)}
         infos.append(LockInfo(
             id=lid, name=prim.stringAttribValue(config.ATTR_NAME), group=prim.stringAttribValue(config.ATTR_GROUP),
-            root=tuple(prim.attribValue("root")), length=prim.floatAttribValue("length"),  # type: ignore[arg-type]
+            root=root, length=prim.floatAttribValue("length"),  # type: ignore[arg-type]
             width=sum(widths) / max(len(widths), 1), thick=sum(thicks) / max(len(thicks), 1),
             twist=pts[-1].floatAttribValue(config.ATTR_LOCK_TWIST) if pts else 0.0,
-            strands=int(round(logic.lock_strands(prim.floatAttribValue("density"), a, section) * shares.get(lid, 1.0))),
-            region_area_cm2=a, floating_cm2=floating.get(lid, 0.0), mask_share=shares.get(lid, 1.0),
+            strands=int(round(strands)), region_area_cm2=a, floating_cm2=floating.get(lid, 0.0),
+            auto_strands=int(round(strands)),
         ))
+    # density layers (v0.2a): what the network grows under them. Its automatic roots are kept by the layers'
+    # keep where they end up (an estimate of that share, `lock_layer_counts`), and the layers scatter their
+    # own roots on its skin (the exact count the network is given)
+    for lid, (keep, add) in grooming_masks.lock_layer_counts(node, scalp, rows).items():
+        for k, info in enumerate(infos):
+            if info.id == lid:
+                n = int(round(rows[lid]["strands"] * keep + add))
+                infos[k] = replace(info, strands=n, layer_strands=int(round(add)), keep_share=float(keep),
+                                   mask_share=n / max(rows[lid]["strands"], 1e-9), layered=True)
     return sorted(infos, key=lambda i: i.id)
 
 
@@ -1238,6 +1253,11 @@ def on_loaded(node) -> None:
             if p is not None and p.eval():
                 p.set(empty)
         mark_old_regions(node)
+    # layers of an older test build's removed kinds are dropped on reading (model.migrate): said once, on
+    # the status bar, never in a dialog
+    dropped = grooming_masks.mask_dropped(node)
+    if dropped:
+        _status(f"{config.HDA_LABEL}: {dropped}")
     install_playbar_callback()
 
 
@@ -1399,7 +1419,7 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
     # density masks (mask_read): per lock its scope set and a digest of the factor on its own skin; the 9
     # region sums would miss a stroke that moves density inside a region
-    mask_sets, mask_hashes = grooming_masks.lock_mask_keys(preview)
+    mask_sets, mask_hashes, mask_adds = grooming_masks.lock_mask_keys(preview)
     sk = surface.floatListAttribValue("surface_keys") if surface.findGlobalAttrib("surface_keys") else ()
     # the mode is per lock (its `disp`, lock_shown): only its strand factor reaches the hair, so the
     # node's mode is not in the key and a lock keeps its cache when the node's Display changes
@@ -1420,7 +1440,7 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     sid = top.sessionId()
     has_disp = geo.findPrimAttrib("disp") is not None
     preview_mode = config.DISPLAY_MODES.index("hair_preview")
-    keys, flags, factors, modes, captures, drags, grows, msets = [], [], [], [], [], [], [], []
+    keys, flags, factors, modes, captures, drags, grows, msets, madds = [], [], [], [], [], [], [], [], []
     has_excluded = geo.findPrimAttrib("excluded") is not None
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
@@ -1457,6 +1477,7 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
         parts.append(int(drag))
         mset = mask_sets[lid] if 0 <= lid < len(mask_sets) else -1
         msets.append(mset)
+        madds.append(float(mask_adds[lid]) if mset >= 0 and lid < len(mask_adds) else 0.0)
         parts.append(mask_hashes[lid] if mset >= 0 else "")
         key = lock_key(parts)
         keys.append(key)
@@ -1467,8 +1488,12 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     geo.setPrimIntAttribValues("do_capture", captures)
     geo.setPrimIntAttribValues("drag_seg", drags)
     geo.setPrimIntAttribValues("cached", flags)
-    geo.addAttrib(hou.attribType.Prim, "mask_set", -1)      # region_cut reads mask_<set> for the lock
+    # density layers: the lock's scope set (mask_skin reads mask_keep_<set> / mask_add_<set>; -1: no layer
+    # covers it, the v0.1 nodes alone) and the strands its second scatter lays out
+    geo.addAttrib(hou.attribType.Prim, "mask_set", -1)
     geo.setPrimIntAttribValues("mask_set", msets)
+    geo.addAttrib(hou.attribType.Prim, "mask_add_n", 0.0)
+    geo.setPrimFloatAttribValues("mask_add_n", madds)
     if groom:
         geo.setPrimIntAttribValues("grows", grows)
 
@@ -1671,7 +1696,7 @@ __all__ = [
     "set_excluded",
     # v0.2a density masks (apps/houdini/grooming_masks.py)
     "mask_add", "mask_remove", "mask_move", "mask_set", "mask_fill", "mask_clear", "mask_invert", "mask_values",
-    "mask_factor",
+    "mask_cover", "mask_dropped",
     "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush", "paint_enter", "paint_exit", "paint_layer",
     "import_masks", "masks_from_publish",
 ]

@@ -4,7 +4,7 @@ The mask brush of MONO Grooming (v0.2a): a Python viewer state, entered by `groo
 It touches no node inside the locked HDA. It reads the fine scalp (`SCALP_FINE`), keeps the layer in numpy
 while the button is down (`grooming_masks.PaintSession`) and writes the node's `mask_layers` parm once on
 release: one undo step a stroke, and nothing cooks while the brush moves, so it follows the mouse whatever
-the hair costs. The scalp is drawn coloured by the factor (grey 1, blue towards 0, red towards 2+), the
+the hair costs. The scalp is drawn coloured by the view (the density, or the layer's mask alone), the
 brush as a ring on the skin. Ctrl paints the other way round (erase while painting, paint while erasing),
 Esc leaves Paint.
 
@@ -20,7 +20,7 @@ import traceback
 import hou
 
 from apps.houdini import grooming_masks as gm
-from tools.fx.grooming import config, logic
+from tools.fx.grooming import config
 
 STATE = config.PAINT_STATE
 LABEL = "MONO Grooming: Paint mask"
@@ -37,18 +37,6 @@ USER_STATES = ("select", "view", "scriptselect", "xform", "edit", "scenegraphsel
 def _np():
     import numpy as np
     return np
-
-
-def colours(factor):
-    """Final factor per point -> the scalp's colour (logic.mask_color, on arrays)."""
-    np = _np()
-    m = np.asarray(factor, np.float32)
-    lo = np.clip(1.0 - m, 0.0, 1.0)[:, None]
-    hi = np.clip(m - 1.0, 0.0, 1.0)[:, None]
-    one = np.array(logic.MASK_COLOR_ONE, np.float32)
-    zero = np.array(logic.MASK_COLOR_ZERO, np.float32)
-    more = np.array(logic.MASK_COLOR_MORE, np.float32)
-    return (one + (zero - one) * lo + (more - one) * hi).astype(np.float32)
 
 
 def _viewer():
@@ -280,8 +268,7 @@ class MaskPaint(object):
             if hit:
                 erase = bool(gm.BRUSH["erase"]) != bool(dev.isCtrlKey())
                 reached = self.session.stroke_to(tuple(pos), tuple(nrm), gm.BRUSH["radius_cm"],
-                                                 value=gm.BRUSH["value"], soft=gm.BRUSH["soft"], erase=erase,
-                                                 level=gm.BRUSH["level"])
+                                                 soft=gm.BRUSH["soft"], erase=erase, level=gm.BRUSH["level"])
                 if reached:
                     self.cur["dabs"] += 1
                     self.cur["points"] += reached

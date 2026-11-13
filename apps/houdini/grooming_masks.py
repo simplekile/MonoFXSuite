@@ -1,15 +1,17 @@
 """
-Density mask layers of MONO Grooming (v0.2a, docs/plans/grooming_v0_2.md): storage, the HDA's `mask_read`,
-the brush and the layer functions of the adapter API. `grooming_adapter` re-exports what the panel uses.
+Density layers of MONO Grooming (v0.2a, docs/plans/grooming_v0_2.md): storage, the HDA's `mask_read`, the
+brush and the layer functions of the adapter API. `grooming_adapter` re-exports what the panel uses.
 
-Where things live: the layer list (name, on, mode, opacity, scope) in `groom_data` (`model.MaskLayer`), what
-is painted in the node's hidden geometry parm `mask_layers`: one point per point of the fine scalp
-(`SCALP_FINE`) with `P`, `uv` and per layer `mask_<id>_v` (value) and `mask_<id>_a` (coverage). Parms, so every
-change is undoable and saved with the hip. A layer never painted has no attributes (coverage 0 everywhere).
+One kind of layer: a fill layer "= D strands / cm2" with a mask, and folders of them. Where things live: the
+layer list (name, on, density, opacity, owner) in `groom_data` (`model.MaskLayer`), what is painted in the
+node's hidden geometry parm `mask_layers`: one point per point of the fine scalp (`SCALP_FINE`) with `P`, `uv`
+and per layer its mask `mask_<id>_a` (1 white: the layer applies, 0 black). Parms, so every change is undoable
+and saved with the hip. A layer never painted has no attribute (a black mask; a folder: a white one).
 
-In the network `mask_read` (Python SOP after the region split) blends the layers per scope set
-(`logic.mask_scope_sets`) into point attributes `mask_<k>` and records, per lock, its set and a digest of the
-factor on its own skin: the lock's cache key takes that digest, so a stroke regrows the locks under it only.
+In the network `mask_read` (Python SOP after the region split) composes the layers per scope set
+(`logic.mask_scope_sets`) into two point attributes: `mask_keep_<k>` (how much of the automatic groom stays)
+and `mask_add_<k>` (the density the layers put there), and records, per lock, its set and a digest of both on
+its own skin: the lock's cache key takes that digest, so a stroke regrows the locks under it only.
 """
 
 from __future__ import annotations
@@ -31,10 +33,12 @@ NODE_SCALP_FINE = "SCALP_FINE"
 UNDO_PREFIX = "MONO Grooming: "
 PUBLISH_MASK_FILE = "mask_layers.bgeo"     # next to grooming_data.json in vNNN/_grooming/
 ATTR_SET_OF = "mask_set_of"       # detail int array by lock id: its scope set (-1: no layer reaches it)
-ATTR_HASH_OF = "mask_hash_of"     # detail string array by lock id: digest of the factor on its skin
+ATTR_HASH_OF = "mask_hash_of"     # detail string array by lock id: digest of keep and add on its skin
+ATTR_ADD_OF = "mask_add_of"       # detail float array by lock id: strands the layers scatter on its skin
+ATTR_KEEP_OF = "mask_keep_of"     # detail float array by lock id: expected share of its automatic roots kept
 ATTR_SETS = "mask_sets"           # detail int: number of scope sets (0: no layer is on)
 MOVED_TEXT = "Mask layers were painted on another scalp: moved over by UV, check them"
-_ATTR_RE = re.compile(r"^mask_(\d+)_([va])$")
+_ATTR_RE = re.compile(r"^mask_(\d+)_a$")
 
 
 def _np():
@@ -151,28 +155,16 @@ class ScalpBrush:
         return idx, np.sqrt(d2[idx])
 
 
-def view_colours(view: str, factor, value=None, coverage=None, density=None, reference: float = 1.0):
+def view_colours(view: str, mask=None, density=None, reference: float = 1.0, points: int = 0):
     """(n, 3) float32 colours of the scalp for a view (config.MASK_VIEWS), on arrays: the rules of
-    logic.mask_color / density_color / layer_color. `factor`: the final factor per point; `value`,
-    `coverage`: the painted layer's ("layer"); `density`: strands / cm2 per point and `reference` the
-    density the ramp is centred on ("density"); "roots" is one plain colour (the dots carry it)."""
+    logic.density_color / layer_color. "layer": `mask`, the painted layer's mask per point (white where it
+    applies); "density": `density`, strands / cm2 per point, and `reference`, the density the ramp is
+    centred on; "roots" is one plain colour (the dots carry it)."""
     np = _np()
-
-    def by_factor(m):
-        m = np.asarray(m, np.float32)
-        lo = np.clip(1.0 - m, 0.0, 1.0)[:, None]
-        hi = np.clip(m - 1.0, 0.0, 1.0)[:, None]
-        one = np.array(logic.MASK_COLOR_ONE, np.float32)
-        return one + (np.array(logic.MASK_COLOR_ZERO, np.float32) - one) * lo \
-            + (np.array(logic.MASK_COLOR_MORE, np.float32) - one) * hi
-
-    if view == "roots":
-        return np.tile(np.array(logic.LAYER_UNPAINTED, np.float32) * 2.0, (len(factor), 1)).astype(np.float32)
-    if view == "layer" and coverage is not None:
-        k = np.clip(np.asarray(coverage, np.float32), 0.0, 1.0)[:, None]
-        dark = np.array(logic.LAYER_UNPAINTED, np.float32)
-        top = by_factor(value) if value is not None else np.ones(3, np.float32)     # a mask: white
-        return (dark + (top - dark) * k).astype(np.float32)
+    dark = np.array(logic.LAYER_UNPAINTED, np.float32)
+    if view == "layer" and mask is not None:
+        k = np.clip(np.asarray(mask, np.float32), 0.0, 1.0)[:, None]
+        return (dark + (1.0 - dark) * k).astype(np.float32)
     if view == "density" and density is not None:
         ramp = np.array(logic.DENSITY_RAMP, np.float32)
         stops = np.array(logic.DENSITY_STOPS, np.float32)
@@ -180,7 +172,8 @@ def view_colours(view: str, factor, value=None, coverage=None, density=None, ref
         i = np.clip(np.searchsorted(stops, t, side="right") - 1, 0, len(stops) - 2)
         f = ((t - stops[i]) / (stops[i + 1] - stops[i]))[:, None]
         return (ramp[i] + (ramp[i + 1] - ramp[i]) * f).astype(np.float32)
-    return by_factor(factor).astype(np.float32)
+    n = points or len(mask if mask is not None else density if density is not None else ())
+    return np.tile(dark * 2.0, (n, 1)).astype(np.float32)
 
 
 def root_density(points, point_area_cm2, roots, cell: float):
@@ -221,33 +214,28 @@ def root_density(points, point_area_cm2, roots, cell: float):
 
 
 class MaskData:
-    """What is painted, as numpy arrays on the current fine scalp. Per layer id `a`: its mask (a fill layer
-    or a folder: where it applies, white 1 / black 0) or its coverage (a paint layer); `v`: a paint layer's
-    value per point. A layer with no array was never painted: a fill or paint layer applies nowhere (black),
+    """What is painted, as numpy arrays on the current fine scalp: per layer id its mask `a` (white 1: the
+    layer applies; black 0). A layer with no array was never painted: a fill layer applies nowhere (black),
     a folder everywhere (it has no mask). `moved`: painted on another scalp and brought over (`read_masks`)."""
 
     def __init__(self, P):
         np = _np()
         self.P = np.asarray(P, dtype=np.float32).reshape(-1, 3)
         self.n = len(self.P)
-        self.v: dict[int, Any] = {}
         self.a: dict[int, Any] = {}
         self.moved = False
 
-    def ensure(self, layer_id: int, kind: str = "paint") -> None:
-        """Arrays for a layer about to be painted (a folder's mask starts white, the others' black)."""
+    def ensure(self, layer_id: int, kind: str = "fill") -> None:
+        """An array for a layer about to be painted (a folder's mask starts white, a fill layer's black)."""
         np = _np()
         if layer_id not in self.a:
             self.a[layer_id] = (np.ones if kind == "folder" else np.zeros)(self.n, np.float32)
-        if kind == "paint" and layer_id not in self.v:
-            self.v[layer_id] = np.ones(self.n, np.float32)
 
     def drop(self, layer_id: int) -> None:
-        self.v.pop(layer_id, None)
         self.a.pop(layer_id, None)
 
     def painted(self, layer_id: int) -> int:
-        """Points of the layer with any mask / coverage."""
+        """Points of the layer with any mask."""
         return int((self.a[layer_id] > 0).sum()) if layer_id in self.a else 0
 
     def mask(self, layer):
@@ -257,41 +245,24 @@ class MaskData:
             return self.a[layer.id]
         return (np.ones if layer.kind == "folder" else np.zeros)(self.n, np.float32)
 
-    def factor(self, layers: Iterable[model.MaskLayer], density: float | None = None):
-        """The final factor per point through `layers` (`factor_abs` without the absolute coverage)."""
-        return self.factor_abs(layers, density)[0]
-
-    def factor_abs(self, layers: Iterable[model.MaskLayer], density: float | None = None):
-        """(the final factor, the absolute coverage) per point through `layers` (bottom first, folders with
-        their layers; `logic.mask_compose_abs`). `density`: the density of the lock it is for, which a fill
-        layer in strands / cm2 is divided by (`logic.mask_layer_value`)."""
+    def compose(self, layers: Iterable[model.MaskLayer]):
+        """(keep, add) per point through `layers` (bottom first, folders with their layers;
+        `logic.mask_compose`): the share of the automatic groom that stays and the density the layers put
+        there, strands / cm2. float32, keep inside 0..1."""
         np = _np()
-        rows = []
-        for m in layers:
-            if m.kind == "paint":
-                value = self.v.get(m.id, 1.0)
-            else:
-                value = logic.mask_layer_value(m, density)
-            rows.append((m, value, self.mask(m)))
-        f, c = logic.mask_compose_abs(rows, np.ones(self.n, np.float32))
-        return np.asarray(f, dtype=np.float32), np.clip(np.asarray(c, dtype=np.float32), 0.0, 1.0)
+        keep, add = logic.mask_compose([(m, self.mask(m)) for m in layers], np.ones(self.n, np.float32))
+        return (np.clip(np.asarray(keep, dtype=np.float32), 0.0, 1.0),
+                np.maximum(np.asarray(add, dtype=np.float32), 0.0))
 
-    def dab(self, layer_id: int, idx, weight, value: float, erase: bool = False, kind: str = "paint",
-            level: float = 1.0) -> None:
-        """One dab. A paint layer: `logic.mask_dab` with the brush `value`. A fill layer or a folder: its
-        mask moves towards `level` (1 white, 0 black; erase paints black) by the brush weight."""
+    def dab(self, layer_id: int, idx, weight, erase: bool = False, kind: str = "fill", level: float = 1.0) -> None:
+        """One dab: the layer's mask moves towards `level` (1 white, 0 black; erase paints black) by the
+        brush weight."""
         self.ensure(layer_id, kind)
         np = _np()
         w = np.asarray(weight, np.float32)
-        if kind != "paint":
-            grey = 0.0 if erase else min(max(float(level), 0.0), 1.0)
-            a = self.a[layer_id][idx]
-            self.a[layer_id][idx] = a + (grey - a) * w
-            return
-        paint = min(max(float(value), 0.0), config.MASK_VALUE_MAX)
-        v, a = logic.mask_dab(self.v[layer_id][idx], self.a[layer_id][idx], w, paint, erase)
-        self.v[layer_id][idx] = v
-        self.a[layer_id][idx] = a
+        grey = 0.0 if erase else min(max(float(level), 0.0), 1.0)
+        a = self.a[layer_id][idx]
+        self.a[layer_id][idx] = a + (grey - a) * w
 
 
 def layers_for_view(masks: Sequence[model.MaskLayer], layer_id: int | None) -> list[model.MaskLayer]:
@@ -429,16 +400,11 @@ def _base(node, scalp):
     return geo
 
 
-def stored_layers(geo) -> dict[int, set[str]]:
-    """Layer ids in a stored geometry with the parts each has ("v", "a")."""
-    out: dict[int, set[str]] = {}
+def stored_layers(geo) -> set[int]:
+    """Layer ids with a mask in a stored geometry."""
     if geo is None:
-        return out
-    for attrib in geo.pointAttribs():
-        m = _ATTR_RE.match(attrib.name())
-        if m:
-            out.setdefault(int(m.group(1)), set()).add(m.group(2))
-    return out
+        return set()
+    return {int(m.group(1)) for m in (_ATTR_RE.match(a.name()) for a in geo.pointAttribs()) if m}
 
 
 def read_masks(node, scalp=None, stored=None) -> MaskData:
@@ -452,7 +418,7 @@ def read_masks(node, scalp=None, stored=None) -> MaskData:
     if stored is None:
         parm = node.parm(config.MASK_PARM)
         stored = parm.evalAsGeometry() if parm is not None else None
-    have = {i: p for i, p in stored_layers(stored).items() if "a" in p}
+    have = stored_layers(stored)
     if not have:
         return md
     sn = stored.intrinsicValue("pointcount")
@@ -463,12 +429,9 @@ def read_masks(node, scalp=None, stored=None) -> MaskData:
         uv_old = _point_uv(stored)
         src = _nearest(uv_new, uv_old) if uv_new is not None and uv_old is not None else _nearest(md.P, sP)
         md.moved = True
-    for layer_id, parts in have.items():
+    for layer_id in have:
         a = np.frombuffer(stored.pointFloatAttribValuesAsString(config.MASK_COVER_ATTR % layer_id), np.float32)
         md.a[layer_id] = (a[src] if src is not None else a).copy()
-        if "v" in parts:
-            v = np.frombuffer(stored.pointFloatAttribValuesAsString(config.MASK_VALUE_ATTR % layer_id), np.float32)
-            md.v[layer_id] = (v[src] if src is not None else v).copy()
     return md
 
 
@@ -481,12 +444,9 @@ def mask_geometry(node, md: MaskData, keep: Iterable[int] | None = None, scalp=N
     for layer_id in sorted(md.a):
         if want is not None and layer_id not in want:
             continue
-        parts = [(config.MASK_COVER_ATTR, md.a[layer_id])]
-        if layer_id in md.v:
-            parts.insert(0, (config.MASK_VALUE_ATTR, md.v[layer_id]))
-        for fmt, arr in parts:
-            geo.addAttrib(hou.attribType.Point, fmt % layer_id, 0.0)
-            geo.setPointFloatAttribValuesFromString(fmt % layer_id, np.ascontiguousarray(arr, np.float32).tobytes())
+        name = config.MASK_COVER_ATTR % layer_id
+        geo.addAttrib(hou.attribType.Point, name, 0.0)
+        geo.setPointFloatAttribValuesFromString(name, np.ascontiguousarray(md.a[layer_id], np.float32).tobytes())
     return geo
 
 
@@ -552,10 +512,12 @@ def _region_tables(top, geo) -> dict:
 
 
 def cook_mask_read(sop) -> None:
-    """Python SOP "mask_read", on the scalp with its split (after region_prims): per scope set the blended
-    factor as point attribute `mask_<k>`, and the details `mask_sets`, `mask_set_of` (by lock id) and
-    `mask_hash_of` (by lock id, a digest of the factor on that lock's own skin, "" where it is 1
-    everywhere). With no layer on it adds nothing: the geometry, and so the groom, is v0.1's."""
+    """Python SOP "mask_read", on the scalp with its split (after region_prims): per scope set the point
+    attributes `mask_keep_<k>` / `mask_add_<k>` (`logic.mask_compose`), the details `mask_sets`,
+    `mask_set_of`, `mask_hash_of` (by lock id: its set, and a digest of keep and add on its own skin, "" where
+    no layer covers it), `mask_add_of` (by lock id: the strands the layers scatter on its skin, the count the
+    lock's second scatter is given) and the prim `mask_dens` (PREVIEW's expected strands / cm2). With no
+    layer on it adds nothing: the geometry, and so the groom, is v0.1's."""
     top = sop.parent()
     geo = sop.geometry()
     text = top.evalParm(config.DATA_PARM)
@@ -563,7 +525,7 @@ def cook_mask_read(sop) -> None:
     if parm is None or not text or '"masks": []' in text:
         return
     data = model.GroomData.from_json(text)
-    masks = [m for m in data.masks if m.on]
+    masks = [m for m in data.masks if m.on and m.kind != "folder"]
     if not masks:
         return
     stored = parm.evalAsGeometry()       # read even when nothing uses it: the node depends on the parm
@@ -571,71 +533,172 @@ def cook_mask_read(sop) -> None:
     md = read_masks(top, scalp=geo, stored=stored)
     if md.moved:
         sop.addWarning(MOVED_TEXT)
-    sets, set_of = logic.mask_scope_keys(
-        data.masks, [(lk.id, lk.group, data.resolve(lk.id)["density"]) for lk in data.locks])
+    sets, set_of = logic.mask_scope_sets(data.masks, [(lk.id, lk.group) for lk in data.locks])
     by_id = {m.id: m for m in data.masks}
-    factors, covers = [], []
-    for k, (ids, density) in enumerate(sets):
-        f, c = md.factor_abs([by_id[i] for i in ids], density)
-        factors.append(f)
-        covers.append(c)
-        for name, arr, default in ((config.MASK_SET_ATTR % k, f, 1.0), (config.MASK_ABS_ATTR % k, c, 0.0)):
+    keeps, adds = [], []
+    for k, ids in enumerate(sets):
+        keep, add = md.compose([by_id[i] for i in ids])
+        keeps.append(keep)
+        adds.append(add)
+        for name, arr, default in ((config.MASK_KEEP_ATTR % k, keep, 1.0), (config.MASK_ADD_ATTR % k, add, 0.0)):
             if geo.findPointAttrib(name) is None:
                 geo.addAttrib(hou.attribType.Point, name, default)
             geo.setPointFloatAttribValuesFromString(name, arr.tobytes())
     tables = _region_tables(top, geo)
     regions = tables["points"]
+    n_prims = len(tables["owners"])
+    area = np.frombuffer(geo.primFloatAttribValuesAsString("area_cm2"), np.float32)
+    base = np.frombuffer(geo.primFloatAttribValuesAsString("density"), np.float32)
+    share = np.maximum(tables["owners"], 1.0)
+
+    def prim_mean(values):
+        return np.bincount(tables["vertex_prim"], weights=values[tables["vertex_point"]],
+                           minlength=n_prims) / tables["corners"]
+
+    keep_prim = [prim_mean(k) for k in keeps]
+    add_prim = [prim_mean(a) for a in adds]
     top_id = max([lk.id for lk in data.locks] + [-1])
     set_list = [-1] * (top_id + 1)
     hash_list = [""] * (top_id + 1)
-    for lock_id, k in set_of.items():
-        if k < 0 or lock_id < 0:
-            continue
-        idx = regions.get(lock_id)
-        # the factor and the absolute coverage on the lock's skin (1 + coverage: all 1 = nothing painted)
-        digest = values_digest(np.concatenate([factors[k][idx], 1.0 + covers[k][idx]])) if idx is not None else ""
-        if digest:      # a lock whose skin is all 1 reads no mask at all: the same hair, the same key
-            set_list[lock_id] = k
-            hash_list[lock_id] = digest
-    # per prim the factor averaged over its owners (PREVIEW's expected strand count reads it)
-    prim_mean = [np.bincount(tables["vertex_prim"], weights=f[tables["vertex_point"]],
-                             minlength=len(tables["owners"])).astype(np.float32) / tables["corners"] for f in factors]
-    mean = np.zeros(len(tables["owners"]), np.float32)
+    add_list = [0.0] * (top_id + 1)
+    dens = np.zeros(n_prims, np.float64)       # per prim: what its owners grow together, strands / cm2
     for lock_id, prims in tables["prims"].items():
-        k = set_list[lock_id] if 0 <= lock_id <= top_id else -1
-        mean[prims] += prim_mean[k][prims] if k >= 0 else 1.0
-    mean = np.where(tables["owners"] > 0, mean / np.maximum(tables["owners"], 1.0), 1.0).astype(np.float32)
-    geo.addAttrib(hou.attribType.Prim, "mask_mean", 1.0)
-    geo.setPrimFloatAttribValuesFromString("mask_mean", mean.tobytes())
+        k = set_of.get(lock_id, -1) if 0 <= lock_id <= top_id else -1
+        idx = regions.get(lock_id)
+        # keep and 1 + add on the lock's skin: all 1 = no layer covers it, the hair without layers, no set
+        digest = values_digest(np.concatenate([keeps[k][idx], 1.0 + adds[k][idx]])) if k >= 0 and idx is not None else ""
+        if not digest:
+            dens[prims] += base[prims]
+            continue
+        set_list[lock_id] = k
+        hash_list[lock_id] = digest
+        add_list[lock_id] = float((add_prim[k][prims] * area[prims] / share[prims]).sum())
+        dens[prims] += base[prims] * keep_prim[k][prims] + add_prim[k][prims]
+    dens = np.where(tables["owners"] > 0, dens / share, base).astype(np.float32)
+    geo.addAttrib(hou.attribType.Prim, "mask_dens", 0.0)
+    geo.setPrimFloatAttribValuesFromString("mask_dens", dens.tobytes())
     geo.addAttrib(hou.attribType.Global, ATTR_SETS, 0)
     geo.setGlobalAttribValue(ATTR_SETS, len(sets))
     geo.addArrayAttrib(hou.attribType.Global, ATTR_SET_OF, hou.attribData.Int)
     geo.setGlobalAttribValue(ATTR_SET_OF, set_list)
     geo.addArrayAttrib(hou.attribType.Global, ATTR_HASH_OF, hou.attribData.String)
     geo.setGlobalAttribValue(ATTR_HASH_OF, hash_list)
+    geo.addArrayAttrib(hou.attribType.Global, ATTR_ADD_OF, hou.attribData.Float)
+    geo.setGlobalAttribValue(ATTR_ADD_OF, add_list)
 
 
-def lock_mask_shares(top, regions_geo) -> dict[int, float]:
-    """Per lock id its masked skin area over its skin area (what its strand count is multiplied by), for the
-    locks a layer reaches; `regions_geo` is SCALP_REGIONS. Empty when no layer is on."""
+def layer_cover(top, regions_geo) -> dict[int, tuple[Any, Any, Any]]:
+    """Per lock id a layer covers: (its prims on SCALP_REGIONS, keep per prim, the layers' density per prim in
+    strands / cm2), the means of `mask_keep_<k>` / `mask_add_<k>` over each prim's corners for the lock's
+    scope set. Empty when no layer is on. Shared by `lock_layer_counts` and grooming-check's skin check."""
     if regions_geo is None or regions_geo.findGlobalAttrib(ATTR_SET_OF) is None:
         return {}
     np = _np()
     tables = _region_tables(top, regions_geo)
     set_of = regions_geo.intListAttribValue(ATTR_SET_OF)
-    area = np.frombuffer(regions_geo.primFloatAttribValuesAsString("area_cm2"), np.float32)
-    means: dict[int, Any] = {}
-    out: dict[int, float] = {}
+    n_prims = len(tables["owners"])
+    means: dict[int, tuple[Any, Any]] = {}
+    out = {}
     for lock_id, prims in tables["prims"].items():
         k = set_of[lock_id] if 0 <= lock_id < len(set_of) else -1
         if k < 0 or not len(prims):
             continue
         if k not in means:
-            f = np.frombuffer(regions_geo.pointFloatAttribValuesAsString(config.MASK_SET_ATTR % k), np.float32)
-            means[k] = np.bincount(tables["vertex_prim"], weights=f[tables["vertex_point"]],
-                                   minlength=len(area)) / tables["corners"]
+            pair = []
+            for fmt in (config.MASK_KEEP_ATTR, config.MASK_ADD_ATTR):
+                f = np.frombuffer(regions_geo.pointFloatAttribValuesAsString(fmt % k), np.float32)
+                pair.append(np.bincount(tables["vertex_prim"], weights=f[tables["vertex_point"]],
+                                        minlength=n_prims) / tables["corners"])
+            means[k] = (pair[0], pair[1])
+        out[lock_id] = (prims, means[k][0][prims], means[k][1][prims])
+    return out
+
+
+def kept_share(prim_strands, far_w, keep, landing_keep: float) -> float:
+    """Pure: the share of a lock's automatic roots (whorl roots apart) expected to stay under layers.
+    `prim_strands`: the roots hairgen scatters on each of the lock's prims; `far_w`: the share of them the
+    tool moves to the lock's start (skin under floating mesh); `keep`: the layers' keep on each prim;
+    `landing_keep`: the keep where the moved roots land. A root is kept by the keep where it ends up."""
+    np = _np()
+    n = np.asarray(prim_strands, np.float64)
+    fw = np.clip(np.asarray(far_w, np.float64), 0.0, 1.0)
+    total = float(n.sum())
+    if total <= 0:
+        return 1.0
+    stay = float((n * (1.0 - fw) * np.asarray(keep, np.float64)).sum())
+    return (stay + float((n * fw).sum()) * landing_keep) / total
+
+
+def lock_layer_counts(top, regions_geo, locks: dict[int, dict]) -> dict[int, tuple[float, float]]:
+    """Per lock id a layer covers: (the share of its automatic roots expected to stay, the strands the layers
+    scatter on its skin). The second is the count the network's second scatter is given (`mask_add_of`),
+    exact; the first follows the network's own steps on the region's prims (`kept_share`): hairgen spreads
+    the lock's strands by area / share, the share `far_w` of the roots under floating mesh moves to a disc
+    round the lock's root (root_pick: up to START_DENSITY_MAX x the lock's density, grown when it runs off
+    the region), and each root stays by the keep where it ends up (mask_thin). Whorl roots are left out, as
+    in `LockInfo.strands`.
+
+    `locks`: per lock id {"strands": its automatic count, "root": its root (scene units), "foot": its
+    footprint radius (scene units)}; `regions_geo`: SCALP_REGIONS with `owner_dist`."""
+    cover = layer_cover(top, regions_geo)
+    if not cover:
+        return {}
+    np = _np()
+    tables = _region_tables(top, regions_geo)
+    adds = regions_geo.floatListAttribValue(ATTR_ADD_OF)
+    area = np.frombuffer(regions_geo.primFloatAttribValuesAsString("area_cm2"), np.float32).astype(np.float64)
+    unit = max(float(top.evalParm("unit_cm")), 1e-6)
+    far = float(top.evalParm("root_far_cm")) if top.parm("root_far_cm") is not None else config.ROOT_FAR_CM
+    n_prims = len(area)
+    P = _points(regions_geo).astype(np.float64)
+    cen = np.stack([np.bincount(tables["vertex_prim"], weights=P[tables["vertex_point"], k], minlength=n_prims)
+                    for k in range(3)], 1) / tables["corners"][:, None]
+    owners = dists = None
+    if regions_geo.findPrimAttrib("owner_dist") is not None and far > 0:
+        owners = regions_geo.primIntListAttribValues("lock_owners")
+        dists = regions_geo.primFloatListAttribValues("owner_dist")
+    out = {}
+    for lock_id, (prims, keep, _add) in cover.items():
+        info = locks.get(lock_id)
+        add_n = float(adds[lock_id]) if lock_id < len(adds) else 0.0
+        if info is None or not len(prims):
+            out[lock_id] = (1.0, add_n)
+            continue
         w = area[prims] / np.maximum(tables["owners"][prims], 1.0)
-        out[lock_id] = float((means[k][prims] * w).sum() / max(float(w.sum()), 1e-12))
+        lock_area = max(float(w.sum()), 1e-9)
+        per_prim = float(info["strands"]) * w / lock_area
+        c = cen[prims]
+        root = np.asarray(info["root"], np.float64)
+        d_root = np.sqrt(((c - root) ** 2).sum(1))
+        centre = c[int(d_root.argmin())]                   # the root moved onto the skin (region_frame fp_c)
+        d_c = np.sqrt(((c - centre) ** 2).sum(1))
+        fw = np.zeros(len(prims))
+        if dists is not None:
+            for j, pr in enumerate(prims):
+                own, dd = owners[pr], dists[pr]
+                at = own.index(lock_id) if lock_id in own else -1
+                if 0 <= at < len(dd) and dd[at] >= 0 and d_c[j] > float(info.get("foot", 0.0)):
+                    fw[j] = logic.falloff(dd[at] * unit, far, config.ROOT_FAR_SOFT)
+        moved = float((per_prim * fw).sum())
+        landing = 1.0
+        if moved > 0:
+            # root_pick's disc: `moved` places at START_DENSITY_MAX x the lock's density, grown (at most 3x)
+            # until the region under it holds them
+            rho = max(float(info["strands"]) / lock_area, 1e-9) * config.START_DENSITY_MAX     # places / cm2
+            rad = np.sqrt(moved / (np.pi * rho)) / unit
+            r_max = 3.0 * max(rad, float(info.get("foot", 0.0)))
+            r = rad
+            for _ in range(8):
+                inside = d_c <= r
+                places = float(area[prims][inside].sum()) * rho
+                if places >= moved or r >= r_max:
+                    break
+                r = min(r_max, r * np.sqrt(moved / max(places, 1e-9)) * 1.1)
+            inside = d_c <= r
+            if not inside.any():
+                inside = d_c <= d_c.min() + 1e-9
+            landing = float((keep[inside] * area[prims][inside]).sum() / max(float(area[prims][inside].sum()), 1e-12))
+        out[lock_id] = (kept_share(per_prim, fw, keep, landing), add_n)
     return out
 
 
@@ -712,12 +775,13 @@ def display_roots(node, cook: bool = True):
     return (np.concatenate(out) if out else np.zeros((0, 3), np.float32)), bool(whole and wanted)
 
 
-def lock_mask_keys(preview_geo) -> tuple[Sequence[int], Sequence[str]]:
-    """(scope set by lock id, digest by lock id) as `mask_read` left them on the regions (PREVIEW passes
-    the details on); empty when no layer is on."""
+def lock_mask_keys(preview_geo) -> tuple[Sequence[int], Sequence[str], Sequence[float]]:
+    """(scope set by lock id, digest by lock id, strands the layers add by lock id) as `mask_read` left them
+    on the regions (PREVIEW passes the details on); empty when no layer is on."""
     if preview_geo is None or preview_geo.findGlobalAttrib(ATTR_SET_OF) is None:
-        return (), ()
-    return preview_geo.intListAttribValue(ATTR_SET_OF), preview_geo.stringListAttribValue(ATTR_HASH_OF)
+        return (), (), ()
+    return (preview_geo.intListAttribValue(ATTR_SET_OF), preview_geo.stringListAttribValue(ATTR_HASH_OF),
+            preview_geo.floatListAttribValue(ATTR_ADD_OF))
 
 
 # ---------------------------------------------------------------------------
@@ -757,7 +821,7 @@ class PaintSession:
         self.node = node
         self.layer_id = int(layer_id)
         self.unit_cm = max(float(node.evalParm("unit_cm")), 1e-6)
-        self.kind = "paint"
+        self.kind = "fill"
         self.scalp = _scalp(node)
         self.brush = scalp_brush(node, self.scalp)
         self.roots = _np().zeros((0, 3), _np().float32)
@@ -770,7 +834,7 @@ class PaintSession:
         """What the node holds now (on entering, after an undo or any change from outside)."""
         self.data = _read(self.node)
         layer = self.data.mask(self.layer_id)
-        self.kind = layer.kind if layer is not None else "paint"
+        self.kind = layer.kind if layer is not None else "fill"
         self.md = read_masks(self.node, self.scalp)
         self.dirty = False
         self._last = None
@@ -778,10 +842,9 @@ class PaintSession:
     def layer(self) -> model.MaskLayer | None:
         return self.data.mask(self.layer_id)
 
-    def factor(self):
-        """The factor the scalp shows while this layer is painted (`layers_for_view`)."""
-        reference = float(self.data.defaults.get("density", model.BUILTIN_DEFAULTS["density"]))
-        return self.md.factor(layers_for_view(self.data.masks, self.layer_id), reference)
+    def cover(self):
+        """(keep, add) the scalp shows while this layer is painted (`layers_for_view`)."""
+        return self.md.compose(layers_for_view(self.data.masks, self.layer_id))
 
     def base_density(self):
         """(automatic density per scalp point in strands / cm2, the groom's default density, each point's
@@ -816,49 +879,46 @@ class PaintSession:
         self.roots = roots
         _base, _reference, point_area = self.base_density()
         self.actual = root_density(self.md.P, point_area, roots, config.ROOT_DENSITY_CELL_CM / self.unit_cm)
-        self.actual_factor = self.factor().copy()
+        self.actual_cover = tuple(x.copy() for x in self.cover())
         self.counted = True
         return True
 
     def density(self):
         """Strands / cm2 per scalp point for the "density" view, the final density map: the roots as counted
-        (`measure`), times how far the factor has moved since (a stroke in progress shows at once what it
-        asks of the hair it is over); the density asked where no roots are known, the factor was 0, or an
-        absolute layer ("= D") covers the skin: there the map is D outright."""
+        (`measure`), moved by what the layers ask now against what they asked when counted (a stroke in
+        progress shows at once what it asks of the hair it is over): the automatic part of the count x keep,
+        plus the layers' density. Before any count: the density asked (`logic.mask_density`)."""
         np = _np()
-        base, reference, _area = self.base_density()
-        factor, cover = self.md.factor_abs(layers_for_view(self.data.masks, self.layer_id), reference)
-        asked = base * factor
+        base, _reference, _area = self.base_density()
+        keep, add = self.cover()
+        asked = logic.mask_density(base, keep, add)
         if getattr(self, "actual", None) is None:
-            return asked
-        was = self.actual_factor
-        moved = np.where(was > 1e-6, self.actual * factor / np.maximum(was, 1e-6), asked)
-        # where a "= D" layer covers, the density is D itself (the roots stay where they are scattered)
-        return (moved + (asked - moved) * cover).astype(np.float32)
+            return asked.astype(np.float32)
+        keep0, add0 = self.actual_cover
+        # the automatic density there, from the count: what was not the layers', over what was kept of it
+        auto = np.where(keep0 > 1e-3, np.maximum(self.actual - add0, 0.0) / np.maximum(keep0, 1e-3), base)
+        return logic.mask_density(auto, keep, add).astype(np.float32)
 
     def colours(self, view: str):
-        """The scalp's colours for a view (config.MASK_VIEWS). "layer": a paint layer shows its values where
-        it has coverage; a fill layer or a folder its mask, white where it applies."""
+        """The scalp's colours for a view (config.MASK_VIEWS). "layer": the painted layer's mask, white
+        where it applies."""
         density = self.density() if view == "density" else None
         reference = self.base_density()[1] if view == "density" else 1.0
         layer = self.layer()
         mask = self.md.mask(layer) if layer is not None and view == "layer" else None
-        value = self.md.v.get(self.layer_id) if self.kind == "paint" else None
-        return view_colours(view, self.factor(), value, mask, density, reference)
+        return view_colours(view, mask, density, reference, points=self.md.n)
 
     def begin(self) -> None:
         self._last = None
 
     def dab(self, centre, normal=None, radius_cm: float = config.BRUSH_RADIUS_CM,
-            value: float = config.BRUSH_VALUE, soft: float = config.BRUSH_SOFT, erase: bool = False,
-            level: float = 1.0) -> int:
-        """One dab at `centre` (scene units, on the skin). A paint layer takes the brush `value`; a fill
-        layer or a folder has its mask painted towards `level` (1 white, 0 black; erase = black). Returns
-        the points it reached."""
+            soft: float = config.BRUSH_SOFT, erase: bool = False, level: float = 1.0) -> int:
+        """One dab at `centre` (scene units, on the skin): the layer's mask is painted towards `level`
+        (1 white, 0 black; erase = black). Returns the points it reached."""
         radius = radius_cm / self.unit_cm
         idx, dist = self.brush.reach(centre, radius, normal)
         if len(idx):
-            self.md.dab(self.layer_id, idx, logic.brush_weights(dist, radius, soft), value, erase, self.kind, level)
+            self.md.dab(self.layer_id, idx, logic.brush_weights(dist, radius, soft), erase, self.kind, level)
             self.dirty = True
         return int(len(idx))
 
@@ -892,20 +952,20 @@ class PaintSession:
 # Adapter API: layers (each one undo step)
 # ---------------------------------------------------------------------------
 
-def mask_add(node, name: str = "", mode: str = "multiply", opacity: float = 1.0, scope: str = "all",
-             group: str = "", locks: Iterable[int] = (), kind: str = "fill", value: float = 1.0,
-             unit: str = "factor", parent: int | None = None) -> int:
-    """A new layer on top of the stack. `kind` (config.MASK_KINDS): "fill" one `value` (a factor, or with
-    `unit` "density" strands / cm2) and a black mask to paint white where it applies; "paint" a value
-    painted per point; "folder" holds layers (`parent`), with a mask and opacity over them all. Nothing
+def mask_add(node, name: str = "", value: float = config.MASK_DENSITY_DEFAULT, opacity: float = 1.0,
+             scope: str = "all", group: str = "", locks: Iterable[int] = (), kind: str = "fill",
+             parent: int | None = None) -> int:
+    """A new layer on top of the stack. `kind` (config.MASK_KINDS): "fill", a layer "= `value` strands / cm2"
+    with a black mask to paint white where it applies; "folder" holds layers (`parent`), with a mask and
+    opacity over them all. `scope` is the layer's owner: every lock, a group, or chosen locks. Nothing
     changes in the hair until something is painted. Returns its id."""
     _require_parm(node)
-    if mode not in config.MASK_MODES or scope not in config.MASK_SCOPES:
-        raise ValueError(f"mask layer mode {mode!r} / scope {scope!r}")
-    if kind not in config.MASK_KINDS or unit not in config.MASK_UNITS:
-        raise ValueError(f"mask layer kind {kind!r} / unit {unit!r}")
+    if scope not in config.MASK_SCOPES:
+        raise ValueError(f"mask layer scope {scope!r}")
+    if kind not in config.MASK_KINDS:
+        raise ValueError(f"mask layer kind {kind!r}")
     data = _read(node)
-    layer = data.add_mask(name, mode, opacity, scope, group, locks, kind, value, unit, parent)
+    layer = data.add_mask(name, value, opacity, scope, group, locks, kind, parent)
     _write(node, f"Add mask {'folder' if kind == 'folder' else 'layer'} {layer.name}", data=data)
     return layer.id
 
@@ -934,28 +994,22 @@ def mask_move(node, layer_id: int, index: int, parent: int | None | str = "keep"
     _write(node, "Reorder mask layers", data=data)
 
 
-def mask_set(node, layer_id: int, name: str | None = None, on: bool | None = None, mode: str | None = None,
+def mask_set(node, layer_id: int, name: str | None = None, on: bool | None = None,
              opacity: float | None = None, scope: str | None = None, group: str | None = None,
-             locks: Iterable[int] | None = None, value: float | None = None, unit: str | None = None) -> bool:
-    """Change a layer's row: any of name, on, mode, opacity, scope (with its group or locks), a fill
-    layer's value and unit. One undo step; False when nothing changed."""
+             locks: Iterable[int] | None = None, value: float | None = None) -> bool:
+    """Change a layer's row: any of name, on, opacity, owner (scope with its group or locks), a fill layer's
+    density (strands / cm2). One undo step; False when nothing changed."""
     data = _read(node)
     layer = data.mask(layer_id)
     if layer is None:
         raise KeyError(layer_id)
-    if mode is not None and mode not in config.MASK_MODES:
-        raise ValueError(f"mask layer mode {mode!r}")
     if scope is not None and scope not in config.MASK_SCOPES:
         raise ValueError(f"mask layer scope {scope!r}")
-    if unit is not None and unit not in config.MASK_UNITS:
-        raise ValueError(f"mask layer unit {unit!r}")
     before = model.MaskLayer(**{**layer.__dict__, "locks": list(layer.locks)})
     if name is not None:
         layer.name = str(name)
     if on is not None:
         layer.on = bool(on)
-    if mode is not None:
-        layer.mode = mode
     if opacity is not None:
         layer.opacity = min(1.0, max(0.0, float(opacity)))
     if scope is not None:
@@ -965,12 +1019,10 @@ def mask_set(node, layer_id: int, name: str | None = None, on: bool | None = Non
     if locks is not None:
         layer.locks = sorted({int(i) for i in locks})
     if value is not None:
-        layer.value = max(0.0, float(value))
-    if unit is not None:
-        layer.unit = unit
+        layer.value = min(config.MASK_DENSITY_MAX, max(0.0, float(value)))
     if layer == before:
         return False
-    what = [k for k in ("name", "on", "mode", "opacity", "scope", "group", "locks", "value", "unit")
+    what = [k for k in ("name", "on", "opacity", "scope", "group", "locks", "value")
             if getattr(layer, k) != getattr(before, k)]
     _write(node, f"Mask layer {layer.name}: {', '.join(what)}", data=data)
     return True
@@ -984,23 +1036,18 @@ def _layer_or_raise(data: model.GroomData, layer_id: int) -> model.MaskLayer:
 
 
 def mask_fill(node, layer_id: int, value: float = 1.0) -> None:
-    """A fill layer or a folder: its whole mask at `value` (1 = a white mask: it applies everywhere).
-    A paint layer: the whole layer painted `value`, coverage 1."""
+    """The layer's (or folder's) whole mask at `value` (1 = a white mask: it applies everywhere)."""
     data = _read(node)
     layer = _layer_or_raise(data, layer_id)
     md = read_masks(node)
     md.ensure(layer_id, layer.kind)
-    if layer.kind == "paint":
-        md.v[layer_id][:] = min(max(float(value), 0.0), config.MASK_VALUE_MAX)
-        md.a[layer_id][:] = 1.0
-    else:
-        md.a[layer_id][:] = min(max(float(value), 0.0), 1.0)
+    md.a[layer_id][:] = min(max(float(value), 0.0), 1.0)
     _write(node, f"Fill mask layer {layer.name}", md=md)
 
 
 def mask_clear(node, layer_id: int) -> None:
-    """Nothing painted on the layer any more; the layer stays. A fill or paint layer then applies nowhere
-    (a black mask), a folder everywhere (no mask)."""
+    """Nothing painted on the layer any more; the layer stays. A fill layer then applies nowhere (a black
+    mask), a folder everywhere (no mask)."""
     data = _read(node)
     layer = _layer_or_raise(data, layer_id)
     md = read_masks(node)
@@ -1009,7 +1056,7 @@ def mask_clear(node, layer_id: int) -> None:
 
 
 def mask_invert(node, layer_id: int) -> None:
-    """Invert the layer's mask (white <-> black; a paint layer's coverage)."""
+    """Invert the layer's mask (white <-> black)."""
     data = _read(node)
     layer = _layer_or_raise(data, layer_id)
     md = read_masks(node)
@@ -1019,39 +1066,37 @@ def mask_invert(node, layer_id: int) -> None:
 
 
 def mask_values(node, layer_id: int):
-    """(value, mask) per fine-scalp point of a layer, as numpy arrays. A fill layer's value is its one
-    number (as a factor at the groom's default density when it is in strands / cm2), a folder's is 1."""
-    np = _np()
+    """The layer's mask per fine-scalp point (numpy float32: 1 white, 0 black)."""
     data = _read(node)
     layer = _layer_or_raise(data, layer_id)
-    md = read_masks(node)
-    if layer.kind == "paint":
-        return md.v.get(layer_id, np.ones(md.n, np.float32)), md.mask(layer)
-    reference = float(data.defaults.get("density", model.BUILTIN_DEFAULTS["density"]))
-    number = 1.0 if layer.kind == "folder" else logic.mask_layer_value(layer, reference)
-    return np.full(md.n, number, np.float32), md.mask(layer)
+    return read_masks(node).mask(layer)
 
 
-def mask_factor(node, lock_id: int | None = None):
-    """The final factor per fine-scalp point: for one lock (the layers that reach it, at its density), or
-    of the "all locks" layers at the groom's default density when `lock_id` is None."""
+def mask_cover(node, lock_id: int | None = None):
+    """(keep, add) per fine-scalp point: the share of the automatic groom that stays and the density the
+    layers put there (strands / cm2; `logic.mask_density`). For one lock (the layers that reach it), or of
+    the "all locks" layers when `lock_id` is None."""
     data = _read(node)
     md = read_masks(node)
     if lock_id is None:
-        reference = float(data.defaults.get("density", model.BUILTIN_DEFAULTS["density"]))
-        return md.factor([m for m in data.masks if m.kind == "folder" or m.scope == "all"], reference)
+        return md.compose([m for m in data.masks if m.kind == "folder" or m.scope == "all"])
     lk = data.lock(lock_id)
     group = lk.group if lk is not None else ""
-    density = data.resolve(lock_id)["density"] if lk is not None else None
-    return md.factor([m for m in data.masks if m.kind == "folder" or m.applies(lock_id, group)], density)
+    return md.compose([m for m in data.masks if m.kind == "folder" or m.applies(lock_id, group)])
+
+
+def mask_dropped(node) -> str:
+    """What the artist is told about layers this version dropped on opening the scene (an older test
+    build's blend modes, factor and paint layers), "" when none: for the panel's message line. The stored
+    JSON keeps them until the next edit writes it."""
+    return model.dropped_text(model.dropped_masks(node.evalParm(config.DATA_PARM)))
 
 
 def mask_stroke(node, layer_id: int, points: Sequence[Sequence[float]], radius_cm: float = config.BRUSH_RADIUS_CM,
-                value: float = config.BRUSH_VALUE, soft: float = config.BRUSH_SOFT, erase: bool = False,
+                soft: float = config.BRUSH_SOFT, erase: bool = False,
                 normals: Sequence[Sequence[float]] | None = None, level: float = 1.0) -> int:
     """One stroke through `points` (on the skin, scene units) as the brush would paint it; one undo step.
-    A paint layer takes `value`; a fill layer or a folder has its mask painted `level` (1 white, 0 black).
-    Returns the dabs that reached skin."""
+    The layer's mask is painted `level` (1 white, 0 black). Returns the dabs that reached skin."""
     if _read(node).mask(layer_id) is None:
         raise KeyError(layer_id)
     session = PaintSession(node, layer_id)
@@ -1059,7 +1104,7 @@ def mask_stroke(node, layer_id: int, points: Sequence[Sequence[float]], radius_c
     landed = 0
     for i, p in enumerate(points):
         nrm = normals[i] if normals is not None else None
-        landed += int(session.stroke_to(p, nrm, radius_cm, value=value, soft=soft, erase=erase, level=level) > 0)
+        landed += int(session.stroke_to(p, nrm, radius_cm, soft=soft, erase=erase, level=level) > 0)
     session.commit("Erase mask" if erase else "Paint mask")
     return landed
 
@@ -1090,19 +1135,18 @@ def mask_rebake(node) -> bool:
 # The panel's hooks (set by its controller): "stroke"(node) after a stroke is stored, to cook inside the
 # panel's loading line (None: the state cooks the node itself); "exit"() when Paint ends without the panel
 HOOKS: dict[str, Any] = {"stroke": None, "exit": None}
-BRUSH: dict[str, Any] = {"radius_cm": config.BRUSH_RADIUS_CM, "value": config.BRUSH_VALUE,
-                         "soft": config.BRUSH_SOFT, "erase": False, "xray": False, "view": "density", "level": 1.0}
+BRUSH: dict[str, Any] = {"radius_cm": config.BRUSH_RADIUS_CM, "soft": config.BRUSH_SOFT, "erase": False,
+                         "xray": False, "view": "density", "level": 1.0}
 PAINT: dict[str, Any] = {"node": None, "layer": None}    # node path and layer id while Paint is on
 
 
-def set_brush(radius_cm: float | None = None, value: float | None = None, soft: float | None = None,
-              erase: bool | None = None, xray: bool | None = None, view: str | None = None,
-              level: float | None = None) -> dict:
-    """Brush settings of the session (not saved, no undo): radius in cm, the value painted (a factor on the
-    automatic density), the soft share of the radius, erase, the scalp's X-ray, and what the scalp shows
-    (`view`, config.MASK_VIEWS: the density as it is, the final factor, the painted layer alone, or the
-    roots as dots). Choosing "density" or "roots" counts the groom's roots, which grows the locks the cache
-    does not hold in full. Returns them all."""
+def set_brush(radius_cm: float | None = None, soft: float | None = None, erase: bool | None = None,
+              xray: bool | None = None, view: str | None = None, level: float | None = None) -> dict:
+    """Brush settings of the session (not saved, no undo): radius in cm, the soft share of the radius, what
+    the mask is painted (`level`: 1 white, 0 black; `erase` = black), the scalp's X-ray, and what the scalp
+    shows (`view`, config.MASK_VIEWS: the density as it is, the painted layer's mask alone, or the roots as
+    dots). Choosing "density" or "roots" counts the groom's roots, which grows the locks the cache does not
+    hold in full. Returns them all."""
     if view is not None:
         if view not in config.MASK_VIEWS:
             raise ValueError(f"mask view {view!r}")
@@ -1110,8 +1154,6 @@ def set_brush(radius_cm: float | None = None, value: float | None = None, soft: 
         BRUSH["count_roots"] = view in ("density", "roots")     # asked for by hand: the state may cook
     if radius_cm is not None:
         BRUSH["radius_cm"] = min(max(float(radius_cm), 0.05), 50.0)
-    if value is not None:
-        BRUSH["value"] = min(max(float(value), 0.0), config.MASK_VALUE_MAX)
     if soft is not None:
         BRUSH["soft"] = min(max(float(soft), 0.0), 1.0)
     if erase is not None:
@@ -1198,13 +1240,14 @@ def import_masks(node, tool_dir: str) -> int:
     data.masks = layers
     data.mask_id_high = max([data.mask_id_high] + [m.id for m in layers])
     md = read_masks(node, stored=geo) if geo is not None else MaskData(_points(_scalp(node)))
+    md.a = {i: a for i, a in md.a.items() if data.mask(i) is not None}     # a dropped layer's mask stays behind
     _write(node, "Mask layers from a publish", data=data, md=md)
     return len(layers)
 
 
 __all__ = [
     "mask_add", "mask_remove", "mask_move", "mask_set", "mask_fill", "mask_clear", "mask_invert", "mask_values",
-    "mask_factor",
+    "mask_cover", "mask_dropped",
     "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush", "paint_enter", "paint_exit",
     "paint_layer", "import_masks", "masks_from_publish",
 ]

@@ -119,40 +119,41 @@ def test_tree_order_moves_locks_and_groups_and_survives_json() -> None:
     assert [g.id for g in again.groups] == ["b", "a"]
 
 
-# ---- v0.2a density mask layers ----
+# ---- v0.2a density layers ----
 
 def test_v01_data_migrates_to_masks_without_changing_anything_else():
     from tools.fx.grooming.model import MaskLayer, migrate
-    old = {"schema": 1, "asset": "char_Helen", "defaults": {"density": 200.0},
-           "groups": [{"id": "g", "name": "G", "overrides": {"clump": 0.5}}],
-           "locks": [{"id": 1, "name": "a", "group": "g", "overrides": {"frizz": 0.2}, "root_flip": True}],
-           "orphans": [{"id": 4, "name": "gone", "group": "g"}], "id_high": 4, "regions_stale": True,
-           "stale_why": ["Detect locks: 1 new"]}
+    old = {"schema": 1, "asset": "char_Helen", "defaults": {"density": 120.0},
+           "groups": [{"id": "g", "name": "g"}],
+           "locks": [{"id": 1, "name": "g_01", "group": "g", "overrides": {"clump": 0.4}}], "id_high": 1}
     d = GroomData.from_json(json.dumps(old))
-    assert d.masks == [] and d.mask_id_high == -1 and d.schema == SCHEMA == 3
-    assert migrate(dict(old))["schema"] == 3 and "masks" not in old      # the input is not changed
-    back = json.loads(d.to_json())
-    for key in ("asset", "defaults", "id_high", "regions_stale", "stale_why"):
-        assert back[key] == old[key]
-    assert d.resolve(1)["frizz"] == 0.2 and d.resolve(1)["clump"] == 0.5 and d.resolve(1)["density"] == 200.0
-    assert d.lock(1).root_flip and d.orphans[0].id == 4
+    assert d.asset == "char_Helen" and d.defaults == {"density": 120.0}
+    assert d.lock(1).overrides == {"clump": 0.4} and d.id_high == 1
+    assert d.masks == [] and d.mask_id_high == -1 and d.schema == SCHEMA == 4
+    new = migrate(dict(old))
+    assert new["schema"] == 4 and "masks" not in old and new["masks_dropped"] == []     # the input is not changed
+    with pytest.raises(ValueError, match="newer than this tool"):
+        migrate({"schema": SCHEMA + 1})
     assert MaskLayer(0, "x").applies(1, "g")
+    assert MaskLayer(0, "x").value == 150.0 and MaskLayer(0, "x").kind == "fill"
+    assert not hasattr(MaskLayer(0, "x"), "mode") and not hasattr(MaskLayer(0, "x"), "unit")
 
 
 def test_mask_layers_roundtrip_order_and_ids():
     d = GroomData()
     a = d.add_mask()
-    b = d.add_mask("Crown", mode="replace", opacity=0.5)
+    b = d.add_mask("Crown", value=5104, opacity=0.5)
     c = d.add_mask("Fringe", scope="group", group="bang")
     e = d.add_mask("Two", scope="locks", locks=[9, 3, 9])
     assert [m.id for m in d.masks] == [0, 1, 2, 3] and a.name == "Layer 1" and e.locks == [3, 9]
+    assert b.value == 5104.0 and b.opacity == 0.5
     d.move_mask(c.id, 0)
     d.move_mask(a.id, 99)
     assert [m.name for m in d.masks] == ["Fringe", "Crown", "Two", "Layer 1"]
     assert d.remove_mask(b.id) and not d.remove_mask(b.id)
     back = GroomData.from_json(d.to_json())
     assert back.masks == d.masks and back.mask_id_high == 3
-    # a removed layer's id never comes back (its painted attributes may still sit in an older publish)
+    assert '"mode"' not in d.to_json() and '"unit"' not in d.to_json()
     assert back.add_mask().id == 4
     assert back.mask(2).applies(7, "bang") and not back.mask(2).applies(7, "back")
     assert back.mask(3).applies(3, "back") and not back.mask(3).applies(4, "back")
@@ -161,32 +162,59 @@ def test_mask_layers_roundtrip_order_and_ids():
 
 
 def test_mask_layers_from_json_are_cleaned():
-    d = GroomData.from_json(json.dumps({"schema": 2, "masks": [
-        {"id": 5, "name": "x", "mode": "screen", "opacity": 7, "scope": "everything", "locks": ["3"]}]}))
+    d = GroomData.from_json(json.dumps({"schema": 4, "masks": [
+        {"id": 5, "name": "x", "opacity": 7, "scope": "nope", "locks": [3, 3, 1], "value": -4, "kind": "paint",
+         "parent": 99}]}))
     m = d.masks[0]
-    assert (m.mode, m.opacity, m.scope, m.locks, m.on) == ("multiply", 1.0, "all", [3], True)
+    assert (m.opacity, m.scope, m.locks, m.value, m.kind, m.parent) == (1.0, "all", [1, 3], 0.0, "fill", None)
     assert d.mask_id_high == 5
+    big = GroomData.from_json(json.dumps({"schema": 4, "masks": [{"id": 0, "value": 1e9}, {"id": 1, "value": "x"}]}))
+    assert big.masks[0].value == 20000.0 and big.masks[1].value == 150.0
 
 
-def test_schema_2_layers_become_paint_layers_and_new_ones_are_fill_layers():
-    d = GroomData.from_json(json.dumps({"schema": 2, "masks": [{"id": 0, "name": "old", "mode": "add"}]}))
-    assert d.schema == SCHEMA == 3 and d.masks[0].kind == "paint" and d.masks[0].mode == "add"
-    new = d.add_mask("Thin skin", mode="replace", value=80, unit="density")
-    assert (new.kind, new.value, new.unit, new.parent) == ("fill", 80.0, "density", None)
-    back = GroomData.from_json(d.to_json())
-    assert back.masks == d.masks
-    bad = GroomData.from_json(json.dumps({"schema": 3, "masks": [
-        {"id": 1, "name": "x", "kind": "smart", "value": -3, "unit": "kg", "parent": 9}]}))
-    m = bad.masks[0]
-    assert (m.kind, m.value, m.unit, m.parent) == ("fill", 0.0, "factor", None)    # cleaned, no folder 9
+def test_schema_3_layers_of_a_removed_kind_are_dropped_and_named():
+    from tools.fx.grooming.model import dropped_masks, dropped_text
+    old = {"schema": 3, "mask_id_high": 6, "masks": [
+        {"id": 0, "name": "Half", "kind": "fill", "mode": "multiply", "value": 0.5, "unit": "factor"},
+        {"id": 1, "name": "Thin skin", "kind": "fill", "mode": "replace", "value": 80.0, "unit": "density",
+         "opacity": 0.5, "scope": "locks", "locks": [14], "parent": 4},
+        {"id": 2, "name": "Plus", "kind": "fill", "mode": "add", "value": 40.0, "unit": "density"},
+        {"id": 3, "name": "Hand", "kind": "paint", "mode": "max"},
+        {"id": 4, "name": "Crown", "kind": "folder", "opacity": 0.7},
+        {"id": 5, "name": "Equal 2", "kind": "fill", "mode": "replace", "value": 2.0, "unit": "factor"},
+        {"id": 6, "name": "", "kind": "fill", "mode": "min", "value": 1.0},
+    ]}
+    text = json.dumps(old)
+    d = GroomData.from_json(text)
+    assert [m.name for m in d.masks] == ["Thin skin", "Crown"] and d.schema == 4
+    kept = d.mask(1)
+    assert (kept.value, kept.opacity, kept.scope, kept.locks, kept.parent) == (80.0, 0.5, "locks", [14], 4)
+    assert d.mask_id_high == 6 and d.add_mask().id == 7              # a dropped layer's id is never reused
+    names = dropped_masks(text)
+    assert names == ["Half", "Plus", "Hand", "Equal 2", "6"]
+    said = dropped_text(names)
+    assert said.startswith("5 density layers") and "Half" in said and "1 more" in said and "= D" in said
+    assert dropped_text([]) == "" and dropped_text(["a"]).startswith("1 density layer from")
+    # once written again nothing is dropped any more, and nothing unreadable raises
+    assert dropped_masks(d.to_json()) == [] and dropped_masks("") == [] and dropped_masks("{broken") == []
+    assert dropped_masks(json.dumps({"schema": 1})) == []
 
 
-def test_folders_hold_layers_one_level_deep():
+def test_schema_2_paint_layers_are_dropped_too():
+    from tools.fx.grooming.model import dropped_masks
+    text = json.dumps({"schema": 2, "masks": [{"id": 0, "name": "old", "mode": "add"},
+                                               {"id": 1, "name": "older", "mode": "multiply"}]})
+    d = GroomData.from_json(text)
+    assert d.masks == [] and d.schema == 4 and d.mask_id_high == 1
+    assert dropped_masks(text) == ["old", "older"]
+
+
+def test_folders_hold_layers_one_level():
     d = GroomData()
     folder = d.add_mask(kind="folder")
     a = d.add_mask("a", parent=folder.id)
     b = d.add_mask("b")
-    assert folder.name == "Folder 1" and a.parent == folder.id and b.parent is None
+    assert a.parent == folder.id and folder.name == "Folder 1"
     d.set_mask_parent(b.id, folder.id)
     assert GroomData.from_json(d.to_json()).mask(b.id).parent == folder.id
     other = d.add_mask(kind="folder")
@@ -197,3 +225,14 @@ def test_folders_hold_layers_one_level_deep():
     d.set_mask_parent(b.id, None)
     assert d.mask(b.id).parent is None
     assert d.remove_mask(folder.id) and d.mask(a.id).parent is None     # deleting a folder keeps its layers
+
+
+def test_a_layer_owned_by_a_missing_lock_follows_it_to_the_lock_it_is_given_to():
+    d = GroomData()
+    mine = d.add_mask("Lock B = 0", value=0.0, scope="locks", locks=[14, 3])
+    both = d.add_mask("Two", scope="locks", locks=[14, 21])
+    other = d.add_mask("Other", scope="locks", locks=[5])
+    everyone = d.add_mask("All")
+    assert d.reassign_mask_lock(14, 21) == ["Lock B = 0", "Two"]
+    assert mine.locks == [3, 21] and both.locks == [21] and other.locks == [5] and everyone.locks == []
+    assert d.reassign_mask_lock(14, 21) == []
