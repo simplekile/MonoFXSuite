@@ -126,6 +126,7 @@ MASK_PARM = "mask_layers"      # hidden geometry parm: per fine-scalp point P, u
 MASK_VALUE_ATTR = "mask_%d_v"  # a layer's painted value per scalp point
 MASK_COVER_ATTR = "mask_%d_a"  # its coverage there: 0 not painted, 1 painted, a dab's soft edge between
 MASK_SET_ATTR = "mask_%d"      # on SCALP_REGIONS: the blended factor of one scope set (logic.mask_scope_sets)
+MASK_ABS_ATTR = "mask_abs_%d"  # ... and its absolute coverage: where a "= D" layer decided the density
 MASK_VALUE_MAX = 8.0           # a painted value is kept inside 0..this (8x the automatic density)
 BRUSH_RADIUS_CM = 1.0
 BRUSH_SOFT = 0.5               # share of the radius over which a dab fades out

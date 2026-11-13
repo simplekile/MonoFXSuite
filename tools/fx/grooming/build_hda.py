@@ -559,15 +559,23 @@ if (find(i[]@lock_owners, id) < 0) { removeprim(0, @primnum, 1); return; }
 int k = prim(1, "mask_set", 0);
 string nm = sprintf("mask_%d", k);
 int has = k >= 0 && haspointattrib(0, nm);
+// ... and its absolute coverage (mask_abs_<k>): where a "= D strands / cm2" layer decided the density, 0
+// elsewhere. There the artist painted the final density: the roots of that skin stay where they are
+// scattered (region_join) and none of the roots the tool relocates land on it (root_pick, root_place)
+string an = sprintf("mask_abs_%d", k);
+int hasa = k >= 0 && haspointattrib(0, an);
 int pp[] = primpoints(0, @primnum);
-float s = 0;
+float s = 0, sa = 0;
 foreach (int p; pp) {
-    float m = 1;
+    float m = 1, ca = 0;
     if (has) m = point(0, nm, p);
-    s += m;
+    if (hasa) ca = point(0, an, p);
+    s += m; sa += ca;
     setpointattrib(0, "mask", p, m);
+    setpointattrib(0, "mask_abs", p, ca);
 }
 f@mask_prim = len(pp) > 0 ? s / len(pp) : 1.0;
+f@mask_abs_prim = len(pp) > 0 ? sa / len(pp) : 0.0;
 """
 
 VEX_REGION_MESH = """// per scalp prim of SCALP_FINE: how far each lock's hair mesh (same group) lies from its centroid,
@@ -626,13 +634,15 @@ v@rc = c; v@ra = ra; v@rb = rb; f@rea = ea; f@reb = eb;
 // (Helen's fringe) and long locks that widen far from the root (hair_back: the first quarter gave
 // 800 strands to a 12 cm wide ribbon, see-through) get as many strands as their mesh shows.
 float dens = prim(1, "density", 0);
-float area = 0, amask = 0;
+float area = 0, amask = 0, aabs = 0;
 for (int pr = 0; pr < nprimitives(0); pr++) {
     float a = prim(0, "area_cm2", pr);   // typed: inside an int expression prim() would return int
     int sh = prim(0, "share", pr);
     float mk = prim(0, "mask_prim", pr);
+    float ca = prim(0, "mask_abs_prim", pr);
     area += a / max(sh, 1);
     amask += a * mk / max(sh, 1);
+    aabs += a * mk * ca / max(sh, 1);
 }
 int sp[] = primpoints(1, 0);
 float w = 0, t = 0;
@@ -648,6 +658,10 @@ f@lock_density = area > 0 ? dens * max(area, section) / area : 0.0;
 // density masks: the count follows the masked area (painted 0.5 = half the strands of that skin; the
 // density attribute below spreads them), so a lock painted 0 everywhere grows nothing, floor included
 f@lock_strands = dens * max(area, section) * (area > 0 ? amask / area : 1.0);
+// skin where the density was painted outright ("= D", mask_abs) grows D x its area, without the
+// cross-section floor: the floor is the tool's own guess, and there the artist said what the density is
+if (aabs > 0 && area > 0) f@lock_strands = dens * ((amask - aabs) * max(area, section) / area + aabs);
+f@lock_dens = dens;
 i@mask_empty = area > 0 && amask <= 0;
 // the lock's start: the strands that make its first stretch are only those rooted round its root (the
 // footprint, REGION_FOOTPRINT x the widest band of the first tenth, centred on the root moved onto the
@@ -706,8 +720,9 @@ if (distance(c, detail(0, "fp_c")) <= detail(0, "fp_r")) {
 // density masks: skin painted above 1 under floating mesh keeps what the mask adds (logic.far_chance: the
 // automatic share far_w still starts the lock, the rest stays, so that skin fills to (mask - far_w) x the
 // density); the start-share estimate weighs each prim by its masked area
+// Where the density was painted outright (mask_abs) no root is moved away: that skin holds what was painted
 float mk = f@mask_prim;
-f@join_u = uj; f@join_a = a * mk; f@far_w = fw / max(mk, 1.0);
+f@join_u = uj; f@join_a = a * mk; f@far_w = fw / max(mk, 1.0) * (1 - f@mask_abs_prim);
 """ % {"umax": JOIN_MAX_U, "soft": config.ROOT_FAR_SOFT}
 
 VEX_REGION_START = """// start_x extra strands (start extras), rooted round the lock's root ON TOP of its count, as many as its
@@ -769,6 +784,11 @@ float s = 0;
 foreach (int pr; prs) { int sh = prim(0, "share", pr); s += sh; }
 s = len(prs) > 0 ? s / len(prs) : 1.0;
 f@density = detail(0, "lock_density") / max(s, 1.0) * f@mask;   // x the density mask (1 without one)
+// where the density was painted outright: the lock's own density x the mask (= D), not the floored one
+if (f@mask_abs > 0) {
+    float ld = detail(0, "lock_density"), d0 = detail(0, "lock_dens");
+    f@density = lerp(ld, d0, f@mask_abs) / max(s, 1.0) * f@mask;
+}
 """
 
 VEX_SURFACE_PARAMS = """// every hair-mesh point: where it sits along its lock (pu, the spine's parameter) and its offset
@@ -1007,6 +1027,9 @@ if (m > 0) {
             vector q = primuv(1, "P", rp, ruv), qn = prim_normal(1, rp, ruv), off = c - q;
             if (length(off - dot(off, qn) * qn) < 0.5 * spc) {
                 float mq = primuv(1, "mask", rp, ruv);
+                float aq = primuv(1, "mask_abs", rp, ruv);
+                // skin whose density was painted outright takes none of these roots
+                if (aq > 0) mq = min(mq, 1.0) * (1 - aq);
                 append(sp, q); append(spm, mq);
             }
         }
@@ -1074,6 +1097,8 @@ if (extra) {
     // density masks: a whorl root is kept by the chance of the mask where it lands (the crown painted down)
     if (atw && rp >= 0) {
         float mq = primuv(1, "mask", rp, ruv);
+        float aq = primuv(1, "mask_abs", rp, ruv);
+        if (aq > 0) mq = min(mq, 1.0) * (1 - aq);     // painted outright: no whorl root lands there
         int wl = prim(2, "lock_id", 0);
         if (rand(set(pr, 9.3, wl)) >= mq) { removeprim(0, pr, 1); return; }
     }

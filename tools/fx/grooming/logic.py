@@ -632,28 +632,52 @@ def mask_layer_value(layer, density: float | None = None):
     return layer.value
 
 
-def mask_compose(rows, start=1.0):
-    """The final factor through a stack with folders. `rows`, bottom first: (layer, value, mask); `layer`
-    has id, on, mode, opacity, kind, parent; `value` and `mask` are numbers or arrays per scalp point (a
-    folder's value is not read). A layer blends as `mask_over` with its mask as the coverage. A folder
-    blends what its layers make of the factor below it, through its own mask and opacity:
-    m + (inside - m) x mask x opacity, as Substance Painter's folders do. Layers and folders that are off
-    are skipped; a layer whose parent is not a folder of `rows` counts as outside any. Never below 0."""
+def mask_is_absolute(layer) -> bool:
+    """The layer says what the density IS where its mask is white: a fill layer in strands / cm2 with the
+    mode replace ("= 80"). Under it the tool's own moving of roots is off (`mask_compose_abs`)."""
+    return (getattr(layer, "kind", "fill") == "fill" and layer.mode == "replace"
+            and getattr(layer, "unit", "factor") == "density")
+
+
+def mask_compose_abs(rows, start=1.0):
+    """(the final factor, the absolute coverage) through a stack with folders. `rows`, bottom first:
+    (layer, value, mask); `layer` has id, on, mode, opacity, kind, parent; `value` and `mask` are numbers
+    or arrays per scalp point (a folder's value is not read). A layer blends as `mask_over` with its mask
+    as the coverage. A folder blends what its layers make of the factor below it, through its own mask and
+    opacity: m + (inside - m) x mask x opacity, as Substance Painter's folders do. Layers and folders that
+    are off are skipped; a layer whose parent is not a folder of `rows` counts as outside any. The factor
+    is never below 0.
+
+    The absolute coverage (0..1) is how far an absolute layer (`mask_is_absolute`) decided the density
+    there: it grows by that layer's mask x opacity, and layers above it (x 0.7, + 40) leave it as it is.
+    Where it is 1 the artist painted the final density, so the groom's roots must lie there at that
+    density: the network leaves the roots of that skin where they are scattered and puts none of the
+    roots it relocates (lock starts, whorls) on it."""
     folders = {layer.id for layer, _v, _a in rows if getattr(layer, "kind", "fill") == "folder"}
 
-    def run(m, parent):
+    def run(m, c, parent):
         for layer, value, mask in rows:
             inside = layer.parent if getattr(layer, "parent", None) in folders else None
             if inside != parent or not layer.on:
                 continue
             if getattr(layer, "kind", "fill") == "folder":
                 if parent is None:
-                    m = m + (run(m, layer.id) - m) * (mask * layer.opacity)
+                    mi, ci = run(m, c, layer.id)
+                    e = mask * layer.opacity
+                    m, c = m + (mi - m) * e, c + (ci - c) * e
             else:
                 m = mask_over(m, value, mask, layer.mode, layer.opacity)
-        return m
+                if mask_is_absolute(layer):
+                    c = c + (1.0 - c) * (mask * layer.opacity)
+        return m, c
 
-    return _higher(run(start, None), 0.0)
+    m, c = run(start, start * 0.0, None)
+    return _higher(m, 0.0), c
+
+
+def mask_compose(rows, start=1.0):
+    """The final factor through a stack with folders (`mask_compose_abs` without the absolute coverage)."""
+    return mask_compose_abs(rows, start)[0]
 
 
 def mask_scope_keys(masks: Sequence["object"], locks: Sequence[tuple]
@@ -768,18 +792,6 @@ def density_color(density: float, reference: float) -> tuple[float, float, float
     i = max(k for k in range(len(DENSITY_STOPS) - 1) if DENSITY_STOPS[k] <= t)
     f = (t - DENSITY_STOPS[i]) / (DENSITY_STOPS[i + 1] - DENSITY_STOPS[i])
     return tuple(x + (y - x) * f for x, y in zip(DENSITY_RAMP[i], DENSITY_RAMP[i + 1]))   # type: ignore[return-value]
-
-
-# In the density view the skin the painted layer's mask covers is tinted, so the artist sees where the layer
-# applies even where the density does not move (skin with no roots stays dark whatever it is multiplied by)
-MASK_TINT = (1.00, 0.25, 0.80)
-MASK_TINT_STRENGTH = 0.55
-
-
-def mask_tint(color, mask: float):
-    """`color` mixed towards MASK_TINT by the mask there x MASK_TINT_STRENGTH."""
-    k = min(max(mask, 0.0), 1.0) * MASK_TINT_STRENGTH
-    return tuple(c + (t - c) * k for c, t in zip(color, MASK_TINT))
 
 
 def layer_color(value: float, coverage: float) -> tuple[float, float, float]:

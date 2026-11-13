@@ -780,3 +780,30 @@ def test_scope_keys_keep_locks_of_another_density_apart_only_when_a_layer_is_in_
     folder.on = False
     assert logic.mask_scope_keys([folder, child], locks) == ([], {1: -1, 2: -1, 3: -1})
     assert logic.mask_scope_sets([factor], [(1, "g"), (2, "g")]) == ([(0,)], {1: 0, 2: 0})
+
+
+def test_absolute_coverage_is_where_a_density_layer_decided_the_density():
+    set80 = _layer(0, mode="replace", value=80.0, unit="density")
+    assert logic.mask_is_absolute(set80)
+    assert not logic.mask_is_absolute(_layer(1, mode="multiply", value=0.5))
+    assert not logic.mask_is_absolute(_layer(2, mode="add", value=40.0, unit="density"))
+    assert not logic.mask_is_absolute(_layer(3, mode="replace", value=1.0))            # a factor: the automatic density
+    assert not logic.mask_is_absolute(_layer(4, mode="replace", value=80.0, unit="density", kind="paint"))
+    m, c = logic.mask_compose_abs([(set80, 0.5, 1.0)])
+    assert (m, c) == (0.5, 1.0)
+    m, c = logic.mask_compose_abs([(set80, 0.5, 0.25)])                               # a soft edge of the mask
+    assert m == pytest.approx(0.875) and c == pytest.approx(0.25)
+    # a layer above keeps what was decided below it, and still changes the number
+    less = _layer(5, mode="multiply", value=0.5)
+    m, c = logic.mask_compose_abs([(set80, 0.5, 1.0), (less, 0.5, 1.0)])
+    assert m == pytest.approx(0.25) and c == 1.0
+    assert logic.mask_compose_abs([(less, 0.5, 1.0)]) == (0.5, 0.0)
+    # in a folder: the folder's mask scales it
+    folder = _layer(9, kind="folder")
+    inside = _layer(6, mode="replace", value=80.0, unit="density", parent=9)
+    m, c = logic.mask_compose_abs([(folder, None, 0.5), (inside, 0.5, 1.0)])
+    assert m == pytest.approx(0.75) and c == pytest.approx(0.5)
+    np = pytest.importorskip("numpy")
+    m, c = logic.mask_compose_abs([(set80, 0.5, np.array([1.0, 0.0], np.float32))], np.ones(2, np.float32))
+    assert m == pytest.approx([0.5, 1.0]) and c == pytest.approx([1.0, 0.0])
+    assert logic.mask_compose([(set80, 0.5, 1.0)]) == 0.5

@@ -463,8 +463,7 @@ def s1c_views():
         base, reference, point_area = ses.base_density()
         dens = ses.density()
         pick = np.linspace(0, len(dens) - 1, 300).astype(int)
-        mask = ses.md.mask(ses.layer())
-        want = np.array([logic.mask_tint(logic.density_color(float(dens[i]), reference), float(mask[i])) for i in pick])
+        want = np.array([logic.density_color(float(dens[i]), reference) for i in pick])
         err = float(np.abs(cds["density"][pick] - want).max())
         strands = S["G"].strands()
         counted = float((ses.actual * point_area).sum()) if ses.actual is not None else 0.0
@@ -580,6 +579,32 @@ def s1d_fill_layer():
               "(0.35 - 0.7: relocated roots included); the mask view is white on dark; a black stroke only "
               "lowers the mask; undo takes it off", evidence=shots["mask"])
         ga().mask_remove(node, lid)
+        # ---- "= 300 strands / cm2": the map shows that colour where it is painted, and the hair has it
+        S["abs_layer"] = ga().mask_add(node, "set 300", mode="replace", value=300.0, unit="density")
+        ga().paint_enter(node, S["abs_layer"])
+        later(500, lambda: drag(line(-120, 30, 120, n=30), after_abs))
+
+    def after_abs():
+        lid2 = S["abs_layer"]
+        st = state_mod().running()
+        ses = st.session
+        v, a = lib.mask_arrays(node, lid2)
+        core = a >= 1.0
+        cd = np.frombuffer(st.geo.pointFloatAttribValuesAsString("Cd"), np.float32).reshape(-1, 3)
+        base, reference, _area = ses.base_density()
+        want = np.array(logic.density_color(300.0, reference))
+        shown = float(np.abs(cd[core] - want).max()) if core.any() else 9.0
+        counted = float(np.median(ses.actual[core])) if ses.actual is not None and core.any() else 0.0
+        shots["abs"] = shot("s1d_3_set_300_density_view")
+        C.add("gui_painted_density_shows_as_painted",
+              int(core.sum()) > 50 and shown < 1e-3 and ses.whole and 0.6 < counted / 300.0 < 1.5,
+              {"layer": "replace, 300 strands / cm2", "points_painted_white": int(core.sum()),
+               "map_colour_error_against_300": shown, "roots_counted_there_median_per_cm2": round(counted, 1),
+               "counted_over_painted": round(counted / 300.0, 3), "groom_counted_whole": bool(ses.whole), "shot": shots["abs"]},
+              "where '= 300' is painted white the density map is the colour of 300 outright, and the roots counted "
+              "from the cooked hair there are 300 / cm2 (median within 0.6 - 1.5: the count is over 1.5 cm boxes)",
+              evidence=shots["abs"])
+        ga().mask_remove(node, lid2)
         ga().mask_set(node, paint_layer, on=True)
         ga().paint_enter(node, paint_layer)
         later(600, lambda: calibrate(S["next"]))

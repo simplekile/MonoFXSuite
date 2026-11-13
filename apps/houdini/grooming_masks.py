@@ -179,11 +179,7 @@ def view_colours(view: str, factor, value=None, coverage=None, density=None, ref
         t = np.clip(np.asarray(density, np.float32) / max(reference, 1e-9), 0.0, stops[-1])
         i = np.clip(np.searchsorted(stops, t, side="right") - 1, 0, len(stops) - 2)
         f = ((t - stops[i]) / (stops[i + 1] - stops[i]))[:, None]
-        out = ramp[i] + (ramp[i + 1] - ramp[i]) * f
-        if coverage is not None:      # where the painted layer's mask is: tinted (logic.mask_tint)
-            k = np.clip(np.asarray(coverage, np.float32), 0.0, 1.0)[:, None] * logic.MASK_TINT_STRENGTH
-            out = out + (np.array(logic.MASK_TINT, np.float32) - out) * k
-        return out.astype(np.float32)
+        return (ramp[i] + (ramp[i + 1] - ramp[i]) * f).astype(np.float32)
     return by_factor(factor).astype(np.float32)
 
 
@@ -262,9 +258,13 @@ class MaskData:
         return (np.ones if layer.kind == "folder" else np.zeros)(self.n, np.float32)
 
     def factor(self, layers: Iterable[model.MaskLayer], density: float | None = None):
-        """The final factor per point through `layers` (bottom first, folders with their layers;
-        `logic.mask_compose`). `density`: the density of the lock it is for, which a fill layer in
-        strands / cm2 is divided by (`logic.mask_layer_value`)."""
+        """The final factor per point through `layers` (`factor_abs` without the absolute coverage)."""
+        return self.factor_abs(layers, density)[0]
+
+    def factor_abs(self, layers: Iterable[model.MaskLayer], density: float | None = None):
+        """(the final factor, the absolute coverage) per point through `layers` (bottom first, folders with
+        their layers; `logic.mask_compose_abs`). `density`: the density of the lock it is for, which a fill
+        layer in strands / cm2 is divided by (`logic.mask_layer_value`)."""
         np = _np()
         rows = []
         for m in layers:
@@ -273,7 +273,8 @@ class MaskData:
             else:
                 value = logic.mask_layer_value(m, density)
             rows.append((m, value, self.mask(m)))
-        return np.asarray(logic.mask_compose(rows, np.ones(self.n, np.float32)), dtype=np.float32)
+        f, c = logic.mask_compose_abs(rows, np.ones(self.n, np.float32))
+        return np.asarray(f, dtype=np.float32), np.clip(np.asarray(c, dtype=np.float32), 0.0, 1.0)
 
     def dab(self, layer_id: int, idx, weight, value: float, erase: bool = False, kind: str = "paint",
             level: float = 1.0) -> None:
@@ -573,14 +574,15 @@ def cook_mask_read(sop) -> None:
     sets, set_of = logic.mask_scope_keys(
         data.masks, [(lk.id, lk.group, data.resolve(lk.id)["density"]) for lk in data.locks])
     by_id = {m.id: m for m in data.masks}
-    factors = []
+    factors, covers = [], []
     for k, (ids, density) in enumerate(sets):
-        f = md.factor([by_id[i] for i in ids], density)
+        f, c = md.factor_abs([by_id[i] for i in ids], density)
         factors.append(f)
-        name = config.MASK_SET_ATTR % k
-        if geo.findPointAttrib(name) is None:
-            geo.addAttrib(hou.attribType.Point, name, 1.0)
-        geo.setPointFloatAttribValuesFromString(name, f.tobytes())
+        covers.append(c)
+        for name, arr, default in ((config.MASK_SET_ATTR % k, f, 1.0), (config.MASK_ABS_ATTR % k, c, 0.0)):
+            if geo.findPointAttrib(name) is None:
+                geo.addAttrib(hou.attribType.Point, name, default)
+            geo.setPointFloatAttribValuesFromString(name, arr.tobytes())
     tables = _region_tables(top, geo)
     regions = tables["points"]
     top_id = max([lk.id for lk in data.locks] + [-1])
@@ -590,7 +592,8 @@ def cook_mask_read(sop) -> None:
         if k < 0 or lock_id < 0:
             continue
         idx = regions.get(lock_id)
-        digest = values_digest(factors[k][idx]) if idx is not None else ""
+        # the factor and the absolute coverage on the lock's skin (1 + coverage: all 1 = nothing painted)
+        digest = values_digest(np.concatenate([factors[k][idx], 1.0 + covers[k][idx]])) if idx is not None else ""
         if digest:      # a lock whose skin is all 1 reads no mask at all: the same hair, the same key
             set_list[lock_id] = k
             hash_list[lock_id] = digest
@@ -680,10 +683,18 @@ def display_roots(node, cook: bool = True):
     if rest is not None and cook:
         rest.cook()                       # grows what the display does not hold in full
     full = rows("groom_keys", cooked=cook) if rest is not None else {}
-    if full is None:                      # output 1's keys are out of date and we may not cook: only the display's
-        full, whole = {}, False
-    else:
-        whole = True
+    whole = True
+    if full is None:
+        # output 1's keys are out of date and we may not cook: the display's hair is the whole groom when
+        # it grows every lock that is not excluded at full density (Display Hair, nothing hidden)
+        full = {}
+        keyed = node.node("lock_keys").geometry() if node.node("lock_keys") is not None else None
+        if keyed is None or keyed.findPrimAttrib(config.ATTR_LOCK_ID) is None:
+            whole = False
+        else:
+            ids = keyed.primIntAttribValues(config.ATTR_LOCK_ID)
+            out_of = keyed.primIntAttribValues("excluded") if keyed.findPrimAttrib("excluded") is not None else [0] * len(ids)
+            whole = all(i in shown for i, ex in zip(ids, out_of) if i >= 0 and not ex)
     out = []
     wanted = {k for k, v in full.items() if v[2]} or set(shown)
     for lock_id in wanted:
@@ -810,17 +821,20 @@ class PaintSession:
         return True
 
     def density(self):
-        """Strands / cm2 per scalp point for the "density" view: the roots as counted (`measure`), times
-        how far the factor has moved since (a stroke in progress shows at once what it asks of the hair it
-        is over); the density asked where no roots are known or the factor was 0."""
+        """Strands / cm2 per scalp point for the "density" view, the final density map: the roots as counted
+        (`measure`), times how far the factor has moved since (a stroke in progress shows at once what it
+        asks of the hair it is over); the density asked where no roots are known, the factor was 0, or an
+        absolute layer ("= D") covers the skin: there the map is D outright."""
         np = _np()
-        base, _reference, _area = self.base_density()
-        factor = self.factor()
+        base, reference, _area = self.base_density()
+        factor, cover = self.md.factor_abs(layers_for_view(self.data.masks, self.layer_id), reference)
         asked = base * factor
         if getattr(self, "actual", None) is None:
             return asked
         was = self.actual_factor
-        return np.where(was > 1e-6, self.actual * factor / np.maximum(was, 1e-6), asked).astype(np.float32)
+        moved = np.where(was > 1e-6, self.actual * factor / np.maximum(was, 1e-6), asked)
+        # where a "= D" layer covers, the density is D itself (the roots stay where they are scattered)
+        return (moved + (asked - moved) * cover).astype(np.float32)
 
     def colours(self, view: str):
         """The scalp's colours for a view (config.MASK_VIEWS). "layer": a paint layer shows its values where
@@ -828,7 +842,7 @@ class PaintSession:
         density = self.density() if view == "density" else None
         reference = self.base_density()[1] if view == "density" else 1.0
         layer = self.layer()
-        mask = self.md.mask(layer) if layer is not None else None
+        mask = self.md.mask(layer) if layer is not None and view == "layer" else None
         value = self.md.v.get(self.layer_id) if self.kind == "paint" else None
         return view_colours(view, self.factor(), value, mask, density, reference)
 

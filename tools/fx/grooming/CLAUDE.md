@@ -529,3 +529,12 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - The acceptance checks dw* / ns* paint "paint" layers; fl_* and `gui_fill_layer_brush_paints_its_mask`
     cover fill layers, masks and folders. Run timing checks with no other Houdini cooking: with two GUI
     sessions open and pytest running, stroke cooks were 1.5x slower and one missed its limit.
+  - "= D" is absolute (`logic.mask_is_absolute`: fill, replace, density unit): the coverage it leaves
+    (`mask_abs_<k>` -> point `mask_abs`, prim `mask_abs_prim` in the loop) switches the tool's own root moves
+    off on that skin, so the painted density is the final one (0 -> 110, 3,304 -> 111 for a paint of 120).
+    Every VEX use is guarded (`> 0`) or multiplies by (1 - coverage), so no layer is still v0.1 bit for bit.
+    The density view is the final map only (the user rejected a tint for the mask): `PaintSession.density`
+    = counted roots x factor change, and D itself under absolute coverage.
+  - Timing checks are absolute limits: with Blender and Resolve running the whole machine was 1.45x slower
+    (v0.1's own full cook 14.4 s instead of 9.7) and `dw3_stroke_speed` missed one stroke. Time v0.1 right
+    before (`--time-only`) and read stroke limits only from a quiet run.

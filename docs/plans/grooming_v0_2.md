@@ -296,6 +296,19 @@ The first build painted a value per point, so the artist had to think "paint 0.5
   opacity 0.5 x 0.75; the density view's roots add up to 119,939 for 119,197 strands.
 - Also from the try: Paint records no undo step of its own, and says so on the status bar when the layer
   being painted is undone (the user undid past the layer's Add and the scalp vanished without a word).
+- **The painted density is the final density** (the user, 2026-11-13: "the artist only needs to know what the
+  final density map looks like"; no tint over the map, the painted colour is the result). A fill layer
+  "= D strands / cm2" (mode replace, unit density: `logic.mask_is_absolute`) has an absolute coverage
+  (`logic.mask_compose_abs`, point `mask_abs_<k>`, in the lock's digest). Where it covers, the network does
+  not move roots away from the skin (`region_join`: far_w x (1 - coverage)), lays none of the roots it
+  relocates on it (`root_pick`, `root_place`: chance x (1 - coverage)) and counts that skin at D without the
+  cross-section floor (`region_frame`, `region_density`). The density view shows D there outright. This
+  answers "Decided in the build" 1 and 5 for absolute layers: Helen, painted 120 / cm2: skin under floating
+  mesh 0 -> 110, the crown 3,304 -> 111, ordinary skin 295 -> 124 (`fl_painted_density_is_the_final_density`).
+  Factor layers (x, +) keep the first rules (they change what the tool does, relocation included).
+- A stroke in Guides display grows no hair: the density view goes on from the last count by the factor's
+  change (0.04 s a stroke); Display Hair counts the real roots after each stroke; choosing the view by hand
+  (or the panel's refresh) counts again.
 - Still open: the result is not shown as hair while the button is down (the density view moves, the hair
   cooks on release); a pen's pressure, radius by drag, mirror; the layer's number painted above 1 does not
   multiply relocated roots (see "Decided in the build" 5).

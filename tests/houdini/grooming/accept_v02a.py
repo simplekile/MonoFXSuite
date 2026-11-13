@@ -745,6 +745,41 @@ def main() -> None:
         clear_layers()
         cook_both()
 
+    # ------------------------------------------------------------------ "= D": the painted density is the final one
+    def absolute():
+        s = G.scalp()
+        D = 120.0
+        roots0 = G.roots()
+        crown = np.asarray(S["crown"]["centre_cm"])
+        places = [("skin under floating mesh", S["thin_patch"]),
+                  ("crown (whorl, lock starts)", np.nonzero(((s["cen_cm"] - crown) ** 2).sum(1) <= 2.0 ** 2)[0]),
+                  ("skin with roots on it", S["zone"]["b"])]
+        rows, ok = [], True
+        for name, prims in places:
+            lid = ga.mask_add(node, name, mode="replace", value=D, unit="density")
+            G.paint_prims(lid, prims, level=1.0)
+            d, r = cook_both()
+            v, a = lib.mask_arrays(node, lid)
+            lo = np.full(len(s["area"]), np.inf)
+            np.minimum.at(lo, s["vprim"], a[s["vpoint"]])
+            inner = G.inner_prims(lo >= 1.0, 0.3)
+            area = float(s["area"][inner].sum())
+            before, _ = G.roots_on(inner, roots0)
+            after, _ = G.roots_on(inner)
+            got = after / max(area, 1e-9)
+            rows.append({"where": name, "area_cm2": round(area, 2), "before_per_cm2": round(before / max(area, 1e-9), 1),
+                         "after_per_cm2": round(got, 1), "painted": D, "after_over_painted": round(got / D, 3),
+                         "locks_recooked": len(d["locks"]), "cook_s": round(d["s"], 2)})
+            ok &= 0.8 <= got / D <= 1.25 and area > 0.5
+            ga.mask_remove(node, lid)
+        d, r = cook_both()
+        C.add("fl_painted_density_is_the_final_density", ok and r["strands"] == S["base_strands"],
+              {"places": rows, "strands_after_removing_the_layers": r["strands"]},
+              "a fill layer '= 120 strands / cm2' with a white mask leaves 120 roots / cm2 (all locks, 0.8 - 1.25) "
+              "on skin that had none (floating mesh), on the crown (thousands) and on ordinary skin",
+              note="under such a layer the tool does not move roots away or lay relocated roots (lock starts, "
+                   "whorls) on that skin, and counts without the cross-section floor")
+
     # ------------------------------------------------------------------ rung 6 / dw5: persistence
     def persistence():
         nonlocal_G = S["G"]
@@ -885,7 +920,8 @@ def main() -> None:
 
     for name, fn in (("no_layer", no_layer), ("zones", zones), ("strokes", strokes), ("thin_skin", thin_skin),
                      ("crown", crown), ("scope", scope), ("digest", digest), ("brush_side", brush_side),
-                     ("modes", modes), ("api", api), ("fill_layers", fill_layers), ("persistence", persistence),
+                     ("modes", modes), ("api", api), ("fill_layers", fill_layers), ("absolute", absolute),
+                     ("persistence", persistence),
                      ("uv_transfer", uv_transfer),
                      ("full_cook", full_cook)):
         C.log("==", name)

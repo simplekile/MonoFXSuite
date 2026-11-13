@@ -444,12 +444,8 @@ def test_view_colours_factor_density_and_one_layer_alone():
     d = gm.view_colours("density", factor, density=dens, reference=150.0)
     for i in range(4):
         assert d[i] == pytest.approx(logic.density_color(float(dens[i]), 150.0), abs=1e-5)
-    tinted = gm.view_colours("density", factor, coverage=cover, density=dens, reference=150.0)
-    assert tinted[0] == pytest.approx(d[0], abs=1e-6)                   # mask 0: the density's own colour
-    for i in (1, 3):
-        want = logic.mask_tint(logic.density_color(float(dens[i]), 150.0), float(cover[i]))
-        assert tinted[i] == pytest.approx(want, abs=1e-5)
-    assert abs(tinted[1] - d[1]).max() > 0.3                            # painted skin with no roots still shows
+    # the density view is the final density map and nothing over it: the mask does not change a colour
+    assert gm.view_colours("density", factor, coverage=cover, density=dens, reference=150.0) == pytest.approx(d)
     plain = gm.view_colours("roots", factor)
     assert plain.shape == (4, 3) and np.allclose(plain, plain[0])       # the dots carry the roots view
     one = gm.view_colours("layer", factor, value, cover)
@@ -542,3 +538,20 @@ def test_folder_mask_starts_white_and_gates_its_layers():
     assert [m.id for m in shown] == [9, 1]
     white = gm.view_colours("layer", np.ones(3, np.float32), None, np.array([1.0, 0.0, 0.5], np.float32))
     assert white[0] == pytest.approx([1, 1, 1]) and white[1] == pytest.approx(logic.LAYER_UNPAINTED)
+
+
+def test_absolute_layer_gives_the_coverage_the_network_reads():
+    gm, np, P, N, nb = _grid_brush()
+    from tools.fx.grooming.model import MaskLayer
+    md = gm.MaskData(P)
+    set80 = MaskLayer(0, "set", mode="replace", value=80.0, unit="density")
+    less = MaskLayer(1, "less", mode="multiply", value=0.5)
+    md.ensure(0, "fill"); md.ensure(1, "fill")
+    md.a[0][:40] = 1.0
+    md.a[1][20:60] = 1.0
+    f, c = md.factor_abs([set80, less], 160.0)
+    assert f[0] == pytest.approx(0.5) and c[0] == 1.0             # = 80 on a lock set to 160
+    assert f[30] == pytest.approx(0.25) and c[30] == 1.0          # ... x 0.5 on top: still decided
+    assert f[50] == pytest.approx(0.5) and c[50] == 0.0           # only the factor layer: not decided
+    assert f[70] == 1.0 and c[70] == 0.0
+    assert md.factor([set80, less], 160.0) == pytest.approx(f)
