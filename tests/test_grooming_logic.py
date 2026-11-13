@@ -682,14 +682,17 @@ def test_far_chance_moves_the_automatic_share_and_keeps_what_the_mask_adds():
     assert 2.0 * (1 - logic.far_chance(0.8, 2.0)) == pytest.approx(2.0 - 0.8)
 
 
-def test_density_color_runs_from_dark_to_white_at_twice_the_reference():
+def test_density_color_is_fine_round_the_set_density_and_reaches_the_crown():
     assert logic.density_color(0.0, 150.0) == pytest.approx(logic.DENSITY_RAMP[0])
     assert logic.density_color(150.0, 150.0) == pytest.approx(logic.DENSITY_RAMP[2])
-    assert logic.density_color(300.0, 150.0) == pytest.approx(logic.DENSITY_RAMP[4])
-    assert logic.density_color(9999.0, 150.0) == pytest.approx(logic.DENSITY_RAMP[4])
+    assert logic.density_color(300.0, 150.0) == pytest.approx(logic.DENSITY_RAMP[3])
+    assert logic.density_color(150.0 * 48, 150.0) == pytest.approx(logic.DENSITY_RAMP[5])
+    assert logic.density_color(1e9, 150.0) == pytest.approx(logic.DENSITY_RAMP[5])
     mid = logic.density_color(37.5, 150.0)                      # a quarter: halfway between the first two
     assert mid == pytest.approx([(a + b) / 2 for a, b in zip(logic.DENSITY_RAMP[0], logic.DENSITY_RAMP[1])])
-    lum = [sum(logic.density_color(d, 100.0)) for d in (0, 25, 50, 100, 150, 200)]
+    # Helen's crown before and after it is painted down (7,059 and 5,104 / cm2) are two colours
+    assert logic.density_color(7059.0, 150.0) != pytest.approx(logic.density_color(5104.0, 150.0), abs=0.02)
+    lum = [sum(logic.density_color(d, 100.0)) for d in (0, 25, 50, 100, 200, 800, 4800)]
     assert lum == sorted(lum)                                   # brighter means denser, all the way
 
 
@@ -699,4 +702,4 @@ def test_layer_color_shows_one_mask_alone():
     assert logic.layer_color(2.0, 1.0) == pytest.approx(logic.MASK_COLOR_MORE)
     half = logic.layer_color(2.0, 0.5)                                              # a dab's soft edge
     assert half == pytest.approx([(u + c) / 2 for u, c in zip(logic.LAYER_UNPAINTED, logic.MASK_COLOR_MORE)])
-    assert set(config.MASK_VIEWS) == {"factor", "density", "layer"}
+    assert set(config.MASK_VIEWS) == {"density", "factor", "layer", "roots"}

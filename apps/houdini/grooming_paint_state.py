@@ -129,7 +129,7 @@ class MaskPaint(object):
                                          params={"color1": hou.Vector4(1.0, 1.0, 1.0, 1.0), "radius": 2.0,
                                                  "style": hou.drawableGeometryPointStyle.LinearCircle})
         self.dots.setTransform(self.xform)
-        self.reroot()
+        self.reroot(cook=False)       # entering never cooks: what the cache holds, or the density asked
         self.recolour()
         node.addEventCallback((hou.nodeEventType.ParmTupleChanged,), self._parm_changed)
         STATS["enter_s"] = time.perf_counter() - t0
@@ -184,10 +184,10 @@ class MaskPaint(object):
                 hou.ui.setStatusMessage("MONO Grooming: Paint ended, the layer being painted is gone "
                                         "(undone or deleted); redo brings it back", hou.severityType.ImportantMessage)
                 return
-            self.recolour()
-            if self.node.isDisplayFlagSet() and gm.BRUSH["roots"]:
+            if self.node.isDisplayFlagSet():
                 self.node.cook()               # an undo from outside: the display's hair, then its roots
-                self.reroot()
+            self.reroot()
+            self.recolour()
         except Exception:
             _note(traceback.format_exc())
 
@@ -196,16 +196,17 @@ class MaskPaint(object):
         # a fresh copy: handed the same hou.Geometry again the drawable keeps the old colours
         self.draw.setGeometry(hou.Geometry(self.geo))
 
-    def reroot(self) -> None:
-        """The root dots again, from what the display has cooked (after a stroke's cook, an undo, entering)."""
+    def reroot(self, cook: bool | None = None) -> None:
+        """Count the groom's roots again for the "density" and "roots" views (after a stroke's cook, an
+        undo, entering, a change of view) and show the dots in the "roots" view. `cook` None: grow what is
+        missing only when the whole groom was counted before (then a stroke's locks are all that miss)."""
         dots = getattr(self, "dots", None)
-        if dots is None or self.node is None:
+        if dots is None or self.node is None or self.session is None:
             return
-        if not gm.BRUSH["roots"]:
-            self.root_count = 0
-            dots.show(False)
-            return
-        roots = gm.display_roots(self.node)
+        view = gm.BRUSH["view"]
+        if view in ("density", "roots"):
+            self.session.measure(self.session.whole if cook is None else cook)
+        roots = self.session.roots if view == "roots" else ()
         self.root_count = int(len(roots))
         geo = hou.Geometry()
         if len(roots):
@@ -219,8 +220,9 @@ class MaskPaint(object):
         if self.draw is not None:
             self.draw.setXray(bool(gm.BRUSH["xray"]))
             if self.session is not None and not self.down:
-                self.recolour()                 # the view may have changed
-                self.reroot()
+                # the view may have changed; one chosen by hand may grow the hair it needs to count
+                self.reroot(cook=True if gm.BRUSH.pop("count_roots", False) else None)
+                self.recolour()
             self.scene_viewer.curViewport().draw()
 
     # ---- drawing and input ----
@@ -309,7 +311,10 @@ class MaskPaint(object):
             except hou.Error:
                 pass                           # a cook error stays on the node
             c["cook_s"] = time.perf_counter() - t
+            t = time.perf_counter()
             self.reroot()
+            self.recolour()
+            c["count_s"] = time.perf_counter() - t
         hm = c.pop("handler_ms")
         c["drag_s"] = t - c.pop("t0")
         c["handler_ms_median"] = float(sorted(hm)[len(hm) // 2]) if hm else 0.0

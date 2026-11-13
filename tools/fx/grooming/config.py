@@ -127,8 +127,12 @@ BRUSH_VALUE = 0.0
 BRUSH_FACING_DEG = 75.0
 # What the scalp shows while painting (set_brush(view=...)); decided with the user, 2026-11-13 (Substance
 # Painter's way: the final result, or one mask alone by Alt+click on it):
+#   "density" the result: roots / cm2 as the groom has them (counted from the cooked hair, so relocated
+#             roots are in it); while a stroke is down, that x the change of the factor; before any hair
+#             is known, the density asked (the automatic density x the factor)
 #   "factor"  the final factor on the automatic density: grey 1, blue towards 0, red towards 2+
-#   "density" the final density asked there, strands / cm2 (the automatic density x the factor)
-#   "layer"   the painted layer alone: its value where it has coverage, dark where it has none
-MASK_VIEWS: tuple[str, ...] = ("factor", "density", "layer")
+#   "layer"   the painted layer's mask alone: white where it applies, dark where it does not
+#   "roots"   a dot at every root of the full groom on a plain scalp
+MASK_VIEWS: tuple[str, ...] = ("density", "factor", "layer", "roots")
+ROOT_DENSITY_CELL_CM = 0.5     # roots and skin are counted in boxes of 3 cells of this size across
 PAINT_STATE = "mono_grooming_mask_paint"   # the Python viewer state (apps/houdini/grooming_paint_state.py)

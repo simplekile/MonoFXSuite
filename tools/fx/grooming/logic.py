@@ -694,18 +694,22 @@ def far_chance(far_w: float, mask: float) -> float:
     return far_w / max(mask, 1.0)
 
 
-# density (strands / cm2) -> colour, as a share of a reference density: 0, 0.5, 1, 1.5, 2 and over
-DENSITY_RAMP = ((0.02, 0.02, 0.10), (0.10, 0.25, 0.75), (0.15, 0.70, 0.45), (0.95, 0.85, 0.20), (1.00, 1.00, 1.00))
+# density (strands / cm2) -> colour. Stops are shares of a reference density (the groom's default): the
+# ramp is fine round the set density and still tells 30 x from 50 x (Helen's crown: 5,100 against 7,000 / cm2)
+DENSITY_STOPS = (0.0, 0.5, 1.0, 2.0, 8.0, 48.0)
+DENSITY_RAMP = ((0.02, 0.02, 0.10), (0.10, 0.25, 0.75), (0.15, 0.70, 0.45), (0.85, 0.75, 0.15),
+                (1.00, 0.55, 0.35), (1.00, 1.00, 1.00))      # each stop brighter than the one before
 LAYER_UNPAINTED = (0.12, 0.12, 0.13)   # "layer" view: skin the layer does not cover
 
 
 def density_color(density: float, reference: float) -> tuple[float, float, float]:
     """Colour of the scalp in the "density" view: `density` over `reference` (the groom's default density)
-    along DENSITY_RAMP, near black at 0, green at the reference, white from twice it."""
-    t = min(max(density / max(reference, 1e-9), 0.0), 2.0) * 2.0      # 0..4 along the ramp
-    i = min(int(t), len(DENSITY_RAMP) - 2)
-    f = t - i
-    return tuple(a + (b - a) * f for a, b in zip(DENSITY_RAMP[i], DENSITY_RAMP[i + 1]))   # type: ignore[return-value]
+    along DENSITY_STOPS / DENSITY_RAMP: near black at 0, green at the reference, yellow at twice it, white
+    from 48 times it."""
+    t = min(max(density / max(reference, 1e-9), 0.0), DENSITY_STOPS[-1])
+    i = max(k for k in range(len(DENSITY_STOPS) - 1) if DENSITY_STOPS[k] <= t)
+    f = (t - DENSITY_STOPS[i]) / (DENSITY_STOPS[i + 1] - DENSITY_STOPS[i])
+    return tuple(x + (y - x) * f for x, y in zip(DENSITY_RAMP[i], DENSITY_RAMP[i + 1]))   # type: ignore[return-value]
 
 
 def layer_color(value: float, coverage: float) -> tuple[float, float, float]:

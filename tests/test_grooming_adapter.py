@@ -440,14 +440,12 @@ def test_view_colours_factor_density_and_one_layer_alone():
     assert f.shape == (4, 3) and f.dtype == np.float32
     for i, m in enumerate(factor):
         assert f[i] == pytest.approx(logic.mask_color(float(m)), abs=1e-6)
-    d = gm.view_colours("density", factor, base_density=base, reference=150.0)
+    dens = np.array([0.0, 150.0, 7059.0, 40.0], np.float32)
+    d = gm.view_colours("density", factor, density=dens, reference=150.0)
     for i in range(4):
-        assert d[i] == pytest.approx(logic.density_color(float(base[i] * factor[i]), 150.0), abs=1e-5)
-    # the same factor on skin with another automatic density is another colour: what "density" is for
-    assert not np.allclose(gm.view_colours("density", np.ones(2, np.float32), base_density=np.array([50.0, 300.0]),
-                                           reference=150.0)[0],
-                           gm.view_colours("density", np.ones(2, np.float32), base_density=np.array([50.0, 300.0]),
-                                           reference=150.0)[1])
+        assert d[i] == pytest.approx(logic.density_color(float(dens[i]), 150.0), abs=1e-5)
+    plain = gm.view_colours("roots", factor)
+    assert plain.shape == (4, 3) and np.allclose(plain, plain[0])       # the dots carry the roots view
     one = gm.view_colours("layer", factor, value, cover)
     for i in range(4):
         assert one[i] == pytest.approx(logic.layer_color(float(value[i]), float(cover[i])), abs=1e-6)
@@ -463,7 +461,26 @@ def test_strand_roots_are_each_strands_first_point():
     roots = gm.strand_roots(pts.ravel(), 4)
     assert roots.shape == (4, 3) and roots[1] == pytest.approx(pts[3]) and roots[3] == pytest.approx(pts[9])
     assert gm.strand_roots(pts.ravel(), 5) is None and gm.strand_roots(pts.ravel(), 0) is None
-    assert ga.set_brush(roots=True)["roots"] is True and ga.set_brush(roots=False)["roots"] is False
+    assert ga.set_brush(view="roots")["view"] == "roots" and ga.set_brush(view="density")["view"] == "density"
+
+
+def test_root_density_counts_roots_over_the_skin_round_each_point():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    # a flat 21 x 21 patch of skin, points 1 mm apart, each owning 0.01 cm2; 400 roots / cm2 on its left half
+    xs = np.arange(21) * 0.001
+    P = np.array([(x, 0.0, z) for z in xs for x in xs])
+    area = np.full(len(P), 0.01)
+    rng = np.random.default_rng(1)
+    roots = np.column_stack([rng.uniform(0.0, 0.010, 400 * 2 // 2), np.zeros(400), rng.uniform(0.0, 0.020, 400)])
+    d = gm.root_density(P, area, roots, cell=0.002)
+    left = d[(P[:, 0] < 0.006) & (P[:, 2] > 0.004) & (P[:, 2] < 0.016)]
+    right = d[(P[:, 0] > 0.016)]
+    assert 150 < float(np.median(left)) < 260           # 400 roots on 2 cm2 of skin: 200 / cm2
+    assert float(right.max()) == 0.0                    # no root near: nothing
+    assert d.dtype == np.float32 and d.shape == (len(P),)
+    assert gm.root_density(P, area, np.zeros((0, 3)), 0.002).max() == 0.0
+    assert gm.root_density(np.zeros((0, 3)), [], roots, 0.002).shape == (0,)
 
 
 def test_brush_settings_are_clamped_and_kept_for_the_session():

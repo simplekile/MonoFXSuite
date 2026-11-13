@@ -151,11 +151,11 @@ class ScalpBrush:
         return idx, np.sqrt(d2[idx])
 
 
-def view_colours(view: str, factor, value=None, coverage=None, base_density=None, reference: float = 1.0):
+def view_colours(view: str, factor, value=None, coverage=None, density=None, reference: float = 1.0):
     """(n, 3) float32 colours of the scalp for a view (config.MASK_VIEWS), on arrays: the rules of
     logic.mask_color / density_color / layer_color. `factor`: the final factor per point; `value`,
-    `coverage`: the painted layer's ("layer"); `base_density`: the automatic density per point, strands /
-    cm2, and `reference` the density the ramp is centred on ("density")."""
+    `coverage`: the painted layer's ("layer"); `density`: strands / cm2 per point and `reference` the
+    density the ramp is centred on ("density"); "roots" is one plain colour (the dots carry it)."""
     np = _np()
 
     def by_factor(m):
@@ -166,18 +166,57 @@ def view_colours(view: str, factor, value=None, coverage=None, base_density=None
         return one + (np.array(logic.MASK_COLOR_ZERO, np.float32) - one) * lo \
             + (np.array(logic.MASK_COLOR_MORE, np.float32) - one) * hi
 
+    if view == "roots":
+        return np.tile(np.array(logic.LAYER_UNPAINTED, np.float32) * 2.0, (len(factor), 1)).astype(np.float32)
     if view == "layer" and value is not None and coverage is not None:
         k = np.clip(np.asarray(coverage, np.float32), 0.0, 1.0)[:, None]
         dark = np.array(logic.LAYER_UNPAINTED, np.float32)
         return (dark + (by_factor(value) - dark) * k).astype(np.float32)
-    if view == "density" and base_density is not None:
+    if view == "density" and density is not None:
         ramp = np.array(logic.DENSITY_RAMP, np.float32)
-        t = np.clip(np.asarray(base_density, np.float32) * np.asarray(factor, np.float32) / max(reference, 1e-9),
-                    0.0, 2.0) * 2.0
-        i = np.minimum(t.astype(np.int64), len(ramp) - 2)
-        f = (t - i)[:, None]
+        stops = np.array(logic.DENSITY_STOPS, np.float32)
+        t = np.clip(np.asarray(density, np.float32) / max(reference, 1e-9), 0.0, stops[-1])
+        i = np.clip(np.searchsorted(stops, t, side="right") - 1, 0, len(stops) - 2)
+        f = ((t - stops[i]) / (stops[i + 1] - stops[i]))[:, None]
         return (ramp[i] + (ramp[i + 1] - ramp[i]) * f).astype(np.float32)
     return by_factor(factor).astype(np.float32)
+
+
+def root_density(points, point_area_cm2, roots, cell: float):
+    """Pure: roots / cm2 at each scalp point, counted over the skin round it: roots and skin area are
+    summed in boxes of 3 x 3 x 3 cells of `cell` (scene units), and the density at a point is the roots over
+    the skin area of its box. Counting both in the same box keeps it right on curved skin, at the scalp's
+    edge and on slivers. `points`, `roots`: (n, 3) in scene units; `point_area_cm2`: each point's share of
+    the skin."""
+    np = _np()
+    P = np.asarray(points, np.float64).reshape(-1, 3)
+    if not len(P):
+        return np.zeros(0, np.float32)
+    lo = P.min(0) - cell
+    shape = (np.ceil((P.max(0) + cell - lo) / cell).astype(int) + 1)
+
+    def cells(x):
+        return tuple(np.clip(np.floor((x - lo) / cell).astype(int), 0, shape - 1).T)
+
+    area = np.zeros(shape)
+    np.add.at(area, cells(P), np.asarray(point_area_cm2, np.float64))
+    count = np.zeros(shape)
+    R = np.asarray(roots, np.float64).reshape(-1, 3)
+    if len(R):
+        R = R[((R >= lo) & (R < lo + shape * cell)).all(1)]
+        np.add.at(count, cells(R), 1.0)
+
+    def box(a):
+        p = np.pad(a, 1)
+        out = np.zeros_like(a)
+        for i in range(3):
+            for j in range(3):
+                for k in range(3):
+                    out += p[i:i + a.shape[0], j:j + a.shape[1], k:k + a.shape[2]]
+        return out
+
+    dens = box(count) / np.maximum(box(area), 1e-9)
+    return dens[cells(P)].astype(np.float32)
 
 
 class MaskData:
@@ -570,48 +609,59 @@ def strand_roots(points, strands: int):
     return pts[::len(pts) // strands]
 
 
-def display_roots(node):
-    """Root positions (n, 3) of the groom at full density, every lock that grows hair: what the brush shows
-    as dots, so the artist sees the roots a stroke left (relocated ones too), not only the factor, and with
-    Guides display sees them on the bare skin. Read from the per-lock cache (no copy of the strands): a lock
-    the display holds as full hair is taken from there; for the others (Guides, Mesh, Hair preview, hidden)
-    output 1's rest groom is cooked, which grows them once (v0.1: about 0.2 s a lock)."""
+def display_roots(node, cook: bool = True):
+    """(root positions (n, 3) of the groom at full density, whether every lock that grows was there).
+    Read from the per-lock cache (no copy of the strands): a lock the display holds as full hair is taken
+    from there; for the others (Guides, Mesh, Hair preview, hidden) output 1's rest groom is used, and with
+    `cook` it is cooked first, which grows them once (v0.1: about 0.2 s a lock). Without `cook` nothing
+    cooks: locks whose hair is not in the cache are left out and the answer says the set is not whole."""
     np = _np()
     from apps.houdini import grooming_adapter as ga
     cache = ga.hair_cache()
     sid = node.sessionId()
 
-    def rows(name):
+    def rows(name, cooked=True):
         sop = node.node(name)
-        geo = sop.geometry() if sop is not None else None
+        if sop is None:
+            return {}
+        if not cooked and sop.needsToCook():
+            return None
+        geo = sop.geometry()
         if geo is None or geo.findPrimAttrib("cache_key") is None:
             return {}
         grows = geo.primIntAttribValues("grows") if geo.findPrimAttrib("grows") is not None else None
         factor = geo.primFloatAttribValues("strand_factor")
-        return {lock_id: (mode, key) for i, (lock_id, mode, key) in enumerate(zip(
-            geo.primIntAttribValues(config.ATTR_LOCK_ID), geo.primStringAttribValues("cache_mode"),
-            geo.primStringAttribValues("cache_key"))) if (grows is None or grows[i]) and factor[i] >= 1.0}
+        return {lock_id: (mode, key, grows is None or bool(grows[i]), factor[i] >= 1.0) for i, (lock_id, mode, key) in
+                enumerate(zip(geo.primIntAttribValues(config.ATTR_LOCK_ID), geo.primStringAttribValues("cache_mode"),
+                              geo.primStringAttribValues("cache_key")))}
 
-    shown = rows("lock_keys")
+    def held(where):
+        return where is not None and cache.get(sid, lock_id, where[0], where[1]) is not None
+
+    shown = {k: v for k, v in (rows("lock_keys") or {}).items() if v[2] and v[3]}
     rest = node.node("GROOM_REST")
-    if rest is not None:
-        full = rows("groom_keys")
-        if any(lock_id not in shown or cache.get(sid, lock_id, *shown[lock_id]) is None for lock_id in full) or not full:
-            rest.cook()                      # grows what the display does not hold in full
-            full = rows("groom_keys")
-        for lock_id, where in full.items():
-            if lock_id not in shown or cache.get(sid, lock_id, *shown[lock_id]) is None:
-                shown[lock_id] = where
+    if rest is not None and cook:
+        rest.cook()                       # grows what the display does not hold in full
+    full = rows("groom_keys", cooked=cook) if rest is not None else {}
+    if full is None:                      # output 1's keys are out of date and we may not cook: only the display's
+        full, whole = {}, False
+    else:
+        whole = True
     out = []
-    for lock_id, (mode, key) in shown.items():
-        geo = cache.get(sid, lock_id, mode, key)
-        if geo is None:
+    wanted = {k for k, v in full.items() if v[2]} or set(shown)
+    for lock_id in wanted:
+        where = shown.get(lock_id)
+        if not held(where):
+            where = full.get(lock_id)
+        if not held(where):
+            whole = False
             continue
+        geo = cache.get(sid, lock_id, where[0], where[1])
         roots = strand_roots(np.frombuffer(geo.pointFloatAttribValuesAsString("P"), np.float32),
                              geo.intrinsicValue("primitivecount"))
         if roots is not None:
             out.append(roots)
-    return np.concatenate(out) if out else np.zeros((0, 3), np.float32)
+    return (np.concatenate(out) if out else np.zeros((0, 3), np.float32)), bool(whole and wanted)
 
 
 def lock_mask_keys(preview_geo) -> tuple[Sequence[int], Sequence[str]]:
@@ -661,6 +711,9 @@ class PaintSession:
         self.unit_cm = max(float(node.evalParm("unit_cm")), 1e-6)
         self.scalp = _scalp(node)
         self.brush = scalp_brush(node, self.scalp)
+        self.roots = _np().zeros((0, 3), _np().float32)
+        self.actual = None
+        self.whole = False
         self.reload()
 
     def reload(self) -> None:
@@ -678,26 +731,60 @@ class PaintSession:
         return self.md.factor(layers_for_view(self.data.masks, self.layer_id))
 
     def base_density(self):
-        """(automatic density per scalp point in strands / cm2, the groom's default density): what the
-        "density" view multiplies by the factor. From the split's prim `density` (the mean of a prim's
-        owners), averaged onto the points; read once a session, a settings edit while painting is not followed."""
+        """(automatic density per scalp point in strands / cm2, the groom's default density, each point's
+        share of the skin in cm2). From the split's prims (`density`: the mean of a prim's owners;
+        `area_cm2`), spread onto the points; read once a session, a settings edit while painting is not
+        followed."""
         if getattr(self, "_base", None) is None:
             np = _np()
             regions = self.node.node("SCALP_REGIONS").geometry()
             dens = np.frombuffer(regions.primFloatAttribValuesAsString("density"), np.float32)
+            area = np.frombuffer(regions.primFloatAttribValuesAsString("area_cm2"), np.float32)
             vertex_prim, vertex_point = _vertex_tables(regions)
             n = len(self.md.P)
+            corners = np.maximum(np.bincount(vertex_prim, minlength=len(area)), 1)
             total = np.bincount(vertex_point, weights=dens[vertex_prim], minlength=n)
             count = np.maximum(np.bincount(vertex_point, minlength=n), 1)
+            point_area = np.bincount(vertex_point, weights=(area / corners)[vertex_prim], minlength=n)
             reference = float(self.data.defaults.get("density", model.BUILTIN_DEFAULTS["density"]))
-            self._base = ((total / count).astype(np.float32), reference)
+            self._base = ((total / count).astype(np.float32), reference, point_area.astype(np.float32))
         return self._base
+
+    def measure(self, cook: bool) -> bool:
+        """Count the groom's roots: `roots` (their positions), `actual` (roots / cm2 per scalp point) and
+        the factor they were grown with. With `cook` the locks whose full hair is not in the cache are
+        grown first (output 1); without it they are left out, and when any is missing nothing is kept
+        (`actual` None: the density view then shows what is asked). True when the whole groom was counted."""
+        roots, whole = display_roots(self.node, cook=cook)
+        self.roots = roots
+        self.whole = whole
+        if not whole:
+            self.actual = None
+            return False
+        _base, _reference, point_area = self.base_density()
+        self.actual = root_density(self.md.P, point_area, roots, config.ROOT_DENSITY_CELL_CM / self.unit_cm)
+        self.actual_factor = self.factor().copy()
+        return True
+
+    def density(self):
+        """Strands / cm2 per scalp point for the "density" view: the roots as counted (`measure`), times
+        how far the factor has moved since (a stroke in progress shows at once what it asks of the hair it
+        is over); the density asked where no roots are known or the factor was 0."""
+        np = _np()
+        base, _reference, _area = self.base_density()
+        factor = self.factor()
+        asked = base * factor
+        if getattr(self, "actual", None) is None:
+            return asked
+        was = self.actual_factor
+        return np.where(was > 1e-6, self.actual * factor / np.maximum(was, 1e-6), asked).astype(np.float32)
 
     def colours(self, view: str):
         """The scalp's colours for a view (config.MASK_VIEWS)."""
         self.md.ensure(self.layer_id)
-        base, reference = self.base_density() if view == "density" else (None, 1.0)
-        return view_colours(view, self.factor(), self.md.v[self.layer_id], self.md.a[self.layer_id], base, reference)
+        density = self.density() if view == "density" else None
+        reference = self.base_density()[1] if view == "density" else 1.0
+        return view_colours(view, self.factor(), self.md.v[self.layer_id], self.md.a[self.layer_id], density, reference)
 
     def begin(self) -> None:
         self._last = None
@@ -897,23 +984,22 @@ def mask_rebake(node) -> bool:
 # panel's loading line (None: the state cooks the node itself); "exit"() when Paint ends without the panel
 HOOKS: dict[str, Any] = {"stroke": None, "exit": None}
 BRUSH: dict[str, Any] = {"radius_cm": config.BRUSH_RADIUS_CM, "value": config.BRUSH_VALUE,
-                         "soft": config.BRUSH_SOFT, "erase": False, "xray": False, "view": "factor", "roots": False}
+                         "soft": config.BRUSH_SOFT, "erase": False, "xray": False, "view": "density"}
 PAINT: dict[str, Any] = {"node": None, "layer": None}    # node path and layer id while Paint is on
 
 
 def set_brush(radius_cm: float | None = None, value: float | None = None, soft: float | None = None,
-              erase: bool | None = None, xray: bool | None = None, view: str | None = None,
-              roots: bool | None = None) -> dict:
+              erase: bool | None = None, xray: bool | None = None, view: str | None = None) -> dict:
     """Brush settings of the session (not saved, no undo): radius in cm, the value painted (a factor on the
     automatic density), the soft share of the radius, erase, the scalp's X-ray, and what the scalp shows
-    (`view`, config.MASK_VIEWS: the final factor, the final density, or the painted layer alone).
-    Returns them all."""
+    (`view`, config.MASK_VIEWS: the density as it is, the final factor, the painted layer alone, or the
+    roots as dots). Choosing "density" or "roots" counts the groom's roots, which grows the locks the cache
+    does not hold in full. Returns them all."""
     if view is not None:
         if view not in config.MASK_VIEWS:
             raise ValueError(f"mask view {view!r}")
         BRUSH["view"] = view
-    if roots is not None:       # a dot on the skin at every root the display grew: the density as it is
-        BRUSH["roots"] = bool(roots)
+        BRUSH["count_roots"] = view in ("density", "roots")     # asked for by hand: the state may cook
     if radius_cm is not None:
         BRUSH["radius_cm"] = min(max(float(radius_cm), 0.05), 50.0)
     if value is not None:
