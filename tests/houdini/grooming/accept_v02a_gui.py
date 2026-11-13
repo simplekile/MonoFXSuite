@@ -666,6 +666,121 @@ def s3_leave():
     later(500, lambda: try_esc(0))
 
 
+def real_px(pt):
+    """Physical screen pixel of a Qt global point (Windows input takes physical pixels)."""
+    q = QtCore.QPoint(int(round(pt[0])), int(round(pt[1])))
+    scr = app.screenAt(q) or SECOND
+    g, ratio = scr.geometry(), scr.devicePixelRatio()
+    return int(round(g.x() + (q.x() - g.x()) * ratio)), int(round(g.y() + (q.y() - g.y()) * ratio))
+
+
+def real_drag(points, done, step_ms=20, settle_ms=500):
+    """One stroke by the real mouse: Windows moves the cursor and presses the left button (the user's own
+    cursor is taken for the time of the stroke)."""
+    import ctypes
+    u = ctypes.windll.user32
+    pts = [real_px(p) for p in points]
+    count = len(state_mod().STATS["strokes"])
+
+    def press():
+        u.mouse_event(0x0002, 0, 0, 0, 0)
+        later(step_ms, lambda: move(1))
+
+    def move(i):
+        if i >= len(pts):
+            return later(80, release)
+        u.SetCursorPos(*pts[i])
+        later(step_ms, lambda: move(i + 1))
+
+    def release():
+        u.mouse_event(0x0004, 0, 0, 0, 0)
+        later(150, lambda: wait(0))
+
+    def wait(n):
+        if len(state_mod().STATS["strokes"]) > count or n > 100:
+            return later(settle_ms, done)
+        later(100, lambda: wait(n + 1))
+
+    u.SetCursorPos(*pts[0])
+    later(250, press)
+
+
+@step
+def s3b_real_mouse():
+    """With the real mouse and keyboard (ACCEPT_INPUT=real): paint, Esc, Paint again, paint."""
+    if os.environ.get("ACCEPT_INPUT") != "real":
+        return S["next"]()
+    import ctypes
+    u = ctypes.windll.user32
+    node = S["node"]
+    sm = state_mod()
+    for m in list(ga().read_data(node).masks):
+        ga().mask_remove(node, m.id)
+    lid = ga().mask_add(node, "real mouse", mode="multiply", value=0.5)
+    ga().set_brush(radius_cm=1.0, soft=0.5, erase=False, level=1.0, view="factor")
+    set_view(S["zone"]["normal"], box_round(S["zone"]["centre_cm"], 3.5))
+    mw = hou.qt.mainWindow()
+    hwnd = int(mw.winId())
+    start = (ctypes.c_long * 2)()
+    u.GetCursorPos(start)
+    # in front of every other window (the user's own Houdini may lie over this one), then a real click on
+    # its title bar: Windows gives the keyboard only to a window the user clicked
+    u.SetWindowPos(hwnd, -1, 0, 0, 0, 0, 0x0003)
+    mw.raise_()
+    mw.activateWindow()
+    top = mw.frameGeometry()
+    u.SetCursorPos(*real_px((top.center().x(), top.top() + 12)))
+    u.mouse_event(0x0002, 0, 0, 0, 0)
+    u.mouse_event(0x0004, 0, 0, 0, 0)
+    ga().paint_enter(node, lid)
+    out = {"foreground_is_this_houdini": None}
+
+    def painted():
+        v, a = lib.mask_arrays(node, lid)
+        return 0 if a is None else int((a > 0).sum())
+
+    def first():
+        out["foreground_is_this_houdini"] = bool(u.GetForegroundWindow() == hwnd)
+        real_drag(line(-110, -30, 110, n=30), after_first)
+
+    def after_first():
+        out["stroke_1"] = {"points_painted": painted(), "stroke": stroke_stats()[0] if sm.STATS["strokes"] else None,
+                           "undo_label": hou.undos.undoLabels()[0] if hou.undos.undoLabels() else ""}
+        out["shot_1"] = shot("s3b_0_real_stroke")
+        u.keybd_event(0x1B, 0, 0, 0)              # Esc down, up
+        u.keybd_event(0x1B, 0, 2, 0)
+        later(900, after_esc)
+
+    def after_esc():
+        out["after_esc"] = {"state": viewer().currentState(), "paint_layer": ga().paint_layer(node)}
+        out["entered_again"] = bool(ga().paint_enter(node, lid))       # what the panel's Paint button does
+        later(500, second)
+
+    def second():
+        out["before_2"] = painted()
+        real_drag(line(-110, 50, 110, n=30), after_second)
+
+    def after_second():
+        n2 = painted()
+        out["stroke_2"] = {"points_painted": n2, "added": n2 - out["before_2"],
+                           "stroke": stroke_stats()[0] if sm.STATS["strokes"] else None}
+        out["shot_2"] = shot("s3b_1_real_stroke_after_esc")
+        out["state_errors"] = sm.STATS["errors"][-2:]
+        u.SetCursorPos(start[0], start[1])
+        u.SetWindowPos(hwnd, -2, 0, 0, 0, 0, 0x0003)        # no longer over every window
+        ok = (out["foreground_is_this_houdini"] and out["stroke_1"]["points_painted"] > 50 and out["after_esc"]["state"] != sm.STATE
+              and out["after_esc"]["paint_layer"] is None and out["entered_again"] and out["stroke_2"]["added"] > 50
+              and not out["state_errors"])
+        C.add("real_mouse_paint_esc_paint_again", ok, out,
+              "a real left-button drag paints the mask; the real Esc key ends Paint; Paint on again and a second "
+              "real drag paints more", evidence=out["shot_2"],
+              note="Windows input (SetCursorPos, mouse_event, keybd_event) on the Houdini window brought to the front")
+        ga().paint_exit(node)
+        S["next"]()
+
+    later(1200, first)
+
+
 @step
 def s4_crown():
     """dw2: the crown painted down to the approved groom's density, by strokes in the viewport."""
