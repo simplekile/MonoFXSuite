@@ -29,6 +29,7 @@ shot (cache paths per character and instance, see Publish and caches), custom te
 export, sim and body collision. What v0.1 decides automatically (Root to skin, thin skin under floating
 mesh, the root spread) is the default that v0.2's redraw, brush and masks edit over, never a second
 system beside them.
+The v0.2 plan (density masks, lock redraw, brush, in that order) is `grooming_v0_2.md`.
 
 ## Code layout
 
