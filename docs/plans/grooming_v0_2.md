@@ -1,4 +1,4 @@
-# MONO Grooming v0.2 (plan; decided 2026-11-13; v0.2a core built, panel and gates open)
+# MONO Grooming v0.2 (plan; decided 2026-11-13; v0.2a core built on Painter's layer model, panel and gates open)
 
 v0.1 (released in MonoFX Suite v0.1.25, contract in `grooming_v0_1.md`) makes the whole groom
 automatically from the hair mesh. v0.2 lets the artist change that result where it is wrong, on top of
@@ -223,15 +223,15 @@ function that changes something is one undo step named "MONO Grooming: ..."; the
 
 | Function | Returns / does |
 |---|---|
-| `mask_add(node, name="", mode="multiply", opacity=1.0, scope="all", group="", locks=()) -> int` | New layer on top, nothing painted; its id |
+| `mask_add(node, name="", mode="multiply", opacity=1.0, scope="all", group="", locks=(), kind="fill", value=1.0, unit="factor", parent=None) -> int` | New layer on top (fill / paint / folder), mask black; its id |
 | `mask_remove(node, layer_id) -> bool` | Delete the layer and what is painted on it |
-| `mask_move(node, layer_id, index)` | Put the layer at place `index` (0 = bottom) |
-| `mask_set(node, layer_id, name=, on=, mode=, opacity=, scope=, group=, locks=) -> bool` | Change the layer's row; False (and no undo step) when nothing changed |
-| `mask_fill(node, layer_id, value=1.0)` / `mask_clear(node, layer_id)` | The whole layer painted `value` / nothing painted on it |
-| `mask_stroke(node, layer_id, points, radius_cm, value, soft, erase=False, normals=None) -> int` | One stroke through points on the skin, as the brush paints it (tests, scripts) |
+| `mask_move(node, layer_id, index, parent="keep")` | Put the layer at place `index` (0 = bottom), and into a folder (`parent` id, None = out) |
+| `mask_set(node, layer_id, name=, on=, mode=, opacity=, scope=, group=, locks=, value=, unit=) -> bool` | Change the layer's row; False (and no undo step) when nothing changed |
+| `mask_fill(node, layer_id, value=1.0)` / `mask_clear(node, layer_id)` / `mask_invert(node, layer_id)` | The whole mask at `value` (1 = white mask) / no mask (black; a folder: none) / white <-> black |
+| `mask_stroke(node, layer_id, points, radius_cm, value, soft, erase=False, normals=None, level=1.0) -> int` | One stroke through points on the skin, as the brush paints it: `level` on a mask (1 white, 0 black), `value` on a paint layer |
 | `mask_values(node, layer_id) -> (value, coverage)` / `mask_factor(node, lock_id=None)` | Arrays per fine-scalp point: a layer, or the final factor (of one lock, or of the "all locks" layers) |
 | `paint_enter(node, layer_id) -> bool` / `paint_exit(node=None)` / `paint_layer(node) -> int \| None` | Paint on (the viewport's tool is the brush; False without a viewport) / off / the layer being painted |
-| `set_brush(radius_cm=, value=, soft=, erase=, xray=, view=, roots=) -> dict` / `brush() -> dict` | Brush of the session (not saved, no undo): radius cm, value 0..8, soft share of the radius, erase, scalp X-ray, what the scalp shows (`view`: factor / density / layer), root dots |
+| `set_brush(radius_cm=, value=, soft=, erase=, xray=, view=, level=) -> dict` / `brush() -> dict` | Brush of the session (not saved, no undo): radius cm, soft share of the radius, erase (= black), `level` painted on a mask (1 white, 0 black), `value` painted on a paint layer, scalp X-ray, `view` (density / factor / layer / roots) |
 | `mask_problem(node) -> str` / `mask_rebake(node) -> bool` | "moved over by UV" while the layers sit on another scalp / store them on the current one |
 | `import_masks(node, tool_dir) -> int` / `masks_from_publish(tool_dir)` | Layers of a publish's `_grooming/` folder into the node / read only |
 | `grooming_masks.HOOKS["stroke"](node)`, `HOOKS["exit"]()` | Set by the panel: after a stroke is stored (it cooks in its loading line); Paint ended without the panel |
@@ -264,30 +264,48 @@ Found on the way: Helen's scalp has a band of sliver polygons by the ears (12,41
 prims on 1.7 cm2). A 1 cm dab there holds ~7,000 points (2.9 ms a mouse move instead of ~1.5), and the first
 prototype of the GUI test painted it by mistake. The brush works on it; nothing to fix in v0.2a.
 
-**The user's own try of the brush (2026-11-13) and what it decided.** Painting a factor did not show what the
-density really looks like: red means "x 2 of the automatic density", which is thin on floating-mesh skin
-and thick at the crown; the hair hides the skin, Hair preview is a tenth of the strands, and the hair only
-changes on release. The user chose Substance Painter's model for the panel:
-- The automatic density is the **base layer, shown at the bottom and locked** (not paintable, not movable).
-- The scalp shows the **final result**, and **Alt+click on a mask shows that mask alone**. Built in the
-  viewer state: `set_brush(view=)` with `factor` (final factor), `density` (the automatic density x the
-  factor, strands / cm2 on a dark-to-white ramp centred on the groom's default density) and `layer` (the
-  painted layer alone, dark where it has no coverage). On Helen every lock has the default density, so
-  `density` is `factor` on another ramp; it differs once locks or groups have their own density.
-- **Root dots** (`set_brush(roots=True)`): a dot at every root of the full groom, refreshed after each
-  stroke, relocated roots (start discs, whorls) included. With Guides display they sit on the bare skin:
-  this is the view that shows the density as it is. Locks the display does not hold as full hair are grown
-  through output 1 for it (about 0.2 s a lock, once).
-- **Nested masks** (a group of layers with a mask and opacity of its own, as Painter's folders): asked for by
-  the user, NOT built. It changes `groom_data` (schema 3), `logic.mask_factor` and `mask_read`; hairgen and
-  the cache keys stay. OPEN for the manager: one level of groups first, and whether a group replaces the
-  per-layer scope (group / chosen locks) or sits beside it.
-- Paint no longer records undo steps of its own, and says so on the status bar when the layer being painted
-  is undone (the user undid past the layer's Add and the scalp vanished without a word).
+**The layer model: Substance Painter's (decided by the user 2026-11-13 after trying the brush; built, t58).**
+The first build painted a value per point, so the artist had to think "paint 0.5", could not tell what a
+"mask" was, and could not see what the density really looked like. The user chose Painter's model
+(its Layer stack, Masking and effects, Effects pages were read for it), and it replaces the layer part of
+"What" above:
+- **Base**: the automatic density, shown as the bottom row, locked (not paintable, not movable).
+- **Fill layer** (the default kind): one number for the whole layer, with a blend mode and opacity. The
+  number is a factor, or a density in strands / cm2 (`unit` "density"): that is divided by each lock's own
+  density, so "= 80" (mode replace) grows 80 / cm2 on a lock set to 150 and on one set to 60 alike, and
+  "+ 40" (mode add) adds 40 / cm2. Changing the number is a panel edit, not paint.
+- **Mask**: each layer has one, per scalp point, 0..1. The brush paints it white (the layer applies) or black
+  (it does not), with any grey between; a new layer's mask is black, so adding a layer changes nothing.
+  White mask / black mask (`mask_fill` 1 / `mask_clear`), invert (`mask_invert`). Alt+click on a mask shows
+  it alone (view "layer"), Shift+click switches it off for a moment (the panel's).
+- **Folder**: holds layers (one level) and has a mask and opacity of its own over all of them:
+  `m + (inside - m) x folder mask x folder opacity` (`logic.mask_compose`). A folder without a mask lets
+  everything through; deleting a folder keeps its layers.
+- **Paint layer**: a value painted per point (the first build). Kept as a kind; schema 2 layers become it.
+- **Scope** (all locks / a group / chosen locks) stays per layer: it is Painter's Geometry mask.
+- **Views** (`set_brush(view=)`): `density` the result, roots / cm2 counted from the cooked groom (so
+  relocated roots are in it), times the factor's change while a stroke is down, and the density asked until
+  the groom has been counted; `factor`; `layer` (the mask alone, white on dark); `roots` (a dot a root on a
+  plain scalp: a view of its own, the user found dots over every view in the way). Choosing density or
+  roots grows the locks the cache does not hold in full (Guides display: the whole groom once, ~12 s).
+- Storage: `groom_data` schema 3 (`MaskLayer.kind`, `value`, `unit`, `parent`); `mask_layers` holds
+  `mask_<id>_a` (the mask) for every layer and `mask_<id>_v` only for paint layers. The scope keys
+  (`logic.mask_scope_keys`) keep locks of another density apart only when a layer is in density units.
+- Numbers (Helen, `accept.json` fl_*, `accept_gui.json`): "= 80" on a lock set to 150 gave x 0.528 of its
+  roots (asked 0.533); "+ 40" x 1.268 (asked 1.267); a folder's mask white x 0.54, black x 1.02, folder
+  opacity 0.5 x 0.75; the density view's roots add up to 119,939 for 119,197 strands.
+- Also from the try: Paint records no undo step of its own, and says so on the status bar when the layer
+  being painted is undone (the user undid past the layer's Add and the scalp vanished without a word).
+- Still open: the result is not shown as hair while the button is down (the density view moves, the hair
+  cooks on release); a pen's pressure, radius by drag, mirror; the layer's number painted above 1 does not
+  multiply relocated roots (see "Decided in the build" 5).
 
-**Panel.** A Layers section (list, eye, blend mode, opacity, scope) with the locked base row at the bottom,
-Paint / Erase with radius and value, Fill and Clear for a layer, the view choice (result / density / this
-mask, Alt+click on a mask) and the root dots toggle. Mockups first.
+**Panel.** As Painter's layer stack: rows top to bottom with eye, name, the number with its blend sign
+(x 0.7, + 40, = 80), the mask thumbnail (click to paint it, Alt+click to see it alone, Shift+click to switch
+it off), folders with their own mask, the locked base row at the bottom; under it the selected layer's
+value, blend, opacity, scope, and the brush (white / black, radius, softness); over the viewport the view
+choice (result / mask / roots) with the density ramp's legend. Mockups first (dcc-panel-design); the sketch
+the user saw is described in the notes folder (`t58-mask-core.md`).
 
 **Done when.**
 - Painting 0 removes every root under the stroke; 2 doubles them there; the roots stay even

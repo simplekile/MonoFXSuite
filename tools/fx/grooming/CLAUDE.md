@@ -513,3 +513,19 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     selection", which sat between strokes in the undo stack. `set_display` still records its own step.
     A GUI test finds the viewport widget inside Houdini's own window (`mw.childAt`): `QApplication.widgetAt`
     is None when another window (the user's Houdini) lies over it.
+  - Layer model = Substance Painter's (the user, 2026-11-13; plan "The layer model"): a fill layer is one
+    number (`MaskLayer.value`, `unit` factor or density) + blend mode + opacity, its mask (`mask_<id>_a`) is
+    what the brush paints (white / black, `set_brush(level=)`); folders (`kind` "folder", layers' `parent`)
+    have a mask over their layers (`logic.mask_compose`); paint layers (a value per point, `mask_<id>_v`)
+    are the first build's kind and what schema 2 layers migrate to. A layer never painted has no array: a
+    fill or paint layer is black, a folder white (`MaskData.mask`). `groom_data` schema 3.
+  - A density unit makes the factor depend on the lock (value / the lock's density), so the scope keys carry
+    the density then (`logic.mask_scope_keys`); with factor units one set serves every lock as before.
+  - The density view counts real roots: `display_roots` reads the per-lock cache (the display's full hair,
+    else output 1's), `root_density` sums roots and skin area in the same 3 x 3 x 3 boxes of 0.5 cm cells
+    (right on curved skin, edges and Helen's sliver band; it adds up to the strand count within 1 %).
+    Entering Paint never cooks for it (`reroot(cook=False)`); choosing the view by hand does. While the
+    button is down the view shows the counted density x factor now / factor then.
+  - The acceptance checks dw* / ns* paint "paint" layers; fl_* and `gui_fill_layer_brush_paints_its_mask`
+    cover fill layers, masks and folders. Run timing checks with no other Houdini cooking: with two GUI
+    sessions open and pytest running, stroke cooks were 1.5x slower and one missed its limit.
