@@ -913,52 +913,54 @@ order(sidx, spos);
        "exact": THIN_ORDER_EXACT, "near": THIN_ORDER_NEAR, "small": THIN_ORDER_SMALL}
 
 MASK_APART = 0.45         # a layer's root stands at least this share of the root spacing asked there from a kept automatic root
-MASK_APART_MAX = 40000000  # ... looked up root by root (layer roots x automatic roots): past this, left as scattered
+
+VEX_APART_CLOUD = """// density mask: the automatic roots that stayed, as points where they landed (group auto_at), for mask_apart's
+// lookup; and the lock's roots / cm2 (apart_ld).
+int n = nprimitives(0);
+for (int pr = 0; pr < n; pr++) {
+    int mr = prim(0, "mask_root", pr);
+    if (mr) continue;
+    vector q = prim(0, "root_at", pr);
+    int pt = addpoint(0, q);
+    setpointgroup(0, "auto_at", pt, 1);
+}
+setdetailattrib(0, "apart_ld", max(detail(1, "lock_density") * prim(2, "strand_factor", 0), 1e-6));
+"""
 
 VEX_MASK_APART = """// density mask, partial coverage (a soft brush edge, an opacity under 1): the lock holds automatic roots that
 // stayed AND the layers' own roots, two scatters that know nothing of each other, so a layer root could lie
 // right beside an automatic one (clumped share +0.06 to +0.16 on ordinary skin at opacity 0.25-0.75). Each
 // layer root nearer than %(apart)s of the root spacing asked there to a kept automatic root is moved straight
-// away from it to that distance, on the skin (up to six times: the move may bring it near another). Automatic roots
-// never move, the count does not change, and skin a layer covers in full has no automatic root to move from.
-int n = nprimitives(0);
-int li[]; vector lp[]; vector ap[];
-for (int pr = 0; pr < n; pr++) {
-    vector q = prim(0, "root_at", pr);
-    int mr = prim(0, "mask_root", pr);
-    if (mr) { append(li, pr); append(lp, q); } else append(ap, q);
-}
-int nl = len(li), na = len(ap);
-if (nl == 0 || na == 0 || float(nl) * na > %(most)d) return;
+// away from it to that distance, on the skin (up to six times: the move may bring it near another). Automatic
+// roots never move, the count does not change, and skin a layer covers in full has no automatic root to move
+// from. The nearest automatic root comes from a point lookup (apart_cloud): every layer root against every
+// automatic one in a loop cost a stroke 0.1 s a lock.
+if (!i@mask_root) return;
+if (npointsgroup(2, "auto_at") == 0) return;
+vector p = v@root_at;
+int rp; vector ruv;
+xyzdist(1, p, rp, ruv);
+if (rp < 0) return;
+float keep = primuv(1, "mask_keep", rp, ruv), add = primuv(1, "density", rp, ruv);
+if (keep <= 0) return;
 float uc = max(chf("../unit_cm"), 1e-6);
-float ld = max(detail(3, "lock_density") * prim(2, "strand_factor", 0), 1e-6);     // roots / cm2 of the lock
-for (int i = 0; i < nl; i++) {
-    vector p = lp[i];
-    int rp; vector ruv;
+float ld = detail(2, "apart_ld");
+float share = prim(1, "share", rp);                     // the lock's part of that skin (add is already divided)
+float rmin = %(apart)s / sqrt(ld * max(keep / max(share, 1.0) + add, 0.05)) / uc;
+int moved = 0;
+for (int pass = 0; pass < 6; pass++) {
+    int b = nearpoint(2, "auto_at", p, rmin);
+    if (b < 0) break;
+    vector a = point(2, "P", b);
+    vector dir = p - a;
+    if (length2(dir) < 1e-16) dir = cross(primuv(1, "N", rp, ruv), set(0.3, 1, 0.7));
+    p = a + normalize(dir) * rmin;
     xyzdist(1, p, rp, ruv);
-    if (rp < 0) continue;
-    float keep = primuv(1, "mask_keep", rp, ruv), add = primuv(1, "density", rp, ruv);
-    if (keep <= 0) continue;
-    float share = prim(1, "share", rp);                     // the lock's part of that skin (add is already divided)
-    float rmin = %(apart)s / sqrt(ld * max(keep / max(share, 1.0) + add, 0.05)) / uc;
-    int moved = 0;
-    for (int pass = 0; pass < 6; pass++) {
-        int b = -1; float bd = rmin * rmin;
-        for (int k = 0; k < na; k++) {
-            float d = length2(ap[k] - p);
-            if (d < bd) { bd = d; b = k; }
-        }
-        if (b < 0) break;
-        vector dir = p - ap[b];
-        if (length2(dir) < 1e-16) dir = cross(primuv(1, "N", rp, ruv), set(0.3, 1, 0.7));
-        p = ap[b] + normalize(dir) * rmin;
-        xyzdist(1, p, rp, ruv);
-        p = primuv(1, "P", rp, ruv);
-        moved = 1;
-    }
-    if (moved) setprimattrib(0, "root_at", li[i], p);
+    p = primuv(1, "P", rp, ruv);
+    moved = 1;
 }
-""" % {"apart": MASK_APART, "most": MASK_APART_MAX}
+if (moved) v@root_at = p;
+""" % {"apart": MASK_APART}
 
 VEX_MASK_THIN = """// density mask: an automatic root stays where keep (mask_skin) says so at the place it ends up
 // (root_place's root_at: a root the tool moved to the lock's start or to a whorl is judged where it landed),
@@ -1829,7 +1831,8 @@ def build_network(sub) -> None:
     roots_in.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
     place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [roots_in, frame, begin, mesh_pu])
     mask_thin = _wrangle(sub, "mask_thin", VEX_MASK_THIN, PRIM, [place, mask_skin, begin, frame])
-    mask_apart = _wrangle(sub, "mask_apart", VEX_MASK_APART, DETAIL, [mask_thin, mask_skin, begin, frame])
+    apart_cloud = _wrangle(sub, "apart_cloud", VEX_APART_CLOUD, DETAIL, [mask_thin, frame, begin])
+    mask_apart = _wrangle(sub, "mask_apart", VEX_MASK_APART, PRIM, [mask_thin, mask_skin, apart_cloud])
     roots_out = _node(sub, "switch", "roots_out", [place, mask_apart])
     roots_out.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
     spread = _wrangle(sub, "root_spread", VEX_ROOT_SPREAD, DETAIL, [roots_out])

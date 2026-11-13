@@ -551,6 +551,8 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     fewer). A start grid of `THIN_ORDER_SMALL` 400 roots or fewer: farthest-point order. Whorl roots: the
     bit-reversed sunflower number. `mask_apart` (after `mask_thin`) moves a layer root off a kept automatic
     root (`MASK_APART` 0.45 of the spacing asked there, up to 6 moves, on the skin; it changes `root_at` only).
+    Its nearest automatic root comes from a point lookup (`apart_cloud`, group `auto_at`): a VEX loop of every
+    layer root against every automatic one took a 3-lock stroke from 0.4 to 0.72 s (limit 0.7).
     What failed on the way, do not retry: a random number (start grids left in bunches, clumped 0.014 ->
     0.616); the root's `id` in hairgen's scatter (it numbers patch by patch: a keep of 0.5 left 0.35 to 1.85 of
     the roots); a golden-ratio step of the sunflower index (that IS the angle); a dither of the position
