@@ -511,6 +511,42 @@ def _region_tables(top, geo) -> dict:
     return tables
 
 
+_REGION_KEYS: dict[int, tuple[bytes, dict]] = {}     # node session id -> (digest of the split and the skin, keys)
+
+
+def region_keys(top, geo) -> dict[int, tuple]:
+    """Per lock id a fingerprint of its region on SCALP_REGIONS, for the lock's cache key: 9 sums over its
+    prims of what the per-lock loop reads of them (count, area / share, share, centre, centre x a weight
+    by prim number, so a moved or swapped prim changes it). Kept per node by a digest of the split and the
+    skin: a detail wrangle summed this on every edit of the groom's data, 39 ms of an undo."""
+    np = _np()
+    h = hashlib.blake2b(digest_size=16)
+    h.update(geo.pointFloatAttribValuesAsString("P"))
+    for name, read in (("area_cm2", geo.primFloatAttribValuesAsString), ("lock_owner", geo.primIntAttribValuesAsString),
+                       ("share", geo.primIntAttribValuesAsString), ("owners_h", geo.primIntAttribValuesAsString)):
+        if geo.findPrimAttrib(name) is not None:
+            h.update(read(name))
+    key = h.digest()
+    hit = _REGION_KEYS.get(top.sessionId())
+    if hit is not None and hit[0] == key:
+        return hit[1]
+    tables = _region_tables(top, geo)
+    n = len(tables["owners"])
+    P = _points(geo).astype(np.float64)
+    cen = np.stack([np.bincount(tables["vertex_prim"], weights=P[tables["vertex_point"], k], minlength=n)
+                    for k in range(3)], 1) / tables["corners"][:, None]
+    area = np.frombuffer(geo.primFloatAttribValuesAsString("area_cm2"), np.float32).astype(np.float64)
+    share = np.maximum(tables["owners"].astype(np.float64), 1.0)
+    weight = 1.0 + (np.arange(n) % 13) * 0.37
+    out = {}
+    for lock_id, prims in tables["prims"].items():
+        c = cen[prims]
+        out[lock_id] = (len(prims), float((area[prims] / share[prims]).sum()), float(share[prims].sum()),
+                        *(float(x) for x in c.sum(0)), *(float(x) for x in (c * weight[prims][:, None]).sum(0)))
+    _REGION_KEYS[top.sessionId()] = (key, out)
+    return out
+
+
 def cook_mask_read(sop) -> None:
     """Python SOP "mask_read", on the scalp with its split (after region_prims): per scope set the point
     attributes `mask_keep_<k>` / `mask_add_<k>` (`logic.mask_compose`), the details `mask_sets`,

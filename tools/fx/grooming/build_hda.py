@@ -508,36 +508,9 @@ if (total * f > cap && total > 0) {
 }
 f@factor = chi("../display_eff") == 2 ? f : 1.0;   // display_eff: the display mode, lighter while playing
 f@preview_factor = f;   // the locks a slider is dragging (preview_ids) grow at this, whatever the display
-// each lock's region fingerprint (region_keys: it changes only with the split, so it is not summed again
-// on every stroke: that was 20 of the 26 ms this node cost)
-f[]@region_keys = detail(1, "region_keys");
+// (each lock's region fingerprint for the hair cache was summed here, 20 of this node's 26 ms on every stroke:
+// now grooming_masks.region_keys, numpy, kept per split)
 """ % {"step": config.PREVIEW_FACTOR_STEP}
-
-VEX_REGION_KEYS = """// fingerprints of each lock's region for the hair cache (adapter.cook_lock_keys): per lock id 9 floats
-// summing what the per-lock loop reads of its prims (count, area / share, share, centre, centre x a
-// weight by prim number, so a moved or swapped prim changes it)
-int mx = -1;
-for (int pr = 0; pr < nprimitives(0); pr++) {
-    int own[] = prim(0, "lock_owners", pr);
-    foreach (int o; own) mx = max(mx, o);
-}
-float rk[]; resize(rk, (mx + 1) * 9);
-for (int pr = 0; pr < nprimitives(0); pr++) {
-    int own[] = prim(0, "lock_owners", pr);
-    if (len(own) == 0) continue;
-    float a = prim(0, "area_cm2", pr);
-    int sh = prim(0, "share", pr);
-    vector c = primuv(0, "P", pr, {0.5, 0.5, 0});
-    float wq = 1 + (pr % 13) * 0.37;
-    foreach (int o; own) {
-        int k = o * 9;
-        rk[k] += 1; rk[k + 1] += a / max(sh, 1); rk[k + 2] += sh;
-        rk[k + 3] += c.x; rk[k + 4] += c.y; rk[k + 5] += c.z;
-        rk[k + 6] += c.x * wq; rk[k + 7] += c.y * wq; rk[k + 8] += c.z * wq;
-    }
-}
-f[]@region_keys = rk;
-"""
 
 VEX_SURFACE_KEYS = """// fingerprints of each piece's lookup cloud for the hair cache: per piece 9 floats (count, cloud
 // position, ds, dt, position x a weight by point number)
@@ -1548,9 +1521,7 @@ def build_network(sub) -> None:
     mask_read.parm("python").set("from apps.houdini import grooming_adapter\n"
                                  "grooming_adapter.cook_mask_read(hou.pwd())\n")
     regions = _node(sub, "null", "SCALP_REGIONS", [mask_read])
-    # on the split before mask_read: a stroke changes no lock's region
-    rkeys = _wrangle(sub, "region_keys", VEX_REGION_KEYS, DETAIL, [rprims])
-    preview = _wrangle(sub, "PREVIEW", VEX_PREVIEW, DETAIL, [regions, rkeys])
+    preview = _wrangle(sub, "PREVIEW", VEX_PREVIEW, DETAIL, [regions])
     section("Frozen regions")
 
     # ---- hair cache: only locks that grow and are not cached go through the loop ----
@@ -1560,7 +1531,7 @@ def build_network(sub) -> None:
     skeys = _wrangle(sub, "surface_keys", VEX_SURFACE_KEYS, DETAIL, [surface])
     # whorl membership from the frozen split (a prim attribute, so it is in each lock's cache key)
     wtag = _wrangle(sub, "whorl_tag", VEX_WHORL_TAG, PRIM, [guides, frozen])
-    keys = _node(sub, "python", "lock_keys", [wtag, preview, skeys])
+    keys = _node(sub, "python", "lock_keys", [wtag, preview, skeys, regions])
     keys.parm("python").set("from apps.houdini import grooming_adapter\n"
                             "grooming_adapter.cook_lock_keys(hou.pwd())\n")
     to_cook = _node(sub, "blast", "to_cook", [keys], group="@grows==0 @cached==1", grouptype=4)

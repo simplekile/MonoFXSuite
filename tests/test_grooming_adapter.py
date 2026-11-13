@@ -217,12 +217,13 @@ def test_lock_cache_drops_the_states_used_longest_ago_when_full():
     assert c.usage(7)["bytes"] == 100
     assert c.get(7, 1, "hair", "k0") == 0            # an undo all the way back: k0 is now the state in use
     c.begin(7)
-    c.put(7, 1, "hair", "k10", 10, size=30)          # 30 bytes more: the three used longest ago go
-    assert [i for i in range(11) if c.has(7, 1, "hair", f"k{i}")] == [0, 4, 5, 6, 7, 8, 9, 10]
-    assert c.usage(7)["bytes"] == 100 and c.usage(7)["dropped"] == 3
+    c.put(7, 1, "hair", "k10", 10, size=30)          # 30 bytes more: the ones used longest ago go, down to
+    # TRIM_TO of the limit (95), so the next stores find room without another pass
+    assert [i for i in range(11) if c.has(7, 1, "hair", f"k{i}")] == [0, 5, 6, 7, 8, 9, 10]
+    assert c.usage(7)["bytes"] == 90 and c.usage(7)["dropped"] == 4
     # another node has its own limit and is not touched
     c.put(8, 1, "hair", "x", "other", size=5000)
-    assert c.has(8, 1, "hair", "x") and c.usage(7)["bytes"] == 100
+    assert c.has(8, 1, "hair", "x") and c.usage(7)["bytes"] == 90
     c.begin(7)                                       # (asking above counted as using: a new cook)
     c.set_limit(7, 40)                               # the artist lowers the limit: trimmed at once
     assert c.usage(7)["bytes"] <= 40 and c.limit(7) == 40

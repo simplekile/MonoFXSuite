@@ -648,4 +648,24 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - Known and left: on the rim of a hard-edged patch the mask is grey for one ring of prims, where the
     automatic roots are kept by chance: not even. A "= 0" patch on the top of the head took `root_clumped`
     from 0.0426 to 0.0500 (limit 0.05).
+- Paint belongs to the painted node (round 3, checks t60 / t61; `grooming_paint_state.py`):
+  - A viewer state gets NO key event while a mouse button is down, and none when another pane has the
+    keyboard: Esc with the mouse held left the brush on. An application event filter (`_EscFilter`, installed
+    while Paint is on, a fast path for everything that is not a key press) turns Esc into `esc()`: the stroke
+    in progress is stored (one undo step), then `paint_exit`. Houdini keeps the state until the button is up,
+    so `_mouse` paints nothing once `PAINT["node"]` is None and asks to leave again. Esc typed in a text field
+    is left to the field.
+  - Another node selected: Houdini enters that node's state, and `_came_back` used to bring the brush back
+    over it, so a drag painted the grooming node while a null was selected. Now `_others_selected(node)`
+    (other selected nodes of the same network) ends Paint in `_came_back` and refuses a stroke's first click;
+    the node selected again still brings the brush back. `enter()` makes the painted node the selection.
+- Density layers and missing locks: a layer owned by a lock keeps the lock's id while the lock is missing;
+  `GroomData.reassign_orphan` (the panel's reassign) gives the missing lock's settings AND its layers to the
+  lock that takes its place (Detect gives a piece that comes back a new id; it does not re-match a missing lock).
+- An edit of the groom's data (a layer's number, any setting) used to cost 0.10-0.12 s to undo: `region_keys`
+  39 ms (a detail wrangle downstream of the spines, dirty on every data edit), `hair_packed` 31 ms (a tuple of
+  3 floats a strand through Python for each coloured copy), `lock_keys` 27 ms. Now the region fingerprints are
+  numpy, kept per split (`grooming_masks.region_keys`, input 3 of `lock_keys`), the display copies carry their
+  colour as the attribute's DEFAULT (`addAttrib(Prim, "Cd", cd)`: no value written per strand), and `lock_keys`
+  reads each prim attribute in one call: 0.057-0.069 s.
 

@@ -86,7 +86,7 @@ _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 MERGED_LOCK = -1                     # LockCache slot of a whole merge (hair_cache / groom_cache), not a lock
 MERGED_MODE = "merged:"
-CACHE_NET_VERSION = "partial-1-root-spread-6-mask-7"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "partial-1-root-spread-6-mask-9"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -268,14 +268,16 @@ class LockCache:
     def _in_use(self, slot: tuple[int, int, str], key: str) -> bool:
         return next(reversed(self._d[slot])) == key or self._meta[slot][key][2] == self._gen.get(slot[0], 0)
 
+    TRIM_TO = 0.95      # once full, room is made down to this share of the limit: not a sort on every store
+
     def _trim(self, node_id: int) -> None:
-        over = self._bytes.get(node_id, 0) - self.limit(node_id)
-        if over <= 0:
+        limit = self.limit(node_id)
+        if self._bytes.get(node_id, 0) <= limit:
             return
         old = sorted((m[1], slot, key) for slot, keys in self._meta.items() if slot[0] == node_id
                      for key, m in keys.items() if not self._in_use(slot, key))
         for _tick, slot, key in old:
-            if self._bytes.get(node_id, 0) <= self.limit(node_id):
+            if self._bytes.get(node_id, 0) <= limit * self.TRIM_TO:
                 break
             self._forget(slot, key)
             self._dropped[node_id] = self._dropped.get(node_id, 0) + 1
@@ -1546,9 +1548,9 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     excluded grows, at full density, never as a drag; a lock the display shows as full hair gets the
     same key, so both outputs share its cached strands.
 
-    Inputs: 0 the shown spines (`grows`), 1 PREVIEW (detail `factor`, `region_keys`: per lock id 9
-    floats summing its region prims), 2 SURFACE_KEYS (detail `surface_keys`: per piece 9 floats of its
-    lookup cloud)."""
+    Inputs: 0 the shown spines (`grows`), 1 PREVIEW (detail `factor`), 2 SURFACE_KEYS (detail
+    `surface_keys`: per piece 9 floats of its lookup cloud), 3 SCALP_REGIONS (each lock's region
+    fingerprint: grooming_masks.region_keys)."""
     import numpy as np
 
     top = sop.parent()
@@ -1567,7 +1569,8 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     # dragged locks: their real count (or the panel's fraction) with fewer points a strand; a node
     # built before drag_factor: the preview fraction
     drag_f = top.evalParm(PARM_DRAG_FACTOR) if top.parm(PARM_DRAG_FACTOR) is not None else light
-    rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
+    # each lock's region fingerprint (numpy, kept per split: grooming_masks.region_keys); input 3 SCALP_REGIONS
+    rk = grooming_masks.region_keys(top, ins[3].geometry()) if len(ins) > 3 and ins[3] is not None else {}
     # density masks (mask_read): per lock its scope set and a digest of the factor on its own skin; the 9
     # region sums would miss a stroke that moves density inside a region
     mask_sets, mask_hashes, mask_adds = grooming_masks.lock_mask_keys(preview)
@@ -1580,6 +1583,27 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     parrays = [np.frombuffer(geo.pointFloatAttribValuesAsString(a.name()), dtype=np.float32).reshape(-1, a.size())
                for a in pattrs]
     rattrs = sorted((a for a in geo.primAttribs() if a.name() not in _KEY_SKIP_ATTRIBS), key=lambda a: a.name())
+    n_prims = geo.intrinsicValue("primitivecount")
+    columns = []                    # per attribute its values by prim, read in one call
+    for a in rattrs:
+        name, size = a.name(), a.size()
+        if a.isArrayType() or a.dataType() not in (hou.attribData.Float, hou.attribData.Int, hou.attribData.String):
+            columns.append((name, [prim.attribValue(a) for prim in geo.iterPrims()]))
+            continue
+        flat = (geo.primFloatAttribValues(name) if a.dataType() == hou.attribData.Float
+                else geo.primIntAttribValues(name) if a.dataType() == hou.attribData.Int
+                else geo.primStringAttribValues(name))
+        columns.append((name, list(flat) if size == 1 else [tuple(flat[i * size:(i + 1) * size]) for i in range(n_prims)]))
+
+    def column(name, default):
+        return list(geo.primIntAttribValues(name)) if geo.findPrimAttrib(name) is not None else [default] * n_prims
+
+    lock_ids, excluded = column(config.ATTR_LOCK_ID, -1), column("excluded", 0)
+    disps, pieces = column("disp", -1), column("piece", -1)
+    # each spine's points, from one read of the vertices (prim.points() per lock was 16 ms of every cook)
+    vertex_prim, vertex_point = grooming_masks._vertex_tables(geo)
+    order = np.argsort(vertex_prim, kind="stable")
+    spine_points = np.split(vertex_point[order], np.cumsum(np.bincount(vertex_prim, minlength=n_prims))[:-1])         if n_prims else []
     for name, default in (("cache_key", ""), ("cache_mode", ""), ("cached", 0), ("strand_factor", 1.0),
                           ("do_capture", 0), ("drag_seg", 0)):
         if geo.findPrimAttrib(name) is None:
@@ -1596,11 +1620,11 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     keys, flags, factors, modes, captures, drags, grows, msets, madds = [], [], [], [], [], [], [], [], []
     akeys, aflags = [], []
     has_excluded = geo.findPrimAttrib("excluded") is not None
-    for prim in geo.iterPrims():
-        lid = prim.intAttribValue(config.ATTR_LOCK_ID)
+    for row in range(n_prims):
+        lid = lock_ids[row]
         if groom:   # every lock that is not excluded, whatever its eye, isolate or Display
-            grows.append(int(not (has_excluded and prim.intAttribValue("excluded"))))
-        disp = prim.intAttribValue("disp") if has_disp else config.DISPLAY_MODES.index(mode) \
+            grows.append(int(not (has_excluded and excluded[row])))
+        disp = disps[row] if has_disp else config.DISPLAY_MODES.index(mode) \
             if mode in config.DISPLAY_MODES else len(config.DISPLAY_MODES) - 1
         # hairgen's density x this (strand_factor): the preview fraction for a lock shown as preview or
         # being dragged, else full; publishing is always full
@@ -1620,11 +1644,11 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
         # captured strands apart from plain ones (cache_mode)
         lock_mode = cache_mode(drag, f, cap)
         modes.append(lock_mode)
-        piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
-        idx = [p.number() for p in prim.points()]
-        parts: list[Any] = [shared, [(a.name(), prim.attribValue(a)) for a in rattrs]]
+        piece = pieces[row]
+        idx = spine_points[row]
+        parts: list[Any] = [shared, [(name, values[row]) for name, values in columns]]
         parts.extend(arr[idx].tobytes() for arr in parrays)
-        parts.append(tuple(rk[lid * 9:lid * 9 + 9]) if lid >= 0 else ())
+        parts.append(rk.get(lid, ()))
         parts.append(tuple(sk[piece * 9:piece * 9 + 9]) if piece >= 0 else ())
         parts.append(f)
         parts.append(cap)
@@ -1934,8 +1958,9 @@ def cook_hair_packed(sop) -> None:
         coloured = cache.get(sid, lid, mode, key)
         if coloured is None:
             tinted = _display_copy(g)
-            tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
-            tinted.setPrimFloatAttribValues("Cd", cd * len(tinted.iterPrims()))
+            # the colour is the attribute's default: every strand has it and no value is written per strand
+            # (a tuple of 3 floats a strand through Python was most of the 30 ms this node cost after an undo)
+            tinted.addAttrib(hou.attribType.Prim, "Cd", cd)
             coloured = tinted.freeze(read_only=True)
             cache.put_derived(sid, lid, mode, key, coloured)
         prim = geo.createPacked("PackedGeometry")
@@ -1954,11 +1979,8 @@ def cook_hair_packed(sop) -> None:
                 m = config.GHOST_MIX
                 gcd = tuple(c * (1 - m) + t * m for c, t in zip(cd, config.GHOST_TINT))
                 tinted = _display_copy(g)
-                tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
-                tinted.addAttrib(hou.attribType.Prim, "Alpha", 1.0)
-                n = len(tinted.iterPrims())
-                tinted.setPrimFloatAttribValues("Cd", gcd * n)
-                tinted.setPrimFloatAttribValues("Alpha", (alpha,) * n)
+                tinted.addAttrib(hou.attribType.Prim, "Cd", gcd)
+                tinted.addAttrib(hou.attribType.Prim, "Alpha", float(alpha))
                 ghost = tinted.freeze(read_only=True)
                 cache.put_derived(sid, lid, mode, gkey, ghost)
             prim.setEmbeddedGeometry(ghost)

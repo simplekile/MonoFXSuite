@@ -265,6 +265,12 @@ own run-to-run noise and the speed limit holds with 3-9 % to spare. OPEN for the
 default ships (the executor built it on, for the margin; "No layers = the v0.1 groom" below is graded by
 root positions and strand counts, and by the QC numbers with the toggle off).
 
+**Paint belongs to the painted node (round 3).** Esc ends Paint from anywhere in Houdini's window, also while
+the mouse is held: what was painted so far is kept as one stroke, the rest of the drag paints nothing.
+Selecting another node ends Paint (the status bar says so) and a drag in the viewport never paints the
+grooming node while another node is selected; selecting the grooming node again keeps Paint. Entering Paint
+makes the node the selection.
+
 **Why two sets of roots, and not one scatter by a density map (round 3).** The first builds multiplied
 hairgen's density attribute by a factor and thinned the roots the tool relocates. Two checkers measured what
 that gave: x2 was x1.08 on the whorl and x5.3 under floating mesh, "= D" ran 11-19 % short where relocated
@@ -352,7 +358,8 @@ blend modes, of which only "= D" gave what it said (two checks, t60 and t61). Th
 - Still open: the result is not shown as hair while the button is down (the density view moves, the hair
   cooks on release); a pen's pressure, radius by drag, mirror.
 
-**Panel.** As Painter's layer stack: rows top to bottom with eye, name, the density ("= 80"), the mask
+**Panel.** (Mockup E2 of t59, with round 3's changes: no blend control, the row shows the layer's density, the
+quick picks are densities.) As Painter's layer stack: rows top to bottom with eye, name, the density ("= 80"), the mask
 thumbnail (click to paint it, Alt+click to see it alone, Shift+click to switch
 it off), folders with their own mask, the locked base row at the bottom; under it the selected layer's
 density (quick picks: densities, not factors), opacity, owner, and the brush (white / black, radius, softness); over the viewport the view

@@ -10,6 +10,12 @@ Esc leaves Paint.
 
 Houdini drops a state entered by name when the node is selected again (it enters the node's own state on
 its next event loop): while Paint is on, the state comes back by itself (`_came_back`), so no stroke is lost.
+
+Paint belongs to the node being painted and to nothing else (round 3, after the second check): selecting
+another node ends it (`_others_selected`: `_came_back` does not bring the brush back, and a stroke never
+starts while another node of the network is selected), and Esc ends it from anywhere in Houdini's window,
+with the mouse held too: an application event filter (`_EscFilter`) sees the key, since a state gets no key
+event while a button is down; the stroke in progress is stored first.
 """
 
 from __future__ import annotations
@@ -26,7 +32,8 @@ STATE = config.PAINT_STATE
 LABEL = "MONO Grooming: Paint mask"
 LIVE: dict = {}      # "state": the running state object, "prev": the viewer's state before Paint
 # what tests read: one dict a stroke, counters, errors (a state's exception only reaches Houdini's console)
-STATS: dict = {"strokes": [], "events": 0, "enters": 0, "exits": 0, "came_back": 0, "errors": []}
+STATS: dict = {"strokes": [], "events": 0, "enters": 0, "exits": 0, "came_back": 0, "errors": [], "esc": 0,
+               "ended_by_selection": 0, "refused_strokes": 0}
 REENTER_MAX = 6      # times the state comes back within REENTER_WINDOW_S before Paint is given up
 REENTER_WINDOW_S = 2.0
 # states the artist picks by hand: going to one of them ends Paint. Anything else (the node's own state,
@@ -41,6 +48,87 @@ def _np():
 
 def _viewer():
     return hou.ui.paneTabOfType(hou.paneTabType.SceneViewer) if hou.isUIAvailable() else None
+
+
+def _others_selected(node) -> list:
+    """Other nodes of the painted node's network that are selected: Paint is not theirs."""
+    return [n for n in hou.selectedNodes() if n != node and n.parent() == node.parent()]
+
+
+def _end_paint(why: str) -> None:
+    """Paint off without the artist asking (another node was selected): said on the status bar."""
+    STATS[why] = STATS.get(why, 0) + 1
+    gm.paint_exit()
+    try:
+        hou.ui.setStatusMessage("MONO Grooming: Paint ended, another node is selected", hou.severityType.Message)
+    except hou.Error:
+        pass
+
+
+def esc() -> None:
+    """Esc: leave Paint and keep what was painted, the stroke the mouse still holds too."""
+    state = LIVE.get("state")
+    if state is not None and state.down:
+        try:
+            state._end_stroke()
+        except Exception:
+            _note(traceback.format_exc())
+    gm.paint_exit()
+
+
+def _qt():
+    try:
+        from PySide6 import QtCore, QtWidgets
+    except ImportError:
+        from PySide2 import QtCore, QtWidgets
+    return QtCore, QtWidgets
+
+
+def _esc_filter():
+    """The application event filter that turns Esc into `esc()` while Paint is on (made once a session). A
+    viewer state gets no key event while a mouse button is down, and none when another pane has the
+    keyboard: Esc with the mouse held left the brush on (checks t60, t61). Esc typed in a text field is
+    left to the field."""
+    got = LIVE.get("esc_filter")
+    if got is not None:
+        return got
+    QtCore, QtWidgets = _qt()
+
+    class _EscFilter(QtCore.QObject):
+        def eventFilter(self, obj, event):
+            try:
+                if event.type() != QtCore.QEvent.KeyPress or event.key() != QtCore.Qt.Key_Escape:
+                    return False
+                if gm.PAINT["node"] is None or LIVE.get("state") is None:
+                    return False
+                focus = QtWidgets.QApplication.focusWidget()
+                if isinstance(focus, (QtWidgets.QLineEdit, QtWidgets.QTextEdit, QtWidgets.QPlainTextEdit)):
+                    return False
+                STATS["esc"] += 1
+                esc()
+                return True
+            except Exception:
+                _note(traceback.format_exc())
+                return False
+
+    LIVE["esc_filter"] = _EscFilter()
+    return LIVE["esc_filter"]
+
+
+def _watch_esc(on: bool) -> None:
+    try:
+        QtCore, QtWidgets = _qt()
+        app = QtWidgets.QApplication.instance()
+        if app is None:
+            return
+        if on and not LIVE.get("esc_on"):
+            app.installEventFilter(_esc_filter())
+            LIVE["esc_on"] = True
+        elif not on and LIVE.get("esc_on"):
+            app.removeEventFilter(_esc_filter())
+            LIVE["esc_on"] = False
+    except Exception:
+        _note(traceback.format_exc())
 
 
 def _note(exc_text: str) -> None:
@@ -120,6 +208,7 @@ class MaskPaint(object):
         self.reroot(cook=False)       # entering never cooks: what the cache holds, or the density asked
         self.recolour()
         node.addEventCallback((hou.nodeEventType.ParmTupleChanged,), self._parm_changed)
+        _watch_esc(True)
         STATS["enter_s"] = time.perf_counter() - t0
 
     def onExit(self, kwargs):
@@ -135,6 +224,8 @@ class MaskPaint(object):
     def _close(self) -> None:
         if self.down:                  # the tool was taken away mid-stroke: keep what was painted
             self._end_stroke()
+        if gm.PAINT["node"] is None:   # Paint is over (not the brush about to come back): no more Esc watch
+            _watch_esc(False)
         if self.node is not None:
             try:
                 self.node.removeEventCallback((hou.nodeEventType.ParmTupleChanged,), self._parm_changed)
@@ -224,7 +315,7 @@ class MaskPaint(object):
 
     def onKeyEvent(self, kwargs):
         if kwargs["ui_event"].device().keyString() == "Esc":
-            gm.paint_exit()
+            esc()
             return True
         return False
 
@@ -237,6 +328,14 @@ class MaskPaint(object):
 
     def _mouse(self, ui_event) -> bool:
         if self.session is None:
+            return False
+        if gm.PAINT["node"] is None:
+            # Paint is over (Esc with the mouse held: Houdini keeps the state until the button is up): no
+            # dab, and the tool goes back as soon as it can
+            if self.ring is not None:
+                self.ring.show(False)
+            import hdefereval
+            hdefereval.executeDeferred(leave)
             return False
         t0 = time.perf_counter()
         STATS["events"] += 1
@@ -258,6 +357,11 @@ class MaskPaint(object):
                 (z[0], z[1], z[2], 0), (pos[0] + lift[0], pos[1] + lift[1], pos[2] + lift[2], 1))) * self.xform)
         self.ring.show(hit)
         left = dev.isLeftButton()
+        if left and not self.down and _others_selected(self.node):
+            # another node is selected: this click is not for the painted node
+            STATS["refused_strokes"] += 1
+            _end_paint("ended_by_selection")
+            return False
         if left and not self.down:
             self.refresh()
             self.down = True
@@ -282,6 +386,8 @@ class MaskPaint(object):
     def _end_stroke(self) -> None:
         self.down = False
         c, self.cur = self.cur, None
+        if c is None:
+            return
         t = time.perf_counter()
         self.writing = True
         try:
@@ -347,6 +453,10 @@ def enter(node) -> bool:
     with hou.undos.disabler():
         if viewer.pwd() != node.parent():
             viewer.setPwd(node.parent())           # a SOP state needs the viewer inside the node's network
+        if _others_selected(node) or not node.isSelected():
+            # Paint is this node's: it becomes the selection (Houdini then enters the node's own state on
+            # its next event loop, and the brush comes back: _came_back)
+            node.setSelected(True, clear_all_selected=True)
         current = viewer.currentState()
         if current != STATE:
             LIVE["prev"] = current
@@ -364,13 +474,21 @@ def leave() -> None:
     """Back to the tool the viewport had before Paint (grooming_masks.paint_exit cleared PAINT)."""
     viewer = _viewer()
     if viewer is None or viewer.currentState() != STATE:
+        if gm.PAINT["node"] is None:
+            _watch_esc(False)
         return
     LIVE["leaving"] = True
     try:
         prev = LIVE.get("prev") or "select"
         with hou.undos.disabler():
             try:
-                viewer.setCurrentState(prev)
+                if prev in USER_STATES or prev == "sopview":
+                    viewer.setCurrentState(prev)
+                else:
+                    # the tool before Paint was a node's own state (the grooming node selected). Entered by
+                    # NAME, a node state generates: Houdini made a second MONO Grooming node on every such
+                    # exit. The viewer goes to the current node's state instead, which makes nothing
+                    viewer.enterCurrentNodeState()
             except hou.Error:
                 viewer.setCurrentState("select")
     finally:
@@ -399,8 +517,13 @@ def _came_back() -> None:
         node = hou.node(gm.PAINT["node"])
         now = time.perf_counter()
         recent = [t for t in LIVE.get("reenters", []) if now - t < REENTER_WINDOW_S]
-        if node is None or current in USER_STATES or len(recent) >= REENTER_MAX:
+        # another node selected: Houdini went to that node's state, and the brush must not come back over it
+        other = bool(node is not None and _others_selected(node))
+        if other:
+            STATS["ended_by_selection"] += 1
+        if node is None or current in USER_STATES or len(recent) >= REENTER_MAX or other:
             gm.PAINT["node"], gm.PAINT["layer"] = None, None
+            _watch_esc(False)
             hook = gm.HOOKS.get("exit")
             if hook is not None:
                 hook()
