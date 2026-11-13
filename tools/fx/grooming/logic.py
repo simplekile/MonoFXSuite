@@ -8,8 +8,11 @@ can be written against them.
 
 from __future__ import annotations
 
+import errno
 import math
+import os
 import re
+import uuid
 from dataclasses import dataclass, field
 from typing import Sequence
 
@@ -432,6 +435,109 @@ def publish_paths(hip_dir: str, asset: str, version: str) -> tuple[str, str]:
     version_dir = lead + "/".join(parts[:idx + 1] + ["publish", version])
     usd = f"{version_dir}/{config.PUBLISH_FILE_TEMPLATE.format(asset=asset)}"
     return usd, f"{version_dir}/{config.TOOL_DATA_DIR}"
+
+
+class StagedFiles:
+    """Files of one publish written under temp names next to their final names, renamed at the end.
+
+    `stage(final)` gives the temp path to write (same folder, so the rename never crosses a disk, and
+    the extension kept, so USD still knows the format); `commit()` renames them all (`os.replace`), the
+    ones staged `last` after the others (the USD, so a USD on disk always has its records). It refuses
+    a final name that exists by then. `abort()` removes exactly what this publish made: its own temp
+    files by name (never a glob, another publish may be writing next to it), the final files it had
+    renamed, and the folders it created while they are empty. Nothing written before is touched.
+    """
+
+    def __init__(self, token: str | None = None):
+        self.token = token or uuid.uuid4().hex[:8]
+        self._files: list[tuple[str, str, bool]] = []   # (temp, final, last)
+        self._dirs: list[str] = []                      # created by make_dirs, outermost first
+        self._placed: list[str] = []                    # final names renamed by commit
+
+    def make_dirs(self, path: str) -> None:
+        """os.makedirs that remembers which folders it created, for abort."""
+        missing = []
+        d = os.path.normpath(path)
+        while d and not os.path.isdir(d):
+            if os.path.exists(d):
+                raise NotADirectoryError(errno.ENOTDIR, "a file is in the way, not a folder", d)
+            missing.append(d)
+            parent = os.path.dirname(d)
+            if parent == d:
+                break
+            d = parent
+        for d in reversed(missing):
+            os.mkdir(d)
+            self._dirs.append(d)
+
+    def stage(self, final: str, last: bool = False) -> str:
+        folder, name = os.path.split(final)
+        stem, ext = os.path.splitext(name)
+        temp = os.path.join(folder, f"{stem}.{self.token}.tmp{ext}").replace("\\", "/")
+        self._files.append((temp, final, last))
+        return temp
+
+    def write_text(self, final: str, text: str) -> str:
+        """Write `text` to the temp name of `final` (flushed to disk, so a full disk fails here)."""
+        temp = self.stage(final)
+        with open(temp, "w", encoding="utf-8") as fh:
+            fh.write(text)
+            fh.flush()
+            os.fsync(fh.fileno())
+        return temp
+
+    def commit(self) -> None:
+        order = [f for f in self._files if not f[2]] + [f for f in self._files if f[2]]
+        for temp, final, _last in order:
+            if not os.path.isfile(temp):
+                raise FileNotFoundError(errno.ENOENT, "nothing was written", temp)
+            if os.path.exists(final):
+                raise FileExistsError(errno.EEXIST, "already exists, not overwritten", final)
+            os.replace(temp, final)
+            self._placed.append(final)
+
+    def abort(self) -> list[str]:
+        """Remove what this publish made; returns what could not be removed (for the message)."""
+        left = []
+        for path in [t for t, _f, _l in self._files] + self._placed:
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except OSError:
+                left.append(path)
+        for d in reversed(self._dirs):
+            try:
+                if os.path.isdir(d) and not os.listdir(d):
+                    os.rmdir(d)
+            except OSError:
+                pass
+        self._placed = []
+        return left
+
+
+_NOT_WRITABLE = {errno.EACCES, errno.EPERM, errno.EROFS}
+
+
+def publish_error(exc: BaseException) -> str:
+    """What the panel says when a publish write fails: the cases an artist can act on by name."""
+    path = str(getattr(exc, "filename", None) or "").replace("\\", "/")
+    where = f": {path}" if path else ""
+    if isinstance(exc, FileExistsError):
+        return f"already published, not overwritten{where}"
+    if isinstance(exc, OSError):
+        if exc.errno == errno.ENOSPC or getattr(exc, "winerror", None) in (39, 112):
+            return f"the disk is full{where}"
+        if exc.errno in _NOT_WRITABLE or getattr(exc, "winerror", None) == 5:
+            return f"the folder is not writable{where}"
+        if exc.strerror:
+            return f"{exc.strerror}{where}"
+    text = str(exc)
+    low = text.lower()
+    if "no space" in low or "disk full" in low or "not enough space" in low:
+        return f"the disk is full ({text})"
+    if "permission denied" in low or "access is denied" in low or "read-only" in low:
+        return f"the folder is not writable ({text})"
+    return text or type(exc).__name__
 
 
 # ---------------------------------------------------------------------------
