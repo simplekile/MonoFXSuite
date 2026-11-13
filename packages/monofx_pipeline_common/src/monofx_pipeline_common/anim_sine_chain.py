@@ -122,11 +122,16 @@ def build_sine_driver_expression(
     chain_phase: float = 0.0,
     wave_mode: str = "SINE",
     channel: str = "ROTATION",
+    cycle_frames: int | None = None,
 ) -> str:
-    """Scripted driver expression with baked chain index and amp ramp."""
+    """Scripted driver expression with baked chain index and amp ramp.
+
+    cycle_frames None reads the live ``cycle`` driver variable; a number bakes it in.
+    """
+    cycle_expr = "cycle" if cycle_frames is None else f"{max(1, int(cycle_frames))}"
     phase_term = f"phase + {float(chain_phase):.6g}"
     angle = f"radians(-freq * {int(member_index)} + {phase_term})"
-    time_term = f"frame / {DEFAULT_SINE_CYCLE_FRAMES} * 2 * pi * speed"
+    time_term = f"frame / {cycle_expr} * 2 * pi * speed"
     if (wave_mode or "SINE").upper() == "NOISE":
         wave = (
             f"(sin({angle} + {time_term}) "
@@ -200,6 +205,7 @@ def scene_sine_wave_prop_paths(channel: str, axis: str) -> Dict[str, str]:
         "freq": f"{rna_prefix}.{group}.frequency",
         "speed": f"{rna_prefix}.{group}.speed",
         "phase": f"{rna_prefix}.{group}.phase",
+        "cycle": f"{rna_prefix}.anim_sine_cycle_frames",
     }
 
 

@@ -26,7 +26,7 @@ def test_build_sine_driver_expression_bakes_index() -> None:
     assert "-freq * 3" in expr3
     assert "radians((amp * 0))" in expr0 or "radians((amp * 0.0))" in expr0
     assert "radians((amp * 0.6))" in expr3
-    assert "frame / 24" in expr3
+    assert "frame / cycle" in expr3
     assert "2 * pi * speed" in expr3
 
 
@@ -46,6 +46,11 @@ def test_build_sine_driver_expression_noise() -> None:
     assert "sin(" in expr
     assert "/ 3" in expr
     assert "2.17" in expr
+
+
+def test_build_sine_driver_expression_custom_cycle() -> None:
+    expr = _sine.build_sine_driver_expression(1, 4, ramp_factor=1.0, cycle_frames=48)
+    assert "frame / 48" in expr
 
 
 def test_build_sine_driver_expression_root_tip() -> None:
@@ -72,7 +77,10 @@ def test_scene_sine_prop_paths() -> None:
     paths = _sine.scene_sine_prop_paths("ROTATION", "Z")
     assert paths["amp"].endswith("anim_sine_rot_z.amplitude")
     assert paths["speed"].endswith("anim_sine_rot_z.speed")
+    assert paths["cycle"].endswith("anim_sine_cycle_frames")
     assert "period" not in paths
+    wave_paths = _sine.scene_sine_wave_prop_paths("ROTATION", "Z")
+    assert wave_paths["cycle"].endswith("anim_sine_cycle_frames")
     loc_paths = _sine.scene_sine_prop_paths("LOCATION", "X")
     assert loc_paths["freq"].endswith("anim_sine_loc_x.frequency")
 
