@@ -29,10 +29,26 @@ PLAY_DISPLAY: tuple[str, ...] = ("same", "guide", "hair_preview")  # index = the
 PREVIEW_FRACTION = 0.10
 PREVIEW_MAX_STRANDS = 20_000
 PREVIEW_FACTOR_STEP = 0.8      # a capped preview factor snaps down to 0.8^k (it is in every lock's cache key)
+# A strand gathers from its root on the region into its lock's shape over this many times the root's
+# distance from the mesh root (build_hda fit_root; at least root_blend of the lock, at most half)
+ROOT_CONVERGE = 3.0
+ROOT_CONVERGE_START = 1.0   # the strands that start a lock gather into it quicker
+# Skin with its lock's mesh over ROOT_FAR_CM above it roots its strands round the lock's root (build_hda
+# region_join / root_pick), fading over +-ROOT_FAR_SOFT of it: the strands crossing that gap were Helen's spike /
+# fuzz / fin. Taken from the hand groom v006, its density over what the regions ask against the mesh's height
+# over the skin: <0.3 cm 1.7, 0.3-0.5 0.50, 0.5-0.7 0.35, 0.7-0.9 0.11, over 1.1 cm ~0 (t52)
+ROOT_FAR_CM = 0.5
+ROOT_FAR_SOFT = 0.5
+# A lock whose mesh root edge lies over ROOT_GAP_CM off the skin floats at its root (a mesh fault: hair does
+# not grow out of the air): Detect lists it, and Root to skin (setting root_skin, cm) bends its spine's start
+# down to the skin
+ROOT_GAP_CM = 0.3
+# a lock's start extras lie on a disc round its root, wide enough to stay under this x the lock's density
+START_DENSITY_MAX = 6.0
 # A scalp's size across (cm) that Detect accepts without a units warning
 SCALP_SIZE_CM = (8.0, 60.0)
 # Prim attributes only the per-lock loop needs (hairgen, fit_to_lock, hairclump): dropped before the cache
-LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_c0", "fit_root", "length_mult", "frizz",
+LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_u0", "fit_c0", "fit_root", "fit_blend", "root_at", "rx", "ry", "start_k", "start_cnt", "start_pos", "length_mult", "frizz",
                      "clumpid", "skinprim", "skinprimuv")
 # The HDA's output 1 "Groom" (and the publish) carry only these besides P, in whatever class the cache has
 # them (docs/plans/grooming_v0_1.md, Geometry contract); output 0 "Display" is what the viewport draws
@@ -71,6 +87,24 @@ MATCH_UNCHANGED_TOL = 1e-5     # root and length within 1e-5 x length: the mesh 
 
 # Region split (logic.region_owners): a lock's footprint radius = this x its measured root width.
 REGION_FOOTPRINT = 0.5
+# Past the footprints a scalp prim goes to the lock whose hair mesh lies nearest over it; locks whose
+# meshes are within this (cm) of the nearest share it (layers lying on each other)
+REGION_MESH_SHARE_CM = 0.1
+# Rule the stored split was made with (detail `region_rule` on the frozen regions): older splits are
+# marked out of date when the scene loads. 2 = footprint, then the mesh lying over the scalp
+REGION_RULE = 3     # 3: footprints on the skin, whorls recorded
+# Whorl (logic.whorls): a lock whose root has WHORL_MIN_LOCKS - 1 other roots within WHORL_RADIUS_CM starts
+# at a whorl; it gets extra roots inside WHORL_DISK_CM of the whorl's centre, enough for its start's
+# cross-section at the set density (build_hda root_spread). The approved Helen v006: 17.5 % of its roots
+# within 1 cm of its crown whorl, ~4,800 / cm2
+WHORL_RADIUS_CM = 1.5
+WHORL_MIN_LOCKS = 3
+WHORL_DISK_CM = 0.7
+# Start extras (build_hda region_frame): strands rooted round a lock's root on top of its count, as many as
+# bring the hair in its first 3/10 to START_TARGET x the mesh's share there: v006's worst start share (t52, 0.47).
+# With roots under floating mesh starting their lock, Helen needs none (worst 0.56 without any, t53)
+START_TARGET = 0.47
+WHORL_FILL = 0.3     # extra strands at a whorl, x the lock's start cross-section
 REGION_SUBDIV = 2              # bilinear subdivisions of the scalp before the split (x4 points each)
 SECTION_MIN_THICK_RATIO = 0.3  # cross-section floor of a lock: thickness counted as >= 30 % of its width
 

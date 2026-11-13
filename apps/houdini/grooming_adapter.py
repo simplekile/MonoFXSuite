@@ -33,12 +33,17 @@ NODE_SPINES_LOCKS = "SPINES_LOCKS"   # spines with lock_id / name / group and re
 NODE_SPINES = "SPINES"               # spines after settings (width_mult, twist_add ...)
 NODE_SCALP_FINE = "SCALP_FINE"       # scalp after the bilinear subdivision used for regions
 NODE_SCALP_REGIONS = "SCALP_REGIONS" # scalp prims with lock_owners (shared when stacked), share, density, area_cm2
+ATTR_OWNER_DIST = "owner_dist"
 ATTR_LOCK_OWNERS = "lock_owners"     # int array: every lock growing hair on a scalp prim
 NODE_HAIR = "HAIR"                   # strands at the current density (preview or full)
 NODE_PUBLISH_USD = "PUBLISH_USD"     # usdexport SOP fed by the rest groom
 NODE_GROOM_REST = "GROOM_REST"       # output 1 "Groom" before the shot deform: every lock, full, contract attribs
 NODE_GROOM = "GROOM"                 # output 1 "Groom"
 
+NODE_REGION_MESH = "region_mesh"     # per SCALP_FINE prim: distance to each lock's hair mesh (Update regions)
+ATTR_REGION_RULE = "region_rule"     # detail on the frozen regions: the rule they were split by
+ATTR_WHORL_LOCKS = "whorl_locks"     # detail on the frozen regions: locks that start at a whorl
+ATTR_WHORL_CENTRES = "whorl_centres" # ... and their whorl's centre (3 floats each)
 PARM_REGIONS = "regions"             # hidden geometry data parm: the frozen region split
 PARM_DISPLAY = "display_mode"
 PARM_COLOR_BY = "color_by"
@@ -71,7 +76,7 @@ _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 MERGED_LOCK = -1                     # LockCache slot of a whole merge (hair_cache / groom_cache), not a lock
 MERGED_MODE = "merged:"
-CACHE_NET_VERSION = "partial-1"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "partial-1-root-spread-6"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -513,11 +518,21 @@ def lock_infos(node) -> list[LockInfo]:
     geo = _cooked(node, NODE_SPINES_LOCKS)
     scalp = _cooked(node, NODE_SCALP_REGIONS)
     area: dict[int, float] = {}   # a shared prim counts 1/share for each of its owners
+    floating: dict[int, float] = {}   # skin under floating mesh, weighted by the falloff (region_join far_w)
     if scalp.findPrimAttrib(ATTR_LOCK_OWNERS) and scalp.findPrimAttrib("area_cm2"):
         # bulk reads: one attribValue call per scalp prim (24k on Helen) cost 2 s on every panel refresh
-        for own, a in zip(scalp.primIntListAttribValues(ATTR_LOCK_OWNERS), scalp.primFloatAttribValues("area_cm2")):
-            for lid in own:
+        owners = scalp.primIntListAttribValues(ATTR_LOCK_OWNERS)
+        areas = scalp.primFloatAttribValues("area_cm2")
+        dists = scalp.primFloatListAttribValues(ATTR_OWNER_DIST) if scalp.findPrimAttrib(ATTR_OWNER_DIST) else None
+        unit = float(node.evalParm("unit_cm"))
+        far = float(node.evalParm("root_far_cm")) if node.parm("root_far_cm") is not None else config.ROOT_FAR_CM
+        for k, (own, a) in enumerate(zip(owners, areas)):
+            for j, lid in enumerate(own):
                 area[lid] = area.get(lid, 0.0) + a / len(own)
+                if dists is not None and j < len(dists[k]) and dists[k][j] >= 0 and far > 0:
+                    w = logic.falloff(dists[k][j] * unit, far, config.ROOT_FAR_SOFT)
+                    if w > 0:
+                        floating[lid] = floating.get(lid, 0.0) + w * a / len(own)
     infos = []
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
@@ -535,6 +550,7 @@ def lock_infos(node) -> list[LockInfo]:
             width=sum(widths) / max(len(widths), 1), thick=sum(thicks) / max(len(thicks), 1),
             twist=pts[-1].floatAttribValue(config.ATTR_LOCK_TWIST) if pts else 0.0,
             strands=logic.lock_strands(prim.floatAttribValue("density"), a, section), region_area_cm2=a,
+            floating_cm2=floating.get(lid, 0.0),
         ))
     return sorted(infos, key=lambda i: i.id)
 
@@ -568,12 +584,14 @@ def detect(node) -> DetectReport:
             # no split to keep yet: "regions out of date" right after the first Detect only asked for a
             # click every artist had to learn (review t48 P2-6); later Detects never re-split silently
             split_regions(node)
+    report.floating = floating_roots(node)
     c = report.counts
     if not data.locks and not data.orphans:
         _status(f"{config.HDA_LABEL}: found {len(pieces)} locks" + (", regions split" if first_split else ""))
     else:
         _status(f"{config.HDA_LABEL}: {len(pieces)} locks - ok {c['ok']}, to check {c['unsure']}, "
-                f"new {c['new']}, missing {c['orphaned']}")
+                f"new {c['new']}, missing {c['orphaned']}"
+                + (" - " + logic.floating_text(report.floating) if report.floating else ""))
     return report
 
 
@@ -643,12 +661,43 @@ def preflight(node) -> dict:
     return out
 
 
+def floating_roots(node) -> list[tuple[str, float]]:
+    """(name, cm) of each lock whose mesh root edge lies over config.ROOT_GAP_CM off the skin (`root_gap`
+    on the spines, the root end the user chose)."""
+    geo = _cooked(node, NODE_SPINES_LOCKS)
+    if geo.findPrimAttrib("root_gap") is None:
+        return []
+    unit = node.evalParm("unit_cm")
+    names = _prim_values(geo, config.ATTR_NAME, "s")
+    gaps = _prim_values(geo, "root_gap", "f")
+    ids = _prim_values(geo, config.ATTR_LOCK_ID, "i")
+    return [(n, g * unit) for n, g, i in zip(names, gaps, ids) if i >= 0 and g * unit > config.ROOT_GAP_CM]
+
+
+def _roots_on_skin(roots: dict[int, tuple[float, float, float]],
+                   centroids: list[tuple[float, float, float]]) -> dict[int, tuple[float, float, float]]:
+    """Each root moved to the nearest scalp prim centre: a cap whose root end lies on another cap sits
+    ~1 cm off the skin (Helen hair_base_08/11/17), so its footprint (0.7 cm) covered no skin, the cap
+    beneath took it, and the first quarter of the cap grew no hair."""
+    if not centroids:
+        return roots
+    import numpy as np
+    c = np.asarray(centroids, dtype=float)
+    out = {}
+    for lid, r in roots.items():
+        i = int(np.argmin(((c - np.asarray(r, dtype=float)) ** 2).sum(axis=1)))
+        out[lid] = tuple(float(v) for v in c[i])
+    return out
+
+
 def split_regions(node) -> None:
     """Recompute and freeze the growth regions, clear `regions_stale`. One undo step.
 
     Per prim of the subdivided scalp (`SCALP_FINE`), at its centroid: the locks whose footprint covers
     it (logic.region_owners: radius = REGION_FOOTPRINT x the lock's measured root width), else the
-    nearest lock; stacked locks share. Frozen as one point per prim with `lock_owners` (int array)."""
+    lock whose hair mesh lies nearest over it (`region_mesh`, layers within REGION_MESH_SHARE_CM
+    share), else the nearest lock; stacked locks share. Frozen as one point per prim with `lock_owners`
+    (int array) and the detail `region_rule` (config.REGION_RULE)."""
     data = read_data(node)
     spines = _cooked(node, NODE_SPINES_LOCKS)
     scalp = _cooked(node, NODE_SCALP_FINE)
@@ -679,18 +728,37 @@ def split_regions(node) -> None:
             c[0] += pos[0]; c[1] += pos[1]; c[2] += pos[2]
         centroids.append((c[0] / n, c[1] / n, c[2] / n))
         prim_groups.append(pp[0].stringAttribValue(config.ATTR_GROUP) if has_group and pp else "")
+    roots = _roots_on_skin(roots, centroids)
     if has_group:
         groups_of = {lk.id: lk.group for lk in data.locks}
     else:  # scalp without regions: every prim may grow any lock
         groups_of = {lid: "" for lid in roots}
-    owners = logic.region_owners(centroids, roots, radii, groups_of, prim_groups)
+    near = _cooked(node, NODE_REGION_MESH)
+    mesh_near = [list(zip(pr.floatListAttribValue("mesh_dist"), pr.intListAttribValue("mesh_lock")))
+                 for pr in near.iterPrims()]
+    share = config.REGION_MESH_SHARE_CM / max(float(node.evalParm("unit_cm")), 1e-6)
+    owners = logic.region_owners(centroids, roots, radii, groups_of, prim_groups, mesh_near, share)
     frozen = hou.Geometry()
+    frozen.addAttrib(hou.attribType.Global, ATTR_REGION_RULE, 0)
+    frozen.setGlobalAttribValue(ATTR_REGION_RULE, config.REGION_RULE)
+    # whorls: locks whose roots converge on one spot get extra roots packed there (build_hda root_spread)
+    uc = max(float(node.evalParm("unit_cm")), 1e-6)
+    whorl = logic.whorls(roots, config.WHORL_RADIUS_CM / uc, config.WHORL_MIN_LOCKS)
+    frozen.addArrayAttrib(hou.attribType.Global, ATTR_WHORL_LOCKS, hou.attribData.Int)
+    frozen.addArrayAttrib(hou.attribType.Global, ATTR_WHORL_CENTRES, hou.attribData.Float)
+    frozen.setGlobalAttribValue(ATTR_WHORL_LOCKS, sorted(whorl))
+    frozen.setGlobalAttribValue(ATTR_WHORL_CENTRES, [v for lid in sorted(whorl) for v in whorl[lid]])
     frozen.createPoints(centroids)
     frozen.addArrayAttrib(hou.attribType.Point, ATTR_LOCK_OWNERS, hou.attribData.Int)
     frozen.addAttrib(hou.attribType.Point, config.ATTR_LOCK_OWNER, config.NO_OWNER)
-    for pt, own in zip(frozen.points(), owners):
+    # how high each owner's mesh lies over the prim (scene units, -1 unknown): the panel's "thin under
+    # floating mesh" reads it without cooking region_mesh on every edit
+    frozen.addArrayAttrib(hou.attribType.Point, ATTR_OWNER_DIST, hou.attribData.Float)
+    for pt, own, nm in zip(frozen.points(), owners, mesh_near):
         pt.setAttribValue(ATTR_LOCK_OWNERS, own)
         pt.setAttribValue(config.ATTR_LOCK_OWNER, own[0] if own else config.NO_OWNER)
+        dist_of = {lid: d for d, lid in nm}
+        pt.setAttribValue(ATTR_OWNER_DIST, [float(dist_of.get(lid, -1.0)) for lid in own])
     data.clear_stale()
     with hou.undos.group(UNDO_PREFIX + "Update regions"):
         node.parm(PARM_REGIONS).set(frozen)
@@ -1118,7 +1186,33 @@ def on_loaded(node) -> None:
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)
+        mark_old_regions(node)
     install_playbar_callback()
+
+
+OLD_REGIONS_WHY = "Regions were split by an older rule: Update regions"
+
+
+def region_rule(frozen) -> int:
+    """The rule a stored split was made with (0: before the rule was recorded)."""
+    if frozen is None or frozen.findGlobalAttrib(ATTR_REGION_RULE) is None:
+        return 0
+    return int(frozen.attribValue(ATTR_REGION_RULE))
+
+
+def mark_old_regions(node) -> bool:
+    """A scene whose regions were split by an older rule (config.REGION_RULE) shows them out of date,
+    with the reason, until Update regions. No undo step (called while loading). True when marked."""
+    frozen = node.parm(PARM_REGIONS).evalAsGeometry() if node.parm(PARM_REGIONS) is not None else None
+    if frozen is None or not frozen.intrinsicValue("pointcount") or region_rule(frozen) >= config.REGION_RULE:
+        return False
+    data = read_data(node)
+    if data.regions_stale and OLD_REGIONS_WHY in data.stale_why:
+        return False
+    data.mark_stale(OLD_REGIONS_WHY)
+    with hou.undos.disabler():
+        node.parm(config.DATA_PARM).set(data.to_json())
+    return True
 
 
 def playing_state(event_name: str) -> bool | None:

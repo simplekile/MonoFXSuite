@@ -32,9 +32,9 @@ angle of the major axis in that frame, unwrapped by pi from band to band. The sp
 to equal steps, which gives `curveu`.
 
 Hair per lock (`fit_to_lock`): hairgen only scatters the roots on the lock's own region at the
-lock's density; every strand is then placed in the lock's measured cross-section, at the spot its
-root has in the region (region principal axes mapped onto the lock's width and thickness axes), and
-blended from its root on the scalp into that shape over the first `root_blend` of its length.
+lock's density, and the roots stay there; each strand joins the lock where its mesh is nearest the root
+(`root_spread`), at the rank of the root's offset across the lock there, and leaves its root over a
+length that grows with that offset (`root_converge`).
 
 Only `hou`; no Houdini GUI needed. Indie licence -> .hdalc.
 """
@@ -321,11 +321,60 @@ v@lock_axis = qrotate(q, a);
 v@lock_minor = cross(t, v@lock_axis);
 """
 
+VEX_ROOT_GAP = """// how far each lock's mesh root edge lies off the skin (root_gap0, scene units) and the move that puts
+// it on the skin (root_gap_v0): its points in the first 3 % of the way from the root band (`dist`, what the
+// spine's bands are measured by), the one nearest the skin; the same for the other end (root_gap1 / _v1, for root_flip). Helen's caps lying on other caps
+// (hair_base_06-18) start 0.6-1.4 cm off the skin, and the strands rooted under them crossed the gap.
+int pts[] = expandpointgroup(1, "@piece=" + itoa(i@piece));
+float mx = 0;
+foreach (int p; pts) mx = max(mx, point(1, "dist", p));
+float g0 = 1e9, g1 = 1e9;
+vector q0 = 0, q1 = 0;
+foreach (int p; pts) {
+    float r = point(1, "dist", p), d = point(1, "scalpdist", p);
+    if (r <= 0.03 * mx && d < g0) { g0 = d; q0 = point(1, "P", p); }
+    if (r >= 0.97 * mx && d < g1) { g1 = d; q1 = point(1, "P", p); }
+}
+f@root_gap0 = g0 < 1e8 ? g0 : 0; f@root_gap1 = g1 < 1e8 ? g1 : 0;
+v@root_gap_v0 = 0; v@root_gap_v1 = 0;
+int hp; vector uv;
+if (g0 < 1e8 && nprimitives(2) > 0) { xyzdist(2, q0, hp, uv); v@root_gap_v0 = primuv(2, "P", hp, uv) - q0; }
+if (g1 < 1e8 && nprimitives(2) > 0) { xyzdist(2, q1, hp, uv); v@root_gap_v1 = primuv(2, "P", hp, uv) - q1; }
+"""
+
+VEX_ROOT_SKIN = """// Root to skin (per-lock setting root_skin, cm): a lock whose root edge lies over ROOT_GAP_CM off the skin
+// has the first root_skin of its spine bent down by the move that puts its root edge on the skin, fading
+// along it, so its strands grow from the skin and blend into the mesh, as Hair Generate's guides do.
+// A lock whose root already touches the skin is never changed (root_gap under the threshold).
+f@root_bent = 0;
+float uc = max(chf("../unit_cm"), 1e-6);
+float L = f@root_skin / uc;
+if (L <= 0 || f@root_gap * uc <= %(gap)s) return;
+int pts[] = primpoints(0, @primnum);
+int n = len(pts);
+if (n < 2) return;
+vector P[]; foreach (int p; pts) { vector q = point(0, "P", p); append(P, q); }
+vector v = v@root_gap_v;
+vector B[] = P;
+float s = 0;
+for (int i = 0; i < n; i++) {
+    if (i > 0) s += distance(P[i], P[i - 1]);
+    B[i] = P[i] + v * (1 - smooth(0, L, s));
+}
+for (int i = 0; i < n; i++) {        // the bent start's tangent too (later nodes project on it)
+    setpointattrib(0, "P", pts[i], B[i]);
+    setpointattrib(0, "tangentu", pts[i], normalize(B[min(i + 1, n - 1)] - B[max(i - 1, 0)]));
+}
+f@root_bent = 1;
+""" % {"gap": config.ROOT_GAP_CM}
+
 VEX_SPINE_FLIP = """// root_flip (the user's per-lock "root end"): the root is the piece's other end. The spine is
 // reversed in place: the bands were measured from the end Detect took, and seen from the other end they
 // are the same cross-sections in reverse order. Measured from the new root: curveu, twist; the tangent
 // turns round, so the minor axis (tangent x axis) does too. Detect still matches on the measured root
 // (SPINES_RAW), so a flipped lock keeps its id and its flip through re-Detect.
+f@root_gap = i@root_flip ? f@root_gap1 : f@root_gap0;     // the root end's gap off the skin (root_gap)
+v@root_gap_v = i@root_flip ? v@root_gap_v1 : v@root_gap_v0;
 if (i@root_flip == 0) return;
 int pts[] = primpoints(0, @primnum);
 int n = len(pts);
@@ -406,6 +455,7 @@ if (nf > 0) {
     c /= max(len(pp), 1);
     int src = nearpoint(2, c);   // by position, never by prim number: a re-exported scalp may reorder
     own = point(2, "lock_owners", src);
+    if (haspointattrib(2, "owner_dist")) f[]@owner_dist = point(2, "owner_dist", src);
 } else {
     int pts[] = primpoints(0, @primnum);
     int ids[], cnt[];
@@ -494,7 +544,32 @@ int id = prim(1, "lock_id", 0);
 if (find(i[]@lock_owners, id) < 0) removeprim(0, @primnum, 1);
 """
 
-VEX_REGION_FRAME = """// region frame: centroid, principal axes on the scalp, half extents
+VEX_REGION_MESH = """// per scalp prim of SCALP_FINE: how far each lock's hair mesh (same group) lies from its centroid,
+// for Update regions (logic.region_owners: past the footprints the prim goes to the lock lying over it)
+vector c = 0;
+int pts[] = primpoints(0, @primnum);
+foreach (int p; pts) c += point(0, "P", p);
+c /= max(len(pts), 1);
+string g = haspointattrib(0, "group") ? point(0, "group", pts[0]) : "";
+int ids[]; float ds[];
+for (int sp = 0; sp < nprimitives(2); sp++) {
+    int lid = prim(2, "lock_id", sp);
+    if (lid < 0) continue;
+    string lg = prim(2, "group", sp);
+    if (g != "" && lg != g) continue;
+    int hp; vector uv;
+    float d = xyzdist(1, "@piece=" + itoa(prim(2, "piece", sp)), c, hp, uv);
+    if (hp < 0) continue;
+    append(ids, lid); append(ds, d);
+}
+i[]@mesh_lock = ids; f[]@mesh_dist = ds;
+"""
+
+START_SPAN = 0.3       # the lock's start whose cross-section a whorl lock's extra strands fill
+
+JOIN_MAX_U = 0.8    # a strand joins its lock before this far along it, so it keeps some length
+
+VEX_REGION_FRAME = ("""// region frame: centroid, principal axes on the scalp, half extents
 int n = npoints(0);
 if (n == 0) return;
 vector c = 0;
@@ -521,7 +596,7 @@ for (int i = 0; i < n; i++) {
 }
 v@rc = c; v@ra = ra; v@rb = rb; f@rea = ea; f@reb = eb;
 // strands: density x the lock's share of the scalp, but at least density x the lock's own cross-section
-// (its widest band, thickness >= 30 % of the width): locks whose roots converge on a small patch
+// (its widest band, thickness >= 30 %% of the width): locks whose roots converge on a small patch
 // (Helen's fringe) and long locks that widen far from the root (hair_back: the first quarter gave
 // 800 strands to a 12 cm wide ribbon, see-through) get as many strands as their mesh shows.
 float dens = prim(1, "density", 0);
@@ -542,6 +617,115 @@ float section = M_PI / 4 * (w * u) * (max(t, 0.3 * w) * u);
 f@region_cm2 = area;
 f@section_cm2 = section;
 f@lock_density = area > 0 ? dens * max(area, section) / area : 0.0;
+f@lock_strands = dens * max(area, section);
+// the lock's start: the strands that make its first stretch are only those rooted round its root (the
+// footprint, REGION_FOOTPRINT x the widest band of the first tenth, centred on the root moved onto the
+// skin; the others join it further along, where its mesh lies over them). A lock starting at a whorl
+// (whorl_tag, logic.whorls) shares that skin with every lock starting there, so it gets whorl_n extra
+// strands rooted at the whorl, as many as the cross-section of its first %(span)s holds at the set
+// density: Helen's ~12 crown caps share ~15 skin prims, and their first third was see-through.
+int np = len(sp);
+float w0 = 0, ws = 0, ts = 0;
+for (int i = 0; i < np; i++) {
+    float wi = point(1, "lock_width", sp[i]);
+    if (i <= max(1, np / 10)) w0 = max(w0, wi);
+    if (i <= max(1, int(np * %(span)s))) { ws = max(ws, wi); ts = max(ts, point(1, "lock_thick", sp[i])); }
+}
+vector rt = prim(1, "root", 0);
+int rp; vector ruv;
+xyzdist(0, rt, rp, ruv);
+vector rc0 = rp >= 0 ? primuv(0, "P", rp, ruv) : rt;
+float rr = %(fp)s * w0;
+float sstart = M_PI / 4 * (ws * u) * (max(ts, 0.3 * ws) * u);
+v@fp_c = rc0; f@fp_r = rr;
+f@root_lift = distance(rt, rc0);           // how far the lock's root sits off the skin
+int wh = prim(1, "whorl", 0);
+float sf = prim(1, "strand_factor", 0);
+// whorl_n extra strands at a whorl: whorl_fill x the cross-section of the first %(span)s at the density
+// (Helen's crown at 0.3: densest 1 cm disc ~16 k roots, ~5,000 / cm2, as the approved v006).
+f@whorl_n = wh ? rint(dens * sstart * sf * chf("../whorl_fill")) : 0;
+f@own_n = max(1, rint(f@lock_strands * sf));
+i@whorl = wh;
+""") % {"span": START_SPAN, "fp": config.REGION_FOOTPRINT, "umax": JOIN_MAX_U}
+
+VEX_REGION_JOIN = """// per region prim, in parallel (inside region_frame's single thread these lookups cost 0.3 s on Helen):
+// where along the lock the strands rooted on it join it (as root_place does: the footprint at the spine's
+// nearest point, elsewhere at the pu of the lock's mesh nearest it), and `far_w`, how much of it lies under
+// floating mesh. Where the lock's mesh lies over root_far_cm above the skin, its roots start the lock
+// instead (root_pick), as the hand groom v006 does (8 %% of the density under Helen's floating caps, 2 %%
+// under the fringe arches): a strand crossing the 1-2.5 cm gap was the spike / fuzz / standing strands
+// (hair_base_08 / 11 / 17) and the fringe's fin. A soft falloff (ROOT_FAR_SOFT either side), not a hard cut,
+// so a small mesh edit never flips a patch of skin at once. That skin is thin on purpose.
+float u = chf("../unit_cm");
+int fl = prim(1, "root_flip", 0);
+float a = f@area_cm2 / max(i@share, 1);
+vector c = primuv(0, "P", @primnum, {0.5, 0.5, 0});
+float uj = 0, fw = 0;
+if (distance(c, detail(0, "fp_c")) <= detail(0, "fp_r")) {
+    int sq; vector suv;
+    xyzdist(1, c, sq, suv);
+    uj = clamp(suv.x, 0, %(umax)s);
+} else {
+    int hp; vector huv;
+    float dm = xyzdist(2, "@piece=" + itoa(prim(1, "piece", 0)), c, hp, huv);
+    if (hp >= 0) { float pu = primuv(2, "pu", hp, huv); uj = clamp(fl ? 1 - pu : pu, 0, %(umax)s); }
+    float fc = chf("../root_far_cm") / u;
+    if (fc > 0 && hp >= 0) fw = smooth(fc * (1 - %(soft)s), fc * (1 + %(soft)s), dm);
+}
+f@join_u = uj; f@join_a = a; f@far_w = fw;
+""" % {"umax": JOIN_MAX_U, "soft": config.ROOT_FAR_SOFT}
+
+VEX_REGION_START = """// start_x extra strands (start extras), rooted round the lock's root ON TOP of its count, as many as its
+// start needs. The lock's own roots stay where hairgen scattered them, at the set density over the whole
+// region, and join the lock where its mesh lies over them (root_place): a lock lying along its region gets
+// its hair along its length and its first stretch only from the roots round its root (Helen's caps and
+// fringe: 11-20 % of their mesh's share in their first 3/10). The region's joins (region_join, stretched as
+// root_spread does) are weighed against the mesh's area in the first 3/10 along the spine (mesh_su); the
+// extras run the whole length. Moving a fixed share of the lock's own roots round its root instead (7e33860)
+// left 60 % of Helen's roots there and the skin between thin.
+int n = nprimitives(0);
+float own = detail(0, "own_n"), wn = detail(0, "whorl_n");
+float h3 = 0, ht = 0, tot = 0;
+if (n > 0) {
+    float ulo = 1, uhi = 0;
+    for (int pr = 0; pr < n; pr++) { float uj = prim(0, "join_u", pr); ulo = min(ulo, uj); uhi = max(uhi, uj); }
+    for (int pr = 0; pr < n; pr++) {
+        float uj = prim(0, "join_u", pr), a = prim(0, "join_a", pr), fw = prim(0, "far_w", pr);
+        float uu = uhi > ulo + 1e-6 ? fit(uj, ulo, uhi, 0, uhi) : 0.0;
+        // the share under floating mesh starts the lock (root_pick): it runs the whole length
+        h3 += a * ((1 - fw) * max(0, 0.3 - uu) + fw * 0.3); ht += a * ((1 - fw) * (1 - uu) + fw); tot += a;
+    }
+    h3 *= own / max(tot, 1e-9); ht *= own / max(tot, 1e-9);
+}
+h3 += 0.3 * wn; ht += wn;          // whorl strands run the whole length too
+int fl = prim(1, "root_flip", 0);
+float m3 = 0, mt = 0;
+int mps[] = expandprimgroup(2, "@piece=" + itoa(prim(1, "piece", 0)));
+foreach (int pr; mps) {
+    float a = prim(2, "su_area", pr), su = prim(2, "su", pr);
+    mt += a; if ((fl ? 1 - su : su) < 0.3) m3 += a;
+}
+float R = chf("../start_target") * (mt > 0 ? m3 / mt : 0.3);
+float ex = R < 0.29 ? (R * ht - h3) / (0.3 - R) : own;
+f@start_x = clamp(rint(ex), 0, 2 * own);
+"""
+
+VEX_MESH_SU = """// each hair-mesh prim: where along its lock's spine it lies (SPINES_RAW, not flipped) and its area, for
+// region_start's mesh share of the start (out of the loop: only the mesh changes it)
+int sp = findattribval(1, "prim", "piece", i@piece);
+f@su = 0; f@su_area = primintrinsic(0, "measuredarea", @primnum);
+if (sp < 0) return;
+int sq; vector suv;
+xyzdist(1, itoa(sp), primuv(0, "P", @primnum, {0.5, 0.5, 0}), sq, suv);
+f@su = suv.x;
+"""
+
+VEX_WHORL_TAG = """// i@whorl: the lock starts at a whorl (Update regions, logic.whorls); v@whorl_c its centre
+i@whorl = 0; v@whorl_c = 0;
+int ids[] = detail(1, "whorl_locks");
+float cs[] = detail(1, "whorl_centres");
+int k = find(ids, i@lock_id);
+if (k >= 0) { i@whorl = 1; v@whorl_c = set(cs[k * 3], cs[k * 3 + 1], cs[k * 3 + 2]); }
 """
 
 VEX_REGION_DENSITY = """// the lock's density (with the cross-section floor), divided where it shares the scalp
@@ -733,56 +917,247 @@ _FIT_PLACE = """vector place(float uu; float ss; float tt; float aw; float pz; f
 }
 """
 
-VEX_FIT_ROOT = ("""// place the strand on the lock's own mesh surface (not on a flat ellipse: wide caps like Helen's
-// hair_base are curved), from its root on the scalp. (s, t) = where its root sits in the lock's
-// region; the mesh offset at (u, s) comes from the surface cloud (input 3), then the lock's settings
-// (width_mult, thick_mult, twist_add through the spine's axes) apply; t adds a little volume.
-// fit_root runs once per strand (prim wrangle): (s, t), the root and its placement, the same for all
-// its points; fit_to_lock then places each point (a point wrangle: writing points from a prim
-// wrangle was 2.5x slower).
-int pr = @primnum;
-int nv = primvertexcount(0, pr);
-vector root = point(0, "P", primpoint(0, pr, 0));
-vector rc = detail(2, "rc"), ra = detail(2, "ra"), rb = detail(2, "rb");
-float s = clamp(dot(root - rc, ra) / max(detail(2, "rea"), 1e-6), -1, 1);
-float t = clamp(dot(root - rc, rb) / max(detail(2, "reb"), 1e-6), -1, 1);
-int p0 = primpoint(1, 0, 0);
-vector a0 = point(1, "lock_axis", p0), m0 = point(1, "lock_minor", p0);
-if (dot(ra, a0) < 0) s = -s;
-if (dot(rb, m0) < 0) t = -t;
-// where a root fell in the region bunches strands in the middle of the lock (Helen: 22 %% of the mesh
-// with no strand near it before clumping); cross_spread moves each strand toward an even spread over
-// the whole cross-section. root_pull then brings its root under that spot.
-float spread = clamp(chf("../cross_spread"), 0, 1);
-if (spread > 0) {
-    s = lerp(s, fit01(rand(set(pr, 0.37, 1.7)), -1, 1), spread);
-    t = lerp(t, fit01(rand(set(pr, 2.91, 0.3)), -1, 1), spread);
+VEX_ROOT_PICK = """// whorl_n + start_x of hairgen's strands (region_frame: on top of the lock's count) are picked at random, so
+// the lock's own roots stay even at the set density over its region. The whorl ones are rooted at its whorl
+// (i@whorl_root, root_place), the start extras (i@start_extra) on a sunflower round the lock's root on its
+// region (v@start_pos: the k-th of m at radius sqrt((k + 0.5) / m), turned by the golden angle), wide enough
+// to stay under START_DENSITY_MAX x the lock's density; points that land off the region are dropped (they
+// would pile up on its edge: Helen's fringe bunched 0.6 of its roots) and the disc grows. Both run the
+// lock's whole length (i@start_root).
+int n = nprimitives(0), wn = int(detail(1, "whorl_n")), sn = int(detail(1, "start_x"));
+int lid = prim(2, "lock_id", 0);
+vector fc = detail(1, "fp_c");
+float uc = max(chf("../unit_cm"), 1e-6);
+if (wn >= n) { wn = 0; sn = 0; }
+if (wn + sn >= n) sn = max(0, n - 1 - wn);
+float rk[]; resize(rk, n);
+for (int pr = 0; pr < n; pr++) rk[pr] = rand(set(pr, 7.31, lid));
+int o[] = argsort(rk);
+// the lock's own roots under floating mesh (region_join far_w, a share of them where it fades) start it too,
+// laid out with the extras
+int isf[]; resize(isf, n);
+int nf = 0;
+for (int k = wn + sn; k < n; k++) {
+    int pt = primpoint(0, o[k], 0);
+    int spr = haspointattrib(0, "skinprim") ? point(0, "skinprim", pt) : prim(0, "skinprim", o[k]);
+    float fw = spr >= 0 ? prim(1, "far_w", spr) : 0.0;
+    int fr = rand(set(o[k], 3.7, lid)) < fw;
+    if (fr) { isf[k] = 1; nf++; }
 }
+int m = sn + nf;
+vector sp[];
+if (m > 0) {
+    float rho = max(detail(1, "lock_density"), 1e-6) * uc * uc;   // strands per scene unit^2
+    float rad = sqrt(m / (M_PI * %(dmax)s * rho));
+    vector nrm = {0, 1, 0};
+    int fp; vector fuv;
+    xyzdist(1, fc, fp, fuv);
+    if (fp >= 0) nrm = prim_normal(1, fp, fuv);
+    vector e1 = normalize(cross(nrm, abs(nrm.y) < 0.9 ? {0, 1, 0} : {1, 0, 0})), e2 = cross(nrm, e1);
+    float a0 = rand(float(lid) + 0.77) * 2 * M_PI, spc = 1 / sqrt(%(dmax)s * rho), R = rad;
+    // the disc grows at most to 3x its radius: grown without bound it reached skin 4 cm from the root
+    // (Helen hair_bang_03), whose strands ran back to the root in a hairpin
+    float rmax = 3 * max(rad, detail(1, "fp_r"));
+    for (int it = 0; it < 8; it++) {
+        resize(sp, 0);
+        int cand = int(ceil(m * R * R / (rad * rad)));
+        for (int k = 0; k < cand; k++) {
+            float a = k * 2.39996323 + a0, d = sqrt((k + 0.5) / cand) * R;
+            int rp; vector ruv;
+            vector c = fc + (e1 * cos(a) + e2 * sin(a)) * d;
+            xyzdist(1, c, rp, ruv);
+            if (rp < 0) continue;
+            // on the region a point moves onto it along the skin's normal; off it, sideways to its edge
+            vector q = primuv(1, "P", rp, ruv), qn = prim_normal(1, rp, ruv), off = c - q;
+            if (length(off - dot(off, qn) * qn) < 0.5 * spc) append(sp, q);
+        }
+        if (len(sp) >= m || R >= rmax) break;
+        R = min(rmax, R * sqrt(float(m) / max(len(sp), 1)) * 1.1);
+    }
+}
+// places: the lock's own far roots first, then the extras; extras left without a place are dropped (the
+// start fill is short there), own roots left without one stay where hairgen put them and join as usual
+int np = len(sp), kst = 0;
+int slot[]; resize(slot, n);
+for (int k = 0; k < n; k++) slot[k] = -1;
+for (int k = wn + sn; k < n; k++) if (isf[k] && kst < np) slot[k] = kst++;
+for (int k = wn; k < wn + sn; k++) if (kst < np) slot[k] = kst++;
+int drop[];
+for (int k = 0; k < n; k++) {
+    int pr = o[k];
+    int isw = k < wn, isx = k >= wn && k < wn + sn;
+    if (isx && slot[k] < 0) { append(drop, pr); continue; }
+    int ist = slot[k] >= 0;
+    setprimattrib(0, "whorl_root", pr, isw);
+    setprimattrib(0, "start_extra", pr, isx);
+    setprimattrib(0, "start_root", pr, isw || ist);
+    setprimattrib(0, "start_k", pr, isw ? k : ist ? slot[k] : -1);
+    setprimattrib(0, "start_cnt", pr, isw ? wn : np);
+    if (ist) setprimattrib(0, "start_pos", pr, sp[slot[k]]);
+}
+foreach (int pr; drop) removeprim(0, pr, 1);
+""" % {"dmax": config.START_DENSITY_MAX}
 
+VEX_ROOT_PLACE = """// per strand (a prim wrangle: the lookups run in parallel; one detail wrangle cost 1.1 s on Helen):
+// where its root ends up (v@root_at), where along its lock it joins it (fit_u0, before root_spread
+// stretches the joins) and its offset across the lock there (rx, ry, ranked by root_spread).
+// fit_u0 = at the mesh's nearest point to the root (input 3, the mesh with `pu`): a lock lying over its
+// own region takes the strands rooted under it there, as hair under a lock does (sent to the mesh's root
+// end, Helen's fringe strands ran back and 11 %% of their points turned over).
+int pr = @primnum;
+int fl = prim(2, "root_flip", 0);
+string own = "@piece=" + itoa(prim(2, "piece", 0));
+float uc = max(chf("../unit_cm"), 1e-6);
+vector r = point(0, "P", primpoint(0, pr, 0));
+// a whorl root: over the skin within %(wdisk)s cm of the whorl's centre, joining at u 0
+int extra = i@start_root;
+if (extra) {
+    // a start root of a lock not at a whorl: within the footprint round the lock's root
+    int atw = i@whorl_root;
+    vector wc = atw ? prim(2, "whorl_c", 0) : detail(1, "fp_c"), wnrm = {0, 1, 0};
+    float rad = %(wdisk)s / uc;
+    float cnt = max(1, i@start_cnt);
+    int wp; vector wuv;
+    xyzdist(1, wc, wp, wuv);
+    if (wp >= 0) { wc = primuv(1, "P", wp, wuv); wnrm = prim_normal(1, wp, wuv); }
+    vector e1 = normalize(cross(wnrm, abs(wnrm.y) < 0.9 ? {0, 1, 0} : {1, 0, 0})), e2 = cross(wnrm, e1);
+    // sunflower: the k-th of cnt at radius sqrt((k + 0.5) / cnt), turned by the golden angle (2.39996)
+    float k = i@start_k;
+    float a = k * 2.39996323 + rand(float(prim(2, "lock_id", 0)) + 0.77) * 2 * M_PI, d = sqrt((k + 0.5) / cnt) * rad;
+    int rp; vector ruv;
+    xyzdist(1, wc + (e1 * cos(a) + e2 * sin(a)) * d, rp, ruv);
+    if (rp >= 0) r = primuv(1, "P", rp, ruv);
+    if (!atw) r = v@start_pos;               // root_pick laid the lock's start roots out on its region
+}
+int hp; vector huv;
+xyzdist(3, own, r, hp, huv);
+// roots round the lock's root (region_frame's footprint) start it: a cap whose start lifts off the skin
+// onto another cap had its own mid lying nearer those roots, and its first three tenths held no hair
+// (at the spine's point nearest them, never behind: the footprint is a disc round the root, and its half
+// ahead of the root, sent back to u 0, made each strand a small hairpin, the crown caps' fuzz at the start)
+float u0 = 0;
+if (hp >= 0 && !extra && distance(r, detail(1, "fp_c")) > detail(1, "fp_r")) {
+    float pu = primuv(3, "pu", hp, huv);
+    u0 = clamp(fl ? 1 - pu : pu, 0, %(umax)s);
+} else if (!extra) {
+    int sq; vector suv;
+    xyzdist(2, r, sq, suv);
+    u0 = clamp(suv.x, 0, %(umax)s);
+}
+vector uv = set(u0, 0, 0);
+vector d = r - primuv(2, "P", 0, uv);
+float w = max(primuv(2, "lock_width", 0, uv), 1e-6), th = max(primuv(2, "lock_thick", 0, uv), 0.3 * w);
+vector la = primuv(2, "lock_axis", 0, uv), lm = primuv(2, "lock_minor", 0, uv);   // typed: dot() overloads
+v@root_at = r;
+f@fit_u0 = u0;
+f@rx = dot(d, normalize(la)) / (0.5 * w);
+f@ry = dot(d, normalize(lm)) / (0.5 * th);
+""" % {"umax": JOIN_MAX_U, "wdisk": config.WHORL_DISK_CM}
+
+VEX_ROOT_SPREAD = """// where every strand joins its lock and where across it (from root_place's fit_u0, rx, ry).
+// The first stretch of a cap often lifts off the scalp (Helen hair_base_17: no root nearer than u 0.26),
+// which left it with no hair: the joins are stretched so the earliest starts at the lock's root.
+// (s, t) = across the lock, ranked: the strands are sorted by u0 into strips of sqrt(n); inside a strip
+// s = rank across the width, t = rank across the thickness, so at every stretch of the lock its strands
+// spread evenly over the whole cross-section and neighbouring roots stay neighbours (a random (s, t)
+// crossed them; ranking along the region's axes mixed up along and across on caps lying on the scalp:
+// 0.4 of their width). cross_spread blends the raw offset over the half width (0) and the rank (1).
+int n = nprimitives(0);
+if (n == 0) return;
+float u0s[], x[], y[]; resize(u0s, n); resize(x, n); resize(y, n);
+for (int pr = 0; pr < n; pr++) {
+    u0s[pr] = prim(0, "fit_u0", pr); x[pr] = prim(0, "rx", pr); y[pr] = prim(0, "ry", pr);
+}
+float ulo = min(u0s), uhi = max(u0s);
+for (int pr = 0; pr < n; pr++) {
+    u0s[pr] = uhi > ulo + 1e-6 ? fit(u0s[pr], ulo, uhi, 0, uhi) : 0.0;
+    setprimattrib(0, "fit_u0", pr, u0s[pr]);
+}
+float spread = clamp(chf("../cross_spread"), 0, 1);
+int ou[] = argsort(u0s);
+int ns = max(1, int(rint(sqrt(float(n)))));
+for (int j = 0; j < ns; j++) {
+    int k0 = j * n / ns, k1 = (j + 1) * n / ns;
+    int ids[]; float xs[], ys[];
+    for (int k = k0; k < k1; k++) { append(ids, ou[k]); append(xs, x[ou[k]]); append(ys, y[ou[k]]); }
+    int m = len(ids);
+    int ox[] = argsort(xs), oy[] = argsort(ys);
+    for (int r = 0; r < m; r++) {
+        int px = ids[ox[r]], py = ids[oy[r]];
+        float rk = (float(r) + 0.5) / m * 2 - 1;
+        setprimattrib(0, "fit_s", px, lerp(clamp(x[px], -1, 1), rk, spread));
+        setprimattrib(0, "fit_t", py, lerp(clamp(y[py], -1, 1), rk, spread));
+    }
+}
+"""
+
+VEX_FIT_ROOT = ("""// place the strand on the lock's own mesh surface (not on a flat ellipse: wide caps like Helen's
+// hair_base are curved), from its root on the scalp. (s, t) = where its root sits across the lock
+// (root_spread); the mesh offset at (u, s) comes from the surface cloud (input 3), then the lock's
+// settings (width_mult, thick_mult, twist_add through the spine's axes) apply; t adds a little volume.
+// fit_root runs once per strand (prim wrangle): the root, its placement and how long it takes to reach
+// it, the same for all its points; fit_to_lock then places each point (a point wrangle: writing points
+// from a prim wrangle was 2.5x slower).
+int pr = @primnum;
+vector root = v@root_at;                     // where root_place put it
+float s = f@fit_s, t = f@fit_t, u0 = f@fit_u0;
 """ + _FIT_PARAMS + _FIT_PLACE + """
 
-vector c0 = place(0.0, s, t, aw, pz, wm, tm, cm, fl);
-// roots are scattered over the lock's whole scalp region, often much wider than the lock's own root:
-// pulled toward the mesh root at the same (s, t) and put back on the region, strands leave the scalp
-// like the mesh does instead of fanning in from all over the region
+vector c0 = place(u0, s, t, aw, pz, wm, tm, cm, fl);
+// the root stays where hairgen scattered it over the lock's region, at the density set (pulling it under
+// the mesh root gathered a 7 x 8 cm region into 1 x 2 cm: Helen's bases 20-30x denser than set, the scalp
+// between them bare). The strand converges from it into the lock's shape over a length that grows with
+// how far it has to go (root_converge x the offset, at least root_blend of the lock, at most half), so a wide region
+// leaves the scalp in a gentle fan, the way hair gathers into a clump, not in a corner.
 float pull = clamp(chf("../root_pull"), 0, 1);
 if (pull > 0 && nprimitives(2) > 0) {
     int rp; vector ruv;
     xyzdist(2, lerp(root, c0, pull), rp, ruv);
     root = primuv(2, "P", rp, ruv);
 }
-f@fit_s = s; f@fit_t = t; v@fit_c0 = c0; v@fit_root = root;
+// a region far wider than its lock (Helen's fringe: 0.8 cm locks on 8 x 8 cm of scalp) leaves roots
+// several cm from the mesh: root_reach (cm, 0 = no limit) brings those within reach of their lock
+float reach = chf("../root_reach_cm") / max(chf("../unit_cm"), 1e-6);
+if (reach > 0 && distance(root, c0) > reach && nprimitives(2) > 0) {
+    int rp; vector ruv;
+    xyzdist(2, c0 + normalize(root - c0) * reach, rp, ruv);
+    root = primuv(2, "P", rp, ruv);
+}
+float len = max(prim(1, "lock_len", 0) * (1 - u0), 1e-6);    // the strand runs from u0 to the tip
+// strands that join along the lock rise to it gently (root_converge 3: at 1, rising straight up 1-2 cm to the
+// floating meshes, they crossed the lock in a spike or fuzz, Helen hair_base_08 / 11 / 17); strands that start
+// it gather quickly (root_converge_start), so the crown's starts are not fuzzy over their first 3/10
+float cv = u0 > 0 ? chf("../root_converge") : chf("../root_converge_start");
+float ub = max(chf("../root_blend"), cv * distance(root, c0) / len);
+f@fit_blend = clamp(ub, 1e-4, 0.5);                  // never over half the strand
+v@fit_c0 = c0; v@fit_root = root;
 """) % {"gap": PIECE_GAP, "sheet": SHEET_GAP}
 
-VEX_FIT = ("""// each strand point: the lock's mesh offset at (u, s, t), eased onto the root over root_blend
+VEX_FIT = ("""// each strand point: the lock's mesh offset at (u, s, t), u running from where the strand joins the lock
+// (fit_u0) to its tip, eased from the root over fit_blend of the strand
+// Only every other point is looked up on the mesh (two surface lookups a point were 3 s of Helen's cook);
+// fit_mid puts the ones between halfway, and strand_smooth blurs along the strand after that
 int pr = pointprims(0, @ptnum)[0];
 int nv = primvertexcount(0, pr);
-float u = nv > 1 ? float(vertexprimindex(0, pointvertex(0, @ptnum))) / (nv - 1) : 0.0;
-float s = prim(0, "fit_s", pr), t = prim(0, "fit_t", pr);
+int iv = vertexprimindex(0, pointvertex(0, @ptnum));
+if (iv %% 2 == 1 && iv < nv - 1) return;
+float u = nv > 1 ? float(iv) / (nv - 1) : 0.0;
+float s = prim(0, "fit_s", pr), t = prim(0, "fit_t", pr), ub = prim(0, "fit_blend", pr);
+float u0 = prim(0, "fit_u0", pr);
 vector c0 = prim(0, "fit_c0", pr), root = prim(0, "fit_root", pr);
 """ + _FIT_PARAMS + _FIT_PLACE + """
-@P = (u <= 0 ? c0 : place(u, s, t, aw, pz, wm, tm, cm, fl)) +(root - c0) * (1 - smooth(0, max(chf("../root_blend"), 1e-4), u));
+@P = (u <= 0 ? c0 : place(lerp(u0, 1, u), s, t, aw, pz, wm, tm, cm, fl)) + (root - c0) * (1 - smooth(0, ub, u));
 """) % {"gap": PIECE_GAP, "sheet": SHEET_GAP}
+
+VEX_FIT_MID = """// the points fit_to_lock skipped: halfway between their neighbours
+int pr = pointprims(0, @ptnum)[0];
+int nv = primvertexcount(0, pr);
+int iv = vertexprimindex(0, pointvertex(0, @ptnum));
+if (iv % 2 == 0 || iv >= nv - 1) return;
+int pts[] = primpoints(0, pr);
+vector a = point(0, "P", pts[iv - 1]), b = point(0, "P", pts[iv + 1]);
+@P = 0.5 * (a + b);
+"""
 
 VEX_STRAND_SMOOTH = """// a surface lookup can land on a fold of the flattened mesh and throw one point off (Helen: 2-11 %
 // of points bent back over 90 deg). The strand's offset from its lock's spine (smooth already) gets a
@@ -790,9 +1165,10 @@ VEX_STRAND_SMOOTH = """// a surface lookup can land on a fold of the flattened m
 int pts[] = primpoints(0, @primnum);
 int n = len(pts), it = chi("../strand_smooth");
 if (n < 4 || it <= 0) return;
+float u0 = f@fit_u0;                                // the strand runs along the spine from u0
 vector O[], S[];
 for (int i = 0; i < n; i++) {
-    vector sp = primuv(1, "P", 0, set(float(i) / (n - 1), 0, 0));
+    vector sp = primuv(1, "P", 0, set(lerp(u0, 1, float(i) / (n - 1)), 0, 0));
     vector p = point(0, "P", pts[i]);
     append(S, sp); append(O, p - sp);
 }
@@ -1050,12 +1426,17 @@ def build_network(sub) -> None:
     # band centroids and frames jump from band to band (Helen: median corner 34 deg every 2.8 cm), and
     # every strand inherits them as zigzags: blurred along the spine, root and tip held
     smooth = _wrangle(sub, "spine_smooth", VEX_SPINE_SMOOTH, PRIM, [resample])
-    raw = _node(sub, "null", "SPINES_RAW", [smooth])
+    gap = _wrangle(sub, "root_gap", VEX_ROOT_GAP, PRIM, [smooth, dist, in_scalp])
+    raw = _node(sub, "null", "SPINES_RAW", [gap])
     # the hair mesh as a lookup cloud: strands follow its real surface, curved caps included
     sparams = _wrangle(sub, "surface_params", VEX_SURFACE_PARAMS, POINT, [pieces, raw])
     sextent = _wrangle(sub, "surface_extent", VEX_SURFACE_EXTENT, DETAIL, [sparams])
     scloud = _wrangle(sub, "surface_cloud", VEX_SURFACE_CLOUD, POINT, [sextent])
     surface = _node(sub, "null", "SURFACE_CLOUD", [scloud])
+    # the mesh itself with `pu`, `piece` on its prims: where a strand rooted under its lock joins it
+    mesh_pu = _node(sub, "attribpromote", "mesh_pu", [sextent], inname="piece", inclass=2, outclass=1,
+                    method=1, deletein=0)
+    mesh_su = _wrangle(sub, "mesh_su", VEX_MESH_SU, PRIM, [mesh_pu, raw])
     section("Pieces, root ends, spines")
 
     # ---- lock ids, names, groups and resolved settings from the JSON ----
@@ -1065,7 +1446,8 @@ def build_network(sub) -> None:
     flip = _wrangle(sub, "spine_flip", VEX_SPINE_FLIP, PRIM, [assign])
     spines_locks = _node(sub, "null", "SPINES_LOCKS", [flip])
     settings = _wrangle(sub, "apply_settings", VEX_APPLY_SETTINGS, POINT, [spines_locks])
-    spines = _node(sub, "null", "SPINES", [settings])
+    to_skin = _wrangle(sub, "root_skin", VEX_ROOT_SKIN, PRIM, [settings])
+    spines = _node(sub, "null", "SPINES", [to_skin])
     # hidden locks (the panel's eye) are not cooked for display; the Groom output (and publish) cooks every lock
     guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0", grouptype=4)
     shown = _wrangle(sub, "lock_shown", VEX_LOCK_SHOWN, PRIM, [guides_cut])
@@ -1082,6 +1464,8 @@ def build_network(sub) -> None:
     frozen = _node(sub, "python", "frozen_regions", [scalp_fine])
     frozen.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_frozen_regions(hou.pwd())\n")
+    # read only by Update regions (grooming_adapter.split_regions), never by the display
+    _wrangle(sub, "region_mesh", VEX_REGION_MESH, PRIM, [scalp_fine, mesh_pu, spines_locks])
     rpts = _wrangle(sub, "region_points", VEX_REGION_POINTS, POINT, [scalp_fine, frozen, spines])
     rprims = _wrangle(sub, "region_prims", VEX_REGION_PRIMS, PRIM, [rpts, spines, frozen])
     regions = _node(sub, "null", "SCALP_REGIONS", [rprims])
@@ -1093,7 +1477,9 @@ def build_network(sub) -> None:
     # an edit of one lock recooks that lock, hiding cooks nothing, showing a cached lock merges it back.
     # Clump, length and frizz run per lock inside the loop, so no whole-groom node is left to recook.
     skeys = _wrangle(sub, "surface_keys", VEX_SURFACE_KEYS, DETAIL, [surface])
-    keys = _node(sub, "python", "lock_keys", [guides, preview, skeys])
+    # whorl membership from the frozen split (a prim attribute, so it is in each lock's cache key)
+    wtag = _wrangle(sub, "whorl_tag", VEX_WHORL_TAG, PRIM, [guides, frozen])
+    keys = _node(sub, "python", "lock_keys", [wtag, preview, skeys])
     keys.parm("python").set("from apps.houdini import grooming_adapter\n"
                             "grooming_adapter.cook_lock_keys(hou.pwd())\n")
     to_cook = _node(sub, "blast", "to_cook", [keys], group="@grows==0 @cached==1", grouptype=4)
@@ -1103,7 +1489,9 @@ def build_network(sub) -> None:
     begin = _node(sub, "block_begin", "foreach_begin", [to_cook], method=1, blockpath="../foreach_end")
     scalp_in = _node(sub, "block_begin", "foreach_scalp", [regions], method=3, blockpath="../foreach_end")
     cut = _wrangle(sub, "region_cut", VEX_REGION_CUT, PRIM, [scalp_in, begin])
-    frame = _wrangle(sub, "region_frame", VEX_REGION_FRAME, DETAIL, [cut, begin])
+    frame0 = _wrangle(sub, "region_frame", VEX_REGION_FRAME, DETAIL, [cut, begin])
+    join = _wrangle(sub, "region_join", VEX_REGION_JOIN, PRIM, [frame0, begin, mesh_pu])
+    frame = _wrangle(sub, "region_start", VEX_REGION_START, DETAIL, [join, begin, mesh_su])
     rdens = _wrangle(sub, "region_density", VEX_REGION_DENSITY, POINT, [frame])
     # hairgen scatters the roots and grows straight unguided strands; fit_to_lock gives them the
     # lock's shape (the spine as a hairgen guide would need skinprim/skinuv on the region).
@@ -1119,10 +1507,20 @@ def build_network(sub) -> None:
     hairgen.parm("density").setExpression(
         'pow(ch("../unit_cm"), 2) * prim("../foreach_begin", 0, "strand_factor", 0)')
     hairgen.parm("scatterseed").setExpression('prim("../foreach_begin", 0, "lock_id", 0)')
+    # the strand count itself (density still spreads them): from density alone hairgen gave locks of a few
+    # scalp prims ~15 % fewer strands than density x area (Helen hair_bang_18: 40 of 47)
+    hairgen.parm("forcecount").set(1)
+    hairgen.parm("count").setExpression(
+        'max(1, rint(detail("../region_frame", "lock_strands", 0) * prim("../foreach_begin", 0, "strand_factor", 0)) '
+        '+ detail("../region_frame", "whorl_n", 0) + detail("../region_start", "start_x", 0))')
     hairgen.parm("thickness").setExpression('ch("../strand_width")')
-    fit_root = _wrangle(sub, "fit_root", VEX_FIT_ROOT, PRIM, [hairgen, begin, frame, surface])
+    pick = _wrangle(sub, "root_pick", VEX_ROOT_PICK, DETAIL, [hairgen, frame, begin])
+    place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [pick, frame, begin, mesh_pu])
+    spread = _wrangle(sub, "root_spread", VEX_ROOT_SPREAD, DETAIL, [place])
+    fit_root = _wrangle(sub, "fit_root", VEX_FIT_ROOT, PRIM, [spread, begin, frame, surface])
     fit = _wrangle(sub, "fit_to_lock", VEX_FIT, POINT, [fit_root, begin, frame, surface])
-    sm_strand = _wrangle(sub, "strand_smooth", VEX_STRAND_SMOOTH, PRIM, [fit, begin])
+    fit_mid = _wrangle(sub, "fit_mid", VEX_FIT_MID, POINT, [fit])
+    sm_strand = _wrangle(sub, "strand_smooth", VEX_STRAND_SMOOTH, PRIM, [fit_mid, begin])
     tags = _wrangle(sub, "strand_tags", VEX_STRAND_TAGS, PRIM, [sm_strand, begin])
     # clump on the lock's own region: hairgen's skinprim / skinprimuv index this region cut, so they
     # are valid on it as they are (one hairclump over the whole scalp needed them looked up again)
@@ -1173,7 +1571,7 @@ def build_network(sub) -> None:
 
     # ---- publish: the full hair, without display-only attributes ----
     # skinprim / skinprimuv refer to the per-lock region inside the loop, not the scalp: dropped
-    pub_clean = _node(sub, "attribdelete", "publish_clean", [hair], primdel="lock_cd group_cd tightness clumpblend fit_s fit_t fit_c0 fit_root "
+    pub_clean = _node(sub, "attribdelete", "publish_clean", [hair], primdel="lock_cd group_cd tightness clumpblend fit_s fit_t fit_u0 fit_c0 fit_root fit_blend root_at rx ry whorl_root start_root start_extra start_k start_cnt start_pos "
                       "length_mult frizz clumpid skinprim skinprimuv path visible Cd",
                       ptdel="Cd tightness skinprim skinprimuv pCaptPts pCaptWeights", dtldel="gl_shadeopencurves")
     pub = _node(sub, "usdexport", "PUBLISH_USD",[pub_clean])
@@ -1414,12 +1812,43 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     adv.addParmTemplate(gone)
     adv.addParmTemplate(hou.FloatParmTemplate("cross_spread", "Cross-section spread", 1, default_value=(1.0,),
                                               min=0.0, max=1.0,
-                                              help="0: a strand's place across the lock follows where its root "
-                                                   "fell in the region (bunches in the middle); 1: an even spread"))
-    adv.addParmTemplate(hou.FloatParmTemplate("root_pull", "Root pull to mesh", 1, default_value=(0.85,),
+                                              help="0: a strand's place across the lock is where its root fell in "
+                                                   "the region (bunches in the middle); 1: its rank there, an even "
+                                                   "spread that keeps neighbouring roots together"))
+    adv.addParmTemplate(hou.FloatParmTemplate("root_pull", "Root pull to mesh", 1, default_value=(0.0,),
                                               min=0.0, max=1.0,
                                               help="0: roots stay where hairgen scattered them over the lock's "
-                                                   "region (fans in from a wide region); 1: under the mesh root"))
+                                                   "region, at the density set; 1: all under the mesh root "
+                                                   "(denser than set, scalp between locks bare)"))
+    adv.addParmTemplate(hou.FloatParmTemplate("root_reach_cm", "Root reach (cm)", 1, default_value=(0.0,),
+                                              min=0.0, max=20.0,
+                                              help="Roots farther than this from where they join their lock are "
+                                                   "brought this close (0: no limit, roots stay where scattered)"))
+    adv.addParmTemplate(hou.FloatParmTemplate("root_far_cm", "Floating mesh (cm)", 1,
+                                              default_value=(config.ROOT_FAR_CM,), min=0.0, max=10.0,
+                                              help="Skin with its lock's mesh more than this above it (fading over "
+                                                   "50 % either side) roots its strands round the lock's root, as a "
+                                                   "hand groom does: no hair crossing the gap, that skin thin "
+                                                   "(0: never)"))
+    adv.addParmTemplate(hou.FloatParmTemplate("start_target", "Start fill", 1,
+                                              default_value=(config.START_TARGET,), min=0.0, max=1.5,
+                                              help="Extra strands rooted round each lock's root, on top of its count, "
+                                                   "until the hair in its first 3/10 is this x the mesh's share there "
+                                                   "(0: none; the lock's own roots stay even over its region)"))
+    adv.addParmTemplate(hou.FloatParmTemplate("whorl_fill", "Whorl fill", 1,
+                                              default_value=(config.WHORL_FILL,), min=0.0, max=10.0,
+                                              help="Extra strands of a lock starting at a whorl, rooted at the whorl, "
+                                                   "in times what its first 3/10's cross-section holds at the density: "
+                                                   "how dense the whorl is packed"))
+    adv.addParmTemplate(hou.FloatParmTemplate("root_converge", "Root convergence", 1,
+                                              default_value=(config.ROOT_CONVERGE,), min=0.0, max=10.0,
+                                              help="How long a strand takes to gather from its root into the "
+                                                   "lock's shape, in times its root's distance from the mesh "
+                                                   "root (at least Root blend of the lock, at most half of it)"))
+    adv.addParmTemplate(hou.FloatParmTemplate("root_converge_start", "Root convergence at start", 1,
+                                              default_value=(config.ROOT_CONVERGE_START,), min=0.0, max=10.0,
+                                              help="Root convergence of the strands that start the lock (rooted round "
+                                                   "its root); the others, joining along it, take Root convergence"))
     adv.addParmTemplate(hou.FloatParmTemplate("strand_segment_cm", "Strand segment (cm)", 1, default_value=(2.0,),
                                               min=0.5, max=10.0,
                                               help="Longest segment of a strand: long locks get more points, "

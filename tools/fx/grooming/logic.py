@@ -29,6 +29,7 @@ class LockInfo:
     twist: float          # total measured twist, radians
     strands: int          # strands generated at full count
     region_area_cm2: float
+    floating_cm2: float = 0.0   # skin under floating mesh, its roots moved to the lock's start (falloff-weighted)
 
 
 @dataclass
@@ -52,6 +53,8 @@ class Match:
 class DetectReport:
     matches: list[Match] = field(default_factory=list)
     orphaned: list[int] = field(default_factory=list)   # lock ids with no piece any more
+    # (lock name, cm) of the locks whose mesh root edge floats over config.ROOT_GAP_CM off the skin
+    floating: list[tuple[str, float]] = field(default_factory=list)
 
     @property
     def counts(self) -> dict[str, int]:
@@ -89,6 +92,27 @@ def _dot(a: Sequence[float], b: Sequence[float]) -> float | None:
     if na == 0.0 or nb == 0.0:
         return None
     return sum(x * y for x, y in zip(a, b)) / (na * nb)
+
+
+def falloff(height_cm: float, far_cm: float, soft: float) -> float:
+    """How much of the skin's roots start the lock where its mesh lies `height_cm` over it: smoothstep from
+    far_cm x (1 - soft) to far_cm x (1 + soft), as build_hda region_join (VEX smooth)."""
+    lo, hi = far_cm * (1 - soft), far_cm * (1 + soft)
+    if hi <= lo:
+        return 1.0 if height_cm > far_cm else 0.0
+    t = min(max((height_cm - lo) / (hi - lo), 0.0), 1.0)
+    return t * t * (3 - 2 * t)
+
+
+def floating_text(floating: Sequence[tuple[str, float]], shown: int = 5) -> str:
+    """The Detect line's warning about locks whose root floats off the skin, or "" when none does."""
+    if not floating:
+        return ""
+    worst = sorted(floating, key=lambda f: -f[1])
+    names = ", ".join(f"{n} {g:.1f} cm" for n, g in worst[:shown])
+    more = f" and {len(worst) - shown} more" if len(worst) > shown else ""
+    return (f"{len(worst)} lock root{'s' if len(worst) > 1 else ''} off the skin ({names}{more}): "
+            f"their meshes start in the air; Root to skin bends them down")
 
 
 def match_locks(pieces: Sequence[MeshPiece], locks: Sequence["object"], next_id: int) -> DetectReport:
@@ -251,16 +275,25 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
                   roots: dict[int, tuple[float, float, float]],
                   radii: dict[int, float],
                   groups_of: dict[int, str],
-                  point_groups: Sequence[str]) -> list[list[int]]:
+                  point_groups: Sequence[str],
+                  mesh_near: Sequence[Sequence[tuple[float, int]]] | None = None,
+                  mesh_share: float = 0.0) -> list[list[int]]:
     """Locks growing hair at each scalp point: every lock of the point's group whose footprint covers
-    it (distance to its root <= its radius, about half its root width), else the nearest lock of the
-    group, else none.
+    it (distance to its root <= its radius, about half its root width), else the lock of the group
+    whose MESH lies nearest over it (`mesh_near`: per point, (distance, lock) to each lock's hair mesh;
+    locks within `mesh_share` of the nearest share), else the nearest lock root of the group, else none.
 
     Stacked locks (Helen's fringe layers: roots 1-4 mm apart, under one scalp polygon) share the
     patch they stand on instead of the nearest one taking it all; the HDA divides a shared patch's
-    density between its owners, so the strand count of the scalp does not change. Every lock of a
-    group that has points gets at least its nearest point. Lists are sorted by distance (nearest first).
+    density between its owners, so the strand count of the scalp does not change. The footprint comes
+    first so a cap lying on another one's root keeps its own root area. Past the footprints the scalp
+    goes to the lock lying over it: by nearest root, Helen's 0.8 cm wide fringe locks owned 8 x 8 cm of
+    scalp, and 59 % of roots spread at the set density sat over 1 cm from their own lock's mesh (under a
+    neighbour's). Every lock of a group that has points gets at least its nearest point. Lists are
+    sorted by distance (nearest first).
     """
+    if mesh_near is not None and len(mesh_near) != len(scalp_points):
+        raise ValueError(f"{len(scalp_points)} scalp points but {len(mesh_near)} mesh distance lists")
     if len(scalp_points) != len(point_groups):
         raise ValueError(f"{len(scalp_points)} scalp points but {len(point_groups)} point groups")
     by_group = _locks_by_group(roots, groups_of)
@@ -274,8 +307,12 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
             if lid not in nearest_of or d < nearest_of[lid][0]:
                 nearest_of[lid] = (d, i)
         inside = sorted((d, lid) for d, lid in cands if d <= max(radii.get(lid, 0.0), 0.0))
+        over = sorted((d, lid) for d, lid in (mesh_near[i] if mesh_near is not None else ())
+                      if lid in roots and groups_of.get(lid, "") == g)
         if inside:
             out.append([lid for _, lid in inside])
+        elif over:
+            out.append([lid for d, lid in over if d <= over[0][0] + max(mesh_share, 0.0)])
         elif cands:
             out.append([min(cands)[1]])
         else:
@@ -284,6 +321,24 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
     for lid, (_d, i) in nearest_of.items():
         if lid not in covered:
             out[i].append(lid)
+    return out
+
+
+def whorls(roots: dict[int, tuple[float, float, float]], radius: float,
+           min_locks: int = 3) -> dict[int, tuple[float, float, float]]:
+    """Locks that start at a whorl, each with its whorl's centre: a lock with at least `min_locks` - 1
+    other roots within `radius` of its own (roots on the skin). The centre is the mean of those roots.
+
+    Helen: ~12 crown caps start at one spot, whose skin cannot hold enough roots at the set density for
+    all their starts (the approved v006 put 17.5 % of its roots within 1 cm of it), so those locks get
+    extra roots packed there; the rest of the scalp stays at the set density."""
+    out: dict[int, tuple[float, float, float]] = {}
+    ids = sorted(roots)
+    for lid in ids:
+        near = [roots[o] for o in ids if _dist(roots[lid], roots[o]) <= radius]
+        if len(near) >= max(min_locks, 1):
+            n = len(near)
+            out[lid] = (sum(p[0] for p in near) / n, sum(p[1] for p in near) / n, sum(p[2] for p in near) / n)
     return out
 
 

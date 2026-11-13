@@ -373,3 +373,82 @@ def test_publish_paths_one_spelling_per_version():
     a, _ = logic.publish_paths("D:/p/char_Helen/04_grooming/houdini/work", "char_Helen", "V7")
     b, _ = logic.publish_paths("D:/p/char_Helen/04_grooming/houdini/work", "char_Helen", "v007")
     assert a == b and "/publish/v007/" in a
+
+
+# ---- region_owners: past the footprints, the lock whose mesh lies over the scalp ----
+# Every lock also gets a point on its own root, so the point tested is the only one in question.
+
+def _with_roots(pt, near, roots):
+    pts = [pt] + [roots[lid] for lid in sorted(roots)]
+    return pts, [near] + [[] for _ in roots]
+
+
+def test_region_owners_scalp_goes_to_the_mesh_lying_over_it_not_the_nearest_root():
+    # Lock 1's root is nearer the point, but lock 2's mesh lies over it (Helen: 0.8 cm fringe locks
+    # owned 8 x 8 cm of scalp by nearest root, while other locks' meshes lay over it).
+    roots = {1: (0.0, 0, 0), 2: (0.2, 0, 0)}
+    pts, near = _with_roots((0.05, 0, 0), [(0.04, 1), (0.002, 2)], roots)
+    owners = logic.region_owners(pts, roots, {1: 0.01, 2: 0.01}, {1: "g", 2: "g"}, ["g"] * 3, near)
+    assert owners[0] == [2]
+
+
+def test_region_owners_footprint_comes_before_the_mesh():
+    # A cap lying over another one's root: the root area stays with the lock rooted there.
+    roots = {1: (0.0, 0, 0), 2: (0.3, 0, 0)}
+    pts, near = _with_roots((0.005, 0, 0), [(0.001, 2), (0.01, 1)], roots)
+    owners = logic.region_owners(pts, roots, {1: 0.02, 2: 0.02}, {1: "g", 2: "g"}, ["g"] * 3, near)
+    assert owners[0] == [1]
+
+
+def test_region_owners_layered_meshes_share_within_mesh_share():
+    roots = {1: (0, 0, 0), 2: (0.3, 0, 0), 3: (0.5, 0, 0)}
+    radii = {1: 0.01, 2: 0.01, 3: 0.01}
+    groups = {1: "g", 2: "g", 3: "g"}
+    pts, near = _with_roots((0.1, 0, 0), [(0.0030, 1), (0.0035, 2), (0.02, 3)], roots)
+    assert logic.region_owners(pts, roots, radii, groups, ["g"] * 4, near, mesh_share=0.001)[0] == [1, 2]
+    assert logic.region_owners(pts, roots, radii, groups, ["g"] * 4, near, mesh_share=0.0)[0] == [1]
+
+
+def test_region_owners_mesh_of_another_group_or_an_excluded_lock_is_ignored():
+    roots = {1: (0, 0, 0), 2: (0.3, 0, 0), 3: (0.6, 0, 0)}
+    pts, near = _with_roots((0.1, 0, 0), [(0.001, 3), (0.002, 9), (0.05, 2)], roots)  # 9: excluded
+    owners = logic.region_owners(pts, roots, {1: 0.01, 2: 0.01, 3: 0.01}, {1: "g", 2: "g", 3: "h"},
+                                 ["g", "g", "g", "h"], near)
+    assert owners[0] == [2]
+
+
+def test_region_owners_needs_one_mesh_list_per_point():
+    import pytest
+    with pytest.raises(ValueError):
+        logic.region_owners([(0, 0, 0), (1, 0, 0)], {1: (0, 0, 0)}, {1: 0.1}, {1: "g"}, ["g", "g"], [[]])
+
+
+# ---- whorls: locks whose roots converge on one spot ----
+
+def test_whorls_finds_locks_starting_at_one_spot_with_its_centre():
+    roots = {1: (0.0, 0, 0), 2: (0.01, 0, 0), 3: (0.0, 0.01, 0), 4: (0.5, 0, 0)}
+    out = logic.whorls(roots, radius=0.015, min_locks=3)
+    assert set(out) == {1, 2, 3}
+    cx, cy, _ = out[1]
+    assert abs(cx - 0.01 / 3) < 1e-9 and abs(cy - 0.01 / 3) < 1e-9
+
+
+def test_whorls_needs_min_locks_and_none_alone():
+    roots = {1: (0.0, 0, 0), 2: (0.01, 0, 0), 3: (0.3, 0, 0)}
+    assert logic.whorls(roots, radius=0.015, min_locks=3) == {}
+    assert set(logic.whorls(roots, radius=0.015, min_locks=2)) == {1, 2}
+
+
+def test_floating_text_lists_the_worst_roots_first() -> None:
+    assert logic.floating_text([]) == ""
+    one = logic.floating_text([("hair_base_17", 0.58)])
+    assert one.startswith("1 lock root off the skin (hair_base_17 0.6 cm)")
+    many = logic.floating_text([(f"l{i}", 0.3 + i / 10) for i in range(8)], shown=3)
+    assert "(l7 1.0 cm, l6 0.9 cm, l5 0.8 cm and 5 more)" in many
+
+
+def test_falloff_fades_between_the_two_heights() -> None:
+    assert logic.falloff(0.2, 0.5, 0.5) == 0.0
+    assert logic.falloff(0.5, 0.5, 0.5) == 0.5
+    assert logic.falloff(0.8, 0.5, 0.5) == 1.0
+    assert 0.0 < logic.falloff(0.4, 0.5, 0.5) < 0.5 < logic.falloff(0.6, 0.5, 0.5) < 1.0

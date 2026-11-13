@@ -10,19 +10,28 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   into `otls/` (the suite root is the package `hpath`).
 - What the user set lives as JSON in the node's hidden `groom_data` parm (`model.GroomData`): a parm, so
   edits are undoable and saved with the hip. Measured lock shape lives on the geometry, never in the JSON.
-  Settings resolve built-in → `defaults` → group → lock.
+  Settings resolve built-in â†’ `defaults` â†’ group â†’ lock.
 - A lock is spine + `lock_width` / `lock_thick` / `lock_twist` along `curveu`; the hair mesh is only an
   input. `lock_width` is the lock's width; Houdini's `width` stays the strand thickness.
 - Growth regions are frozen in the node and change only on Update regions: editing one lock never changes
   another lock's look without telling. Rule (`logic.region_owners`): the scalp is subdivided bilinearly
-  (`region_subdiv`), each prim belongs to every lock whose footprint (0.5 x widest head width) covers its
-  centroid, else the nearest lock of its group; stacked locks share prims (`lock_owners`, `share`) and
-  divide the density. Nearest-root alone left 19/61 Helen fringe locks bare (roots 1-4 mm apart). The
-  frozen split is read back by position (`nearpoint`), never by prim number.
+  (`region_subdiv`), each prim belongs to every lock whose footprint (0.5 x widest head width, centred on
+  the root moved onto the skin: `_roots_on_skin`, a cap whose root lies on another cap sits ~1 cm up and
+  its footprint covered no skin) covers its centroid, else the lock of its group whose hair MESH lies nearest over it (HDA node `region_mesh`, layers
+  within `REGION_MESH_SHARE_CM` share), else the nearest root; stacked locks share prims (`lock_owners`,
+  `share`) and divide the density. Nearest-root alone left 19/61 Helen fringe locks bare (roots 1-4 mm
+  apart), and past the footprints it gave scalp to locks lying elsewhere: 0.8 cm fringe locks owned 8 x 8
+  cm, and with roots at the set density 59 % sat over 1 cm from their own mesh, under a neighbour's (by
+  mesh: 25 %). Update regions also records whorls (`logic.whorls`: a lock with 2+ other roots within
+  `WHORL_RADIUS_CM` 1.5 of its own starts at one; detail `whorl_locks` / `whorl_centres`, read per lock by
+  `whorl_tag` into the cache key). The frozen split is read back by position (`nearpoint`), never by prim
+  number; it records its rule (detail `region_rule`, `config.REGION_RULE` 3), and a scene split by an older
+  rule opens with regions out of date and the reason (`mark_old_regions` in OnLoaded): existing scenes
+  need Update regions.
 - Strands per lock = density x max(its share of the scalp, its own cross-section) (`logic.lock_strands`,
   same rule in the HDA's `region_frame`): fringe locks whose roots converge on one spot still get hair
   matching their mesh. In VEX, type every `prim()` read used in arithmetic (`float a = prim(...)`):
-  inside an int expression it returns int and areas of 0.03 cm² became 0.
+  inside an int expression it returns int and areas of 0.03 cmÂ² became 0.
 - Partial cook: each lock's hair is cooked once per state of what it reads and kept in a per-lock
   cache (`grooming_adapter.LockCache`, on `sys` so a module reload keeps it). `lock_keys` (Python SOP,
   hair modes only) digests per lock its spine and resolved settings, its region (`region_keys`, 9 sums
@@ -114,7 +123,7 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     the isolate would ghost every drawn lock, so then nothing is ghosted and the message says why; eyes
     refocus on every refresh. No "editing" word in the tree (the user: the packed / strands icon says more).
   - Loading: every change through the controller (`_run`, `_edit`) runs in `_busy`: the panel's loading
-    line ("Cooking: …", a moving bar) is armed for `BUSY_DELAY_MS` (150), and the node is cooked there
+    line ("Cooking: â€¦", a moving bar) is armed for `BUSY_DELAY_MS` (150), and the node is cooked there
     (`adapter.cook_display`), not on the viewport's next draw. Houdini handles Qt events mid-cook, so the
     line shows during a long cook (t37: a group density edit of 4.3 s showed it at 0.17 s) and never
     for a quick one. A first click on a lock makes the ghost copies of the others once (~0.1 s).
@@ -187,11 +196,32 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   cross-section per band; per band a 2D principal-axis fit in a parallel-transported frame gives width,
   thickness and twist (a near-round band keeps the previous axis). Lock ids reach the network by the
   root Detect stored (`assign_pieces`), so Detect must run after the hair mesh changes.
-- Hair QC also measures roots against density, the width profile along each lock against its mesh,
-  and folds (grooming-check, 2026-11-12). Helen: strand counts match density x area (worst 16 %), folds
-  0.02 %, hair ~0.78 of the mesh's width along every lock, but `root_pull` gathers each lock's roots into
-  its mesh piece's root cross-section (hair_base_01: region 6.7 x 7.7 cm, roots in 1.1 x 1.9 cm): the base
-  is ~20-30x denser than set and the scalp between lock bases bare. OPEN, the user's call.
+- Hair QC also measures roots against density, the skin between locks, the width profile along each lock
+  against its mesh, the hair's share at each lock's start, folds, hair turned off its lock and hair outside
+  its lock (grooming-check). Decided (the user, 2026-11-13, plan "Root spread"; was the OPEN `root_pull`
+  question): `root_pull` (v0.1, 0.85) gathered each lock's roots into its mesh's root cross-section (bases
+  20-30x denser than set, scalp between them bare); roots now lie evenly at the set density where a lock's
+  mesh lies within reach of the skin, and where it floats higher than `root_far_cm` (0.5, fading over +-50 %)
+  they start the lock, so that skin is thin on purpose, as the hand groom v006 does (its density over what the
+  regions ask, against the mesh's height over the skin: <0.3 cm 1.7, 0.3-0.5 0.50, 0.5-0.7 0.35, 0.7-0.9
+  0.11, over 1.1 cm ~0; t52). Strands that crossed that 1-2.5 cm gap were the spike / fuzz / standing strands
+  (hair_base_08 / 11 / 17) and the fringe's fin; even roots under floating caps (9593a15) left outside-the-lock
+  0.53, Root to skin alone did not help past the root. The panel's measured cells say "Thin under floating
+  mesh" (cm2, falloff-weighted, from `owner_dist` that Update regions records per owner), and the skin check
+  leaves that skin out (Helen: 359 cm2, 304 thin, reported apart). Rejected on the way: a fixed share of each
+  lock's roots moved to its start (7e33860: 60 % of roots, skin between thin), even roots everywhere (fringe fan
+  2.3-3.9x, fin), rising at most 20-30 deg (worse), start extras at 0.63 (+23 % strands, +24 % cook).
+  Helen (t53 k1; v006 / v0.1 / now, same skin and split for all): strands 86,338 / 118,380 / 118,705; start
+  share worst 0.47 / 0.83 / 0.56 with no start extras (START_TARGET 0.47 = v006 asks none on Helen); outside
+  worst 0.97* / 0.25 / 0.27 (back locks' tenth 8, as v0.1); turned 0.78* / 0.05 / 0.08; root clumped 0.32 / 0.75
+  / 0.04, spacing 0.51 / 0.12 / 0.84; whorl densest 1 cm disc 18.6 % / 8.1 % / 18.7 % of roots (5,104 / 3,042 /
+  7,059 per cm2). *v006 per lock is not measurable (a guide groom: its strands do not follow the cards).
+  QC limits carry v006's value and a reason where they are stricter. Cook of the full groom (output 1),
+  alternating with v0.1's HAIR (cook_all): median 9.17 vs 8.52 s, +7 % (pairs 0-23 %, a noisy machine).
+  Root to skin (`root_skin`, cm, default 3) stays for locks whose mesh root edge floats over `ROOT_GAP_CM`
+  (0.3; `root_gap`, the points in the first 3 % of `dist` from the root band nearest the skin): 25 Helen locks
+  (hair_base_01/02/04/06-18, upper fringe layers), bent 0.43-1.36 cm, no lock touching the skin moved; Detect
+  lists them with the gap in cm.
 - Workflow GUI check (t46): drag ticks ~0.43 s (the first 2.5 s), release 0.7 s, undo 0.47 s, Deform
   frames ~1.5 s (first 4.4 s), publish 0.7 s with 118,380 strands and only contract primvars. GUI tests
   cannot play the timeline inside one step (Houdini's playback runs in its own loop): start it in one
@@ -235,9 +265,40 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   point; writing points from a prim wrangle was 2.5x slower); its offset from the spine gets a median
   of 3 and a blur, and its first fifth is relaxed with a fading weight (`strand_smooth`). Segments:
   at least 32, more on long locks (`strand_segment_cm`); 12 left curled short locks with 80 deg corners.
-  A strand's place across the lock is an even spread (`cross_spread`), not where its root fell in the
-  region (that bunched strands mid-lock), and its root is pulled under that spot (`root_pull`, else
-  wide regions fan in). Strand count uses the lock's widest band anywhere (the first quarter gave
+  Root spread (`root_spread`, a detail wrangle before `fit_root`): roots stay where hairgen scattered
+  them (`root_pull` 0); each strand joins its lock at `fit_u0`, the `pu` of its own mesh's nearest point
+  to the root (a lock lying over its region takes the strands rooted under it there: sent to the root
+  end, Helen's fringe folded 11 %), the joins stretched so the earliest starts at u 0; (s, t) is the
+  rank of the root's offset across the lock at u0, inside strips of sqrt(n) sorted by u0 (an even
+  spread that keeps neighbours together: a random (s, t) crossed strands; ranking along the region's
+  axes mixed along and across on caps). The strand runs u0 -> tip and leaves its root over
+  `fit_blend` = max(`root_blend`, `root_converge` x offset / length), at most half.
+  Root steps: `region_frame` (detail: frame, footprint, whorl_n, own_n), `region_join` (prim, parallel:
+  where the strands of each region prim join, and `root_far`), `region_start` (detail: start_x),
+  `root_pick` (detail: picks whorl roots and start extras at random among hairgen's, so the lock's own roots
+  stay even; lays out the start roots), `root_place` (prim: `root_at`, raw join `fit_u0`, `rx` / `ry`),
+  `root_spread` (detail: stretch and ranks). Start extras (`start_extra`) are strands ON TOP of the lock's
+  count, as many as bring its first 3/10 to `start_target` (0.47, v006's worst) x the mesh's share there,
+  estimated from the region's joins; on Helen none is needed any more. Own roots keep their
+  place: a fixed share of them moved round the root (7e33860) left the skin between locks thin. Roots under
+  floating mesh (`region_join` `far_w`: smoothstep of the lock's mesh height over the skin from 0.25 to 0.75 cm
+  at `root_far_cm` 0.5, `ROOT_FAR_SOFT` 0.5; a root moves with that chance) start the lock, for every lock,
+  and the start-share estimate counts them as full length.
+  Start roots are laid out as one sunflower on a disc round the lock's root at up to
+  `START_DENSITY_MAX` (6) x its density, each point moved onto the region (a point off it is dropped, the
+  disc grows to at most 3x: grown without bound it reached skin 4 cm away, hair_bang_03, and its strands ran
+  back in a hairpin); extras with no place are dropped. Footprint roots join at the spine's nearest point,
+  never behind it (sent to u 0, the half of the footprint ahead of the root made small hairpins: the crown
+  caps' fuzz in their third tenth, turned 0.36). Joining strands rise over `root_converge` (3) x their
+  offset (at 1 they rose straight up to the floating meshes: spike / fuzz, turned 0.2-0.27), starting ones
+  over `root_converge_start` (1). A lock starting at a whorl gets `whorl_n` = `whorl_fill`
+  (0.3) x density x the cross-section of its first `START_SPAN` (0.3) extra strands on top of its count,
+  rooted on a sunflower within `WHORL_DISK_CM` (0.7) of the whorl's centre (`whorl_root`); whorl roots and
+  start extras are left out of the root and skin checks, counted apart. With the crown's start extras the
+  densest 1 cm disc is 18,111 roots, 5,765 / cm2 (v006 16,035 / 5,104). The crown shot keeps a light patch
+  where the caps meet at the whorl; v006's crown shot has the same. Raising the density attribute in the
+  footprint did nothing: hairgen's relax evens density out. `root_reach_cm` (0) can bring every far root
+  closer. Strand count uses the lock's widest band anywhere (the first quarter gave
   long hair_back ribbons 800 strands: see-through). Scenes keep the parm values they saved
   (`spine_points` 24 in older scenes): revert them to the defaults to get this result.
 - Hairclump runs per lock (inside the loop), `clumpid` = `lock_id` going in, so clumps stay in a lock. The lock's clump
@@ -255,7 +316,7 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   `layoutChildren` over everything made a knot of crossing wires.
 - Helen (sandbox t12/t16/t18): 61/61 locks with hair, 116 k strands, 4 M points, hair check PASS (corner
   p95 26 deg vs 43 for v006, mesh uncovered 6 % vs 3.5 %, every lock at least 0.76 of its mesh's width), full cook 5.3 s, density edit 5 s, shot frame 1 s,
-  detect 2.6 s, split 4 s, publish 5 s / 50 MB (47–56 s before regions were frozen). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
+  detect 2.6 s, split 4 s, publish 5 s / 50 MB (47â€“56 s before regions were frozen). GUI checks run Houdini with a startup script on the secondary monitor and grab the panel.
   Quitting Houdini with `hou.exit` from a Qt timer segfaults even in an empty session (fxhoudinimcp
   loaded): not this tool; kill leftover test sessions after a GUI run.
 - Anim input (input 2) may be a USD Import left packed (one PackedUSD prim): inside, `unpackusd` to
@@ -288,7 +349,7 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   source as plain text, Reset only when set at this level); several locks that differ show "mixed"; a
   drag writes once on release (one undo step). Sliders and combos ignore the wheel, so it scrolls the panel.
   Measured values in cm (`adapter.unit_cm(node)` when there, else the node's `unit_cm` parm).
-- Panel layout (2026-11-12 redesign): top bar (node, asset, Settings ⚙: Font size and X-ray, saved per user; Dock), then a view bar (Display,
+- Panel layout (2026-11-12 redesign): top bar (node, asset, Settings âš™: Font size and X-ray, saved per user; Dock), then a view bar (Display,
   Color by, Deform, Isolate: viewing never sits next to an action that writes), the tree (filter, a Confirm
   all line while locks are new / to check, banner, rows), the settings (title, subtitle with what the
   viewport does with the selection, toggles Strands / Isolate / Hidden / Flip root / Exclude in a `_WrapRow`
@@ -303,7 +364,7 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   groups sit inside it (the data still keeps `defaults` apart; only the view nests). A setting's source
   column names the level an inherited value comes from: the group by its name, All locks, or "tool
   default" (`model.BUILTIN_DEFAULTS`). On All locks or a group a last column says whether the levels
-  below follow ("all follow") or how many set their own ("2 set own", tooltip names them; narrow: "↓2"),
+  below follow ("all follow") or how many set their own ("2 set own", tooltip names them; narrow: "â†“2"),
   and an edit there says who keeps their own value (`controller._below`).
 - Everything the artist reads is English (panel, status bar, node warnings, undo labels, publish notes); the
   user found Vietnamese mixed in. Regions out of date say why: `GroomData.mark_stale(why)` keeps the last

@@ -325,6 +325,16 @@ def test_detect_report_is_shown(env) -> None:
     assert view.stale is False
 
 
+def test_detect_warns_about_roots_off_the_skin(env) -> None:
+    adapter, view, c = env
+    adapter.report = DetectReport(matches=[Match(0, 1, "ok")], floating=[("hair_base_08", 0.86), ("hair_base_11", 0.96)])
+    c.detect()
+    text, error = view.messages[-1]
+    assert not error
+    assert "2 lock roots off the skin" in text and "hair_base_11 1.0 cm, hair_base_08 0.9 cm" in text
+    assert "Root to skin" in text
+
+
 def test_publish_refusal_message_is_shown(env) -> None:
     adapter, view, c = env
     c.confirm_all()                                 # nothing at risk: Publish goes on at once
@@ -1338,3 +1348,10 @@ def test_tree_drop_places_map_to_the_controller(app, prefs) -> None:
     ui._fire("drop", tree._dragged(), target, where)
     assert [lk.id for lk in adapter.read_data(None).locks if lk.group == "back"] == [1, 2, 3, 4]
     ui.close()
+
+
+def test_measured_cells_say_why_skin_is_thin_under_floating_mesh() -> None:
+    info = LockInfo(1, "l1", "g", (0, 0, 0), 10.0, 1.5, 0.4, 0.2, 1000, 3.0, floating_cm2=2.4)
+    rows = dict(ctl._floating_row(info.floating_cm2))
+    assert rows == {"Thin under floating mesh": "2.4 cm² (roots start the lock instead)"}
+    assert ctl._floating_row(0.01) == []

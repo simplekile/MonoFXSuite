@@ -33,6 +33,7 @@ SETTING_RANGES: dict[str, tuple[float, float]] = {
     "clump": (0.0, 1.0),
     "length_mult": (0.0, 2.0),
     "frizz": (0.0, 1.0),
+    "root_skin": (0.0, 10.0),
 }
 # Names as Houdini uses them: Hair Generate's "Thickness" (and the `width` attribute) is one strand's, so
 # the lock's measured cross-section is "Lock width" / "Lock thickness", never plain Width / Thickness.
@@ -44,8 +45,9 @@ SETTING_LABELS: dict[str, str] = {
     "clump": "Clump",
     "length_mult": "Length ×",
     "frizz": "Frizz",
+    "root_skin": "Root to skin",
 }
-SETTING_UNITS: dict[str, str] = {"density": "/cm²", "twist_add": "°"}
+SETTING_UNITS: dict[str, str] = {"density": "/cm²", "twist_add": "°", "root_skin": "cm"}
 # Stored value x scale = the value the panel shows (twist is stored in radians, shown in degrees like the
 # measured twist)
 SETTING_SCALE: dict[str, float] = {"twist_add": 180.0 / math.pi}
@@ -58,6 +60,9 @@ SETTING_TIPS: dict[str, str] = {
     "clump": "Hair Clump › Blend: 0 no clumping, 1 strands fully gathered into clumps",
     "length_mult": "Multiplies the strands' length",
     "frizz": "Frizz amount (as Guide Process › Frizz): random waves along each strand",
+    "root_skin": "Where the lock's root floats off the skin (a mesh lying on another lock), this length of it is "
+                 "bent down so its strands grow from the skin, as guides do. Locks whose root touches the skin "
+                 "are never changed. 0: off",
 }
 
 DISPLAY_LABELS: dict[str, str] = {
@@ -120,6 +125,14 @@ def report_text(counts: dict[str, int]) -> str:
 
 def _fmt(value: float) -> str:
     return f"{value:.3g}" if abs(value) < 1000 else f"{value:,.0f}"
+
+
+def _floating_row(cm2: float) -> list[tuple[str, str]]:
+    """The skin left thin on purpose under floating mesh: its roots start the lock, as a hand groom's do
+    (no hair crossing the gap). Said in the panel so the artist does not read it as a fault."""
+    if cm2 < 0.05:
+        return []
+    return [("Thin under floating mesh", f"{_fmt(cm2)} cm² (roots start the lock instead)")]
 
 
 def _cm(value: float) -> str:
@@ -544,14 +557,16 @@ class GroomController:
             i = infos[0]
             return [("Lock width", _cm(i.width * u)), ("Lock thickness", _cm(i.thick * u)),
                     ("Length", _cm(i.length * u)), ("Twist", f"{math.degrees(i.twist):.0f}°"),
-                    ("Strands", f"{i.strands:,}"), ("Skin area", f"{_fmt(i.region_area_cm2)} cm²")]
+                    ("Strands", f"{i.strands:,}"), ("Skin area", f"{_fmt(i.region_area_cm2)} cm²")] + _floating_row(
+                        i.floating_cm2)
         n = len(infos)
         return [("Lock width, mean", _cm(sum(i.width for i in infos) / n * u)),
                 ("Lock thickness, mean", _cm(sum(i.thick for i in infos) / n * u)),
                 ("Length, mean", _cm(sum(i.length for i in infos) / n * u)),
                 ("Locks", f"{n}"),
                 ("Strands", f"{sum(i.strands for i in infos):,}"),
-                ("Skin area", f"{_fmt(sum(i.region_area_cm2 for i in infos))} cm²")]
+                ("Skin area", f"{_fmt(sum(i.region_area_cm2 for i in infos))} cm²")] + _floating_row(
+                    sum(i.floating_cm2 for i in infos))
 
     # ------------------------------------------------------------------
     # Writing: one read, one change, one write (one undo step)
@@ -913,6 +928,8 @@ class GroomController:
             text = f"Detect locks: found {n} lock{'s' if n != 1 else ''}"
         else:
             text = report_text(c)
+        if getattr(report, "floating", None):
+            text += " · " + logic.floating_text(report.floating)
         if self.data().regions_stale:
             text += " · regions out of date: Update regions"
         warnings = self._preflight().get("warnings", [])
