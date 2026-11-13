@@ -507,6 +507,30 @@ def cook_mask_read(sop) -> None:
     geo.setGlobalAttribValue(ATTR_HASH_OF, hash_list)
 
 
+def lock_mask_shares(top, regions_geo) -> dict[int, float]:
+    """Per lock id its masked skin area over its skin area (what its strand count is multiplied by), for the
+    locks a layer reaches; `regions_geo` is SCALP_REGIONS. Empty when no layer is on."""
+    if regions_geo is None or regions_geo.findGlobalAttrib(ATTR_SET_OF) is None:
+        return {}
+    np = _np()
+    tables = _region_tables(top, regions_geo)
+    set_of = regions_geo.intListAttribValue(ATTR_SET_OF)
+    area = np.frombuffer(regions_geo.primFloatAttribValuesAsString("area_cm2"), np.float32)
+    means: dict[int, Any] = {}
+    out: dict[int, float] = {}
+    for lock_id, prims in tables["prims"].items():
+        k = set_of[lock_id] if 0 <= lock_id < len(set_of) else -1
+        if k < 0 or not len(prims):
+            continue
+        if k not in means:
+            f = np.frombuffer(regions_geo.pointFloatAttribValuesAsString(config.MASK_SET_ATTR % k), np.float32)
+            means[k] = np.bincount(tables["vertex_prim"], weights=f[tables["vertex_point"]],
+                                   minlength=len(area)) / tables["corners"]
+        w = area[prims] / np.maximum(tables["owners"][prims], 1.0)
+        out[lock_id] = float((means[k][prims] * w).sum() / max(float(w.sum()), 1e-12))
+    return out
+
+
 def lock_mask_keys(preview_geo) -> tuple[Sequence[int], Sequence[str]]:
     """(scope set by lock id, digest by lock id) as `mask_read` left them on the regions (PREVIEW passes
     the details on); empty when no layer is on."""
@@ -764,6 +788,9 @@ def mask_rebake(node) -> bool:
 # Adapter API: Paint mode (the viewer state is apps/houdini/grooming_paint_state.py)
 # ---------------------------------------------------------------------------
 
+# The panel's hooks (set by its controller): "stroke"(node) after a stroke is stored, to cook inside the
+# panel's loading line (None: the state cooks the node itself); "exit"() when Paint ends without the panel
+HOOKS: dict[str, Any] = {"stroke": None, "exit": None}
 BRUSH: dict[str, Any] = {"radius_cm": config.BRUSH_RADIUS_CM, "value": config.BRUSH_VALUE,
                          "soft": config.BRUSH_SOFT, "erase": False, "xray": False}
 PAINT: dict[str, Any] = {"node": None, "layer": None}    # node path and layer id while Paint is on

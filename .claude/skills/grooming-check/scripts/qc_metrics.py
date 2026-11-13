@@ -409,7 +409,7 @@ def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm, whorl
         d = nn_dist(roots[sel]) * unit_cm
         out[info.id] = {"strands": n, "expected": int(info.strands), "density_ratio": n / max(info.strands, 1),
                         "spacing_ratio": float(np.median(d) / spacing), "clumped": float(np.mean(d < 0.3 * spacing)),
-                        "area_cm2": area}
+                        "area_cm2": area, "mask_share": float(getattr(info, "mask_share", 1.0))}
     return out
 
 
@@ -475,8 +475,12 @@ def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5, far
     area = np.array(rg.primFloatAttribValues("area_cm2"))
     P = np.array(rg.pointFloatAttribValues("P")).reshape(-1, 3)
     cen = np.array([P[[v.point().number() for v in pr.vertices()]].mean(0) for pr in rg.prims()]) * unit_cm
-    dens = {i.id: i.strands / max(i.region_area_cm2, 1e-6) for i in infos}
+    # density masks (v0.2a): a lock's strands already count its masked area (mask_share), so what a prim asks
+    # is the unmasked density x the mask there (SCALP_REGIONS mask_mean); without a layer both are 1
+    dens = {i.id: i.strands / max(getattr(i, "mask_share", 1.0), 1e-6) / max(i.region_area_cm2, 1e-6) for i in infos}
     want = np.array([np.mean([dens.get(o, 0.0) for o in own]) if own else 0.0 for own in owners]) * area
+    if rg.findPrimAttrib("mask_mean") is not None:
+        want = want * np.array(rg.primFloatAttribValues("mask_mean"))
     have = np.bincount(rprim[(rprim >= 0) & ~extra], minlength=len(area)).astype(float)
     ratio = np.ones(len(area))
     r2 = radius_cm * radius_cm
@@ -727,7 +731,8 @@ def main():
         d, sh = dens.get(r["lock_id"]), shape.get(r["lock_id"])
         if d:
             r.update({"density_ratio": d["density_ratio"], "expected": d["expected"],
-                      "spacing_ratio": d["spacing_ratio"], "clumped": d["clumped"]})
+                      "spacing_ratio": d["spacing_ratio"], "clumped": d["clumped"],
+                      "mask_share": d.get("mask_share", 1.0)})
         if sh:
             mids = [b["ratio"] for b in sh["bins"][3:7] if b]
             tip = sh["bins"][-1]
@@ -735,7 +740,14 @@ def main():
                       "width_tip": tip["ratio"] if tip else 1.0, "tip_center_off": tip["center_off"] if tip else 0.0,
                       "fold": sh["fold"], "width_profile": [round(b["ratio"], 2) if b else None for b in sh["bins"]]})
     have = [r for r in locks if "density_ratio" in r]
-    s["density_off_worst"] = max((abs(r["density_ratio"] - 1) for r in have), default=0.0)
+    # density masks (v0.2a): a lock no layer reaches must hold exactly what density x area asks; a lock with
+    # painted skin (mask_share != 1) may hold fewer than its masked area asks, never more: the roots the tool
+    # lays out round its start or its whorl are thinned by the mask where they land, which the estimate does
+    # not model (the mask's own counts are checked by accept_v02a.py: 0, x0.5, x2 on the painted skin)
+    s["density_off_worst"] = max((abs(r["density_ratio"] - 1) if r.get("mask_share", 1.0) == 1.0
+                                  else max(r["density_ratio"] - 1, 0.0) for r in have), default=0.0)
+    s["density_short_painted_worst"] = max((1 - r["density_ratio"] for r in have if r.get("mask_share", 1.0) != 1.0),
+                                           default=0.0)
     s["root_clumped"] = float(np.mean([r["clumped"] for r in have])) if have else 0.0
     s["root_spacing_low"] = float(np.median([r["spacing_ratio"] for r in have])) if have else 1.0
     shp = [r for r in locks if "width_mid" in r]

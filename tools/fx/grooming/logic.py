@@ -33,6 +33,7 @@ class LockInfo:
     strands: int          # strands generated at full count
     region_area_cm2: float
     floating_cm2: float = 0.0   # skin under floating mesh, its roots moved to the lock's start (falloff-weighted)
+    mask_share: float = 1.0     # v0.2a: its masked skin area over its skin area (`strands` already counts it)
 
 
 @dataclass

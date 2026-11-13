@@ -1,4 +1,4 @@
-# MONO Grooming v0.2 (plan; decided 2026-11-13, not built yet)
+# MONO Grooming v0.2 (plan; decided 2026-11-13; v0.2a core built, panel and gates open)
 
 v0.1 (released in MonoFX Suite v0.1.25, contract in `grooming_v0_1.md`) makes the whole groom
 automatically from the hair mesh. v0.2 lets the artist change that result where it is wrong, on top of
@@ -191,38 +191,78 @@ A new scalp topology transfers the layers by UV, with a warning.
    transfer) plus the 0.04 s every edit pays (keys, merge). "One lock under 1 s" holds; a stroke over
    stacked locks pays for each of them.
 
-**Build (proposed from the spike).**
-- Data: `groom_data.masks` (list, bottom first: id, name, on, mode, opacity, scope), `schema` +1 with a
-  migration; hidden geometry parm `mask_layers` (points of the fine scalp: `P`, `uv`,
-  `mask_<id>_v`, `mask_<id>_a`). Both written in one undo group a stroke; neither goes into the shared
-  part of the cache key (`_KEY_SKIP_PARMS`: a string parm in it recooked all 61 locks on the first stroke).
-- Network: `mask_read` (Python SOP on `SCALP_FINE`, numpy blend -> point `mask`), point and prim `mask`
-  on `SCALP_REGIONS`; `PREVIEW` counts `density x area x mask` and its `region_keys` take the mask;
-  `region_frame` counts strands on the masked area (`lock_strands x masked area / area`, so a lock
-  painted 0 everywhere grows nothing, floor included); `region_density` x the point's mask; `root_pick`
-  keeps a start place by the chance of the mask there; the same in the `groom_` loop (`_copy_loop`).
-- Paint: our viewer state in `apps/houdini/` (entered from the panel's Paint; `onGenerate`, since it is
-  entered by name), a `SimpleDrawable` of the scalp recoloured from a copy a dab, a ring for the brush,
-  write on release, the cook inside the controller's `_busy`. Selecting the node again makes Houdini
-  enter the node's own state and drop ours (the spike lost its strokes to this): bind it as the HDA's
-  state, or re-enter while Paint is on.
-- While Paint is on the panel shows Hair preview (or Guides) and the scalp's X-ray toggle.
+**Build (core built 2026-11-13, t58; the panel is a separate task).**
+- Data: `groom_data.masks` (`model.MaskLayer`, bottom first: id, name, on, mode, opacity, scope with its
+  `group` or `locks`; the order is the place in the list), `mask_id_high` (a layer id is never reused),
+  `schema` 2 with a migration (a v0.1 scene opens with no layer and is rewritten only by the next edit).
+  Hidden geometry parm `mask_layers`: the fine scalp's points with `P`, `uv`, `mask_<id>_v`, `mask_<id>_a`; a
+  layer never painted has no attributes. A stroke writes only `mask_layers` (the layer list did not change,
+  and writing `groom_data` would recook the spines); a layer edit writes only `groom_data`; one undo group
+  each. Neither is in the shared part of the cache key (`_KEY_SKIP_PARMS`).
+- Network: `mask_read` (Python SOP in line after `region_prims`, `grooming_masks.cook_mask_read`) blends the
+  layers per scope set in numpy into point attributes `mask_<k>` on `SCALP_REGIONS`, and writes the details
+  `mask_sets`, `mask_set_of` and `mask_hash_of` (by lock id) and the prim `mask_mean` (PREVIEW's expected
+  strands). With no layer on it adds nothing, so the geometry and the groom are v0.1's. `lock_keys` gives each
+  lock its `mask_set` and puts the lock's digest in its key. Inside the loop `region_cut` writes point `mask`
+  and prim `mask_prim` for the lock (1 without a mask), `region_frame` counts strands on the masked area
+  (`mask_empty`: a lock masked to 0 grows nothing, `has_region`), `region_density` x the point's mask,
+  `region_join` the far chance and the masked area, `root_pick` and `root_place` thin the roots they lay out.
+  The `groom_` loop is the same code (`_copy_loop`).
+- Paint: `apps/houdini/grooming_paint_state.py`, state `mono_grooming_mask_paint`, registered on first use
+  (no `viewer_states/` folder to install), entered by `paint_enter`. A `SimpleDrawable` of the scalp recoloured
+  from a copy a dab, a ring on the skin, the write on release, then the panel's `HOOKS["stroke"]` (the cook
+  inside `_busy`) or the node's own cook. Ctrl paints the other way round, Esc leaves Paint.
+- While Paint is on the panel shows Hair preview (or Guides) and the scalp's X-ray toggle (`set_brush(xray=)`).
+- Publish: `vNNN/_grooming/mask_layers.bgeo` next to `grooming_data.json` (staged like the other files),
+  named in `publish.json` (`masks`: file, layer ids, points, painted points a layer); `masks_from_publish` /
+  `import_masks` read them back. The published USD is the masked groom.
 
-**Not sure yet (settle in the build, in this order).**
-1. Skin under floating mesh: a root there moves to the lock's start by `far_w` whatever the mask, so
-   painting that skin up mostly feeds the start. Proposed: the automatic share moves, what the mask adds
-   above 1 stays (chance `far_w / mask`). Not tested; the done-when item "thin skin painted up" depends on it.
-2. Scope: a layer for a group or chosen locks means a factor per lock, not per point. Proposed: one
-   blended attribute per distinct scope set, each lock reading its own. Not prototyped.
-3. The region digest: 9 sums a lock (the spike added the mask to two of them). A stroke that moves
-   density inside a region without changing those sums would be missed; hash the lock's own mask values.
-4. The brush measures straight distance (24.5 k points, 0.3 ms): a dab near the ear reaches skin behind
-   it. Limit it to skin connected under the brush, facing the same way.
-5. Whorl roots do not read the mask yet. UV transfer to a new scalp is untested. A hand-held brush
-   (pen, hotkeys, radius drag) was not tried by a person.
-6. v0.1, found here: with an anim wired, output 1's key differs from the display's (`do_capture`) and
-   both use the lock's two cache slots, so once something reads output 1 an undo regrows the locks
-   (0.65-1.5 s instead of 0.04 s). Give the capture its own slot, or keep 3.
+**Adapter API added in v0.2a** (`apps/houdini/grooming_masks.py`, re-exported by `grooming_adapter`; each
+function that changes something is one undo step named "MONO Grooming: ..."; the layer list itself is
+`read_data(node).masks`).
+
+| Function | Returns / does |
+|---|---|
+| `mask_add(node, name="", mode="multiply", opacity=1.0, scope="all", group="", locks=()) -> int` | New layer on top, nothing painted; its id |
+| `mask_remove(node, layer_id) -> bool` | Delete the layer and what is painted on it |
+| `mask_move(node, layer_id, index)` | Put the layer at place `index` (0 = bottom) |
+| `mask_set(node, layer_id, name=, on=, mode=, opacity=, scope=, group=, locks=) -> bool` | Change the layer's row; False (and no undo step) when nothing changed |
+| `mask_fill(node, layer_id, value=1.0)` / `mask_clear(node, layer_id)` | The whole layer painted `value` / nothing painted on it |
+| `mask_stroke(node, layer_id, points, radius_cm, value, soft, erase=False, normals=None) -> int` | One stroke through points on the skin, as the brush paints it (tests, scripts) |
+| `mask_values(node, layer_id) -> (value, coverage)` / `mask_factor(node, lock_id=None)` | Arrays per fine-scalp point: a layer, or the final factor (of one lock, or of the "all locks" layers) |
+| `paint_enter(node, layer_id) -> bool` / `paint_exit(node=None)` / `paint_layer(node) -> int \| None` | Paint on (the viewport's tool is the brush; False without a viewport) / off / the layer being painted |
+| `set_brush(radius_cm=, value=, soft=, erase=, xray=) -> dict` / `brush() -> dict` | Brush of the session (not saved, no undo): radius cm, value 0..8, soft share of the radius, erase, scalp X-ray |
+| `mask_problem(node) -> str` / `mask_rebake(node) -> bool` | "moved over by UV" while the layers sit on another scalp / store them on the current one |
+| `import_masks(node, tool_dir) -> int` / `masks_from_publish(tool_dir)` | Layers of a publish's `_grooming/` folder into the node / read only |
+| `grooming_masks.HOOKS["stroke"](node)`, `HOOKS["exit"]()` | Set by the panel: after a stroke is stored (it cooks in its loading line); Paint ended without the panel |
+
+**Decided in the build (the "Not sure yet" list of the spike; numbers: Helen, hython, t58 `accept.json`).**
+1. Skin under floating mesh: the plan's proposal, built. A root there starts the lock with the chance
+   `far_w / max(mask, 1)` (`logic.far_chance`): painted down, the same share of fewer roots moves; painted
+   above 1, the automatic share still moves and what the mask adds stays. Skin with `far_w` 1 painted 2 went
+   from 0 to 1.02 x the set density (132 roots where 129 are asked), evenly. The lock grew by more than the
+   patch holds when its strand count is floored by its cross-section (hair_base_20: +304 strands, 132 on the
+   patch): the surplus starts the lock, +2 % of its strands. No contract change.
+2. Scope: one blended factor per distinct set of layers (`logic.mask_scope_sets`), each lock reads its own
+   (`mask_set`). A groom with only "all locks" layers has one set. Two locks sharing skin, the layer on one:
+   only that lock is recooked and loses its roots there, the other keeps its count. No contract change.
+3. The digest: `mask_read` hashes each lock's own factor values (blake2b of the float32 values on its region's
+   points), "" when all are exactly 1, so an empty layer or paint elsewhere regrows nothing. The same paint on
+   another part of a lock's own skin gives another key.
+4. The brush (`grooming_masks.ScalpBrush`) reaches the points inside its radius that face the way the skin
+   under the cursor does (under 75 deg, `config.BRUSH_FACING_DEG`) and are joined to it through such points
+   (neighbours = points sharing a prim). On Helen: 6 points facing away within 0.8 cm of a dab, none reached.
+5. Whorl roots and start roots are kept by the chance of the mask where they land (painted 0: none; the
+   layout does not move, so nothing piles up beside the paint): the crown painted 0 went from 35,790 roots to
+   0. They are only ever thinned: painting a whorl or a start disc above 1 adds hair through hairgen's scatter
+   there, not through the relocated roots. UV transfer: a scalp with other points (tested: Region subdivisions
+   2 -> 1) takes each point's value from the stored point nearest in uv (in space without uv), `mask_problem`
+   says so, the next write (or `mask_rebake`) stores it. A hand-held brush is still the user's own try.
+6. Fixed as its own commit (559c1da): captured strands have a cache slot of their own (`cache_mode`).
+
+Found on the way: Helen's scalp has a band of sliver polygons by the ears (12,418 of the fine scalp's 24,320
+prims on 1.7 cm2). A 1 cm dab there holds ~7,000 points (2.9 ms a mouse move instead of ~1.5), and the first
+prototype of the GUI test painted it by mistake. The brush works on it; nothing to fix in v0.2a.
 
 **Panel.** A Layers section (list, eye, blend mode, opacity, scope), Paint / Erase with radius and
 value, Fill and Clear for a layer. Mockups first.

@@ -470,3 +470,37 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     and Shot deform on (hython does not reset it), which bunches every root and deforms output 1; make a
     scene with the current defaults first (`t57_make.py`). Output 1 is deformed while an anim is wired:
     read roots from `GROOM_REST`.
+- v0.2a density masks, the core (t58, sandbox `tests/t58_mask_core/`; what was decided is in the v0.2 plan,
+  the acceptance scripts are `tests/houdini/grooming/accept_v02a.py` (hython) and `accept_v02a_gui.py`):
+  - Code: `apps/houdini/grooming_masks.py` (storage, `cook_mask_read`, `ScalpBrush`, `PaintSession`, the layer
+    functions; the adapter re-exports them) and `apps/houdini/grooming_paint_state.py` (the viewer state). The
+    panel is not built yet: it calls `mask_*`, `paint_enter` / `paint_exit`, `set_brush` and sets `HOOKS`.
+  - There is no `attribwrangle` SOP verb (it is an HDA): VEX cannot be run on a `hou.Geometry` without a node.
+    `attribpromote`, `normal`, `attribtransfer` have verbs. Topology in bulk: a point and a prim number
+    attribute promoted to vertices and read with `vertexIntAttribValuesAsString` (`_vertex_tables`); one hou
+    call per vertex of the fine scalp is over a second.
+  - A node outside a locked HDA cannot be wired to a node inside it (`setInput` fails): tests read
+    `GROOM_REST` through an Object Merge.
+  - `mask_read` is in line and cooks on every edit, so what depends only on the split is kept per node by a
+    digest of it (`_region_tables`), and the mask's mean per prim is numpy's: looked up per owner and point
+    in PREVIEW's VEX it cost 45 ms an edit and took the undo of a stroke to 0.09 s (now 0.04-0.08 s).
+  - "No layer = v0.1" holds because nothing is added then, and with layers every use multiplies by a mask
+    that is exactly 1 where nothing is painted; a lock whose skin is all 1 gets no `mask_set` and no digest,
+    so an empty layer regrows nothing.
+  - A scalp attribute named `mask` or `mask_<n>` of the user's cannot leak in: a lock without a set never
+    reads `mask_<k>`, and with one `mask_read` has just written it.
+  - The state: entered by name it gets `onGenerate`; Houdini goes to the node's own state
+    (`mono::grooming::0.1`) when the node is selected again, and the state comes back by itself while Paint
+    is on (`_came_back`); a tool the artist picks (`USER_STATES`: select, view ...) ends Paint. Undo while
+    painting: a `ParmTupleChanged` callback on the node reloads the brush's data. `ui_event.ray()` is in
+    world space: the state moves it into the object's space.
+  - GUI test of the brush: a stroke's release is handled after the tick that sent it (it stores and cooks),
+    so wait for the state's stroke count, not a fixed time. Screen positions of points on the skin: fit
+    global pixels to `viewport.mapToScreen` from a few test moves (no guess about toolbars or pixel ratio).
+    Esc reaches the state as a QKeyEvent sent to the viewport widget after `setFocus()`.
+  - Helen's scalp has a band of sliver polygons by the ears (half the fine scalp's prims on 1.7 cm2): pick
+    test patches away from prims under 0.001 cm2, and never snap a path to the nearest scalp point.
+  - Full-cook timing in one process: drop the node's LockCache and force `groom_keys` (forcing `GROOM_REST`
+    alone cooks nothing: 0.0 s). Single cold cooks swing 9.5-13.4 s on this machine: compare medians of 5.
+  - `lock_infos` counts a lock's strands on its masked area (`LockInfo.mask_share`), and grooming-check's skin
+    check multiplies what a prim asks by `mask_mean`, so a painted groom is judged against what was asked.

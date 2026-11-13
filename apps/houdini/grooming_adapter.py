@@ -542,6 +542,7 @@ def lock_infos(node) -> list[LockInfo]:
                     w = logic.falloff(dists[k][j] * unit, far, config.ROOT_FAR_SOFT)
                     if w > 0:
                         floating[lid] = floating.get(lid, 0.0) + w * a / len(own)
+    shares = grooming_masks.lock_mask_shares(node, scalp)    # density masks: strands follow the masked area
     infos = []
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
@@ -558,8 +559,8 @@ def lock_infos(node) -> list[LockInfo]:
             root=tuple(prim.attribValue("root")), length=prim.floatAttribValue("length"),  # type: ignore[arg-type]
             width=sum(widths) / max(len(widths), 1), thick=sum(thicks) / max(len(thicks), 1),
             twist=pts[-1].floatAttribValue(config.ATTR_LOCK_TWIST) if pts else 0.0,
-            strands=logic.lock_strands(prim.floatAttribValue("density"), a, section), region_area_cm2=a,
-            floating_cm2=floating.get(lid, 0.0),
+            strands=int(round(logic.lock_strands(prim.floatAttribValue("density"), a, section) * shares.get(lid, 1.0))),
+            region_area_cm2=a, floating_cm2=floating.get(lid, 0.0), mask_share=shares.get(lid, 1.0),
         ))
     return sorted(infos, key=lambda i: i.id)
 
