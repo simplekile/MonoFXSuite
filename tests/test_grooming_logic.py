@@ -575,3 +575,108 @@ def test_make_dirs_says_when_a_file_is_in_the_way(tmp_path) -> None:
         logic.StagedFiles().make_dirs(tool)
     msg = logic.publish_error(e.value)
     assert msg.startswith("a file is in the way, not a folder: ") and "\\" not in msg and msg.endswith("/publish")
+
+
+# ---- v0.2a density masks ----
+
+@pytest.mark.parametrize("mode,want", [
+    ("multiply", 0.5 * 3.0), ("add", 0.5 + 3.0), ("subtract", 0.5 - 3.0), ("replace", 3.0),
+    ("min", 0.5), ("max", 3.0),
+])
+def test_mask_blend_modes(mode, want):
+    assert logic.mask_blend(0.5, 3.0, mode) == pytest.approx(want)
+
+
+def test_mask_blend_refuses_an_unknown_mode():
+    with pytest.raises(ValueError):
+        logic.mask_blend(1.0, 1.0, "screen")
+    assert set(config.MASK_MODES) == {"multiply", "add", "subtract", "replace", "min", "max"}
+
+
+@pytest.mark.parametrize("mode", config.MASK_MODES)
+def test_unpainted_skin_is_left_alone_in_every_mode(mode):
+    # coverage 0: whatever value the layer holds there, the factor below stays
+    assert logic.mask_over(0.7, 5.0, 0.0, mode) == pytest.approx(0.7)
+    assert logic.mask_over(0.7, 5.0, 1.0, mode, opacity=0.0) == pytest.approx(0.7)
+
+
+def test_coverage_and_opacity_fade_a_layer_in():
+    assert logic.mask_over(1.0, 0.0, 1.0, "multiply") == pytest.approx(0.0)
+    assert logic.mask_over(1.0, 0.0, 0.5, "multiply") == pytest.approx(0.5)            # a dab's soft edge
+    assert logic.mask_over(1.0, 0.0, 0.5, "multiply", opacity=0.5) == pytest.approx(0.75)
+    assert logic.mask_over(1.0, 2.0, 1.0, "replace", opacity=0.25) == pytest.approx(1.25)
+
+
+def test_mask_factor_runs_bottom_to_top_and_never_goes_below_zero():
+    # x2 everywhere, then +1 at half coverage, then subtract 5: 1 -> 2 -> 2.5 -> -2.5 -> 0
+    stack = [("multiply", 1.0, 2.0, 1.0), ("add", 1.0, 1.0, 0.5)]
+    assert logic.mask_factor(stack) == pytest.approx(2.5)
+    assert logic.mask_factor(stack + [("subtract", 1.0, 5.0, 1.0)]) == 0.0
+    assert logic.mask_factor([]) == 1.0
+    # order matters: replace on top wins, at the bottom it is multiplied
+    assert logic.mask_factor([("multiply", 1.0, 2.0, 1.0), ("replace", 1.0, 0.3, 1.0)]) == pytest.approx(0.3)
+    assert logic.mask_factor([("replace", 1.0, 0.3, 1.0), ("multiply", 1.0, 2.0, 1.0)]) == pytest.approx(0.6)
+
+
+def test_mask_factor_on_arrays_matches_the_numbers():
+    np = pytest.importorskip("numpy")
+    v = np.array([0.0, 2.0, 0.5, 3.0], np.float32)
+    a = np.array([1.0, 1.0, 0.0, 0.5], np.float32)
+    for mode in config.MASK_MODES:
+        got = logic.mask_factor([(mode, 0.8, v, a)], np.ones(4, np.float32))
+        want = [logic.mask_factor([(mode, 0.8, float(x), float(y))]) for x, y in zip(v, a)]
+        assert got == pytest.approx(want), mode
+        assert got.shape == (4,)
+
+
+def test_mask_scope_sets_share_one_factor_between_locks_with_the_same_layers():
+    from tools.fx.grooming.model import MaskLayer
+    masks = [MaskLayer(0, "all"), MaskLayer(1, "fringe", scope="group", group="bang"),
+             MaskLayer(2, "two locks", scope="locks", locks=[5, 9]), MaskLayer(3, "off", on=False)]
+    locks = [(1, "back"), (2, "back"), (5, "bang"), (6, "bang"), (9, "back")]
+    sets, of = logic.mask_scope_sets(masks, locks)
+    assert sets == [(0,), (0, 1, 2), (0, 1), (0, 2)]
+    assert of == {1: 0, 2: 0, 5: 1, 6: 2, 9: 3}
+    # only scoped layers: the locks outside keep the automatic density (-1: no set)
+    sets, of = logic.mask_scope_sets(masks[1:2], locks)
+    assert sets == [(1,)] and of == {1: -1, 2: -1, 5: 0, 6: 0, 9: -1}
+    assert logic.mask_scope_sets([], locks) == ([], {i: -1 for i, _g in locks})
+
+
+def test_brush_weights_soft_edge():
+    assert logic.brush_weights(0.0, 1.0, 0.5) == 1.0
+    assert logic.brush_weights(0.5, 1.0, 0.5) == 1.0       # inside the hard core
+    assert logic.brush_weights(0.75, 1.0, 0.5) == pytest.approx(0.5)
+    assert logic.brush_weights(1.0, 1.0, 0.5) == 0.0
+    assert logic.brush_weights(2.0, 1.0, 0.5) == 0.0
+    assert logic.brush_weights(0.99, 1.0, 0.0) == 1.0      # hard edge
+    np = pytest.importorskip("numpy")
+    assert logic.brush_weights(np.array([0.0, 0.75, 2.0]), 1.0, 0.5) == pytest.approx([1.0, 0.5, 0.0])
+
+
+def test_mask_dab_paints_erases_and_keeps_what_it_does_not_touch():
+    # fresh skin takes the value outright, its coverage is the weight
+    assert logic.mask_dab(1.0, 0.0, 0.25, 0.0) == (0.0, 0.25)
+    # painted skin moves towards the value by the weight, coverage only grows
+    v, a = logic.mask_dab(2.0, 1.0, 0.5, 0.0)
+    assert (v, a) == (pytest.approx(1.0), 1.0)
+    assert logic.mask_dab(2.0, 0.6, 0.0, 0.0) == (2.0, 0.6)          # outside the dab
+    assert logic.mask_dab(2.0, 0.8, 0.5, 0.0, erase=True) == (2.0, pytest.approx(0.4))
+    np = pytest.importorskip("numpy")
+    v, a = logic.mask_dab(np.array([1.0, 2.0, 2.0]), np.array([0.0, 1.0, 0.6]), np.array([0.25, 0.5, 0.0]), 0.0)
+    assert v == pytest.approx([0.0, 1.0, 2.0]) and a == pytest.approx([0.25, 1.0, 0.6])
+
+
+def test_mask_color_reads_grey_blue_red():
+    assert logic.mask_color(1.0) == pytest.approx(logic.MASK_COLOR_ONE)
+    assert logic.mask_color(0.0) == pytest.approx(logic.MASK_COLOR_ZERO)
+    assert logic.mask_color(2.0) == pytest.approx(logic.MASK_COLOR_MORE)
+    assert logic.mask_color(9.0) == pytest.approx(logic.MASK_COLOR_MORE)
+
+
+def test_far_chance_moves_the_automatic_share_and_keeps_what_the_mask_adds():
+    assert logic.far_chance(0.8, 1.0) == pytest.approx(0.8)      # v0.1
+    assert logic.far_chance(0.8, 0.5) == pytest.approx(0.8)      # painted down: the same share of fewer roots
+    assert logic.far_chance(0.8, 2.0) == pytest.approx(0.4)      # 2 x roots, 0.8 of the set density moves
+    # skin density left over the set density: mask x (1 - chance) = mask - far_w above 1
+    assert 2.0 * (1 - logic.far_chance(0.8, 2.0)) == pytest.approx(2.0 - 0.8)

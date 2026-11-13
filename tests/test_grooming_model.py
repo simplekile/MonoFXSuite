@@ -117,3 +117,52 @@ def test_tree_order_moves_locks_and_groups_and_survives_json() -> None:
     again = GroomData.from_json(data.to_json())
     assert [lk.id for lk in again.locks] == [lk.id for lk in data.locks]
     assert [g.id for g in again.groups] == ["b", "a"]
+
+
+# ---- v0.2a density mask layers ----
+
+def test_v01_data_migrates_to_masks_without_changing_anything_else():
+    from tools.fx.grooming.model import MaskLayer, migrate
+    old = {"schema": 1, "asset": "char_Helen", "defaults": {"density": 200.0},
+           "groups": [{"id": "g", "name": "G", "overrides": {"clump": 0.5}}],
+           "locks": [{"id": 1, "name": "a", "group": "g", "overrides": {"frizz": 0.2}, "root_flip": True}],
+           "orphans": [{"id": 4, "name": "gone", "group": "g"}], "id_high": 4, "regions_stale": True,
+           "stale_why": ["Detect locks: 1 new"]}
+    d = GroomData.from_json(json.dumps(old))
+    assert d.masks == [] and d.mask_id_high == -1 and d.schema == SCHEMA == 2
+    assert migrate(dict(old))["schema"] == 2 and "masks" not in old      # the input is not changed
+    back = json.loads(d.to_json())
+    for key in ("asset", "defaults", "id_high", "regions_stale", "stale_why"):
+        assert back[key] == old[key]
+    assert d.resolve(1)["frizz"] == 0.2 and d.resolve(1)["clump"] == 0.5 and d.resolve(1)["density"] == 200.0
+    assert d.lock(1).root_flip and d.orphans[0].id == 4
+    assert MaskLayer(0, "x").applies(1, "g")
+
+
+def test_mask_layers_roundtrip_order_and_ids():
+    d = GroomData()
+    a = d.add_mask()
+    b = d.add_mask("Crown", mode="replace", opacity=0.5)
+    c = d.add_mask("Fringe", scope="group", group="bang")
+    e = d.add_mask("Two", scope="locks", locks=[9, 3, 9])
+    assert [m.id for m in d.masks] == [0, 1, 2, 3] and a.name == "Layer 1" and e.locks == [3, 9]
+    d.move_mask(c.id, 0)
+    d.move_mask(a.id, 99)
+    assert [m.name for m in d.masks] == ["Fringe", "Crown", "Two", "Layer 1"]
+    assert d.remove_mask(b.id) and not d.remove_mask(b.id)
+    back = GroomData.from_json(d.to_json())
+    assert back.masks == d.masks and back.mask_id_high == 3
+    # a removed layer's id never comes back (its painted attributes may still sit in an older publish)
+    assert back.add_mask().id == 4
+    assert back.mask(2).applies(7, "bang") and not back.mask(2).applies(7, "back")
+    assert back.mask(3).applies(3, "back") and not back.mask(3).applies(4, "back")
+    with pytest.raises(KeyError):
+        d.move_mask(77, 0)
+
+
+def test_mask_layers_from_json_are_cleaned():
+    d = GroomData.from_json(json.dumps({"schema": 2, "masks": [
+        {"id": 5, "name": "x", "mode": "screen", "opacity": 7, "scope": "everything", "locks": ["3"]}]}))
+    m = d.masks[0]
+    assert (m.mode, m.opacity, m.scope, m.locks, m.on) == ("multiply", 1.0, "all", [3], True)
+    assert d.mask_id_high == 5

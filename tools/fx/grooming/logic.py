@@ -566,3 +566,128 @@ def lock_name(group_prefix: str, taken: Sequence[str]) -> str:
     while f"{prefix}_{n:0{config.LOCK_NAME_DIGITS}d}" in taken:
         n += 1
     return f"{prefix}_{n:0{config.LOCK_NAME_DIGITS}d}"
+
+
+# ---------------------------------------------------------------------------
+# v0.2a density masks (docs/plans/grooming_v0_2.md). Every function takes plain floats or numpy arrays
+# (one number per scalp point), so the HDA's mask_read, the brush and the tests share one rule.
+# ---------------------------------------------------------------------------
+
+def _lower(a, b):
+    try:
+        return min(a, b)
+    except (TypeError, ValueError):      # arrays: element by element
+        import numpy as np
+        return np.minimum(a, b)
+
+
+def _higher(a, b):
+    try:
+        return max(a, b)
+    except (TypeError, ValueError):
+        import numpy as np
+        return np.maximum(a, b)
+
+
+def mask_blend(m, value, mode: str):
+    """What a layer painted `value` makes of the factor `m` below it at full coverage and opacity.
+    Multiply m x value, Add m + value, Subtract m - value, Replace value, Min, Max (config.MASK_MODES)."""
+    if mode == "multiply":
+        return m * value
+    if mode == "add":
+        return m + value
+    if mode == "subtract":
+        return m - value
+    if mode == "replace":
+        return value + m * 0      # keeps m's shape when value is one number
+    if mode == "min":
+        return _lower(m, value)
+    if mode == "max":
+        return _higher(m, value)
+    raise ValueError(f"mask blend mode {mode!r}")
+
+
+def mask_over(m, value, coverage, mode: str, opacity: float = 1.0):
+    """One layer over the factor `m`: m + (blend(m, value) - m) x coverage x opacity. Where the layer is
+    not painted (coverage 0) the factor stays as it is in every mode, so no mode needs a "neutral" value."""
+    return m + (mask_blend(m, value, mode) - m) * (coverage * opacity)
+
+
+def mask_factor(layers, start=1.0):
+    """The final factor on the automatic density: `start` (1) through `layers` from bottom to top, each
+    (mode, opacity, value, coverage), never below 0. Layers that are off are left out by the caller."""
+    m = start
+    for mode, opacity, value, coverage in layers:
+        m = mask_over(m, value, coverage, mode, opacity)
+    return _higher(m, 0.0)
+
+
+def mask_scope_sets(masks: Sequence["object"], locks: Sequence[tuple[int, str]]
+                    ) -> tuple[list[tuple[int, ...]], dict[int, int]]:
+    """Which layers reach which lock. `masks`: the layer stack, bottom first (`id`, `on`, `applies`);
+    `locks`: (lock id, group id). Returns the distinct scope sets (each the ids of the layers that are on
+    and apply, bottom first) and, per lock id, the index of its set, -1 when no layer reaches it (its
+    density is the automatic one). Locks with the same layers share one blended factor on the scalp, so
+    a groom with only "all locks" layers has one set whatever its lock count."""
+    sets: list[tuple[int, ...]] = []
+    of: dict[int, int] = {}
+    for lock_id, group_id in locks:
+        ids = tuple(m.id for m in masks if m.on and m.applies(lock_id, group_id))
+        if not ids:
+            of[lock_id] = -1
+            continue
+        if ids not in sets:
+            sets.append(ids)
+        of[lock_id] = sets.index(ids)
+    return sets, of
+
+
+def brush_weights(dist, radius: float, soft: float = config.BRUSH_SOFT):
+    """Weight of a dab at distance `dist` from its centre: 1 inside (1 - soft) x radius, easing to 0 at the
+    radius (smoothstep). `soft` 0 is a hard edge."""
+    inner = radius * (1.0 - min(1.0, max(0.0, soft)))
+    span = max(radius - inner, 1e-9)
+    try:
+        w = min(1.0, max(0.0, (radius - dist) / span))
+    except (TypeError, ValueError):
+        import numpy as np
+        w = np.clip((radius - dist) / span, 0.0, 1.0)
+    return w * w * (3.0 - 2.0 * w)
+
+
+def mask_dab(value, coverage, weight, paint: float, erase: bool = False):
+    """One dab on a layer's (value, coverage) with the brush `weight` there (numbers or arrays); returns the
+    new (value, coverage). Paint: skin not painted before takes the brush value outright (its coverage,
+    the weight, is what fades the edge), painted skin moves towards it by the weight; coverage only grows.
+    Erase: coverage x (1 - weight), the value stays (a layer's value means nothing where it has no coverage)."""
+    if erase:
+        return value, coverage * (1.0 - weight)
+    try:
+        fresh = coverage <= 0
+        v = paint if fresh else value + (paint - value) * weight
+        return (v if weight > 0 else value), max(coverage, weight)
+    except (TypeError, ValueError):
+        import numpy as np
+        v = np.where(coverage <= 0, paint, value + (paint - value) * weight)
+        return np.where(weight > 0, v, value), np.maximum(coverage, weight)
+
+
+MASK_COLOR_ONE = (0.55, 0.55, 0.55)    # factor 1: the automatic density
+MASK_COLOR_ZERO = (0.05, 0.15, 0.90)   # towards 0: no hair
+MASK_COLOR_MORE = (0.95, 0.15, 0.05)   # towards 2 and over
+
+
+def mask_color(m: float) -> tuple[float, float, float]:
+    """Colour of the scalp while painting, by the final factor: grey 1, blue towards 0, red towards 2+."""
+    lo = min(1.0, max(0.0, 1.0 - m))
+    hi = min(1.0, max(0.0, m - 1.0))
+    return tuple(g + (z - g) * lo + (r - g) * hi   # type: ignore[return-value]
+                 for g, z, r in zip(MASK_COLOR_ONE, MASK_COLOR_ZERO, MASK_COLOR_MORE))
+
+
+def far_chance(far_w: float, mask: float) -> float:
+    """Chance that a root under floating mesh starts its lock instead of staying on that skin (`far_w`,
+    v0.1) once the skin is painted: far_w / max(mask, 1). Painted down, the automatic share still moves
+    (less hair there, less at the start); painted above 1, the automatic share moves and what the mask
+    adds stays, so the skin fills to (mask - far_w) x the set density (the HDA's region_join, same rule)."""
+    return far_w / max(mask, 1.0)

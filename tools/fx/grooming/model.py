@@ -11,7 +11,9 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-SCHEMA = 1
+from tools.fx.grooming import config
+
+SCHEMA = 2      # 2: `masks` (v0.2a density mask layers)
 
 # Built-in defaults: the bottom of the resolution chain (defaults -> data.defaults -> group -> lock).
 BUILTIN_DEFAULTS: dict[str, float] = {
@@ -78,6 +80,44 @@ class Orphan:
     excluded: bool = False
 
 
+@dataclass
+class MaskLayer:
+    """One density mask layer (v0.2a). What is painted (a value and a coverage per scalp point) lives on the
+    node's `mask_layers` geometry parm under this `id`; here only what the panel's layer row shows. The
+    layer's order is its place in `GroomData.masks`, bottom first."""
+    id: int
+    name: str
+    on: bool = True
+    mode: str = "multiply"       # config.MASK_MODES
+    opacity: float = 1.0         # 0..1
+    scope: str = "all"           # config.MASK_SCOPES: "all", "group" (`group`), "locks" (`locks`)
+    group: str = ""              # scope "group": the group id
+    locks: list[int] = field(default_factory=list)   # scope "locks": lock ids (kept for missing locks too)
+
+    def applies(self, lock_id: int, group_id: str) -> bool:
+        """This layer changes the density of that lock (whatever `on` says)."""
+        if self.scope == "group":
+            return group_id == self.group
+        if self.scope == "locks":
+            return lock_id in self.locks
+        return True
+
+
+def _clean_mask(raw: dict[str, Any]) -> MaskLayer:
+    mode = str(raw.get("mode", "multiply"))
+    scope = str(raw.get("scope", "all"))
+    opacity = raw.get("opacity", 1.0)
+    opacity = float(opacity) if isinstance(opacity, (int, float)) and not isinstance(opacity, bool) else 1.0
+    return MaskLayer(
+        id=int(raw["id"]), name=str(raw.get("name", "")), on=bool(raw.get("on", True)),
+        mode=mode if mode in config.MASK_MODES else "multiply",
+        opacity=min(1.0, max(0.0, opacity)),
+        scope=scope if scope in config.MASK_SCOPES else "all",
+        group=str(raw.get("group", "")),
+        locks=sorted({int(i) for i in raw.get("locks", ())}),
+    )
+
+
 STALE_WHY_KEPT = 6   # reasons the panel lists for regions out of date
 
 
@@ -91,6 +131,8 @@ class GroomData:
     regions_stale: bool = False  # set when locks change after the last region split
     stale_why: list[str] = field(default_factory=list)   # what changed since (the panel says it)
     id_high: int = 0             # highest lock id ever given: deleting an orphan never frees its id
+    masks: list[MaskLayer] = field(default_factory=list)   # density mask layers, bottom first (v0.2a)
+    mask_id_high: int = -1       # highest mask layer id ever given: a deleted layer's attributes are never reused
     schema: int = SCHEMA
 
     # ---- regions out of date ----
@@ -125,6 +167,40 @@ class GroomData:
     def note_ids(self) -> None:
         """Raise `id_high` to the ids in use; called whenever locks are added."""
         self.id_high = max([self.id_high] + [lk.id for lk in self.locks] + [o.id for o in self.orphans])
+
+    # ---- density mask layers (v0.2a): order = place in `masks`, bottom first ----
+    def mask(self, layer_id: int) -> MaskLayer | None:
+        return next((m for m in self.masks if m.id == layer_id), None)
+
+    def add_mask(self, name: str = "", mode: str = "multiply", opacity: float = 1.0, scope: str = "all",
+                 group: str = "", locks=()) -> MaskLayer:
+        """A new layer on top of the stack; its id is never one a layer had before."""
+        layer_id = max([self.mask_id_high] + [m.id for m in self.masks]) + 1
+        taken = {m.name for m in self.masks}
+        if not name:
+            n = len(self.masks) + 1
+            while f"Layer {n}" in taken:
+                n += 1
+            name = f"Layer {n}"
+        layer = _clean_mask({"id": layer_id, "name": name, "mode": mode, "opacity": opacity, "scope": scope,
+                             "group": group, "locks": list(locks)})
+        self.masks.append(layer)
+        self.mask_id_high = layer_id
+        return layer
+
+    def remove_mask(self, layer_id: int) -> bool:
+        n = len(self.masks)
+        self.masks = [m for m in self.masks if m.id != layer_id]
+        return len(self.masks) != n
+
+    def move_mask(self, layer_id: int, index: int) -> None:
+        """Put the layer at place *index* of the stack (0 = bottom; past the end = top)."""
+        layer = self.mask(layer_id)
+        if layer is None:
+            raise KeyError(layer_id)
+        rest = [m for m in self.masks if m.id != layer_id]
+        at = max(0, min(int(index), len(rest)))
+        self.masks = rest[:at] + [layer] + rest[at:]
 
     # ---- settings ----
     def resolve(self, lock_id: int) -> dict[str, float]:
@@ -223,6 +299,8 @@ class GroomData:
             regions_stale=bool(raw.get("regions_stale", False)),
             stale_why=[str(w) for w in raw.get("stale_why", [])][-STALE_WHY_KEPT:],
             id_high=int(raw.get("id_high", 0)),
+            masks=[_clean_mask(m) for m in raw.get("masks", [])],
+            mask_id_high=max([int(raw.get("mask_id_high", -1))] + [int(m["id"]) for m in raw.get("masks", [])]),
             schema=SCHEMA,
         )
 
@@ -232,10 +310,17 @@ def migrate(raw: dict[str, Any]) -> dict[str, Any]:
     version = int(raw.get("schema", 1))
     if version > SCHEMA:
         raise ValueError(f"groom_data schema {version} is newer than this tool ({SCHEMA}); update MonoFX Suite")
+    if version < 2:
+        # v0.1 -> v0.2a: density mask layers. A v0.1 scene has none, so nothing in its hair changes; the
+        # JSON on the node is rewritten only by the next edit
+        raw = dict(raw)
+        raw.setdefault("masks", [])
+        raw.setdefault("mask_id_high", -1)
+        raw["schema"] = 2
     return raw
 
 
 __all__ = [
     "SCHEMA", "BUILTIN_DEFAULTS", "SETTING_KEYS",
-    "Group", "Lock", "Orphan", "GroomData", "migrate",
+    "Group", "Lock", "Orphan", "MaskLayer", "GroomData", "migrate",
 ]

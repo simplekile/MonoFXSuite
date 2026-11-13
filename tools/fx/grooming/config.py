@@ -109,3 +109,20 @@ REGION_SUBDIV = 2              # bilinear subdivisions of the scalp before the s
 SECTION_MIN_THICK_RATIO = 0.3  # cross-section floor of a lock: thickness counted as >= 30 % of its width
 
 LOCK_NAME_DIGITS = 2           # fringe_01
+
+# ---- v0.2a density masks (docs/plans/grooming_v0_2.md) ----
+# Blend modes of a mask layer (logic.mask_blend); a layer's value is a factor on the automatic density
+MASK_MODES: tuple[str, ...] = ("multiply", "add", "subtract", "replace", "min", "max")
+MASK_SCOPES: tuple[str, ...] = ("all", "group", "locks")   # every lock, one group's locks, chosen locks
+MASK_PARM = "mask_layers"      # hidden geometry parm: per fine-scalp point P, uv, mask_<id>_v, mask_<id>_a
+MASK_VALUE_ATTR = "mask_%d_v"  # a layer's painted value per scalp point
+MASK_COVER_ATTR = "mask_%d_a"  # its coverage there: 0 not painted, 1 painted, a dab's soft edge between
+MASK_SET_ATTR = "mask_%d"      # on SCALP_REGIONS: the blended factor of one scope set (logic.mask_scope_sets)
+MASK_VALUE_MAX = 8.0           # a painted value is kept inside 0..this (8x the automatic density)
+BRUSH_RADIUS_CM = 1.0
+BRUSH_SOFT = 0.5               # share of the radius over which a dab fades out
+BRUSH_VALUE = 0.0
+# A dab reaches only skin connected to the point under the cursor and facing its way: the angle between a
+# point's normal and the hit's stays under this (the skin behind an ear is not painted through it)
+BRUSH_FACING_DEG = 75.0
+PAINT_STATE = "mono_grooming_mask_paint"   # the Python viewer state (apps/houdini/grooming_paint_state.py)
