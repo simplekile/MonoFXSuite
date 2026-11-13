@@ -628,3 +628,24 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     several runs, never on one.
 - Do not write `\n` inside a Python heredoc passed through the shell tool: it arrives as a real newline
   (two build_hda.py edits broke that way). Use a patch file, or the editor.
+- grooming-check under density layers (round 3, t62 `qc/`; `qc_metrics.py`):
+  - `lock_infos`' expected count for a lock under layers is exact once the lock was cooked: the mean keep
+    where each of its cached automatic roots ends up (`grooming_masks.root_landings` on the cache's "auto:"
+    entry, `keep_at`: Attribute Transfer as a verb, nearest scalp point) x its automatic count + the layers'
+    own count. The prim-based estimate (`lock_layer_counts` without roots) was 22-24 % off on crown locks
+    (their start roots land in a painted whorl); it is only the answer before the first cook.
+  - `density_off_worst` is |strands / expected - 1| for every lock, painted or not, both ways (the one-sided
+    check for painted locks is gone). A groom painted "= 5104" on the crown and "= 150" on thin skin: 0.005.
+    `tests/houdini/grooming/qc_tamper.py` cuts 30 % of a painted lock's strands while the groom cooks:
+    QC fails with 0.298.
+  - Skin: a prim asks automatic x keep + the layers' density of each owner; skin whose 0.5 cm disc asks for
+    less than one root (painted "= 0") is not thin skin (`skin_none_asked_cm2` reports it); skin under
+    floating mesh that a layer covers in full is judged like any skin.
+  - Roots bunched / spacing of a lock under layers: each root's nearest-root distance is held against the
+    spacing asked where the root is (1 / sqrt(automatic x keep + the layers' density)); one spacing for the
+    lock called every root of a densely painted part bunched (fringe locks reaching into a crown painted
+    5,104: 0.5-0.65). Unpainted locks: unchanged, and so are all 27 numbers of a groom without layers.
+  - Known and left: on the rim of a hard-edged patch the mask is grey for one ring of prims, where the
+    automatic roots are kept by chance: not even. A "= 0" patch on the top of the head took `root_clumped`
+    from 0.0426 to 0.0500 (limit 0.05).
+

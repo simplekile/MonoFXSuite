@@ -388,13 +388,40 @@ def densest_spot(roots_cm, radius=1.0, sample=1500):
     return best, best_n, best_n / (np.pi * radius * radius)
 
 
-def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm, whorl=None):
+def layer_cover_of(node):
+    """(grooming_masks.layer_cover of the node, centroid of every SCALP_REGIONS prim in scene units), or
+    (None, None) without density layers (or a suite from before them)."""
+    try:
+        from apps.houdini import grooming_masks as gm
+    except ImportError:
+        return None, None
+    if not hasattr(gm, "layer_cover"):
+        return None, None
+    geo = node.node("SCALP_REGIONS").geometry()
+    cover = gm.layer_cover(node, geo)
+    if not cover:
+        return None, None
+    tables = gm._region_tables(node, geo)
+    P = np.frombuffer(geo.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3).astype(float)
+    n = len(tables["owners"])
+    cen = np.stack([np.bincount(tables["vertex_prim"], weights=P[tables["vertex_point"], k], minlength=n)
+                    for k in range(3)], 1) / tables["corners"][:, None]
+    return cover, cen
+
+
+def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm, whorl=None, cover=None, cen=None):
     """Per lock: strands against density x area (`logic.lock_strands`, what the tool means to grow), and
     how the roots spread: median nearest-root distance over the even spacing 1/sqrt(actual density on the
     lock's area), and the share of roots closer than 0.3x that spacing (bunched roots). Whorl roots
     (`whorl_root`) and start extras (`start_extra`), strands the tool packs on purpose on top of a lock's
     count, are left out of all three and counted apart. A lock's start roots (`start_root` without `whorl_root`: its own strands, laid out
-    round its root) are counted and measured like any other."""
+    round its root) are counted and measured like any other.
+
+    A lock under density layers (v0.2a; `cover`, `cen` from layer_cover_of) is asked different densities on
+    different skin (150 here, 5,104 on the painted crown), so one even spacing for the whole lock would
+    call every root of its dense part bunched: each root's distance to its nearest root is held against the
+    spacing asked WHERE THE ROOT IS, 1 / sqrt(automatic x keep + the layers' density there). Without a
+    layer that is the lock's one density, as before."""
     roots = pos[starts]
     whorl = np.zeros(len(roots), dtype=bool) if whorl is None else whorl
     out = {}
@@ -407,9 +434,26 @@ def roots_and_density(pos, starts, counts, lock_of_strand, infos, unit_cm, whorl
         area = max(info.region_area_cm2, 1e-6)
         spacing = 1.0 / np.sqrt(n / area)                    # cm, if the roots sat evenly on the area
         d = nn_dist(roots[sel]) * unit_cm
+        spacing_ratio, clumped = float(np.median(d) / spacing), float(np.mean(d < 0.3 * spacing))
+        if cover is not None and info.id in cover:
+            prims, keep, add = cover[info.id]
+            auto = (getattr(info, "auto_strands", 0) or info.strands) / area
+            r = roots[sel]
+            near = np.empty(len(r), dtype=int)
+            for i in range(0, len(r), 500):
+                near[i:i + 500] = ((r[i:i + 500, None, :] - cen[prims][None, :, :]) ** 2).sum(-1).argmin(1)
+            asked = auto * keep[near] + add[near]              # roots / cm2 asked at each root
+            ok = asked > 1e-6
+            if ok.sum() >= 3:
+                local = 1.0 / np.sqrt(asked[ok])
+                spacing_ratio = float(np.median(d[ok] / local))
+                clumped = float(np.mean(d[ok] < 0.3 * local))
         out[info.id] = {"strands": n, "expected": int(info.strands), "density_ratio": n / max(info.strands, 1),
-                        "spacing_ratio": float(np.median(d) / spacing), "clumped": float(np.mean(d < 0.3 * spacing)),
-                        "area_cm2": area, "mask_share": float(getattr(info, "mask_share", 1.0))}
+                        "spacing_ratio": spacing_ratio, "clumped": clumped,
+                        "area_cm2": area, "mask_share": float(getattr(info, "mask_share", 1.0)),
+                        "layered": bool(getattr(info, "layered", False)),
+                        "auto_strands": int(getattr(info, "auto_strands", 0) or info.strands),
+                        "layer_strands": int(getattr(info, "layer_strands", 0))}
     return out
 
 
@@ -441,13 +485,19 @@ i@qc_extra = w || e;
 """
 
 
-def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5, far_cm=ROOT_FAR_CM):
+def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5, far_cm=ROOT_FAR_CM, cover=None):
     """The skin between locks: per scalp prim of the frozen split (SCALP_REGIONS), the roots within
     `radius_cm` of it against what its regions ask for there (each owner's strands / its region area; a
     shared prim the mean of its owners'), both summed over the prims in that disc, so prim size and region
     borders cancel out. Whorl roots and start extras (`whorl_root`, `start_extra`: strands packed on purpose
-    on top of the lock's count) are left out: what is left must cover the skin evenly. Returns per prim
-    (owners, area cm2, ratio)."""
+    on top of the lock's count) are left out: what is left must cover the skin evenly.
+
+    Density layers (v0.2a, `cover`: grooming_masks.layer_cover, per lock its prims with the layers' keep and
+    density there): a prim asks each owner's automatic density x keep + the layers' density, over its
+    owners. Returns per prim (owners, area cm2, ratio, under floating mesh, asked): `asked` is False where
+    the skin within `radius_cm` asks for less than one root in all (painted "= 0"): there is nothing to be
+    thin against. Skin under floating mesh a layer covers in full is judged like any other (the artist
+    painted its density); elsewhere it stays the tool's own thin skin."""
     w = hair.parent().createNode("attribwrangle", "qc_root_prim")
     w.setInput(0, hair)
     w.setInput(1, regions)
@@ -475,19 +525,39 @@ def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5, far
     area = np.array(rg.primFloatAttribValues("area_cm2"))
     P = np.array(rg.pointFloatAttribValues("P")).reshape(-1, 3)
     cen = np.array([P[[v.point().number() for v in pr.vertices()]].mean(0) for pr in rg.prims()]) * unit_cm
-    # density masks (v0.2a): a lock's strands already count its masked area (mask_share), so what a prim asks
-    # is the unmasked density x the mask there (SCALP_REGIONS mask_mean); without a layer both are 1
-    dens = {i.id: i.strands / max(getattr(i, "mask_share", 1.0), 1e-6) / max(i.region_area_cm2, 1e-6) for i in infos}
-    want = np.array([np.mean([dens.get(o, 0.0) for o in own]) if own else 0.0 for own in owners]) * area
-    if rg.findPrimAttrib("mask_mean") is not None:
-        want = want * np.array(rg.primFloatAttribValues("mask_mean"))
+    # each owner's automatic density (its count without layers over its skin); under layers a prim asks
+    # automatic x keep + the layers' density of each owner (logic.mask_density), without layers the automatic
+    dens = {i.id: (getattr(i, "auto_strands", 0) or i.strands) / max(i.region_area_cm2, 1e-6) for i in infos}
+    keep_of, add_of = {}, {}
+    for lock_id, (prims, keep, add) in (cover or {}).items():
+        k = np.ones(len(area))
+        k[prims] = keep
+        a = np.zeros(len(area))
+        a[prims] = add
+        keep_of[lock_id], add_of[lock_id] = k, a
+    want = np.zeros(len(area))
+    full = np.zeros(len(area), dtype=bool)        # a layer covers the prim for every owner
+    for pr, own in enumerate(owners):
+        if not own:
+            continue
+        tot, least = 0.0, 0.0
+        for o in own:
+            k = keep_of[o][pr] if o in keep_of else 1.0
+            tot += dens.get(o, 0.0) * k + (add_of[o][pr] if o in add_of else 0.0)
+            least = max(least, k)
+        want[pr] = tot / len(own) * area[pr]
+        full[pr] = least <= 0.01
+    arch = arch & ~full          # painted in full: the density there is the artist's, judged like any skin
     have = np.bincount(rprim[(rprim >= 0) & ~extra], minlength=len(area)).astype(float)
     ratio = np.ones(len(area))
+    asked = np.ones(len(area), dtype=bool)
     r2 = radius_cm * radius_cm
     for i in range(0, len(cen), 1000):
         near = ((cen[i:i + 1000, None, :] - cen[None, :, :]) ** 2).sum(-1) <= r2
-        ratio[i:i + 1000] = (near @ have) / np.maximum(near @ want, 1e-9)
-    return owners, area, ratio, arch
+        wanted = near @ want
+        ratio[i:i + 1000] = (near @ have) / np.maximum(wanted, 1e-9)
+        asked[i:i + 1000] = wanted >= 1.0
+    return owners, area, ratio, arch, asked
 
 
 def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10, unit_cm=100.0):
@@ -710,7 +780,9 @@ def main():
     sx = np.array(hgeo.primIntAttribValues("start_extra")) > 0 if hgeo.findPrimAttrib("start_extra") else np.zeros(len(starts), dtype=bool)
     report["start_roots"] = int((startr & ~whorl).sum())
     report["start_extras"] = int(sx.sum())
-    dens = roots_and_density(pos, starts, counts, lock_of_strand, ga.lock_infos(node), unit_cm, whorl | sx)
+    cover, cover_cen = layer_cover_of(node)
+    dens = roots_and_density(pos, starts, counts, lock_of_strand, ga.lock_infos(node), unit_cm, whorl | sx,
+                             cover, cover_cen)
     # the whorl: ours (roots the tool packed there) and the densest 1 cm disc of ours and the reference
     _c, n_ours, d_ours = densest_spot(pos[starts] * unit_cm)
     report["whorl"] = {"ours_whorl_roots": int(whorl.sum()), "ours_whorl_share": float(whorl.mean()) if len(whorl) else 0.0,
@@ -732,7 +804,8 @@ def main():
         if d:
             r.update({"density_ratio": d["density_ratio"], "expected": d["expected"],
                       "spacing_ratio": d["spacing_ratio"], "clumped": d["clumped"],
-                      "mask_share": d.get("mask_share", 1.0)})
+                      "mask_share": d.get("mask_share", 1.0), "layered": d.get("layered", False),
+                      "auto_strands": d.get("auto_strands"), "layer_strands": d.get("layer_strands", 0)})
         if sh:
             mids = [b["ratio"] for b in sh["bins"][3:7] if b]
             tip = sh["bins"][-1]
@@ -740,14 +813,14 @@ def main():
                       "width_tip": tip["ratio"] if tip else 1.0, "tip_center_off": tip["center_off"] if tip else 0.0,
                       "fold": sh["fold"], "width_profile": [round(b["ratio"], 2) if b else None for b in sh["bins"]]})
     have = [r for r in locks if "density_ratio" in r]
-    # density masks (v0.2a): a lock no layer reaches must hold exactly what density x area asks; a lock with
-    # painted skin (mask_share != 1) may hold fewer than its masked area asks, never more: the roots the tool
-    # lays out round its start or its whorl are thinned by the mask where they land, which the estimate does
-    # not model (the mask's own counts are checked by accept_v02a.py: 0, x0.5, x2 on the painted skin)
-    s["density_off_worst"] = max((abs(r["density_ratio"] - 1) if r.get("mask_share", 1.0) == 1.0
-                                  else max(r["density_ratio"] - 1, 0.0) for r in have), default=0.0)
-    s["density_short_painted_worst"] = max((1 - r["density_ratio"] for r in have if r.get("mask_share", 1.0) != 1.0),
-                                           default=0.0)
+    # too few AND too many, for every lock. Under density layers (v0.2a) a lock's expected count is what
+    # the network grows (`lock_infos`: its automatic count x the share of its roots the layers keep where
+    # they end up + the layers' own roots), so a painted lock is held to the same limit both ways
+    s["density_off_worst"] = max((abs(r["density_ratio"] - 1) for r in have), default=0.0)
+    s["density_off_painted_worst"] = max((abs(r["density_ratio"] - 1) for r in have if r.get("layered")), default=0.0)
+    report["painted_locks"] = [{"name": r["name"], "strands": r["strands"], "expected": r["expected"],
+                                "ratio": round(r["density_ratio"], 3), "auto": r.get("auto_strands"),
+                                "layers": r.get("layer_strands")} for r in have if r.get("layered")]
     s["root_clumped"] = float(np.mean([r["clumped"] for r in have])) if have else 0.0
     s["root_spacing_low"] = float(np.median([r["spacing_ratio"] for r in have])) if have else 1.0
     shp = [r for r in locks if "width_mid" in r]
@@ -774,12 +847,15 @@ def main():
     report["turned_locks"] = [{"name": r["name"], "turned": r["turned_profile"]} for r in
                               sorted(locks, key=lambda r: -r.get("turned_worst", 0.0))[:8] if "turned_profile" in r]
     t = time.time()
-    owners, area, ratio, arch = skin_density(hair, merge(node.path() + "/SCALP_REGIONS", "qc_regions"), mesh, spines,
-                                             ga.lock_infos(node), unit_cm,
-                                             far_cm=float(node.evalParm("root_far_cm")) if node.parm("root_far_cm") else ROOT_FAR_CM)
+    owners, area, ratio, arch, asked = skin_density(
+        hair, merge(node.path() + "/SCALP_REGIONS", "qc_regions"), mesh, spines, ga.lock_infos(node), unit_cm,
+        far_cm=float(node.evalParm("root_far_cm")) if node.parm("root_far_cm") else ROOT_FAR_CM, cover=cover)
     report["skin_arch_cm2"] = float(area[arch].sum())
     report["skin_arch_thin_cm2"] = float(area[arch & (ratio < 0.5)].sum())
-    has = np.array([len(o) > 0 for o in owners]) & ~arch
+    # skin that asks for no root (painted "= 0") is not thin skin: nothing was to grow there
+    owned = np.array([len(o) > 0 for o in owners])
+    report["skin_none_asked_cm2"] = float(area[owned & ~arch & ~asked].sum())
+    has = owned & ~arch & asked
     thin = has & (ratio < 0.5)
     s["skin_thin_share"] = float(area[thin].sum() / max(area[has].sum(), 1e-9))
     per = {}

@@ -311,6 +311,11 @@ class LockCache:
         for key in list(self._d.get(slot, {})):
             self._forget(slot, key)
 
+    def latest(self, node_id: int, lock_id: int, mode: str) -> Any:
+        """The state of a slot used last (not counted as a use), None when the slot is empty."""
+        d = self._d.get((node_id, lock_id, mode))
+        return d[next(reversed(d))] if d else None
+
     def values(self, node_id: int, mode: str) -> list:
         """Everything held for a node under one mode, every lock and state."""
         return [v for slot, keys in self._d.items() if slot[0] == node_id and slot[2] == mode for v in keys.values()]
@@ -708,7 +713,12 @@ def lock_infos(node) -> list[LockInfo]:
     # density layers (v0.2a): what the network grows under them. Its automatic roots are kept by the layers'
     # keep where they end up (an estimate of that share, `lock_layer_counts`), and the layers scatter their
     # own roots on its skin (the exact count the network is given)
-    for lid, (keep, add) in grooming_masks.lock_layer_counts(node, scalp, rows).items():
+    cache, sid = hair_cache(), node.sessionId()
+
+    def auto_roots(lock_id):       # the lock's automatic roots as the loop last laid them out, full density
+        return cache.latest(sid, lock_id, AUTO_MODE + "hair")
+
+    for lid, (keep, add) in grooming_masks.lock_layer_counts(node, scalp, rows, auto_roots).items():
         for k, info in enumerate(infos):
             if info.id == lid:
                 n = int(round(rows[lid]["strands"] * keep + add))

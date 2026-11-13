@@ -629,7 +629,52 @@ def kept_share(prim_strands, far_w, keep, landing_keep: float) -> float:
     return (stay + float((n * fw).sum()) * landing_keep) / total
 
 
-def lock_layer_counts(top, regions_geo, locks: dict[int, dict]) -> dict[int, tuple[float, float]]:
+def root_landings(auto_geo):
+    """(where each automatic root of a lock ends up (n, 3), which of them are whorl roots) from the lock's
+    cached automatic roots (root_pick's output: one strand a root, `start_root` / `whorl_root` flags and
+    `start_pos` for the roots it laid out round the lock's start). A root not relocated ends up where
+    hairgen scattered it. None when the geometry is not such roots."""
+    np = _np()
+    n = auto_geo.intrinsicValue("primitivecount")
+    if n <= 0:
+        return np.zeros((0, 3), np.float32), np.zeros(0, bool)
+    roots = strand_roots(np.frombuffer(auto_geo.pointFloatAttribValuesAsString("P"), np.float32), n)
+    if roots is None:
+        return None
+    roots = roots.copy()
+    whorl = np.zeros(n, bool)
+    if auto_geo.findPrimAttrib("start_root") is not None and auto_geo.findPrimAttrib("start_pos") is not None:
+        start = np.frombuffer(auto_geo.primIntAttribValuesAsString("start_root"), np.int32) > 0
+        if auto_geo.findPrimAttrib("whorl_root") is not None:
+            whorl = np.frombuffer(auto_geo.primIntAttribValuesAsString("whorl_root"), np.int32) > 0
+        pos = np.frombuffer(auto_geo.primFloatAttribValuesAsString("start_pos"), np.float32).reshape(-1, 3)
+        moved = start & ~whorl
+        roots[moved] = pos[moved]
+    return roots, whorl
+
+
+def keep_at(regions_geo, set_index: int, positions):
+    """The layers' keep of one scope set at `positions` (n, 3): the value of the nearest scalp point
+    (Attribute Transfer as a verb, one sample)."""
+    np = _np()
+    if not len(positions):
+        return np.zeros(0, np.float32)
+    name = config.MASK_KEEP_ATTR % set_index
+    src = hou.Geometry()
+    src.merge(_cloud(_points(regions_geo)))
+    src.addAttrib(hou.attribType.Point, name, 1.0)
+    src.setPointFloatAttribValuesFromString(name, regions_geo.pointFloatAttribValuesAsString(name))
+    cloud = _cloud(positions)
+    cloud.addAttrib(hou.attribType.Point, name, 1.0)
+    verb = hou.sopNodeTypeCategory().nodeVerb("attribtransfer")
+    verb.setParms({"primitiveattribs": 0, "pointattribs": 1, "pointattriblist": name, "kernel": "uniform",
+                   "kernelradius": 1e9, "maxsamplecount": 1, "threshold": 0})
+    out = hou.Geometry()
+    verb.execute(out, [cloud, src])
+    return np.frombuffer(out.pointFloatAttribValuesAsString(name), np.float32).copy()
+
+
+def lock_layer_counts(top, regions_geo, locks: dict[int, dict], auto_roots=None) -> dict[int, tuple[float, float]]:
     """Per lock id a layer covers: (the share of its automatic roots expected to stay, the strands the layers
     scatter on its skin). The second is the count the network's second scatter is given (`mask_add_of`),
     exact; the first follows the network's own steps on the region's prims (`kept_share`): hairgen spreads
@@ -639,10 +684,31 @@ def lock_layer_counts(top, regions_geo, locks: dict[int, dict]) -> dict[int, tup
     in `LockInfo.strands`.
 
     `locks`: per lock id {"strands": its automatic count, "root": its root (scene units), "foot": its
-    footprint radius (scene units)}; `regions_geo`: SCALP_REGIONS with `owner_dist`."""
+    footprint radius (scene units)}; `regions_geo`: SCALP_REGIONS with `owner_dist`.
+
+    `auto_roots(lock_id)`: the lock's cached automatic roots (the cache's "auto:" entry), None when it was
+    never cooked. With them the share is not an estimate: it is the mean keep where each of the lock's
+    automatic roots ends up (`root_landings`, `keep_at`), which is exactly the chance mask_thin draws
+    against, so the expected count is right to the scatter of a coin per root."""
     cover = layer_cover(top, regions_geo)
     if not cover:
         return {}
+    exact = {}
+    if auto_roots is not None:
+        np = _np()
+        set_of = regions_geo.intListAttribValue(ATTR_SET_OF)
+        adds_exact = regions_geo.floatListAttribValue(ATTR_ADD_OF)
+        for lock_id in cover:
+            geo = auto_roots(lock_id)
+            got = root_landings(geo) if geo is not None else None
+            if got is None:
+                continue
+            landing, whorl = got
+            own = landing[~whorl]
+            share = float(keep_at(regions_geo, set_of[lock_id], own).mean()) if len(own) else 1.0
+            exact[lock_id] = (share, float(adds_exact[lock_id]) if lock_id < len(adds_exact) else 0.0)
+        if len(exact) == len(cover):
+            return exact
     np = _np()
     tables = _region_tables(top, regions_geo)
     adds = regions_geo.floatListAttribValue(ATTR_ADD_OF)
@@ -699,6 +765,7 @@ def lock_layer_counts(top, regions_geo, locks: dict[int, dict]) -> dict[int, tup
                 inside = d_c <= d_c.min() + 1e-9
             landing = float((keep[inside] * area[prims][inside]).sum() / max(float(area[prims][inside].sum()), 1e-12))
         out[lock_id] = (kept_share(per_prim, fw, keep, landing), add_n)
+    out.update(exact)
     return out
 
 

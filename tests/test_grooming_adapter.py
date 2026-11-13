@@ -269,6 +269,7 @@ def test_lock_cache_sizes_values_with_its_sizer_and_keeps_only_named_copies():
     assert c.get(7, 1, "hair#cd", "k|blue") and c.usage(7)["entries"] == 4
     assert sorted(c.values(7, "hair#cd")) == ["a copy is stored like anything else", "copy one", "copy two"]
     assert c.values(7, "nothing") == [] and c.values(8, "hair#cd") == []
+    assert c.latest(7, 1, "hair#cd") == "a copy is stored like anything else" and c.latest(7, 5, "hair") is None
     assert ga._geo_bytes("not a geometry") == 0
     assert ga.LockCache().limit(1) == int(config.UNDO_CACHE_GB * 2 ** 30) and config.UNDO_CACHE_GB == 2.0
     assert config.UNDO_CACHE_PARM in ga._KEY_SKIP_PARMS      # changing the limit regrows nothing
