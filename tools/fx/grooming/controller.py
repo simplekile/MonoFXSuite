@@ -1074,6 +1074,8 @@ class GroomController:
             self.refresh_publish_version()
         else:
             self.view.set_message(f"Not published: {result.message}", error=True)
+            # a version taken meanwhile (another publish) or a folder made: propose the next free one
+            self.refresh_publish_version()
         return result
 
     # ------------------------------------------------------------------

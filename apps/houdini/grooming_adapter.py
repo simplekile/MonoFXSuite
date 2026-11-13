@@ -1071,27 +1071,34 @@ def publish_context(node) -> tuple[str, list[str]]:
 
 
 def publish(node, version: str | None = None) -> PublishResult:
-    """Write the asset groom USD and `vNNN/_grooming/` (grooming_data.json, publish.json); never overwrite."""
+    """Write the asset groom USD and `vNNN/_grooming/` (grooming_data.json, publish.json); never overwrite.
+
+    Every file goes to a temp name next to its final one and is renamed only once all are written
+    (`logic.StagedFiles`, the USD last); a failure removes this publish's own temp files and the
+    folders it made, so nothing half written is left and an earlier publish stays as it was.
+    """
     data = read_data(node)
     scene = hou.hipFile.basename()
     asset = data.asset or asset_from_scene(scene)
     hip_dir = os.path.dirname(hou.hipFile.path())
+    note = ""
     try:
         if not version:
-            version, _note = logic.publish_version(os.path.splitext(scene)[0], _existing_versions(hip_dir, asset))
+            version, note = logic.publish_version(os.path.splitext(scene)[0], _existing_versions(hip_dir, asset))
         usd, tool_dir = logic.publish_paths(hip_dir, asset, version)
         version = os.path.basename(os.path.dirname(usd))  # the normalised spelling (v7 -> v007)
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         return PublishResult(False, "", version or "", f"Cannot publish: {exc}")
     if os.path.exists(usd) or os.path.exists(tool_dir):
         return PublishResult(False, usd, version, f"{version} is already published, not overwritten: {usd}")
 
     exporter = _inner(node, NODE_PUBLISH_USD)
-    made = not os.path.isdir(os.path.dirname(usd))
+    staged = logic.StagedFiles()
     try:
-        os.makedirs(tool_dir)
+        staged.make_dirs(tool_dir)
+        usd_tmp = staged.stage(usd, last=True)
         with hou.undos.disabler():  # export settings are not an edit of the groom
-            node.parm(PARM_PUBLISH_PATH).set(usd)
+            node.parm(PARM_PUBLISH_PATH).set(usd_tmp)
             try:
                 # the Groom output's rest path: every lock not excluded, full hair, whatever the view
                 hair = _cooked(node, NODE_GROOM_REST)
@@ -1100,32 +1107,27 @@ def publish(node, version: str | None = None) -> PublishResult:
             finally:
                 node.parm(PARM_PUBLISH_PATH).set("")
         errors = exporter.errors()
-        if errors or not os.path.isfile(usd):
+        if errors or not os.path.isfile(usd_tmp):
             raise RuntimeError("; ".join(errors) or "USD export wrote no file")
-        with open(os.path.join(tool_dir, "grooming_data.json"), "w", encoding="utf-8") as fh:
-            fh.write(data.to_json())
+        staged.write_text(os.path.join(tool_dir, "grooming_data.json").replace("\\", "/"), data.to_json())
         record = publish_record(asset, version, usd, hou.hipFile.path(), data, strands, node.path(),
                                 hou.applicationVersionString())
-        with open(os.path.join(tool_dir, "publish.json"), "w", encoding="utf-8") as fh:
-            json.dump(record, fh, ensure_ascii=False, indent=1)
+        staged.write_text(os.path.join(tool_dir, "publish.json").replace("\\", "/"),
+                          json.dumps(record, ensure_ascii=False, indent=1))
+        staged.commit()
     except Exception as exc:  # noqa: BLE001 - reported to the panel, never a dialog
-        _remove_partial(usd, tool_dir, made)
-        return PublishResult(False, usd, version, f"Publish {version} failed: {exc}")
+        left = staged.abort()
+        msg = f"Publish {version} failed, nothing written: {logic.publish_error(exc)}"
+        if left:
+            msg += f" (could not remove {', '.join(left)})"
+        return PublishResult(False, usd, version, msg)
     msg = f"Published {asset} {version}: {strands:,} strands, {len(data.locks)} locks"
     if data.regions_stale:
         msg += " (regions out of date)"
+    if note:
+        msg += f". {note}"
     _status(f"{config.HDA_LABEL}: {msg}")
     return PublishResult(True, usd, version, msg)
-
-
-def _remove_partial(usd: str, tool_dir: str, made_version_dir: bool) -> None:
-    """Undo a failed publish: only what this publish created."""
-    for path in (os.path.join(tool_dir, "publish.json"), os.path.join(tool_dir, "grooming_data.json"), usd):
-        if os.path.isfile(path):
-            os.remove(path)
-    for d in (tool_dir, os.path.dirname(usd) if made_version_dir else ""):
-        if d and os.path.isdir(d) and not os.listdir(d):
-            os.rmdir(d)
 
 
 # ---------------------------------------------------------------------------

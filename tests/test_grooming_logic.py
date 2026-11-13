@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import errno
+import os
 import random
 
 import pytest
@@ -452,3 +454,124 @@ def test_falloff_fades_between_the_two_heights() -> None:
     assert logic.falloff(0.5, 0.5, 0.5) == 0.5
     assert logic.falloff(0.8, 0.5, 0.5) == 1.0
     assert 0.0 < logic.falloff(0.4, 0.5, 0.5) < 0.5 < logic.falloff(0.6, 0.5, 0.5) < 1.0
+
+
+# ---------------------------------------------------------------------------
+# StagedFiles: publish writes temp names, renames at the end, cleans up only its own
+# ---------------------------------------------------------------------------
+
+def _publish_dirs(tmp_path):
+    usd, tool = logic.publish_paths(str(tmp_path / "char_A" / "04_grooming" / "work"), "char_A", "v003")
+    return usd, tool
+
+
+def test_staged_files_rename_only_at_commit(tmp_path) -> None:
+    usd, tool = _publish_dirs(tmp_path)
+    s = logic.StagedFiles(token="t1")
+    s.make_dirs(tool)
+    usd_tmp = s.stage(usd, last=True)
+    assert os.path.dirname(usd_tmp) == os.path.dirname(usd) and usd_tmp.endswith(".tmp.usd")
+    open(usd_tmp, "w").write("usd")
+    s.write_text(tool + "/publish.json", "{}")
+    assert not os.path.exists(usd) and not os.path.exists(tool + "/publish.json")
+    s.commit()
+    assert open(usd).read() == "usd" and open(tool + "/publish.json").read() == "{}"
+    assert sorted(os.listdir(os.path.dirname(usd))) == ["_grooming", "char_A_grooming_publish.usd"]
+
+
+def test_staged_files_usd_renamed_last(tmp_path, monkeypatch) -> None:
+    usd, tool = _publish_dirs(tmp_path)
+    s = logic.StagedFiles()
+    s.make_dirs(tool)
+    open(s.stage(usd, last=True), "w").write("usd")
+    s.write_text(tool + "/grooming_data.json", "{}")
+    s.write_text(tool + "/publish.json", "{}")
+    done = []
+    real = os.replace
+    monkeypatch.setattr(logic.os, "replace", lambda a, b: (done.append(os.path.basename(b)), real(a, b)))
+    s.commit()
+    assert done == ["grooming_data.json", "publish.json", "char_A_grooming_publish.usd"]
+
+
+def test_abort_mid_commit_leaves_nothing_and_removes_new_folders(tmp_path, monkeypatch) -> None:
+    usd, tool = _publish_dirs(tmp_path)
+    publish_dir = os.path.dirname(os.path.dirname(usd))
+    os.makedirs(publish_dir + "/v002")
+    open(publish_dir + "/v002/old.usd", "w").write("old")
+    open(publish_dir + "/v002/x.t9.tmp.usd", "w").write("someone else's temp")
+    s = logic.StagedFiles(token="t9")
+    s.make_dirs(tool)
+    open(s.stage(usd, last=True), "w").write("usd")
+    s.write_text(tool + "/publish.json", "{}")
+    real = os.replace
+    calls = []
+
+    def flaky(a, b):
+        calls.append(b)
+        if len(calls) == 2:
+            raise OSError(errno.ENOSPC, "No space left on device", b)
+        real(a, b)
+
+    monkeypatch.setattr(logic.os, "replace", flaky)
+    with pytest.raises(OSError):
+        s.commit()
+    assert s.abort() == []
+    assert sorted(os.listdir(publish_dir)) == ["v002"]          # v003 and _grooming were ours: gone
+    assert sorted(os.listdir(publish_dir + "/v002")) == ["old.usd", "x.t9.tmp.usd"]  # untouched
+
+
+def test_abort_keeps_folders_that_existed(tmp_path) -> None:
+    usd, tool = _publish_dirs(tmp_path)
+    os.makedirs(os.path.dirname(usd))
+    s = logic.StagedFiles()
+    s.make_dirs(tool)
+    s.write_text(tool + "/publish.json", "{}")
+    s.abort()
+    assert os.path.isdir(os.path.dirname(usd)) and os.listdir(os.path.dirname(usd)) == []
+
+
+def test_commit_never_overwrites(tmp_path) -> None:
+    usd, tool = _publish_dirs(tmp_path)
+    s = logic.StagedFiles()
+    s.make_dirs(tool)
+    open(s.stage(usd, last=True), "w").write("new")
+    open(usd, "w").write("published meanwhile")
+    with pytest.raises(FileExistsError):
+        s.commit()
+    s.abort()
+    assert open(usd).read() == "published meanwhile"   # not ours: kept
+    assert os.listdir(os.path.dirname(usd)) == ["char_A_grooming_publish.usd"]
+
+
+def test_commit_refuses_a_temp_that_was_never_written(tmp_path) -> None:
+    usd, tool = _publish_dirs(tmp_path)
+    s = logic.StagedFiles()
+    s.make_dirs(tool)
+    s.stage(usd, last=True)
+    with pytest.raises(FileNotFoundError):
+        s.commit()
+
+
+@pytest.mark.parametrize("exc, want", [
+    (OSError(errno.ENOSPC, "No space left on device", "D:/p/x.usd"), "the disk is full: D:/p/x.usd"),
+    (PermissionError(errno.EACCES, "Permission denied", "D:/p"), "the folder is not writable: D:/p"),
+    (OSError(errno.EROFS, "Read-only file system", "/mnt/p"), "the folder is not writable: /mnt/p"),
+    (FileExistsError(errno.EEXIST, "exists", "D:/p/x.usd"), "already published, not overwritten: D:/p/x.usd"),
+    (RuntimeError("Error writing layer: No space left on device"), "the disk is full ("),
+    (RuntimeError("Unable to open file: Permission denied"), "the folder is not writable ("),
+    (RuntimeError("USD export wrote no file"), "USD export wrote no file"),
+    (OSError(errno.EACCES, "Access is denied", r"D:\p\v003"), "the folder is not writable: D:/p/v003"),
+])
+def test_publish_error_names_what_the_artist_can_fix(exc, want) -> None:
+    assert logic.publish_error(exc).startswith(want)
+
+
+def test_make_dirs_says_when_a_file_is_in_the_way(tmp_path) -> None:
+    usd, tool = _publish_dirs(tmp_path)
+    publish_dir = os.path.dirname(os.path.dirname(usd))
+    os.makedirs(os.path.dirname(publish_dir))
+    open(publish_dir, "w").write("not a folder")
+    with pytest.raises(NotADirectoryError) as e:
+        logic.StagedFiles().make_dirs(tool)
+    msg = logic.publish_error(e.value)
+    assert msg.startswith("a file is in the way, not a folder: ") and "\\" not in msg and msg.endswith("/publish")

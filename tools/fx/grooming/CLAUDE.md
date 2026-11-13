@@ -416,3 +416,16 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   the button (names, count), a second click with the same locks hidden publishes everything.
 - Names follow the department: `grooming` (`04_grooming/publish/vNNN/char_<name>_grooming_publish.usd`,
   tool data in `vNNN/_grooming/`). Publish version defaults to the scene's `_vNNN` and never overwrites.
+- Publish writes nothing half done (`logic.StagedFiles`): the USD (the inner `PUBLISH_USD` exports to
+  the temp name through `publish_path`), `grooming_data.json` and `publish.json` go to
+  `<name>.<token>.tmp<ext>` next to their final names (same folder: the rename never crosses a disk; the
+  extension kept: USD picks the format by it), then `commit` renames them with `os.replace`, the USD
+  last, so a USD on disk always has its records; a final name that appeared meanwhile is refused, not
+  overwritten. On any failure `abort` removes this publish's own temp files by name (never a glob:
+  another publish may be writing beside it), what it had already renamed, and the folders it made while
+  empty; earlier versions are not touched. JSON is fsynced so a full disk fails before the rename.
+  `logic.publish_error` names what the artist can fix (disk full, folder not writable, already
+  published, a file where a folder should be); the panel shows it on the message line and proposes the
+  next free version again. hython t54 (`sandbox/.../t54_publish/`): ok, same version, disk full on the
+  2nd rename, failure after the USD export, no permission, no `_vNNN` in the scene, file in the way: no
+  temp file left, the renamed USD reads back with every strand (118,622 on Helen).

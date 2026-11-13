@@ -315,7 +315,12 @@ Publish and caches
 - Publish always writes the full hair (not the preview, not the deformed shot pose, hidden and
   isolated locks included, with the warning), whatever the panel shows.
 - Version already published, scene name without a version, path not writable, disk full: say so in
-  the panel, nothing half written (write to a temp name, rename at the end). NOT DONE yet: v0.1 work.
+  the panel, nothing half written. Done: the USD and both JSON records are written to temp names in
+  their own folders and renamed (`os.replace`) only once all are written, the USD last
+  (`logic.StagedFiles`); a failure removes exactly this publish's temp files and the folders it made,
+  an earlier publish stays as it was. The reason goes to the panel's message line (`logic.publish_error`),
+  never a dialog, and the version field proposes the next free version again. A scene without `_vNNN`
+  publishes as the next free version and says so. Checked in hython (t54) with failures mid-way.
 - (v0.2) Several characters in a shot: one node per character; cache paths carry the character (and an
   instance number when the same asset appears twice), so two Helens never write one file. Caching
   one, several or all; one failing does not stop or corrupt the others; frame ranges per character.

@@ -347,6 +347,17 @@ def test_publish_refusal_message_is_shown(env) -> None:
     assert adapter.published_version is None  # empty field: the adapter's default
 
 
+def test_failed_publish_proposes_the_next_free_version(env) -> None:
+    adapter, view, c = env
+    c.confirm_all()
+    adapter.publish_context = lambda node: ("char_Helen_grooming_v007", ["v007"])
+    adapter.publish_result = PublishResult(False, "", "v007", "Publish v007 failed, nothing written: the disk is full")
+    c.publish("v007")
+    text, error = view.messages[-1]
+    assert error and "disk is full" in text
+    assert view.version[0] == "v008"
+
+
 def test_publish_version_prefilled_from_logic(env, monkeypatch) -> None:
     adapter, view, c = env
     adapter.publish_context = lambda node: ("char_Helen_grooming_v007", ["v007"])
