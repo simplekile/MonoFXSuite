@@ -94,10 +94,16 @@ if ($changelog -notmatch "## \[$([regex]::Escape($version))\]") {
 }
 if (Invoke-Git @("tag", "-l", $tag)) { Fail "tag $tag already exists locally" }
 if (Invoke-Git @("ls-remote", "--tags", "origin", $tag)) { Fail "tag $tag already exists on origin" }
-& gh auth status *> $null
-if ($LASTEXITCODE -ne 0) { Fail "gh is not logged in (gh auth login)" }
-& gh release view $tag *> $null
-if ($LASTEXITCODE -eq 0) { Fail "GitHub Release $tag already exists" }
+# Windows PowerShell 5.1 turns a native command's stderr into a terminating error under "Stop", so
+# a gh that answers "release not found" (the case we want) would stop the script: exit code only.
+function Test-Native([scriptblock]$Command) {
+    $saved = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try { & $Command *> $null } finally { $ErrorActionPreference = $saved }
+    return ($LASTEXITCODE -eq 0)
+}
+if (-not (Test-Native { gh auth status })) { Fail "gh is not logged in (gh auth login)" }
+if (Test-Native { gh release view $tag }) { Fail "GitHub Release $tag already exists" }
 if (-not (Test-Path "C:\Program Files (x86)\Inno Setup 6\ISCC.exe")) { Fail "Inno Setup 6 not found" }
 
 Invoke-Tests

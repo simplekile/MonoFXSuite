@@ -78,6 +78,13 @@ try {
         Write-Host "Release may already exist. Try: gh release delete $Tag then run again."
         exit 1
     }
+    # gh has left the body empty after creating with assets (v0.1.24, v0.1.25): check, and set it again
+    $bodyLength = gh release view $Tag --json body --jq ".body | length"
+    if ($LASTEXITCODE -ne 0 -or [int]$bodyLength -eq 0) {
+        gh release edit $Tag --notes-file $NotesPathFull | Out-Null
+        $bodyLength = gh release view $Tag --json body --jq ".body | length"
+        if ([int]$bodyLength -eq 0) { Write-Host "Release notes are still empty: gh release edit $Tag --notes-file RELEASE_NOTES.md" }
+    }
     $url = "https://github.com/simplekile/MonoFXSuite/releases/tag/" + $Tag
     Write-Host "Done. Release: $url"
 }
