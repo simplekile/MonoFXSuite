@@ -741,6 +741,8 @@ def test_a_dab_paints_value_and_coverage_and_erase_removes_the_paint():
     v2, a2 = logic.mask_dab(v, a, np.array([1.0, 0.0, 0.5]), 0.0, erase=True)
     assert list(a2) == pytest.approx([0.0, 0.5, 0.5])         # erase takes coverage away; it does not paint black
     assert list(v2) == pytest.approx(list(v))
+    _v, gone = logic.mask_dab(v, a, np.array([0.99999994, 0.99999994, 0.5]), 0.0, erase=True)
+    assert list(gone) == pytest.approx([0.0, 0.0, 0.5]) and gone[0] == 0.0 and gone[1] == 0.0     # no 6e-8 left behind
     v3, a3 = logic.mask_dab(v, a, np.array([0.0, 0.0, 0.0]), 1.0)
     assert list(v3) == pytest.approx(list(v)) and list(a3) == pytest.approx(list(a))     # no weight: untouched
 
