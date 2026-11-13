@@ -658,6 +658,9 @@ def preflight(node) -> dict:
     if xf is not None and not xf.isAlmostEqual(hou.hmath.identityTransform()):
         out["warnings"].append(f"{obj.name()} is moved or scaled: the groom is made in its own space, so"
                                " density and widths follow its scale")
+    problem = deform_problem(node)   # output 1 deforms by itself: a refused anim would cache the rest groom
+    if problem:
+        out["warnings"].append(problem)
     return out
 
 
@@ -799,8 +802,34 @@ def deform_state(node) -> tuple[bool, bool]:
     return wired, bool(p.eval()) if p is not None else True
 
 
+def anim_mismatch_text(anim_points: int, rest_points: int) -> str:
+    """Why the shot deform is refused, "" when it can run: the animated hair mesh must have the rest hair
+    mesh's points (another count would move the wrong points). The same words as the HDA's warning."""
+    if anim_points == rest_points and rest_points > 0:
+        return ""
+    if anim_points <= 0:
+        return "Anim hair mesh: no prims named like the rest hair mesh: no deform"
+    return f"Anim hair mesh: {anim_points} points, rest hair mesh {rest_points}: no deform"
+
+
+def deform_problem(node) -> str:
+    """With an animated hair mesh wired in: why the deform does not run ("" when it does). Cooks the anim
+    input's hair (ANIM_HAIR) once; call it when the deform is turned on, not per frame."""
+    if not (len(node.inputs()) > 2 and node.inputs()[2] is not None):
+        return ""
+    anim, rest = node.node("ANIM_HAIR"), node.node("IN_HAIR")
+    try:
+        ga, gr = anim.geometry(), rest.geometry()
+    except (AttributeError, hou.Error):
+        return ""
+    if ga is None or gr is None:
+        return ""
+    return anim_mismatch_text(len(ga.iterPoints()), len(gr.iterPoints()))
+
+
 def set_shot_deform(node, on: bool) -> None:
-    """Shot deform on / off: a view choice, no undo step; a scene always opens with it off (OnLoaded)."""
+    """Shot deform on / off: a view choice, no undo step; in the UI a scene opens with it off
+    (OnLoaded); without a UI it stays as saved."""
     p = node.parm("shot_deform")
     if p is not None:
         with hou.undos.disabler():
@@ -1177,14 +1206,21 @@ def cook_assign(sop) -> None:
         sop.addWarning(f"{missing} locks are not in the groom data yet: press Detect locks")
 
 
+def loaded_resets(ui: bool) -> tuple[tuple[str, Any], ...]:
+    """(parm, value) OnLoaded puts back. View state always; Shot deform only in the UI: grooming is the
+    main mode there, but hython / hbatch / a farm job opening a shot scene to cache output 1 must keep
+    the deform it was saved with, else every frame of the cache is the rest groom (t56)."""
+    resets = ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_STRANDS, ""), (PARM_FOCUS, ""), (PARM_PLAYING, 0))
+    return resets + (("shot_deform", 0),) if ui else resets
+
+
 def on_loaded(node) -> None:
     """HDA OnLoaded: isolate is a temporary view, so a scene saved while isolated opens showing all;
-    a scene saved while playing opens at its Display; a scene saved with Shot deform on opens at rest
-    (grooming is the main mode: with the deform every lock is drawn as strands and focus cannot see
-    through the others)."""
+    a scene saved while playing opens at its Display; in the UI a scene saved with Shot deform on opens
+    at rest (grooming is the main mode: with the deform every lock is drawn as strands and focus cannot
+    see through the others). Without a UI (caching a shot) the deform stays as saved."""
     with hou.undos.disabler():
-        for name, empty in ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_STRANDS, ""), (PARM_FOCUS, ""),
-                            (PARM_PLAYING, 0), ("shot_deform", 0)):
+        for name, empty in loaded_resets(hou.isUIAvailable()):
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)
@@ -1294,6 +1330,16 @@ def _key_parms(top) -> list[tuple[str, str]]:
     return out
 
 
+def capture_flag(groom: bool, wired: bool, deforming: bool) -> int:
+    """Whether a lock's strands are cooked with the Point Deform capture (`do_capture`, in the key).
+    Output 1 (Groom, groom=True) deforms whenever an animated hair mesh is wired (decided 2026-11-13:
+    a File Cache on it caches the shot whatever the view toggle); the display only while Shot deform is
+    on. Capturing every lock whenever the anim was wired, for the display too, held ~800 B a point
+    (Helen 5.9 GB after a cook, 9.5 GB after an edit, review t48), so the display's first Deform on
+    regrows its locks once."""
+    return int(wired and (groom or deforming))
+
+
 def cook_lock_keys(sop, groom: bool = False) -> None:
     """Python SOP "lock_keys", hair modes only: per spine `cache_key` (a digest of everything the
     per-lock hair loop reads for that lock: its spine and settings, its region, its mesh piece, the
@@ -1366,10 +1412,9 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
         # a dragged lock's strands are coarser (DRAG_SEGMENTS): kept apart from its full hair
         lock_mode = "drag" if drag else "hair" if f >= 1.0 else "hair_preview"
         modes.append(lock_mode)
-        # captured only while the shot deform runs. Capturing every full-hair lock whenever the anim was
-        # wired (so that turning the deform on regrew nothing) held ~800 B a point: Helen 5.9 GB after a
-        # cook, 9.5 GB after an edit (review t48). Now the first Deform on regrows the groom once.
-        cap = int(wired and deforming)
+        # captured only where a deform reads it (capture_flag): the display while Shot deform is on,
+        # the Groom output whenever an anim is wired (it cooks only when something reads it)
+        cap = capture_flag(groom, wired, deforming)
         captures.append(cap)
         piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
         idx = [p.number() for p in prim.points()]
@@ -1586,6 +1631,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "deform_problem", "capture_flag", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]

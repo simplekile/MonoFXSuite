@@ -77,7 +77,10 @@ Outputs: 0 **Display** is what the viewport draws: hidden and isolated-out locks
 packed per lock with its colour inside, locks out of focus are see-through ghosts, preview display lowers
 the density, and with Shot deform on it is the deformed display. 1 **Groom** is the groom itself and never
 depends on the view: every lock that is not excluded, full density, only P and the contract attributes
-above (`config.GROOM_ATTRIBS`), at rest, or deformed by the animated hair mesh while Shot deform is on.
+above (`config.GROOM_ATTRIBS`), deformed by the animated hair mesh whenever one is wired and has the rest
+hair mesh's points, else at rest with a warning (decided 2026-11-13, t56: a File Cache on it caches the
+shot however the scene opened). The Shot deform toggle drives only output 0. Output 1 cooks only when
+something reads it, so grooming does not pay for its deform; publish reads `GROOM_REST`, always at rest.
 Downstream nodes (a File Cache for a shot, SOP Import, a ROP, Guide Process) and the publish read output 1.
 
 `lock_width` is the lock's width. Houdini's `width` stays the strand thickness for render. Never mix them.
@@ -372,3 +375,32 @@ Panel
   points up to 2.6 cm, so the quality setting stays.
 - While playing (node parm, default Hair preview): playback draws min(Display, While playing), back on
   stop; Same as Display turns it off. Never applies to publish or to caching a shot by frames in hython.
+
+### Shot check (t56, 2026-11-13, Helen sh020 / sh025, hython; `sandbox/.../tests/t56_shot/`)
+
+- Deform works on both shots. With Shot deform on, outputs 0 and 1 follow the anim: the anim hair mesh
+  moves up to 76 cm (sh020, hair anim) and 195 cm (sh025, head only) from frame 0, and every 20th strand
+  point stays as close to the animated mesh as the rest groom is to the rest mesh (p50 0.12 cm, p95
+  0.54-0.55 cm, max 3.85 cm, every frame). The shot places the character ~342 m from the asset's origin,
+  so the undeformed groom is 342 m off.
+- Cook per frame, Hair full, 4.07 M points: output 1 (Groom) 1.07-1.15 s (warm 1.1 s), output 0
+  (Display) another 0.86-0.90 s; the first frame after Deform on regrows the groom (12.2 s). Deform off:
+  nothing is time dependent, a frame costs 0.0 s.
+- The 0.0 s "shot frame" of t55 was the deform off, not a broken deform: OnLoaded turns `shot_deform` off
+  and t55 also reverted every parm, so frame 60 cooked nothing.
+- Another point count (100 points removed): ANIM_HAIR warns "Anim hair mesh: 196102 points, rest hair
+  mesh 196202: no deform" and output 1 stays at rest, as decided. The warning stayed on that inner node:
+  neither the HDA node nor the panel showed it (a warning inside a locked HDA does not reach the node
+  even on the cook chain). Fixed: the panel's Deform on says why the hair stays at rest
+  (`adapter.deform_problem`).
+- Caching: v0.1 has no shot cache (no button, adapter function or ROP); a stock File Cache on output 1
+  is the only way. A job that opens the shot scene (hython, hbatch, a farm) wrote the REST groom on every
+  frame, because OnLoaded turned the deform off. Fixed: OnLoaded turns it off only in the UI
+  (`adapter.loaded_resets`); a scene saved with the deform on caches deformed. In the UI a File Cache's
+  Save to Disk needed Deform turned on first. Decided (user, 2026-11-13): output 1 deforms whenever a
+  matching anim is wired, the toggle drives only output 0 (Geometry contract above; `capture_flag`). With the deform on,
+  bgeo.sc is ~20 MB a frame; frames are independent (capture at rest, no sim), any order.
+- Checked after the change (t56b, `t56_out1.py`, sh020 opened as the UI opens it: Shot deform off): a lock
+  edit with the display at rest cooks 0.33 s and no deform node (`deform`, `groom_deform`, `ANIM_HAIR`,
+  `groom_keys` 0 cooks), a frame change 0.0 s; a stock File Cache on output 1 wrote frames 0 / 30 / 60
+  deformed (strands p95 0.53 cm off the animated mesh, ~20 MB a frame, 13.4 s for the 3 with the regrow).

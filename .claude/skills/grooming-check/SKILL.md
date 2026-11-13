@@ -70,6 +70,10 @@ strand goes to the lock whose mesh is nearest most of it) side by side, front an
 40 s a lock; whole-groom shots are skipped. This is how a lock-shaped problem shows: Helen's crown
 caps (wide, short) came out as narrow twisted ribbons while every other lock matched.
 
+**Shot** (`QC_FRAMES=0,60,120`, a scene with the animated hair mesh wired): Shot deform on, one view a
+frame (`QC_VIEWS` for more): `shot_<view>_f<frame>` (ours deformed) and `shot_mesh_<view>_f<frame>` (the
+animated hair mesh, same camera). Nothing else is shot.
+
 Wait for "done" in `capture_log.txt`, then kill the Houdini it started (it often hangs on exit):
 only the process whose command line has `qc_capture`, never the fxhoudini MCP's.
 

@@ -284,3 +284,30 @@ def test_only_a_deforming_node_plays_lighter():
 
 def test_install_playbar_callback_needs_houdini():
     ga.install_playbar_callback()   # no hou here: does nothing, raises nothing
+
+
+def test_scene_opens_at_rest_in_the_ui_but_keeps_the_deform_when_caching():
+    """t56: a hython / farm job caching output 1 opened the shot scene, OnLoaded turned Shot deform off,
+    and every cached frame was the rest groom (342 m from the character on sh020)."""
+    ui = dict(ga.loaded_resets(True))
+    batch = dict(ga.loaded_resets(False))
+    assert ui["shot_deform"] == 0
+    assert "shot_deform" not in batch
+    for name in (ga.PARM_ISOLATE, ga.PARM_FOCUS, ga.PARM_PLAYING):   # view state goes back either way
+        assert name in ui and name in batch
+
+
+def test_anim_mismatch_text():
+    assert ga.anim_mismatch_text(196202, 196202) == ""
+    assert ga.anim_mismatch_text(196102, 196202) == "Anim hair mesh: 196102 points, rest hair mesh 196202: no deform"
+    assert "no prims named like" in ga.anim_mismatch_text(0, 196202)
+    assert callable(ga.deform_problem)
+
+
+def test_groom_output_captures_whenever_an_anim_is_wired_the_display_only_while_deforming():
+    """Output 1 deforms whenever a matching anim is wired (a File Cache on it caches the shot whatever
+    the view toggle); the display captures only with Shot deform on (memory, review t48)."""
+    assert ga.capture_flag(groom=True, wired=True, deforming=False) == 1
+    assert ga.capture_flag(groom=False, wired=True, deforming=False) == 0
+    assert ga.capture_flag(groom=False, wired=True, deforming=True) == 1
+    assert ga.capture_flag(groom=True, wired=False, deforming=False) == 0

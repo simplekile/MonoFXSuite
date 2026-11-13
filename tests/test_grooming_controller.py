@@ -598,6 +598,19 @@ def test_shot_deform_toggle_turns_the_anim_off_for_fast_edits(env) -> None:
     assert "edits are fast" in view.messages[-1][0]
 
 
+def test_shot_deform_on_with_a_mismatched_anim_says_why_it_stays_at_rest(env) -> None:
+    """t56: the HDA refused the deform (another point count) but only an inner node held the warning."""
+    adapter, view, c = env
+    c.set_shot_deform(False)
+    adapter.deform_problem = lambda node: "Anim hair mesh: 196102 points, rest hair mesh 196202: no deform"
+    assert c.set_shot_deform(True)
+    text, error = view.messages[-1]
+    assert "196102 points" in text and "stays at rest" in text and error is True
+    adapter.deform_problem = lambda node: ""
+    c.set_shot_deform(True)
+    assert "follows the animated hair mesh" in view.messages[-1][0]
+
+
 def test_isolate_another_lock_while_isolated_switches_to_it(env) -> None:
     adapter, view, c = env
     c.select_locks([1, 2])

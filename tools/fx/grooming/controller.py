@@ -989,10 +989,25 @@ class GroomController:
         if self._run("Shot deform", lambda: call(self.node, bool(on)) or True) is None:
             return False
         self.view.set_deform_state(*self.deform_state())
+        problem = self._deform_problem() if on else ""
+        if problem:   # the anim cannot drive this groom: say so, the hair stays at rest
+            self.view.set_message(problem + ": the hair stays at rest (the animated hair mesh needs the rest"
+                                  " hair mesh's points, in the same order)", error=True)
+            return True
         self.view.set_message("Deform on: the hair follows the animated hair mesh. Every lock is drawn as strands, "
                               "the others are only dimmed (not see-through), each edit deforms it again"
                               if on else "Shot deform off: the hair stays at rest, edits are fast")
         return True
+
+    def _deform_problem(self) -> str:
+        """Why the deform does not run ("" when it does, or with an older adapter)."""
+        read = getattr(self.adapter, "deform_problem", None)
+        if read is None or self.node is None:
+            return ""
+        try:
+            return str(read(self.node) or "")
+        except Exception:
+            return ""
 
     def refresh_publish_version(self) -> str:
         """Prefill the publish version from logic.publish_version, when the adapter can say what the
