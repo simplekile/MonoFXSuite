@@ -86,7 +86,7 @@ _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 MERGED_LOCK = -1                     # LockCache slot of a whole merge (hair_cache / groom_cache), not a lock
 MERGED_MODE = "merged:"
-CACHE_NET_VERSION = "partial-1-root-spread-6-mask-9"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "partial-1-root-spread-6-mask-20"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "

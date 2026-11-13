@@ -13,7 +13,7 @@ from typing import Any
 
 from tools.fx.grooming import config
 
-SCHEMA = 4      # 2: `masks` (v0.2a density mask layers); 3: fill layers, folders; 4: only "= D" fill layers
+SCHEMA = 5      # 2: `masks` (v0.2a); 3: fill layers, folders; 4: only "= D" layers; 5: one 0..1 mask, blend modes
 
 # Built-in defaults: the bottom of the resolution chain (defaults -> data.defaults -> group -> lock).
 BUILTIN_DEFAULTS: dict[str, float] = {
@@ -82,19 +82,19 @@ class Orphan:
 
 @dataclass
 class MaskLayer:
-    """One density layer (v0.2a): a fill layer "= `value` strands / cm2", or a folder of them. What is
-    painted (its mask per scalp point: white where it applies, black where the automatic groom stays) lives
-    on the node's `mask_layers` geometry parm under this `id`; here only what the panel's layer row shows.
-    The layer's order is its place in `GroomData.masks`, bottom first."""
+    """One layer of the density mask (v0.2a; config.MASK_MODES has the model). What a paint layer holds per
+    scalp point (value and coverage) lives on the node's `mask_layers` geometry parm under this `id`; here
+    only what the panel's layer row shows. The layer's order is its place in `GroomData.masks`, bottom first."""
     id: int
     name: str
     on: bool = True
+    mode: str = "normal"         # config.MASK_MODES
     opacity: float = 1.0         # 0..1
     scope: str = "all"           # the owner, config.MASK_SCOPES: "all", "group" (`group`), "locks" (`locks`)
     group: str = ""              # scope "group": the group id
     locks: list[int] = field(default_factory=list)   # scope "locks": lock ids (kept for missing locks too)
-    kind: str = "fill"           # config.MASK_KINDS: "fill" (a density and a mask), "folder"
-    value: float = config.MASK_DENSITY_DEFAULT   # a fill layer's density, strands / cm2, where its mask is white
+    kind: str = "paint"          # config.MASK_KINDS: "paint" (value and coverage per point), "fill", "folder"
+    value: float = 1.0           # 0..1. A fill layer's value; a paint layer's where only its coverage is stored
     parent: int | None = None    # the folder this layer is in (one level: a folder is never in a folder)
 
     def applies(self, lock_id: int, group_id: str) -> bool:
@@ -112,14 +112,16 @@ def _number(raw, default: float) -> float:
 
 def _clean_mask(raw: dict[str, Any]) -> MaskLayer:
     scope = str(raw.get("scope", "all"))
+    mode = str(raw.get("mode", "normal"))
     return MaskLayer(
         id=int(raw["id"]), name=str(raw.get("name", "")), on=bool(raw.get("on", True)),
+        mode=mode if mode in config.MASK_MODES else "normal",
         opacity=min(1.0, max(0.0, _number(raw.get("opacity"), 1.0))),
         scope=scope if scope in config.MASK_SCOPES else "all",
         group=str(raw.get("group", "")),
         locks=sorted({int(i) for i in raw.get("locks", ())}),
-        kind=str(raw.get("kind", "fill")) if raw.get("kind", "fill") in config.MASK_KINDS else "fill",
-        value=min(config.MASK_DENSITY_MAX, max(0.0, _number(raw.get("value"), config.MASK_DENSITY_DEFAULT))),
+        kind=str(raw.get("kind", "paint")) if raw.get("kind", "paint") in config.MASK_KINDS else "paint",
+        value=min(1.0, max(0.0, _number(raw.get("value"), 1.0))),
         parent=int(raw["parent"]) if isinstance(raw.get("parent"), int) and not isinstance(raw.get("parent"), bool)
         else None,
     )
@@ -188,8 +190,8 @@ class GroomData:
     def mask(self, layer_id: int) -> MaskLayer | None:
         return next((m for m in self.masks if m.id == layer_id), None)
 
-    def add_mask(self, name: str = "", value: float = config.MASK_DENSITY_DEFAULT, opacity: float = 1.0,
-                 scope: str = "all", group: str = "", locks=(), kind: str = "fill",
+    def add_mask(self, name: str = "", mode: str = "normal", opacity: float = 1.0, scope: str = "all",
+                 group: str = "", locks=(), kind: str = "paint", value: float = 1.0,
                  parent: int | None = None) -> MaskLayer:
         """A new layer on top of the stack; its id is never one a layer had before."""
         layer_id = max([self.mask_id_high] + [m.id for m in self.masks]) + 1
@@ -200,7 +202,7 @@ class GroomData:
             while f"{word} {n}" in taken:
                 n += 1
             name = f"{word} {n}"
-        layer = _clean_mask({"id": layer_id, "name": name, "opacity": opacity, "scope": scope,
+        layer = _clean_mask({"id": layer_id, "name": name, "mode": mode, "opacity": opacity, "scope": scope,
                              "group": group, "locks": list(locks), "kind": kind, "value": value})
         self.masks.append(layer)
         self.mask_id_high = layer_id
@@ -384,32 +386,51 @@ def migrate(raw: dict[str, Any]) -> dict[str, Any]:
         raw = dict(raw)
         raw["masks"] = [dict(m, kind=m.get("kind", "paint")) for m in raw.get("masks", [])]
         raw["schema"] = 3
-    if int(raw.get("schema", 3)) < 4:
-        # 3 -> 4: one kind of layer, "= D strands / cm2" (the user, 2026-11-13). Schema 2 and 3 were never
-        # released: their multiply / add / subtract / min / max layers, factor layers and paint layers are
-        # dropped, by name in `masks_dropped` (the panel and OnLoaded say so; the JSON on the node is
-        # rewritten only by the next edit). Folders and "= D" layers stay as they are
+    if int(raw.get("schema", 3)) < 5:
+        # -> 5: one mask in 0..1 (config.MASK_MODES has the model). Schemas 2 to 4 were never released (dev
+        # files only): a layer is carried over where its meaning is clear (`_carry_mask`), else dropped and
+        # named in `masks_dropped` (the panel and OnLoaded say so; the JSON on the node is rewritten only by
+        # the next edit)
         raw = dict(raw)
+        version = int(raw.get("schema", 3))
         keep, dropped = [], []
         for m in raw.get("masks", []):
-            (keep if _is_density_layer(m) else dropped).append(m)
-        raw["masks"] = [{k: v for k, v in m.items() if k not in ("mode", "unit")} for m in keep]
+            new = _carry_mask(m, version)
+            (keep if new is not None else dropped).append(new if new is not None else m)
+        raw["masks"] = keep
         raw["masks_dropped"] = [str(m.get("name") or m.get("id", "?")) for m in dropped]
-        # a dropped layer's id is never given again: its mask may still lie in `mask_layers`
+        # a dropped layer's id is never given again: its paint may still lie in `mask_layers`
         raw["mask_id_high"] = max([int(raw.get("mask_id_high", -1))] + [int(m["id"]) for m in keep + dropped])
-        raw["schema"] = 4
+        raw["schema"] = 5
     return raw
 
 
-def _is_density_layer(raw: dict[str, Any]) -> bool:
-    """A schema 3 layer that schema 4 still has: a folder, or a fill layer "= D strands / cm2"."""
-    kind = raw.get("kind", "fill")
-    return kind == "folder" or (kind == "fill" and raw.get("mode") == "replace" and raw.get("unit") == "density")
+def _carry_mask(raw: dict[str, Any], version: int) -> dict[str, Any] | None:
+    """A layer of schema 2 to 4 as a schema 5 layer, None when it has no meaning there.
+    Kept: folders (their opacity; a folder's own mask is gone); paint layers (their values were factors, used
+    up to 8: stored values are read clamped to 0..1) with "replace" now called "normal"; a fill layer with a
+    value in 0..1 as a factor, which becomes a paint layer of that one value under the mask it had (its
+    stored mask is its coverage). Dropped: fill layers in strands / cm2 (schema 3's unit "density", every
+    schema 4 layer: "= D" is not a value in 0..1) and factor values over 1."""
+    kind = raw.get("kind", "paint" if version < 4 else "fill")
+    out = {k: v for k, v in raw.items() if k != "unit"}
+    mode = raw.get("mode", "multiply" if version < 4 else "normal")
+    out["mode"] = "normal" if mode == "replace" else mode
+    if kind == "folder":
+        return dict(out, kind="folder", mode="normal")
+    if version >= 4:
+        return None
+    if kind == "paint":
+        return dict(out, kind="paint", value=1.0)
+    value = raw.get("value", 1.0)
+    if raw.get("unit", "factor") != "factor" or not isinstance(value, (int, float)) or not 0.0 <= value <= 1.0:
+        return None
+    return dict(out, kind="paint", value=float(value))
 
 
 def dropped_masks(text: str | None) -> list[str]:
     """Names of the layers a stored `groom_data` holds that this version drops on reading (`migrate`): layers
-    of a removed kind or blend mode from an unreleased build. Empty for anything else, unreadable JSON too."""
+    of an unreleased build with no meaning in the 0..1 mask. Empty for anything else, unreadable JSON too."""
     if not text or not text.strip():
         return []
     try:
@@ -425,7 +446,7 @@ def dropped_text(names: list[str]) -> str:
         return ""
     shown = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
     return (f"{len(names)} density layer{'s' if len(names) != 1 else ''} from an older test build dropped "
-            f"({shown}): only \"= D strands / cm2\" layers are kept")
+            f"({shown}): a layer's value is 0 to 1 of the lock's density now")
 
 
 __all__ = [

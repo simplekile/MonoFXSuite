@@ -512,35 +512,66 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     selection", which sat between strokes in the undo stack. `set_display` still records its own step.
     A GUI test finds the viewport widget inside Houdini's own window (`mw.childAt`): `QApplication.widgetAt`
     is None when another window (the user's Houdini) lies over it.
-  - Layer model, round 3 (the user, 2026-11-13, after checks t60 and t61 failed the blend modes; plan "What"
-    and "The layer model"): ONE kind of layer, a fill layer "= D strands / cm2" (`MaskLayer.value`) with a
-    mask (`mask_<id>_a`, what the brush paints white / black, `set_brush(level=)`), opacity and owner
-    (`scope`), plus folders (`kind` "folder", layers' `parent`, a mask over their layers). No modes, no units,
-    no paint layers: `config.MASK_MODES`, `logic.mask_blend` and the rest are gone, and nothing may bring a
-    factor back (the panel's quick picks are densities, `config.MASK_DENSITY_PICKS`). `groom_data` schema 4;
-    schema 2 / 3 layers of a removed kind are dropped on reading and named (`model.dropped_masks`, OnLoaded's
-    status line, `mask_dropped`). A layer never painted has no array: a fill layer is black, a folder white.
-  - The rule is density = automatic x keep + add (`logic.mask_compose`: keep = 1 - coverage, add = D x
-    coverage; no lock density in it, so one scope set serves locks of any density). `mask_read` writes it per
-    scope set as `mask_keep_<k>` / `mask_add_<k>`.
+  - Layer model, FINAL (the user, 2026-11-14; plan "What" and "The layer model"; it replaces round 3's "one
+    kind of layer, = D strands / cm2", commit 2c6c704, which replaced the factor layers t60 / t61 failed): ONE
+    density mask per skin point, 0..1, blended bottom to top from a stack of layers; a lock grows mask x its
+    OWN Density setting on painted skin (white = the lock's density, black = no hair). Every value is 0..1:
+    no strands / cm2 anywhere, no value over 1, and nothing may bring either back (the panel's quick picks are
+    `config.MASK_VALUE_PICKS` 0 / 0.5 / 1). Layers: `kind` "paint" (per point a value `mask_<id>_v` and a
+    coverage `mask_<id>_a`; the brush paints value + coverage, `set_brush(value=)`; erase takes coverage away,
+    it never paints black; never painted = no arrays = transparent), "fill" (one `MaskLayer.value` over all its
+    owner's skin, nothing stored), "folder" (opacity over its layers, no mask of its own). Each layer: `mode`
+    (`config.MASK_MODES`: normal, multiply, add, subtract, min, max), opacity, owner (`scope`).
+    `groom_data` schema 5; older dev layers migrate where the meaning is clear (`model._carry_mask`: paint
+    layers and folders stay, a schema 3 factor fill 0..1 becomes a paint layer of that value under its mask),
+    the rest (strands / cm2, factor over 1, all schema 4 layers) are dropped and named (`model.dropped_masks`,
+    OnLoaded's status line, `mask_dropped`).
+  - The rule: m' = m + (blend(m, v) - m) x coverage x opacity, clamped per layer (`logic.mask_blend` is that
+    blend on plain numbers). The automatic groom at the bottom counts as 1 but is the automatic ROOTS, not
+    "1 x density", so the stack carries (keep, add) per point (`logic.mask_layer`, `mask_compose`): keep = share
+    of the automatic roots left, add = share of the lock's Density the layers grow, keep + add = m, and
+    density of a lock = automatic x keep + its Density x add (`logic.mask_density`). Normal: keep x (1 - e),
+    add x (1 - e) + v x e (so partial coverage = automatic x (1 - e) + v x Density x e). Multiply: both x
+    (1 - e + e x v). Subtract / Min take from add first, then from keep (`mask_fold`); Add / Max only raise add
+    up to keep + add = 1, so over unpainted skin they change nothing. No lock density in (keep, add), so one
+    scope set serves locks of any density; `mask_read` writes `mask_keep_<k>` / `mask_add_<k>` per set and
+    multiplies add by each lock's Density for its `mask_add_n`.
   - How the network does it (t62; why: the plan's "Why two sets of roots"): the automatic roots are grown
-    by v0.1's own nodes and each stays by the chance keep where it ends up (`mask_thin`, by `root_at`, drawn
-    from the root's number: stable); the layers' roots come from a second scatter (`hairgen_layers` on
-    `mask_skin`, add / share on unshared points, `mask_add_n` roots) merged in before `root_place`. Never
+    by v0.1's own nodes and each stays while its threshold `thin_u` < keep where it ends up (`mask_thin`, by
+    `root_at`); the layers' roots come from a second scatter (`hairgen_layers` on `mask_skin`, the lock's
+    Density x add / share on unshared points, `mask_add_n` roots) merged in before `root_place`. Never
     multiply hairgen's density attribute by a mask again: it could not thin relocated roots (whorl, lock
     starts), and a forced count re-placed every root for a mask of 0.03.
-  - Measured (t62 `dens*/`, Helen, discs of 1.3 cm, roots of all locks in the core): "= 0" gives 0 on 8
-    kinds of skin; "= 40 / 120 / 300" 0.92-1.07 of D (whorl 1.04-1.07, top of the head 1.00-1.03, lock starts
-    0.92-0.97, stacked skin 0.96-1.00, under floating mesh 0.94-1.00, fringe 1.02-1.05, ordinary 0.97-1.00,
-    ear slivers 1.04-1.06); grey 0.25 / 0.5 / 0.75 and opacity 0.5 within 0.995-1.048 of automatic + (D -
-    automatic) x coverage on ordinary skin, the whorl and the top of the head. Shared points (the lock's
-    share averaged at a point) gave 1.08-1.10 on the top of the head: hence `mask_split` (Facet, unique points).
+  - Even thinning (`thin_order`, a detail wrangle after `root_pick`, cached with the automatic roots, so a
+    stroke never pays it; plan "Even thinning"): `thin_u` per automatic root. Start roots and scattered roots
+    are each ordered by PAIRING (nearest unpaired root; one of the pair to the first half, the one farther
+    from the roots already there; each half paired again, `THIN_ORDER_BITS` 10 times; the halves are thin_u's
+    binary digits), so a share is kept locally and per lock. Roots sorted along a Z-order curve, a partner
+    looked for among the next `THIN_ORDER_WINDOW` 10 (all of them in a half of `THIN_ORDER_EXACT` 64 or
+    fewer). A start grid of `THIN_ORDER_SMALL` 400 roots or fewer: farthest-point order. Whorl roots: the
+    bit-reversed sunflower number. `mask_apart` (after `mask_thin`) moves a layer root off a kept automatic
+    root (`MASK_APART` 0.45 of the spacing asked there, up to 6 moves, on the skin; it changes `root_at` only).
+    What failed on the way, do not retry: a random number (start grids left in bunches, clumped 0.014 ->
+    0.616); the root's `id` in hairgen's scatter (it numbers patch by patch: a keep of 0.5 left 0.35 to 1.85 of
+    the roots); a golden-ratio step of the sunflower index (that IS the angle); a dither of the position
+    through R2 (stripes), and on whole cells (+0.06 to +0.10 at 0.25); a farthest-point order of everything
+    (even in space, not a share: the rim first; inside a large start grid 0.8, stacked skin 1.17, floating
+    mesh 0.56, also with distances in the roots' own spacing); pairing every root against every other (+13 s
+    cold; VEX array loops run ~40-100 ns a step, keep n x n under a few million); pairs taken in turn instead
+    of by distance to the first half (a 163-root start grid at a quarter: +0.15 to +0.19). VEX has no shift
+    operators (`r = r * 2 + k % 2; k /= 2`). Cold cook 6.8 -> ~10 s.
+  - A few v0.1 start roots float off the skin (hair_base_20: 1 of 7,172 strands starts 0.24 cm up); the mask
+    judges a root where it lands on its lock's region, so such a strand can stay over skin painted black
+    when that landing is the patch's rim. The acceptance lists roots over 0.1 cm off the skin, apart.
+  - Measured (t62 `accept.json`, Helen, discs of 1.3 cm, 8 kinds of skin, all locks together and each lock on
+    its own skin): see `report.md` there. Shared points (the lock's share averaged at a point) gave 1.08-1.10
+    on the top of the head: hence `mask_split` (Facet, unique points).
   - Evenness under a layer is judged per lock on the lock's OWN skin in the patch (`accept_lib.lock_even`):
     a lock holding a strip of a painted patch has all its roots on that strip, which reads as "clumped"
     against the whole patch's area (t61's hair_base_21 0.756). All locks together on stacked skin are near a
     random pattern (0.15-0.29), as the automatic groom is there (0.17-0.43).
   - `lock_infos` under layers: `strands` = `auto_strands` x `keep_share` + `layer_strands` (whorl roots apart,
-    as before). `layer_strands` is the network's own count; `keep_share` follows the network's steps on the
+    as before). `layer_strands` is the network's own count (the lock's Density x add over its skin); `keep_share` follows the network's steps on the
     region's prims (`grooming_masks.lock_layer_counts`: scatter by area / share, `far_w` from `owner_dist`
     moved to root_pick's disc, kept by the keep where it lands). `mask_share` = strands / auto_strands.
   - The density view counts real roots: `display_roots` reads the per-lock cache (the display's full hair,
@@ -548,8 +579,10 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     (right on curved skin, edges and Helen's sliver band; it adds up to the strand count within 1 %).
     Entering Paint never cooks for it (`reroot(cook=False)`); choosing the view by hand does. While the
     button is down the view shows the counted density x factor now / factor then.
-  - The acceptance checks dw* / ns* paint "paint" layers; fl_* and `gui_fill_layer_brush_paints_its_mask`
-    cover fill layers, masks and folders. Run timing checks with no other Houdini cooking: with two GUI
+  - The acceptance (`accept_v02a.py`): d* a paint layer's values, erase, partial coverage; b* the blend modes
+    (over painted skin, over the automatic groom, Multiply as the top layer); m* compose, fill layers, folders,
+    owners; r* no layer = v0.1; q* QC after painting; p* persistence, migration, a missing lock. Every density
+    check grades all locks together AND each lock on its own skin in the patch (`_grade`). Run timing checks with no other Houdini cooking: with two GUI
     sessions open and pytest running, stroke cooks were 1.5x slower and one missed its limit.
   - Timing checks are absolute limits: with Blender and Resolve running the whole machine was 1.45x slower
     (v0.1's own full cook 14.4 s instead of 9.7) and `dw3_stroke_speed` missed one stroke. Time v0.1 right
@@ -635,11 +668,12 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     own count. The prim-based estimate (`lock_layer_counts` without roots) was 22-24 % off on crown locks
     (their start roots land in a painted whorl); it is only the answer before the first cook.
   - `density_off_worst` is |strands / expected - 1| for every lock, painted or not, both ways (the one-sided
-    check for painted locks is gone). A groom painted "= 5104" on the crown and "= 150" on thin skin: 0.005.
+    check for painted locks is gone). A groom painted "= 5104" on the crown and "= 150" on thin skin (round 3's
+    model; the final model's numbers are in t62 `report.md`): 0.005.
     `tests/houdini/grooming/qc_tamper.py` cuts 30 % of a painted lock's strands while the groom cooks:
     QC fails with 0.298.
-  - Skin: a prim asks automatic x keep + the layers' density of each owner; skin whose 0.5 cm disc asks for
-    less than one root (painted "= 0") is not thin skin (`skin_none_asked_cm2` reports it); skin under
+  - Skin: a prim asks automatic x keep + the layers' density of each owner (`grooming_masks.layer_cover`: the
+    owner's Density x add); skin whose 0.5 cm disc asks for less than one root (painted black) is not thin skin (`skin_none_asked_cm2` reports it); skin under
     floating mesh that a layer covers in full is judged like any skin.
   - Roots bunched / spacing of a lock under layers: each root's nearest-root distance is held against the
     spacing asked where the root is (1 / sqrt(automatic x keep + the layers' density)); one spacing for the

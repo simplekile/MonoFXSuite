@@ -48,7 +48,7 @@ START_DENSITY_MAX = 6.0
 # A scalp's size across (cm) that Detect accepts without a units warning
 SCALP_SIZE_CM = (8.0, 60.0)
 # Prim attributes only the per-lock loop needs (hairgen, fit_to_lock, hairclump): dropped before the cache
-LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_u0", "fit_c0", "fit_root", "fit_blend", "root_at", "rx", "ry", "start_k", "start_cnt", "start_pos", "length_mult", "frizz",
+LOOP_ONLY_ATTRIBS = ("tightness", "clumpblend", "fit_s", "fit_t", "fit_u0", "fit_c0", "fit_root", "fit_blend", "root_at", "rx", "ry", "start_k", "start_cnt", "start_pos", "thin_u", "mask_root", "length_mult", "frizz",
                      "clumpid", "skinprim", "skinprimuv")
 # The HDA's output 1 "Groom" (and the publish) carry only these besides P, in whatever class the cache has
 # them (docs/plans/grooming_v0_1.md, Geometry contract); output 0 "Display" is what the viewport draws
@@ -111,28 +111,31 @@ SECTION_MIN_THICK_RATIO = 0.3  # cross-section floor of a lock: thickness counte
 LOCK_NAME_DIGITS = 2           # fringe_01
 
 # ---- v0.2a density masks (docs/plans/grooming_v0_2.md) ----
-# One kind of layer (decided by the user, 2026-11-13, after two failed checks of the blend modes): a fill
-# layer "= D strands / cm2". Where its mask is white the density IS D, whatever the lock is set to; black
-# returns the skin to the automatic groom; grey (or a lower opacity) lies between:
-#   density = automatic x (1 - coverage) + D x coverage           (logic.mask_compose, logic.mask_density)
-# Multiply, add, subtract, min and max are gone: a grey mask or a lower opacity on a "= D" layer, and the
-# Density setting of a lock or a group, cover what they did.
+# The model (the user, final, 2026-11-14; it replaces the "= D strands / cm2" layers of the commit before, and the
+# factor layers of the first builds). One density mask per skin point, m in 0..1, made by blending a stack of
+# layers bottom to top, as the layer stack of a mask in Substance Painter. On painted skin a lock grows
+#     m x that lock's own Density setting            (white = the lock's density, black = no hair)
+# an absolute density: the tool moves no root off that skin and lays none of its relocated roots on it. The
+# bottom of the stack is the automatic groom, which counts as 1 for the blends and stays the automatic groom,
+# root for root, where no layer has coverage. Every value is 0..1: brush value, fill value.
+# Blend modes of a layer (logic.mask_layer): result = below + (blend(below, value) - below) x coverage x opacity
+MASK_MODES: tuple[str, ...] = ("normal", "multiply", "add", "subtract", "min", "max")
 MASK_SCOPES: tuple[str, ...] = ("all", "group", "locks")   # the layer's owner: every lock, a group, chosen locks
-#   "fill"   one density for the whole layer (its `value`, strands / cm2) and a mask painted white / black
-#   "folder" holds layers (their `parent`); its own mask and opacity apply to all of them together
-MASK_KINDS: tuple[str, ...] = ("fill", "folder")
-MASK_DENSITY_MAX = 20000.0     # a layer's density is kept inside 0..this (Helen's crown: 7,000 / cm2)
-MASK_DENSITY_DEFAULT = 150.0   # a new layer's density
-# the panel's quick picks for a layer's density (strands / cm2): densities, not factors
-MASK_DENSITY_PICKS: tuple[float, ...] = (0.0, 40.0, 80.0, 150.0, 300.0)
-MASK_PARM = "mask_layers"      # hidden geometry parm: per fine-scalp point P, uv, mask_<id>_a
-MASK_COVER_ATTR = "mask_%d_a"  # a layer's mask per scalp point: 1 white (it applies), 0 black
-# on SCALP_REGIONS, per scope set (logic.mask_scope_sets): how much of the automatic groom stays
-# (1 - coverage), and the density the layers put there instead (strands / cm2, all owners together)
+#   "paint"  the brush paints a value and a coverage per skin point; skin it never painted is transparent
+#   "fill"   one value over all the skin of its owner, full coverage
+#   "folder" holds layers (their `parent`); its opacity applies to all of them together
+MASK_KINDS: tuple[str, ...] = ("paint", "fill", "folder")
+MASK_VALUE_PICKS: tuple[float, ...] = (0.0, 0.5, 1.0)     # the panel's quick picks for a value
+MASK_PARM = "mask_layers"      # hidden geometry parm: per fine-scalp point P, uv, mask_<id>_v, mask_<id>_a
+MASK_VALUE_ATTR = "mask_%d_v"  # a paint layer's value per scalp point, 0..1
+MASK_COVER_ATTR = "mask_%d_a"  # ... and its coverage there: 0 not painted, 1 painted, a dab's soft edge between
+# on SCALP_REGIONS, per scope set (logic.mask_scope_sets): density of a lock = automatic x keep + add x the
+# lock's Density setting. `keep`: how much of the automatic groom stays; `add`: the absolute part, 0..1
 MASK_KEEP_ATTR = "mask_keep_%d"
 MASK_ADD_ATTR = "mask_add_%d"
 BRUSH_RADIUS_CM = 1.0
 BRUSH_SOFT = 0.5               # share of the radius over which a dab fades out
+BRUSH_VALUE = 1.0              # what the brush paints: 1 white (the lock's density), 0 black (no hair)
 # A dab reaches only skin connected to the point under the cursor and facing its way: the angle between a
 # point's normal and the hit's stays under this (the skin behind an ear is not painted through it)
 BRUSH_FACING_DEG = 75.0
@@ -140,8 +143,8 @@ BRUSH_FACING_DEG = 75.0
 # Painter's way: the final result, or one mask alone by Alt+click on it):
 #   "density" the result: roots / cm2 as the groom has them (counted from the cooked hair, so relocated
 #             roots are in it); while a stroke is down, what the layers ask of that count (automatic x keep +
-#             the layers' density); before any hair is known, the density asked
-#   "layer"   the painted layer's mask alone: white where it applies, dark where it does not
+#             add x the density set there); before any hair is known, the density asked
+#   "layer"   the painted layer alone: its value (white 1, black 0) where it has coverage, dark elsewhere
 #   "roots"   a dot at every root of the full groom on a plain scalp
 MASK_VIEWS: tuple[str, ...] = ("density", "layer", "roots")
 ROOT_DENSITY_CELL_CM = 0.5     # roots and skin are counted in boxes of 3 cells of this size across

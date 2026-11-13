@@ -8,10 +8,12 @@ accept.json ({item, pass, value, limit, evidence} per check, `passed`), accept_l
 checks that run in a process of their own (QC, full-cook timing, reopen). Hython's exit code is not reliable:
 read the JSON. Run it with no other Houdini cooking: the speed limits are absolute.
 
-Round 3: one kind of layer, "= D strands / cm2". Every density check is graded on several kinds of skin
-(whorl, top of the head, a lock's start, the most stacked skin, skin under floating mesh, fringe, ordinary,
-the sliver band by the ear) at D = 0, 40, 120, 300, with roots of ALL locks counted in the core of a painted
-disc; limits are the plan's, never tuned to a result."""
+Round 3, the final model: one density mask per skin point, 0..1, blended from a stack of layers (paint, fill,
+folders; six blend modes); a lock grows mask x its own Density. Every density check is graded on several kinds
+of skin (whorl, top of the head, a lock's start, the most stacked skin, skin under floating mesh, fringe,
+ordinary, the sliver band by the ear) at white / 0.5 / 0.25 / black, with the roots of ALL locks counted in
+the core of a painted disc and each lock held to the rule on its own skin there; limits are the plan's, never
+tuned to a result."""
 from __future__ import annotations
 
 import json
@@ -40,13 +42,14 @@ import hou  # noqa: E402
 import numpy as np  # noqa: E402
 
 import accept_lib as lib  # noqa: E402
-from tools.fx.grooming import config, logic, model  # noqa: E402
+from tools.fx.grooming import config, model  # noqa: E402
 
 HYTHON = os.path.join(hou.expandString("$HFS"), "bin", "hython.exe" if os.name == "nt" else "hython").replace("\\", "/")
 QC = SUITE + "/.claude/skills/grooming-check/scripts/qc_metrics.py"
-DENSITIES = (0.0, 40.0, 120.0, 300.0)
-EVEN_CLUMPED = 0.10     # a lock's roots in a painted patch: clumped share on its own skin (a random pattern: 0.25)
-EVEN_SPACING = 0.45     # ... and spacing ratio, grooming-check's root_spacing_low limit
+VALUES = (1.0, 0.5, 0.25, 0.0)
+EVEN_RISE = 0.05        # a lock's roots in a painted patch: clumped share on its own skin, over its no-layer value
+OFF_SKIN_CM = 0.1       # a root farther than this from every scalp prim centre is not on the skin (prims: ~0.02 cm)
+EVEN_SPACING = 0.45     # where every root is the layers': spacing ratio, grooming-check's root_spacing_low limit
 UNDO_S = 0.1
 
 C = lib.Checks(OUT, meta={"suite": SUITE, "scene": SCENE, "started": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -86,6 +89,8 @@ ROOTS0 = G.roots()
 BASE = G.strands_by_lock()
 C.meta["strands"] = sum(BASE.values())
 Z = K.zones(ROOTS0)
+DATA0 = ga.read_data(node)
+DENS = {lk.id: float(DATA0.resolve(lk.id)["density"]) for lk in DATA0.locks}      # each lock's own Density setting
 C.meta["zones"] = {k: [round(float(x), 2) for x in v] for k, v in Z.items()}
 C.write()
 
@@ -121,7 +126,7 @@ def clear_layers():
 
 def s1_stroke_speed():
     c, _n, _p = lib.densest_spot(ROOTS0[0], 1.0)
-    lid = ga.mask_add(node, "speed", value=120.0)
+    lid = ga.mask_add(node, "speed")
     cook_all()
     places = [("hair_base_12", None), ("crown_whorl", c), ("hair_back_06", None), ("hair_bang_08", None),
               ("hair_base_05", None), ("hair_back_14", None), ("hair_bang_17", None), ("hair_base_01", None)]
@@ -130,7 +135,7 @@ def s1_stroke_speed():
         for k in range(3):
             path = K.disc_path(K.snap(centre), 0.06 * k) if centre is not None else K.region_path(name, shift=0.06 * k)
             c0 = ga.mask_cover(node)
-            ga.mask_stroke(node, lid, path, radius_cm=0.8, level=1.0)
+            ga.mask_stroke(node, lid, path, radius_cm=0.8, value=1.0)
             c1 = ga.mask_cover(node)
             s, locks, _r = cook_all()
             under = K.owners_of_changed(c0, c1)
@@ -157,7 +162,7 @@ def s1_stroke_speed():
 def _chain(place, n, radius=0.8, out1=None):
     """n strokes at one place, n undos, n redos. Each undo / redo: seconds for the undo and the display
     cook; locks grown for the display and for the rest groom (and captures made for the deformed output)."""
-    lid = ga.mask_add(node, place, value=120.0)
+    lid = ga.mask_add(node, place)
     cook_all()
     use0 = ga.undo_cache_usage(node)
     states, strokes, peak = [], [], use0["bytes"]
@@ -171,7 +176,7 @@ def _chain(place, n, radius=0.8, out1=None):
     read()
     for i in range(n):
         before = ga.undo_cache_usage(node)["bytes"]
-        ga.mask_stroke(node, lid, K.disc_path(Z[place], 0.05 * i), radius_cm=radius, level=1.0 if i % 3 else 0.6)
+        ga.mask_stroke(node, lid, K.disc_path(Z[place], 0.05 * i), radius_cm=radius, value=1.0 if i % 3 else 0.6)
         s, d, r = cook_all()
         caps = read()
         use = ga.undo_cache_usage(node)
@@ -283,94 +288,169 @@ def u5_usage():
 
 
 # ---------------------------------------------------------------------------
-# painted D gives D
+# the mask: painted m gives m x the lock's density
 # ---------------------------------------------------------------------------
 
-def _patch(lid, level=1.0, atol=1e-6):
-    """(core prims, area, {lock: roots before}, after: counts, positions, lock ids) of the painted disc."""
-    core = K.core(ga.mask_values(node, lid), level, atol=atol)
+def _core(lid, atol=1e-6):
+    """Prims of the fine scalp the layer covers in full (coverage 1 at every corner), away from the edge."""
+    return K.core(ga.mask_values(node, lid)[1], 1.0, atol=atol)
+
+
+def _grade(core, keep, add, evenness=True):
+    """Roots on `core` against the rule, for all locks together and for each lock on its own skin there:
+    a lock's roots = its automatic roots x keep + add x its Density x its skin. keep, add: the cover there.
+    The limit max(0.15, 2 / sqrt(N)) has no meaning for a lock asked under one root there (N < 1: a lock whose
+    skin only touches the core, a root counted to the core from the prim beside it): such a lock may hold at
+    most 2 roots, and is listed. Where no root is asked (black), a strand whose root floats over OFF_SKIN_CM
+    off the skin is listed, not counted: v0.1 leaves a few start roots there (hair_base_20: 1 of 7,172, 0.24 cm
+    up), and the tool judges a root where it lands on its lock's skin, which for that one is the disc's rim."""
     area = float(K.area[core].sum())
-    b = K.roots_in(core, ROOTS0)[0]
+    b, rb, lb = K.roots_in(core, ROOTS0)
     a, ra, la = K.roots_in(core, G.roots())
-    return core, area, b, a, ra, la
+    floating = {}
+    if keep <= 0 and add <= 0 and len(ra):
+        up = np.sqrt(((ra[:, None, :] - K.cen[None, :, :]) ** 2).sum(-1).min(1))
+        for k in np.unique(la[up > OFF_SKIN_CM]):
+            n = int(((la == k) & (up > OFF_SKIN_CM)).sum())
+            floating[K.names[int(k)]] = {"roots": n, "off_the_skin_cm": round(float(up[la == k].max()), 3)}
+            a[int(k)] -= n
+    locks, bad = {}, []
+    target = 0.0
+    for k in sorted(set(b) | set(a)):
+        skin = K.lock_area_in(core, k)
+        want = b.get(k, 0) * keep + add * DENS[k] * skin
+        target += want
+        got = a.get(k, 0)
+        lim = lib.density_limit(want, 1.0) if want >= 1.0 else 0.0
+        if keep <= 0 and add <= 0:
+            ok = got == 0                                   # black, or bounded to nothing: no root at all
+        elif want < 1.0:
+            ok = got <= 2
+        else:
+            ok = abs(got / want - 1) <= lim
+        locks[K.names[k]] = {"skin_cm2": r3(skin), "automatic": b.get(k, 0), "expected": r3(want), "roots": got,
+                             "ratio": r3(got / want) if want >= 1.0 else None, "limit": r3(lim), "pass": ok}
+        if not ok:
+            bad.append(K.names[k])
+    got = sum(a.values())
+    lim = lib.density_limit(target, 1.0) if target > 0 else 0.0
+    row = {"core_cm2": r3(area), "automatic_per_cm2": r3(sum(b.values()) / area), "expected_per_cm2": r3(target / area),
+           "measured_per_cm2": r3(got / area), "ratio": r3(got / target) if target > 0 else None, "limit": r3(lim),
+           "locks_on_core": len(locks), "locks_outside_their_limit": bad, "locks": locks,
+           "roots_floating_off_the_skin_not_counted": floating,
+           "locks_asked_under_one_root": {k: v["roots"] for k, v in locks.items() if v["expected"] < 1.0 and v["roots"]},
+           "worst_lock": max(locks.items(), key=lambda kv: abs((kv[1]["ratio"] or 1) - 1) / max(kv[1]["limit"], 1e-9))
+           if locks else None,
+           "pass": (got == 0 if target <= 0 else abs(got / target - 1) <= lim) and not bad}
+    if evenness and got:
+        ev0 = lib.lock_even(rb, lb, K, core)
+        ev1 = lib.lock_even(ra, la, K, core)
+        rises = {k: round(v.get("clumped", 0.0) - ev0.get(k, {}).get("clumped", 0.0), 3) for k, v in ev1.items()}
+        low = [k for k, v in ev1.items() if keep <= 0 and v.get("spacing_ratio", 1.0) < EVEN_SPACING]
+        row["even"] = {"clumped_now_worst": max([v.get("clumped", 0.0) for v in ev1.values()] + [0.0]),
+                       "clumped_rise_worst": max(list(rises.values()) + [0.0]),
+                       "spacing_ratio_lowest": min([v.get("spacing_ratio", 1.0) for v in ev1.values()] + [9.0]),
+                       "locks_judged": len(ev1), "rise_per_lock": {k: v for k, v in rises.items() if v > 0},
+                       "all_locks_together_clumped": r3(lib.spacing_stats(ra, area).get("clumped")),
+                       "pass": all(v <= EVEN_RISE for v in rises.values()) and not low}
+    return row
+
+
+def _on_skin(core):
+    """(roots on the core's skin, roots counted to the core that float over OFF_SKIN_CM off the skin)."""
+    _a, ra, _la = K.roots_in(core, G.roots())
+    if not len(ra):
+        return 0, 0
+    up = np.sqrt(((ra[:, None, :] - K.cen[None, :, :]) ** 2).sum(-1).min(1))
+    return int((up <= OFF_SKIN_CM).sum()), int((up > OFF_SKIN_CM).sum())
+
+
+def _paint(name, zone, value=1.0, radius=1.3, **kw):
+    lid = ga.mask_add(node, name, **kw)
+    K.paint_disc(lid, Z[zone] if isinstance(zone, str) else zone, radius, value=value)
+    return lid
+
+
+def _all(rows, key="pass"):
+    return all(r[key] for r in rows.values())
+
+
+def _even(rows):
+    return all(r["even"]["pass"] for r in rows.values() if "even" in r)
 
 
 def d1_density():
     ref = rest_points()
-    for zname, c in Z.items():
-        rows, even = {}, {}
-        for D in DENSITIES:
-            lid = ga.mask_add(node, "= %d" % D, value=D)
-            K.paint_disc(lid, c, 1.3)
+    for zname in Z:
+        rows = {}
+        for m in VALUES:
+            lid = _paint("paint %s" % m, zname, m)
             s, locks, _r = cook_all()
-            core, area, b, a, ra, la = _patch(lid)
-            tb, ta = sum(b.values()), sum(a.values())
-            lim = lib.density_limit(D, area) if D else 0.0
-            ratio = ta / area / D if D else None
-            rows["= %d" % D] = {"core_cm2": r3(area), "before_per_cm2": r3(tb / area), "after_per_cm2": r3(ta / area),
-                                "measured_over_D": r3(ratio), "limit": r3(lim), "locks_on_core": len(set(b) | set(a)),
-                                "pass": (ta == 0) if not D else abs(ratio - 1) <= lim,
-                                "display_s": r3(s), "locks": len(locks)}
-            if D:
-                per = lib.lock_even(ra, la, K, core)
-                even["= %d" % D] = {"all_locks": {k: r3(v) for k, v in lib.spacing_stats(ra, area).items()}, "per_lock": per,
-                                    "pass": all(v.get("clumped", 0) <= EVEN_CLUMPED and v.get("spacing_ratio", 1) >= EVEN_SPACING
-                                                for v in per.values())}
+            rows["painted %s" % m] = dict(_grade(_core(lid), 0.0, m), display_s=r3(s), locks_recooked=len(locks))
             ga.mask_remove(node, lid)
             cook_all()
-        C.add("d1_painted_D_gives_D_" + zname, all(r["pass"] for r in rows.values()), rows,
-              "roots of all locks / cm2 in the disc's core: 0 for D = 0, else |measured / D - 1| <= max(0.15, 2 / sqrt(D x area))")
-        C.add("d1_roots_even_" + zname, all(r["pass"] for r in even.values()), even,
-              "each lock with >= 30 roots in the core: clumped share <= %s and spacing ratio >= %s on its own skin there"
-              % (EVEN_CLUMPED, EVEN_SPACING),
-              note="all locks together on stacked skin are near a random pattern (0.25), as the automatic groom is there")
+        C.add("d1_painted_m_gives_m_x_lock_density_" + zname, _all(rows), rows,
+              "a paint layer (Normal) painted white / 0.5 / 0.25 / black on a disc; roots in its core: 0 for black, else "
+              "|measured / (m x lock density x skin) - 1| <= max(0.15, 2 / sqrt(N)) for all locks together AND for each "
+              "lock on its own skin there")
+        C.add("d1_roots_even_" + zname, _even(rows), {k: v.get("even") for k, v in rows.items()},
+              "each lock with >= 30 roots in the core: clumped share <= its no-layer value there + %s; spacing ratio >= %s"
+              % (EVEN_RISE, EVEN_SPACING))
     C.add("d1_all_removed_is_the_automatic_groom", rest_points()[0] == ref[0] and G.strands_by_lock() == BASE,
           {"strands": G.strands(), "automatic": sum(BASE.values())},
           "after all those layers were deleted: every rest point as when the check began, byte for byte, and the "
           "strands of every lock as the first cook's")
 
 
-def d2_black():
-    """White "= 300" on a disc, then black painted over it with the brush: the automatic groom by root positions."""
+def d2_erase():
+    """White on a disc, black painted over it (black overrides: no hair), then the eraser: the automatic groom."""
     rows = {}
     ref = rest_points()
     roots_ref = G.roots()
     for zname in ("crown_whorl", "most_stacked", "under_floating_mesh", "ordinary_hair_back_06", "top_of_head"):
         c = Z[zname]
-        lid = ga.mask_add(node, "white then black", value=300.0)
-        K.paint_disc(lid, c, 1.3)
+        lid = _paint("white, black, erased", zname, 1.0)
         cook_all()
-        changed = rest_points()[0] != ref[0]
-        K.paint_disc(lid, c, 2.0, level=0.0, dab_r=0.5, label="Paint mask")          # black, wider than the white
+        core = _core(lid)
+        white = sum(K.roots_in(core, G.roots())[0].values())
+        K.paint_disc(lid, c, 1.3, value=0.0)                                     # black over the white
+        cook_all()
+        black, floating = _on_skin(core)
+        value_black = float(ga.mask_values(node, lid)[0][ga.mask_values(node, lid)[1] >= 1.0].max())
+        K.paint_disc(lid, c, 2.0, dab_r=0.5, erase=True, label="Erase mask")     # the eraser, wider than the paint
         s, locks, _r = cook_all()
-        left = float(ga.mask_values(node, lid).max())
+        left = float(ga.mask_values(node, lid)[1].max())
         P, L = rest_points()
         r1, l1 = G.roots()
         same_roots = bool(r1.shape == roots_ref[0].shape and np.array_equal(l1, roots_ref[1])
                           and float(np.abs(r1 - roots_ref[0]).max()) == 0.0)
-        rows[zname] = {"white_changed_the_groom": changed, "mask_left_max": left, "roots_at_the_same_places": same_roots,
+        rows[zname] = {"roots_in_the_core_white": white, "after_black_over_it": black,
+                       "roots_floating_off_the_skin_not_counted": floating, "value_where_painted_black": value_black,
+                       "coverage_left_after_erase": left, "roots_at_the_same_places": same_roots,
                        "every_point_equal_bytes": P == ref[0], "lock_ids_equal": bool(np.array_equal(L, ref[1])),
-                       "locks_recooked_by_black": len(locks)}
+                       "locks_recooked_by_erase": len(locks)}
         ga.mask_remove(node, lid)
         cook_all()
-    C.add("d2_black_paint_returns_the_automatic_groom", all(r["white_changed_the_groom"] and r["roots_at_the_same_places"]
-                                                         and r["every_point_equal_bytes"] and r["lock_ids_equal"]
-                                                         for r in rows.values()), rows,
-          "5 kinds of skin: after black is painted over the white disc with the brush (soft, wider than the disc), "
-          "every root is where the automatic groom has it (difference 0), and every rest point byte for byte")
+    C.add("d2_black_overrides_and_erase_returns_the_automatic_groom",
+          all(r["roots_in_the_core_white"] > 0 and r["after_black_over_it"] == 0 and r["value_where_painted_black"] == 0.0
+              and r["coverage_left_after_erase"] == 0.0 and r["roots_at_the_same_places"] and r["every_point_equal_bytes"]
+              and r["lock_ids_equal"] for r in rows.values()), rows,
+          "5 kinds of skin: black painted over a white disc leaves no root on its core's skin (black is a value, not an "
+          "eraser; a v0.1 start root floating over 0.1 cm off the skin is listed, not counted); after the eraser (wider than the disc) the layer has no coverage, every root is where the automatic "
+          "groom has it (difference 0) and every rest point is equal byte for byte")
 
 
 LAYER_ID0 = 10000000      # the layers' own strands are numbered from here (build_hda VEX_MASK_TAG)
+TINY = 0.028
 
 
 def d2_tiny():
-    """A leftover mask of 0.028 (round 2: it re-placed every root of two locks, points up to 20 mm away).
-    Strands are followed by their id: a strand's number in its lock's automatic scatter."""
+    """A layer that covers 0.028 of the way (round 2: a leftover mask of 0.028 re-placed every root of two locks,
+    points up to 20 mm away). Strands are followed by their id: a strand's number in its lock's automatic scatter."""
     rows = {}
     before = G.strands_by_id()
     for zname in ("ordinary_hair_back_06", "most_stacked", "crown_whorl"):
-        lid = ga.mask_add(node, "tiny", value=300.0)
-        K.paint_disc(lid, Z[zname], 1.3, level=0.028)
+        lid = _paint("tiny", zname, 1.0, opacity=TINY)
         s, locks, _r = cook_all()
         after = G.strands_by_id()
         total = kept = gone = new = strangers = 0
@@ -401,52 +481,49 @@ def d2_tiny():
                                                "median": round(float(np.median(tm)), 4)}}
         ga.mask_remove(node, lid)
         cook_all()
-    ok = all(r["share_gone"] <= 0.028 + 0.02 and r["automatic_strands_not_there_before"] == 0
+    ok = all(r["locks"] > 0 and r["share_gone"] <= TINY + 0.02 and r["automatic_strands_not_there_before"] == 0
              and r["a_kept_root_moved_cm"]["max"] <= 0.05 for r in rows.values())
     C.add("d2_a_tiny_mask_moves_no_root", ok, rows,
-          "mask 0.028 of a \"= 300\" layer on a disc (ordinary skin, stacked skin, the whorl), strands followed by "
-          "id: no automatic strand appears, at most 0.028 + 0.02 of them are gone, and every kept root is within "
-          "0.05 cm of where it was (round 2: every root of the locks re-placed, up to 2 cm)",
+          "a white disc at opacity 0.028 (ordinary skin, stacked skin, the whorl), strands followed by id: no "
+          "automatic strand appears, at most 0.028 + 0.02 of them are gone, and every kept root is within 0.05 cm of "
+          "where it was (round 2: every root of the locks re-placed, up to 2 cm)",
           note="tips are reported: a kept strand's place across its lock is its rank among the lock's strands, "
                "so it shifts a little when a neighbour goes")
 
 
-def d3_grey():
+def d3_partial():
+    """Partial coverage blends the automatic groom with the mask: density = automatic x (1 - e) + m x lock
+    density x e, e = coverage x opacity (of the layer, or of the folder it is in)."""
     rows = {}
     for zname in ("ordinary_hair_back_06", "crown_whorl", "top_of_head"):
-        for D in (40.0, 300.0):
-            for cov, how in ((0.25, "mask"), (0.5, "mask"), (0.75, "mask"), (0.5, "opacity")):
-                lid = ga.mask_add(node, "grey", value=D, opacity=cov if how == "opacity" else 1.0)
-                level = 1.0 if how == "opacity" else cov
-                K.paint_disc(lid, Z[zname], 1.3, level=level)
+        for m in (1.0, 0.25):
+            for e, how in ((0.25, "opacity"), (0.5, "opacity"), (0.75, "opacity"), (0.5, "folder opacity")):
+                folder = ga.mask_add(node, "F", kind="folder", opacity=e) if how.startswith("folder") else None
+                lid = _paint("part", zname, m, opacity=1.0 if folder is not None else e, parent=folder)
                 cook_all()
-                core, area, b, a, _ra, _la = _patch(lid, level, atol=1e-4)
-                auto = sum(b.values()) / area
-                target = auto + (D - auto) * cov
-                got = sum(a.values()) / area
-                lim = lib.density_limit(target, area)
-                rows["%s = %d %s %.2f" % (zname, D, how, cov)] = {
-                    "automatic": r3(auto), "target": r3(target), "measured": r3(got), "ratio": r3(got / target),
-                    "limit": r3(lim), "pass": abs(got / target - 1) <= lim}
-                ga.mask_remove(node, lid)
-                cook_all()
-    C.add("d3_grey_mask_or_opacity_follows_the_rule", all(r["pass"] for r in rows.values()),
-          {"worst": max(rows.items(), key=lambda kv: abs(kv[1]["ratio"] - 1)), "rows": rows},
-          "ordinary skin, the whorl, the top of the head; D = 40, 300; mask 0.25 / 0.5 / 0.75 and opacity 0.5: "
-          "|measured / (automatic + (D - automatic) x coverage) - 1| <= max(0.15, 2 / sqrt(N))")
+                rows["%s m %s %s %.2f" % (zname, m, how, e)] = _grade(_core(lid), 1.0 - e, m * e)
+                clear_layers()
+    worst = max(rows.items(), key=lambda kv: abs((kv[1]["ratio"] or 1) - 1))
+    C.add("d3_partial_coverage_follows_the_rule", _all(rows), {"worst": worst, "rows": rows},
+          "ordinary skin, the whorl, the top of the head; white and 0.25; opacity 0.25 / 0.5 / 0.75 and a folder at "
+          "0.5: |measured / (automatic x (1 - e) + m x lock density x e) - 1| <= max(0.15, 2 / sqrt(N)), all locks "
+          "together and each lock")
+    C.add("d3_partial_coverage_roots_even", _even(rows), {k: v.get("even") for k, v in rows.items()},
+          "each lock with >= 30 roots in the core: clumped share <= its no-layer value there + %s" % EVEN_RISE)
 
 
 def d4_soft_edge():
     rows = {}
-    for zname, D in (("ordinary_hair_back_06", 40.0), ("ordinary_hair_back_06", 300.0), ("crown_whorl", 40.0)):
+    for zname, m in (("ordinary_hair_back_06", 1.0), ("ordinary_hair_back_06", 0.25), ("crown_whorl", 1.0),
+                     ("top_of_head", 0.0)):
         c = Z[zname]
-        lid = ga.mask_add(node, "soft", value=D)
+        lid = ga.mask_add(node, "soft")
         s = lib.gm_session(node, lid)
-        s.dab(c / G.unit, None, 1.5, 1.0, level=1.0)          # one dab, soft over the whole radius
+        s.dab(c / G.unit, None, 1.5, m, 1.0)          # one dab, soft over the whole radius
         s.commit()
         cook_all()
-        mask = ga.mask_values(node, lid).astype(float)
-        lo, hi = K.prim_minmax(mask)
+        cover = ga.mask_values(node, lid)[1].astype(float)
+        lo, hi = K.prim_minmax(cover)
         d = np.sqrt(((K.cen - c) ** 2).sum(1))
         r1 = G.roots()
         rings = []
@@ -456,110 +533,246 @@ def d4_soft_edge():
             if area <= 0:
                 continue
             cov = float(((lo[prims] + hi[prims]) * 0.5 * K.area[prims]).sum() / area)
-            auto = sum(K.roots_in(prims, ROOTS0)[0].values()) / area
+            before = K.roots_in(prims, ROOTS0)[0]
+            auto = sum(before.values()) / area
             got = sum(K.roots_in(prims, r1)[0].values()) / area
-            target = auto + (D - auto) * cov
-            lim = lib.density_limit(target, area)
-            rings.append({"ring_cm": [a, b], "coverage": r3(cov), "automatic": r3(auto), "target": r3(target),
-                          "measured": r3(got), "limit": r3(lim), "pass": abs(got / max(target, 1e-9) - 1) <= lim,
-                          "between": min(auto, D) * 0.85 <= got <= max(auto, D) * 1.15})
-        rows["%s = %d" % (zname, D)] = rings
+            full = m * sum(DENS[k] * K.lock_area_in(prims, k) for k in before) / area
+            target = auto * (1.0 - cov) + full * cov
+            lim = lib.density_limit(target * area, 1.0)
+            rings.append({"ring_cm": [a, b], "coverage": r3(cov), "automatic": r3(auto), "m_x_lock_density": r3(full),
+                          "target": r3(target), "measured": r3(got), "limit": r3(lim),
+                          "pass": abs(got / max(target, 1e-9) - 1) <= lim,
+                          "between": min(auto, full) * (1 - lim) - 1e-9 <= got <= max(auto, full) * (1 + lim)})
+        rows["%s m %s" % (zname, m)] = rings
         ga.mask_remove(node, lid)
         cook_all()
-    C.add("d4_soft_edge_follows_the_mask", all(r["pass"] and r["between"] for rs in rows.values() for r in rs), rows,
-          "one soft dab (radius 1.5 cm): in each 0.3 cm ring the density is automatic + (D - automatic) x the ring's "
-          "coverage within max(0.15, 2 / sqrt(N)), and lies between the two sides")
+    C.add("d4_soft_edge_follows_the_coverage", all(r["pass"] and r["between"] for rs in rows.values() for r in rs), rows,
+          "one soft dab (radius 1.5 cm) of white, 0.25 or black: in each 0.3 cm ring the density is automatic x (1 - "
+          "coverage) + m x lock density x coverage within max(0.15, 2 / sqrt(N)), and lies between the two sides (each "
+          "widened by that same limit)")
 
 
 # ---------------------------------------------------------------------------
-# the layer model: order, opacity, folders, owners, a layer's number
+# the layer model: blend modes, order, opacity, folders, fill layers, owners
 # ---------------------------------------------------------------------------
+
+BLEND_ZONES = ("crown_whorl", "top_of_head", "ordinary_hair_back_06")
+
+
+def _formula(below, value, mode, effect=1.0):
+    """The contract's own line, written here apart from logic.py: below + (blend - below) x effect, in 0..1."""
+    blend = {"normal": value, "multiply": below * value, "add": below + value, "subtract": below - value,
+             "min": min(below, value), "max": max(below, value)}[mode]
+    return min(1.0, max(0.0, below + (blend - below) * effect))
+
+
+def b1_blend_modes():
+    """Each blend mode over painted skin: the cover against the formula, and the roots it grows."""
+    for zname in BLEND_ZONES:
+        rows = {}
+        for mode, below, value, opacity in (("normal", 0.5, 0.25, 1.0), ("multiply", 0.5, 0.5, 1.0), ("add", 0.5, 0.25, 1.0),
+                                            ("add", 0.75, 0.75, 1.0), ("subtract", 0.75, 0.5, 1.0),
+                                            ("subtract", 0.25, 0.5, 1.0), ("min", 0.75, 0.25, 1.0), ("min", 0.25, 0.75, 1.0),
+                                            ("max", 0.25, 1.0, 1.0), ("max", 0.75, 0.5, 1.0), ("multiply", 1.0, 0.5, 0.5),
+                                            ("add", 0.25, 0.5, 0.5)):
+            a = _paint("below", zname, below)
+            b = _paint("top", zname, value, mode=mode, opacity=opacity)
+            cook_all()
+            core = np.intersect1d(_core(a), _core(b))
+            keep, add = ga.mask_cover(node)
+            pts = np.unique(np.concatenate([K.S["prim_points"][p] for p in core]))
+            want = _formula(below, value, mode, opacity)
+            err = max(float(np.abs(keep[pts]).max()), float(np.abs(add[pts] - want).max()))
+            row = _grade(core, 0.0, want)
+            row.update({"below": below, "value": value, "opacity": opacity, "formula_m": r3(want), "cover_error": err,
+                        "pass": row["pass"] and err <= 1e-6})
+            rows["%s %s over %s%s" % (mode, value, below, " at opacity %s" % opacity if opacity < 1 else "")] = row
+            clear_layers()
+        C.add("b1_blend_modes_over_painted_skin_" + zname, _all(rows), rows,
+              "a paint layer in each mode over a painted layer (12 cases): the cover there equals below + (blend(below, "
+              "value) - below) x opacity clamped to 0..1 (error <= 1e-6, no automatic root kept), and the roots are "
+              "that m x lock density within max(0.15, 2 / sqrt(N)), all locks together and each lock")
+        C.add("b1_blend_modes_roots_even_" + zname, _even(rows), {k: v.get("even") for k, v in rows.items()},
+              "each lock with >= 30 roots in the core: clumped share <= its no-layer value there + %s" % EVEN_RISE)
+
+
+def b2_modes_over_the_automatic_groom():
+    """A layer over skin no lower layer covers: the automatic groom counts as 1. Multiply, Subtract and Min thin
+    it (evenly); Add and Max cannot raise it and leave it as it is."""
+    ref = rest_points()
+    roots_ref = G.roots()
+    for zname in BLEND_ZONES:
+        rows = {}
+        for mode, value, keep in (("subtract", 0.4, 0.6), ("min", 0.25, 0.25), ("multiply", 0.5, 0.5)):
+            lid = _paint(mode, zname, value, mode=mode)
+            cook_all()
+            row = _grade(_core(lid), keep, 0.0)
+            row["automatic_kept"] = keep
+            rows["%s %s" % (mode, value)] = row
+            clear_layers()
+        same = {}
+        for mode, value in (("add", 0.4), ("max", 0.4), ("multiply", 1.0), ("min", 1.0), ("subtract", 0.0)):
+            lid = _paint(mode, zname, value, mode=mode)
+            s, locks, _r = cook_all()
+            r1, l1 = G.roots()
+            same["%s %s" % (mode, value)] = {
+                "roots_at_the_same_places": bool(r1.shape == roots_ref[0].shape and np.array_equal(l1, roots_ref[1])
+                                                 and float(np.abs(r1 - roots_ref[0]).max()) == 0.0),
+                "every_point_equal_bytes": rest_points()[0] == ref[0]}
+            clear_layers()
+        ok = _all(rows) and all(r["roots_at_the_same_places"] and r["every_point_equal_bytes"] for r in same.values())
+        C.add("b2_modes_over_unpainted_skin_" + zname, ok, {"thinned": rows, "left_as_it_is": same},
+              "Subtract 0.4, Min 0.25, Multiply 0.5 over the automatic groom: its roots x 0.6 / 0.25 / 0.5 within "
+              "max(0.15, 2 / sqrt(N)), all locks together and each lock; Add 0.4, Max 0.4, Multiply 1, Min 1, "
+              "Subtract 0: the automatic groom by root positions and byte for byte")
+        C.add("b2_thinned_roots_even_" + zname, _even(rows), {k: v.get("even") for k, v in rows.items()},
+              "each lock with >= 30 roots in the core: clumped share <= its no-layer value there + %s" % EVEN_RISE)
+
+
+def b3_multiply_bounds():
+    """Multiply's use: a top layer that bounds the region. 0 removes the hair, 1 keeps what is below."""
+    ref = rest_points()
+    roots_ref = G.roots()
+    for zname in Z:
+        rows = {}
+        over_paint = zname in BLEND_ZONES or zname.startswith(("most_stacked", "lock_start"))
+        for v in (0.0, 0.25, 0.5, 1.0):
+            if over_paint and v != 0.25:
+                a = _paint("painted white", zname, 1.0)
+                b = _paint("bound", zname, v, mode="multiply")
+                cook_all()
+                rows["x %s over painted white" % v] = _grade(np.intersect1d(_core(a), _core(b)), 0.0, v)
+                clear_layers()
+            lid = _paint("bound", zname, v, mode="multiply")
+            cook_all()
+            row = _grade(_core(lid), v, 0.0)
+            if v == 1.0:
+                r1, l1 = G.roots()
+                row["roots_at_the_same_places"] = bool(r1.shape == roots_ref[0].shape and np.array_equal(l1, roots_ref[1])
+                                                       and float(np.abs(r1 - roots_ref[0]).max()) == 0.0)
+                row["every_point_equal_bytes"] = rest_points()[0] == ref[0]
+                row["pass"] = row["pass"] and row["roots_at_the_same_places"] and row["every_point_equal_bytes"]
+            rows["x %s over unpainted skin" % v] = row
+            clear_layers()
+        C.add("b3_multiply_as_the_top_layer_" + zname, _all(rows), rows,
+              "a Multiply paint layer at 0 / 0.5 / 1 over skin painted white (m x lock density: none, half, all) and at "
+              "0 / 0.25 / 0.5 / 1 over unpainted skin (the automatic roots x that; at 1 the automatic groom byte for "
+              "byte): within max(0.15, 2 / sqrt(N)), all locks together and each lock")
+        C.add("b3_multiply_thins_evenly_" + zname, _even(rows), {k: v.get("even") for k, v in rows.items()},
+              "each lock with >= 30 roots in the core: clumped share <= its no-layer value there + %s (rounds 1 and 2 "
+              "measured 0.014 -> 0.616 at x 0.5 on the top of the head)" % EVEN_RISE)
+
 
 def m1_compose():
     c = Z["ordinary_hair_back_06"]
     off = np.array([0.8, 0.0, 0.0])
-    a = ga.mask_add(node, "A = 40", value=40.0)
-    b = ga.mask_add(node, "B = 300", value=300.0, opacity=0.6)
+    a = ga.mask_add(node, "A 0.3")
+    b = ga.mask_add(node, "B x0.5", mode="multiply", opacity=0.6)
     f = ga.mask_add(node, "F", kind="folder", opacity=0.7)
-    d = ga.mask_add(node, "D = 0", value=0.0, parent=f)
-    e = ga.mask_add(node, "E off", value=999.0)
-    for lid, centre, radius, soft in ((a, c, 1.2, 0.0), (b, c + off, 1.2, 1.0), (d, c - off, 1.0, 0.5), (e, c, 2.0, 0.0),
-                                      (f, c - off, 0.7, 1.0)):
+    d = ga.mask_add(node, "D black", parent=f)
+    ga.mask_add(node, "G + 0.2", mode="add", kind="fill", value=0.2, parent=f)
+    e = ga.mask_add(node, "E off")
+    for lid, centre, radius, soft, value in ((a, c, 1.2, 0.0, 0.3), (b, c + off, 1.2, 1.0, 0.5), (d, c - off, 1.0, 0.5, 0.0),
+                                             (e, c, 2.0, 0.0, 1.0)):
         s = lib.gm_session(node, lid)
-        s.dab(centre / G.unit, None, radius, soft, level=0.0 if lid == f else 1.0)
+        s.dab(centre / G.unit, None, radius, value, soft)
         s.commit()
     ga.mask_set(node, e, on=False)
-    keep, add = ga.mask_cover(node)
-    ma, mb, md, mf = (ga.mask_values(node, x).astype(np.float64) for x in (a, b, d, f))
-    # our own arithmetic, bottom to top: A, then B at 0.6, then the folder (D inside) through its mask x 0.7
-    k = 1.0 - ma
-    ad = 40.0 * ma
-    eb = mb * 0.6
-    k, ad = k * (1 - eb), ad * (1 - eb) + 300.0 * eb
-    ki, ai = k * (1 - md), ad * (1 - md) + 0.0 * md
-    ef = mf * 0.7
-    k, ad = k + (ki - k) * ef, ad + (ai - ad) * ef
-    err = max(float(np.abs(keep - k).max()), float(np.abs(add - ad).max() / 300.0))
-    ga.mask_move(node, a, 4)                      # A to the top: it wins where it is white
-    keep2, add2 = ga.mask_cover(node)
-    top = ma >= 1.0
-    order_ok = bool(np.allclose(add2[top], 40.0, atol=1e-3) and np.allclose(keep2[top], 0.0, atol=1e-6)
-                    and float(np.abs(add2 - add).max()) > 1.0)
+    keep, add = (x.astype(np.float64) for x in ga.mask_cover(node))
+    (va, ca), (vb, cb), (vd, cd) = ((x.astype(np.float64) for x in ga.mask_values(node, i)) for i in (a, b, d))
+
+    def stack(order, a_opacity=1.0):
+        """The mask's value t (the automatic groom counts as 1) and the automatic share kept, bottom to top."""
+        t = np.ones(len(va))
+        k = np.ones(len(va))
+        for name in order:
+            if name == "a":
+                e_ = ca * a_opacity
+                t, k = t + (va - t) * e_, k * (1 - e_)
+            elif name == "b":
+                e_ = cb * 0.6
+                t, k = t + (t * vb - t) * e_, k * (1 - e_ + e_ * vb)
+            elif name == "f":
+                ti = t + (vd - t) * cd                    # D, Normal
+                ki = k * (1 - cd)
+                ti = np.clip(ti + 0.2, 0.0, 1.0)          # G, a fill layer in Add: over all skin
+                t, k = t + (ti - t) * 0.7, k + (ki - k) * 0.7
+            t = np.clip(t, 0.0, 1.0)
+        return t, k
+
+    t, k = stack("abf")
+    err = max(float(np.abs(keep + add - t).max()), float(np.abs(keep - k).max()))
+    ga.mask_move(node, a, 5)                      # A to the top: Normal overrides what is below where it is painted
+    keep2, add2 = (x.astype(np.float64) for x in ga.mask_cover(node))
+    t2, k2 = stack("bfa")
+    top = ca >= 1.0
+    order_ok = bool(np.allclose(add2[top], 0.3, atol=1e-6) and np.allclose(keep2[top], 0.0, atol=1e-6)
+                    and float(np.abs(keep2 + add2 - (keep + add)).max()) > 0.05
+                    and max(float(np.abs(keep2 + add2 - t2).max()), float(np.abs(keep2 - k2).max())) <= 1e-5)
     ga.mask_set(node, a, opacity=0.0)
-    keep3, add3 = ga.mask_cover(node)
-    k0 = (1 - eb)
-    a0 = 300.0 * eb
-    ki, ai = k0 * (1 - md), a0 * (1 - md)
-    k0, a0 = k0 + (ki - k0) * ef, a0 + (ai - a0) * ef
-    op_err = max(float(np.abs(keep3 - k0).max()), float(np.abs(add3 - a0).max() / 300.0))
+    keep3, add3 = (x.astype(np.float64) for x in ga.mask_cover(node))
+    t3, k3 = stack("bf")
+    op_err = max(float(np.abs(keep3 + add3 - t3).max()), float(np.abs(keep3 - k3).max()))
     clear_layers()
     C.add("m1_layers_order_opacity_folder_compose", err <= 1e-5 and order_ok and op_err <= 1e-5,
-          {"max_error": err, "reorder_changes_the_result_and_the_top_layer_wins": order_ok, "opacity_0_error": op_err,
-           "points_covered": int((keep < 1).sum())},
-          "mask_cover (keep, add) of 3 layers + a folder with its own soft mask and opacity + a layer that is off, "
-          "against arithmetic written here: max error <= 1e-5")
+          {"max_error": err, "reorder_changes_the_result_and_the_top_normal_layer_wins": order_ok, "opacity_0_error": op_err,
+           "points_covered": int((keep < 1).sum()), "points": len(keep)},
+          "mask_cover (keep, add) of a Normal layer, a soft Multiply layer at opacity 0.6, a folder at 0.7 holding a "
+          "soft black layer and an Add fill layer, and a layer that is off, against arithmetic written here (the "
+          "mask's value by the contract's formula, the automatic share kept): max error <= 1e-5")
 
 
-def m2_value():
-    c = Z["ordinary_hair_back_06"]
-    lid = ga.mask_add(node, "number", value=123.0)
-    K.paint_disc(lid, c, 1.3)
-    cook_all()
-    core, area, b, a, _ra, _la = _patch(lid)
-    before = sum(a.values()) / area
-    under = sorted(set(a) | set(b))
+def m2_fill():
+    """A fill layer: one value over all the skin of its owner; its value is changed without painting."""
+    lk = G.lock_id("hair_back_14")
+    prims = G.region_prims(lk)
+    skin = K.lock_area_in(prims, lk)
+    lid = ga.mask_add(node, "fill", kind="fill", value=1.0, scope="locks", locks=[lk])
+    s0, locks0, _r = cook_all()
+    white = G.strands_by_lock().get(lk, 0)
     n0 = len(hou.undos.undoLabels())
-    c0 = ga.mask_cover(node)
-    ga.mask_set(node, lid, value=317.0)        # a density no other check paints here (the cache would hold it)
+    ga.mask_set(node, lid, value=0.5)
     steps = len(hou.undos.undoLabels()) - n0
     label = hou.undos.undoLabels()[0]
-    c1 = ga.mask_cover(node)
     s, locks, _r = cook_all()
-    after = sum(K.roots_in(core, G.roots())[0].values()) / area
-    owners = K.owners_of_changed(c0, c1)
+    half = G.strands_by_lock().get(lk, 0)
     t = time.perf_counter()
     hou.undos.performUndo()
     node.cook()
     us = time.perf_counter() - t
     ul = CC.take()
     G.rest.cook()
-    back = sum(K.roots_in(core, G.roots())[0].values()) / area
-    # a layer whose mask is black: changing its number regrows nothing
-    black = ga.mask_add(node, "black", value=50.0)
+    back = G.strands_by_lock().get(lk, 0)
+    others = all(G.strands_by_lock().get(k) == BASE.get(k) for k in BASE if k != lk)
+    ga.mask_set(node, lid, value=0.0)
     cook_all()
-    ga.mask_set(node, black, value=500.0)
-    none = cook_all()[1]
+    none = G.strands_by_lock().get(lk, 0)
+    try:
+        lib.gm_session(node, lid)
+        refused = False
+    except ValueError:
+        refused = True
+    # a paint layer never painted is transparent: changing its row regrows nothing
+    empty = ga.mask_add(node, "never painted", mode="multiply")
+    cook_all()
+    ga.mask_set(node, empty, opacity=0.3)
+    unpainted = cook_all()[1]
     clear_layers()
-    lim = lib.density_limit(317.0, area)
-    C.add("m2_a_layers_density_is_changed_without_painting",
-          steps == 1 and locks == owners and abs(after / 317.0 - 1) <= lim and us < UNDO_S and not ul
-          and abs(back - before) < 1e-9 and none == [] and s <= 0.2 * len(locks) + 0.1,
-          {"undo_steps": steps, "label": label, "per_cm2": [r3(before), r3(after), r3(back)], "limit": r3(lim),
-           "locks_recooked": len(locks), "locks_owning_skin_under_the_mask": len(owners), "display_s": r3(s),
-           "limit_s": round(0.2 * len(locks) + 0.1, 2), "undo_s": r3(us), "undo_locks": len(ul),
-           "black_mask_value_change_recooks": len(none), "locks_on_core": len(under)},
-          "120 -> 317 on a painted layer: one undo step, only the locks under its mask recook (within the speed "
-          "limit), the density follows, undo < 0.1 s with 0 locks and the density back; a black mask: 0 locks")
+    want = DENS[lk] * skin
+    lim, lim_half = lib.density_limit(want, 1.0), lib.density_limit(want * 0.5, 1.0)
+    C.add("m2_fill_layer_one_value_over_its_owners_skin",
+          locks0 == [lk] and locks == [lk] and abs(white / want - 1) <= lim and abs(half / (want * 0.5) - 1) <= lim_half
+          and none == 0 and steps == 1 and us < UNDO_S and not ul and back == white and others and refused
+          and unpainted == [] and s <= 0.2 * len(locks) + 0.1,
+          {"lock": K.names[lk], "skin_cm2": r3(skin), "density": DENS[lk], "automatic_strands": BASE.get(lk),
+           "strands_white_half_black": [white, half, none], "expected_white_half": [r3(want), r3(want * 0.5)],
+           "limits": [r3(lim), r3(lim_half)], "locks_recooked": [K.names[k] for k in locks], "display_s": r3(s),
+           "undo_steps": steps, "label": label, "undo_s": r3(us), "undo_locks": len(ul), "strands_after_undo": back,
+           "other_locks_keep_their_strands": others, "painting_a_fill_layer_is_refused": refused,
+           "a_never_painted_layers_row_change_recooks": len(unpainted)},
+          "a fill layer owned by one lock: white gives that lock's Density x its skin, 0.5 half of it, black none "
+          "(max(0.15, 2 / sqrt(N))); only that lock recooks, within the speed limit; the value change is one undo "
+          "step, undone < 0.1 s with 0 locks; the brush refuses a fill layer; a paint layer never painted is transparent")
 
 
 def m3_folder():
@@ -567,86 +780,81 @@ def m3_folder():
     lk = G.lock_id("hair_back_14")
     c = K.snap(K.cen[G.region_prims(lk)].mean(0))
     folder = ga.mask_add(node, "Folder", kind="folder")
-    inner = ga.mask_add(node, "= 40", value=40.0, parent=folder)
-    K.paint_disc(inner, c, 1.3)
+    inner = _paint("0.5", c, 0.5, parent=folder)
     cook_all()
-    core, area, b, a, ra, la = _patch(inner)
-    white = sum(a.values()) / area
-    lim = lib.density_limit(40.0, area)
-    strands_white = G.strands_by_lock()
+    core = _core(inner)
+    full = _grade(core, 0.0, 0.5)
+    strands_full = G.strands_by_lock()
     ga.mask_set(node, folder, opacity=0.5)
     cook_all()
-    half = sum(K.roots_in(core, G.roots())[0].values()) / area
-    auto = sum(b.values()) / area
-    target = auto + (40.0 - auto) * 0.5
-    lim_half = lib.density_limit(target, area)
+    half = _grade(core, 0.5, 0.25)
+    ga.mask_set(node, folder, opacity=0.0)
+    cook_all()
+    zero_equal = rest_points()[0] == ref[0]
     ga.mask_set(node, folder, opacity=1.0)
-    K.paint_disc(folder, c, 2.2, level=0.0, dab_r=0.5)          # the folder's own mask black over the patch
-    cook_all()
-    black_equal = rest_points()[0] == ref[0]
-    ga.mask_clear(node, folder)                                  # no folder mask again: white
-    cook_all()
     ga.mask_set(node, folder, on=False)
     cook_all()
     off_equal = rest_points()[0] == ref[0]
     ga.mask_set(node, folder, on=True)
     cook_all()
-    bytes_before = ga.mask_values(node, inner).tobytes()
+    bytes_before = [x.tobytes() for x in ga.mask_values(node, inner)]
     ga.mask_remove(node, folder)
     data = ga.read_data(node)
     kept = (data.mask(inner) is not None and data.mask(inner).parent is None
-            and ga.mask_values(node, inner).tobytes() == bytes_before)
+            and [x.tobytes() for x in ga.mask_values(node, inner)] == bytes_before)
     cook_all()
-    after_delete = G.strands_by_lock() == strands_white
+    after_delete = G.strands_by_lock() == strands_full
     clear_layers()
-    C.add("m3_folder_mask_opacity_off_delete",
-          abs(white / 40.0 - 1) <= lim and abs(half / target - 1) <= lim_half and black_equal and off_equal and kept
-          and after_delete,
-          {"place": "hair_back_14", "core_cm2": r3(area), "locks_on_core": len(set(a) | set(b)),
-           "in_a_white_folder_per_cm2": r3(white), "over_D": r3(white / 40.0), "limit": r3(lim),
-           "folder_opacity_0.5": {"automatic": r3(auto), "target": r3(target), "measured": r3(half), "limit": r3(lim_half)},
-           "folder_mask_black_is_the_automatic_groom": black_equal, "folder_off_is_the_automatic_groom": off_equal,
-           "deleting_the_folder_keeps_its_layer_and_mask": kept, "and_the_layer_then_applies_as_before": after_delete},
-          "\"= 40\" in a white folder on hair_back_14's skin gives 40 (round 2: 0.81); the folder at opacity 0.5 the rule; "
-          "its mask black, or the folder off: the automatic groom byte for byte; deleting it keeps the layer")
+    C.add("m3_folder_opacity_off_delete",
+          full["pass"] and half["pass"] and zero_equal and off_equal and kept and after_delete,
+          {"place": "hair_back_14", "in_a_folder_at_1": full, "folder_opacity_0.5": half,
+           "folder_opacity_0_is_the_automatic_groom": zero_equal, "folder_off_is_the_automatic_groom": off_equal,
+           "deleting_the_folder_keeps_its_layer_and_paint": kept, "and_the_layer_then_applies_as_before": after_delete},
+          "a layer painted 0.5 in a folder on hair_back_14's skin gives 0.5 x lock density (round 2: 0.81 of the "
+          "target); the folder at opacity 0.5: automatic x 0.5 + 0.25 x lock density; at 0, or off: the automatic "
+          "groom byte for byte; deleting it keeps the layer")
 
 
 def m4_owner():
-    # the most stacked skin: one of its locks owns a layer "= 0", a group owns "= 300"
+    # the most stacked skin: one of its locks owns a black layer; a group owns a white one
     c = Z["most_stacked"]
     names = K.names
     pr = int(((K.cen - c) ** 2).sum(1).argmin())
     owners = list(K.own[pr])
     mine = owners[0]
-    one = ga.mask_add(node, "one lock = 0", value=0.0, scope="locks", locks=[mine])
-    K.paint_disc(one, c, 1.3)
+    one = _paint("one lock bare", c, 0.0, radius=1.1, scope="locks", locks=[mine])   # a disc no other check paints
     s, locks, _r = cook_all()
-    core, area, b, a, _ra, _la = _patch(one)
+    core = _core(one)
+    b = K.roots_in(core, ROOTS0)[0]
+    a = K.roots_in(core, G.roots())[0]
     others_same = all(G.strands_by_lock().get(k) == BASE.get(k) for k in BASE if k != mine)
-    row1 = {"lock": names[mine], "its_roots_on_the_patch": [b.get(mine, 0), a.get(mine, 0)], "locks_recooked": [names[k] for k in locks],
-            "other_locks_keep_their_strands": others_same}
+    row1 = {"lock": names[mine], "its_roots_on_the_patch": [b.get(mine, 0), a.get(mine, 0)],
+            "locks_recooked": [names[k] for k in locks], "other_locks_keep_their_strands": others_same}
     ok1 = a.get(mine, 0) == 0 and b.get(mine, 0) > 0 and locks == [mine] and others_same
     ga.mask_remove(node, one)
     cook_all()
     data = ga.read_data(node)
     group = data.lock(mine).group
-    grp = ga.mask_add(node, "group = 300", value=300.0, scope="group", group=group)
-    K.paint_disc(grp, Z["ordinary_hair_back_06"], 1.3)
+    grp = _paint("group white", "ordinary_hair_back_06", 1.0, scope="group", group=group)
     s, locks, _r = cook_all()
     in_group = {lk.id for lk in data.locks if lk.group == group}
-    core2, area2, b2, a2, _ra, _la = _patch(grp)
-    on_patch = {k for k in set(a2) | set(b2)}
-    got = sum(v for k, v in a2.items() if k in in_group) / area2
-    lim = lib.density_limit(300.0, area2)
-    ok2 = set(locks) <= in_group and all(a2.get(k, 0) == b2.get(k, 0) for k in on_patch - in_group)
-    row2 = {"group": group, "locks_recooked_in_the_group": set(locks) <= in_group, "group_roots_per_cm2": r3(got),
-            "limit": r3(lim), "locks_of_other_groups_on_the_patch": len(on_patch - in_group)}
-    if not (on_patch - in_group):
-        ok2 = ok2 and abs(got / 300.0 - 1) <= lim
+    core2 = _core(grp)
+    area2 = float(K.area[core2].sum())
+    b2 = K.roots_in(core2, ROOTS0)[0]
+    a2 = K.roots_in(core2, G.roots())[0]
+    on_patch = set(a2) | set(b2)
+    want = sum(DENS[k] * K.lock_area_in(core2, k) for k in on_patch & in_group)
+    got = sum(v for k, v in a2.items() if k in in_group)
+    lim = lib.density_limit(want, 1.0)
+    ok2 = (set(locks) <= in_group and all(a2.get(k, 0) == b2.get(k, 0) for k in on_patch - in_group)
+           and abs(got / max(want, 1e-9) - 1) <= lim)
+    row2 = {"group": group, "locks_recooked_in_the_group": set(locks) <= in_group, "group_roots": got, "expected": r3(want),
+            "limit": r3(lim), "core_cm2": r3(area2), "locks_of_other_groups_on_the_patch": len(on_patch - in_group)}
     clear_layers()
     C.add("m4_a_layer_owned_by_a_lock_or_a_group", ok1 and ok2, {"lock": row1, "group": row2},
-          "on stacked skin a layer \"= 0\" owned by one lock removes that lock's roots there and recooks it alone; a "
-          "layer owned by a group recooks only that group's locks (and gives D where they hold the skin alone)")
+          "on stacked skin a black layer owned by one lock removes that lock's roots there and recooks it alone; a "
+          "white layer owned by a group recooks only that group's locks, gives them their density on their skin and "
+          "leaves the roots of other groups' locks as they were")
 
 
 # ---------------------------------------------------------------------------
@@ -662,34 +870,43 @@ def r1_states():
         P, L = rest_points()
         rows[tag] = {"points_equal": P == ref[0], "ids_equal": bool(np.array_equal(L, ref[1])),
                      "locks_grown": grown}
-    c = Z["ordinary_hair_back_06"]
-    a = ga.mask_add(node, "empty", value=300.0)
-    same("a layer added, mask black", len(cook_all()[1]))
-    b = ga.mask_add(node, "b", value=0.0)
+    a = ga.mask_add(node, "empty")
+    same("a paint layer added, nothing painted", len(cook_all()[1]))
+    b = ga.mask_add(node, "b", mode="multiply")
     f = ga.mask_add(node, "f", kind="folder")
-    d = ga.mask_add(node, "d", value=40.0, parent=f)
-    for lid, z in ((a, "ordinary_hair_back_06"), (b, "crown_whorl"), (d, "top_of_head")):
-        K.paint_disc(lid, Z[z], 1.3)
+    d = ga.mask_add(node, "d", parent=f)
+    g = ga.mask_add(node, "g", kind="fill", value=0.5, parent=f)
+    cook_all()
+    ga.mask_set(node, g, on=False)
+    for lid, z, v in ((a, "ordinary_hair_back_06", 1.0), (b, "crown_whorl", 0.5), (d, "top_of_head", 0.0)):
+        K.paint_disc(lid, Z[z], 1.3, value=v)
     cook_all()
     rows["painted"] = {"changed": rest_points()[0] != ref[0]}
     for lid in (a, b, d):
         ga.mask_set(node, lid, on=False)
     cook_all()
-    same("3 painted layers, all off")
-    for lid in (a, b, d):
+    same("3 painted layers and a fill layer, all off")
+    for lid in (a, b, d, g):
         ga.mask_set(node, lid, on=True)
     ga.mask_set(node, f, on=False)
     ga.mask_set(node, a, on=False)
     ga.mask_set(node, b, on=False)
     cook_all()
-    same("the folder off (its layer on)")
+    same("the folder off (its paint and fill layers on)")
+    ga.mask_set(node, g, on=False)
     for lid in (a, b, f):
         ga.mask_set(node, lid, on=True)
-    for lid, z in ((a, "ordinary_hair_back_06"), (b, "crown_whorl"), (d, "top_of_head")):
-        K.paint_disc(lid, Z[z], 2.0, level=0.0, dab_r=0.5)         # black with the brush
+    for lid in (a, b, d):
+        ga.mask_set(node, lid, opacity=0.0)
     cook_all()
-    same("every mask painted black with the brush")
-    rows["every mask painted black with the brush"]["mask_left_max"] = max(float(ga.mask_values(node, x).max()) for x in (a, b, d))
+    same("every layer at opacity 0")
+    for lid in (a, b, d):
+        ga.mask_set(node, lid, opacity=1.0)
+    for lid, z in ((a, "ordinary_hair_back_06"), (b, "crown_whorl"), (d, "top_of_head")):
+        K.paint_disc(lid, Z[z], 2.0, dab_r=0.5, erase=True, label="Erase mask")       # the eraser
+    cook_all()
+    same("every layer erased with the brush")
+    rows["every layer erased with the brush"]["coverage_left_max"] = max(float(ga.mask_values(node, x)[1].max()) for x in (a, b, d))
     for lid, z in ((a, "ordinary_hair_back_06"), (b, "crown_whorl")):
         K.paint_disc(lid, Z[z], 1.3)
     cook_all()
@@ -700,8 +917,9 @@ def r1_states():
     clear_layers()
     same("every layer deleted")
     ok = rows["painted"]["changed"] and all(r.get("points_equal", True) and r.get("ids_equal", True) for r in rows.values())
-    C.add("r1_no_layer_off_black_is_the_automatic_groom_byte_for_byte", ok, rows,
-          "in one process, against the groom cooked before any layer: every rest point's bytes and every lock id")
+    C.add("r1_no_layer_off_unpainted_is_the_automatic_groom_byte_for_byte", ok, rows,
+          "in one process, against the groom cooked before any layer: every rest point's bytes and every lock id",
+          note="black is a value now (no hair), so \"all black\" of the first brief is \"nothing painted / erased\" here")
 
 
 def r2_counts():
@@ -802,29 +1020,26 @@ def r5_fullcook():
 def q1_painted_qc():
     spot = lib.densest_spot(ROOTS0[0], 1.0)[0]
     before = lib.disc_density(ROOTS0[0], spot, 1.0)
-    a = ga.mask_add(node, "Crown = 5104", value=5104.0)
-    K.paint_disc(a, Z["crown_whorl"], 2.0)
-    b = ga.mask_add(node, "Thin skin = 150", value=150.0)
+    factor = round(5104.0 / before, 3)
+    a = ga.mask_add(node, "Crown x %s" % factor, mode="multiply")
+    K.paint_disc(a, Z["crown_whorl"], 2.0, value=factor)
+    b = ga.mask_add(node, "Thin skin white")
     K.paint_disc(b, Z["under_floating_mesh"], 2.0)
     cook_all()
     r = G.roots()
-    core = K.core(ga.mask_values(node, b), 1.0)
-    area = float(K.area[core].sum())
-    thin0 = sum(K.roots_in(core, ROOTS0)[0].values()) / area
-    thin1 = sum(K.roots_in(core, r)[0].values()) / area
+    thin = _grade(_core(b), 0.0, 1.0)
     crown = lib.disc_density(r[0], spot, 1.0)
     infos = {i.id: i for i in ga.lock_infos(node)}
     now = G.strands_by_lock()
     hip = OUT + "/painted.hiplc"
     hou.hipFile.save(hip)
     clear_layers()
-    row = {"crown_densest_1cm_disc_per_cm2": [r3(before), r3(crown)], "v006": 5104,
-           "thin_skin_per_cm2": [r3(thin0), r3(thin1)], "painted": 150, "thin_core_cm2": r3(area),
-           "strands": sum(now.values())}
-    lim = lib.density_limit(150.0, area)
-    C.add("q1_crown_down_to_v006_and_thin_skin_up", abs(crown / 5104.0 - 1) <= 0.15 and abs(thin1 / 150.0 - 1) <= lim, row,
-          "\"= 5104\" on the crown whorl: the densest 1 cm disc within 15 % of 5,104 / cm2; \"= 150\" on skin under "
-          "floating mesh: within max(0.15, 2 / sqrt(N)) of 150")
+    row = {"crown_densest_1cm_disc_per_cm2": [r3(before), r3(crown)], "v006": 5104, "multiply": factor,
+           "thin_skin": thin, "strands": sum(now.values())}
+    C.add("q1_crown_down_to_v006_and_thin_skin_up",
+          abs(crown / 5104.0 - 1) <= 0.15 and thin["pass"] and thin["measured_per_cm2"] > thin["automatic_per_cm2"], row,
+          "Multiply 5104 / automatic on the crown whorl: the densest 1 cm disc within 15 % of 5,104 / cm2; white on "
+          "skin under floating mesh: the locks' own density there within max(0.15, 2 / sqrt(N)), above the automatic")
     rep = _qc(hip, "painted")
     if rep is None:
         C.add("q1_painted_groom_passes_qc_27_of_27", False, "no qc_report.json", note="see qc_painted.log")
@@ -840,7 +1055,7 @@ def q1_painted_qc():
           {"passed": len(rep["checks"]) - len(failed), "of": len(rep["checks"]), "failed": failed,
            "density_off_worst": nums.get("density_off_worst"), "painted_locks": len(rep.get("painted_locks", [])),
            "before_and_after": {k: [before_nums.get(k), v] for k, v in nums.items()}},
-          "grooming-check on the groom painted \"= 5104\" on the crown and \"= 150\" on thin skin",
+          "grooming-check on the groom with the crown thinned to v006's density and thin skin painted white",
           evidence="qc_painted/qc_report.json")
     worst = max((abs(i.strands - (now.get(i.id, 0))) / max(i.strands, 1) for i in infos.values() if i.layered), default=0)
     C.add("q1_lock_infos_expects_what_the_network_grows", True, {"locks_under_layers": sum(i.layered for i in infos.values()),
@@ -869,22 +1084,20 @@ def q1_painted_qc():
 
 def _stack():
     lk = G.lock_id("hair_back_14")
-    c = Z["ordinary_hair_back_06"]
     data = ga.read_data(node)
-    a = ga.mask_add(node, "All = 120", value=120.0)
-    K.paint_disc(a, c, 1.3)
+    _paint("All 0.8", "ordinary_hair_back_06", 0.8)
     f = ga.mask_add(node, "Folder", kind="folder", opacity=0.7)
-    b = ga.mask_add(node, "Soft = 40", value=40.0, parent=f)
+    b = ga.mask_add(node, "Soft 0.3", parent=f)
     s = lib.gm_session(node, b)
-    s.dab(Z["top_of_head"] / G.unit, None, 1.5, 1.0)
+    s.dab(Z["top_of_head"] / G.unit, None, 1.5, 0.3, 1.0)
     s.commit()
-    o = ga.mask_add(node, "Off = 999", value=999.0)
-    K.paint_disc(o, Z["crown_whorl"], 1.0)
+    o = _paint("Off", "crown_whorl", 1.0, radius=1.0)
     ga.mask_set(node, o, on=False)
-    one = ga.mask_add(node, "Lock B = 0", value=0.0, scope="locks", locks=[lk])
-    K.paint_disc(one, K.snap(K.cen[G.region_prims(lk)].mean(0)), 1.5)
-    grp = ga.mask_add(node, "Group = 200", value=200.0, scope="group", group=data.lock(G.lock_id("hair_bang_08")).group, opacity=0.5)
-    K.paint_disc(grp, Z[next(k for k in Z if k.startswith("fringe_"))], 1.0)
+    one = _paint("Lock B bare", K.snap(K.cen[G.region_prims(lk)].mean(0)), 0.0, radius=1.5, scope="locks", locks=[lk])
+    group = data.lock(G.lock_id("hair_bang_08")).group
+    _paint("Group x0.5", next(k for k in Z if k.startswith("fringe_")), 0.5, radius=1.0, mode="multiply", scope="group",
+           group=group, opacity=0.5)
+    ga.mask_add(node, "Fringe fill", kind="fill", mode="min", value=0.9, scope="group", group=group)
     cook_all()
     return lk, one
 
@@ -892,7 +1105,7 @@ def _stack():
 def _snapshot():
     data = ga.read_data(node)
     return ([dict(m.__dict__) for m in data.masks],
-            {m.id: lib.mask_arrays(node, m.id)[1] for m in data.masks}, G.strands_by_lock())
+            {(m.id, n): x for m in data.masks for n, x in zip("va", lib.mask_arrays(node, m.id))}, G.strands_by_lock())
 
 
 def _same(a, b):
@@ -925,8 +1138,9 @@ def p1_persist():
         rows["reopen_in_a_new_process"]["layers"] and rows["reopen_in_a_new_process"]["strands"] and \
         rows["reopen_in_a_new_process"]["stored_schema"] == model.SCHEMA and not got.get("errors")
     C.add("p1_layers_survive_detect_regions_save_reopen", ok, rows,
-          "6 layers (a folder with opacity, a soft mask, a layer off, one owned by a lock, one by a group): the layer "
-          "list, every mask's bytes and the strands of every lock are the same after Detect, after Update regions, and "
+          "7 layers (a folder with opacity, a soft painted layer, a layer off, one owned by a lock, a Multiply layer and a "
+          "Min fill layer owned by a group): the layer "
+          "list, every layer's painted values and coverage (bytes) and the strands of every lock are the same after Detect, after Update regions, and "
           "in a new process after save / reopen (schema %d)" % model.SCHEMA)
     # publish, and its layers into another scene
     work = OUT + "/publish/char_Helen/04_grooming/work"
@@ -948,9 +1162,9 @@ def p1_persist():
                   for p in stage.Traverse() if p.IsA(UsdGeom.BasisCurves))
         pub.update({"publish_json_masks": rec.get("masks"), "grooming_data_schema": gd.get("schema"),
                     "read_back_layers_same": [dict(m.__dict__) for m in layers] == ref[0],
-                    "read_back_masks_same": all(np.array_equal(
-                        np.frombuffer(mgeo.pointFloatAttribValuesAsString(config.MASK_COVER_ATTR % k), np.float32), v)
-                        for k, v in ref[1].items() if v is not None) if mgeo is not None else False,
+                    "read_back_masks_same": all(np.array_equal(np.frombuffer(mgeo.pointFloatAttribValuesAsString(
+                        (config.MASK_VALUE_ATTR if n == "v" else config.MASK_COVER_ATTR) % k), np.float32), v)
+                        for (k, n), v in ref[1].items() if v is not None) if mgeo is not None else False,
                     "usd_strands": usd, "usd_is_the_painted_groom": usd == sum(ref[2].values())})
         okp = pub["read_back_layers_same"] and pub["read_back_masks_same"] and pub["usd_is_the_painted_groom"] \
             and gd.get("schema") == model.SCHEMA
@@ -981,7 +1195,7 @@ def p3_orphan(lk, one):
     Pin = np.frombuffer(gin.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3)
     hit = np.array([tuple(np.round(x, 5)) in want for x in Pin])
     prims = sorted({pr.number() for pr in gin.prims() if hit[pr.vertices()[0].point().number()]})
-    core = K.core(ga.mask_values(node, one), 1.0)
+    core = _core(one)
     row = {"lock": names[lk], "mesh_prims_dropped": len(prims),
            "its_roots_on_its_painted_skin_before": K.roots_in(core, G.roots())[0].get(lk, 0)}
     blast = node.parent().createNode("blast", "accept_v2_drop")
@@ -1009,7 +1223,7 @@ def p3_orphan(lk, one):
         ga.split_regions(node)
         K.reload()
         cook_all()
-        core = K.core(ga.mask_values(node, one), 1.0)
+        core = _core(one)
         row["roots_of_the_new_lock_on_the_painted_skin_before_reassign"] = K.roots_in(core, G.roots())[0].get(new, 0)
         d = ga.read_data(node)
         moved = d.reassign_orphan(lk, new)                      # what the panel's reassign does (controller.reassign_orphan)
@@ -1018,39 +1232,42 @@ def p3_orphan(lk, one):
         row["layers_moved"] = moved
         row["layer_now_owned_by"] = ga.read_data(node).mask(one).locks
         row["roots_of_the_new_lock_on_the_painted_skin_after_reassign"] = K.roots_in(core, G.roots())[0].get(new, 0)
-        ok = (moved == ["Lock B = 0"] and row["layer_now_owned_by"] == [new]
+        ok = (moved == ["Lock B bare"] and row["layer_now_owned_by"] == [new]
               and row["roots_of_the_new_lock_on_the_painted_skin_before_reassign"] > 0
               and row["roots_of_the_new_lock_on_the_painted_skin_after_reassign"] == 0
               and row["its_roots_on_its_painted_skin_before"] == 0 and row["layer_still_names_it"])
     blast.destroy()
     C.add("p3_a_layer_owned_by_a_lock_follows_it_through_a_mesh_version", ok, row,
           "the hair mesh loses lock B (missing, its layer kept), gets it back (a new lock id): until reassigned the new "
-          "lock grows on the skin painted \"= 0\" for B; after reassigning the missing lock to it, it grows none there")
+          "lock grows on the skin painted black for B; after reassigning the missing lock to it, it grows none there")
 
 
 def p4_migration():
-    """A dev file of the earlier builds (schema 3, blend modes, factor and paint layers)."""
+    """Dev files of the earlier builds: schema 3 (blend modes, factor and density fill layers under a mask, paint
+    layers) and schema 4 (\"= D\" layers)."""
     clear_layers()
-    c = Z["ordinary_hair_back_06"]
-    keep = ga.mask_add(node, "Keep = 80", value=80.0)
-    K.paint_disc(keep, c, 1.3)
-    x = ga.mask_add(node, "Old x0.5", value=1.0)
-    K.paint_disc(x, Z["top_of_head"], 1.3)
-    y = ga.mask_add(node, "Old + 40", value=40.0)
-    K.paint_disc(y, Z["crown_whorl"], 1.0)
+    keep = _paint("Old paint", "ordinary_hair_back_06", 0.5)
+    x = _paint("Old x0.5", "top_of_head", 1.0)
+    y = _paint("Old + 40", "crown_whorl", 1.0, radius=1.0)
+    z = _paint("Old x2", "most_stacked", 1.0, radius=1.0)
     cook_all()
-    want = None
+    core_keep, core_x = _core(keep), _core(x)
+    geo = hou.Geometry(node.parm(config.MASK_PARM).evalAsGeometry())
+    for lid in (x, y, z):                                     # a fill layer of schema 3 stored its mask only
+        geo.findPointAttrib(config.MASK_VALUE_ATTR % lid).destroy()
+    node.parm(config.MASK_PARM).set(geo)
     raw = json.loads(node.evalParm(config.DATA_PARM))
     raw["schema"] = 3
     for m in raw["masks"]:
+        m["unit"] = "factor"
         if m["id"] == keep:
-            m.update(mode="replace", unit="density")
+            m.update(kind="paint", mode="replace")
         elif m["id"] == x:
-            m.update(mode="multiply", unit="factor", value=0.5)
+            m.update(kind="fill", mode="multiply", value=0.5)
+        elif m["id"] == y:
+            m.update(kind="fill", mode="add", unit="density", value=40.0)
         else:
-            m.update(mode="add", unit="density")
-    raw["masks"].append({"id": 77, "name": "Old paint", "kind": "paint", "mode": "max", "value": 1.0, "unit": "factor",
-                         "on": True, "opacity": 1.0, "scope": "all", "group": "", "locks": [], "parent": None})
+            m.update(kind="fill", mode="multiply", value=2.0)
     node.parm(config.DATA_PARM).set(json.dumps(raw))
     err = None
     try:
@@ -1059,41 +1276,75 @@ def p4_migration():
         err = str(e)
     data = ga.read_data(node)
     said = ga.mask_dropped(node)
-    core, area, b, a, _ra, _la = _patch(keep)
-    got = sum(a.values()) / area
-    lim = lib.density_limit(80.0, area)
-    # the dropped layers no longer change the hair: only the kept layer's locks differ from the automatic groom
-    P, L = rest_points()
-    crown_roots = sum(K.roots_in(np.nonzero(np.sqrt(((K.cen - Z["crown_whorl"]) ** 2).sum(1)) < 0.8)[0], G.roots())[0].values())
-    crown_auto = sum(K.roots_in(np.nonzero(np.sqrt(((K.cen - Z["crown_whorl"]) ** 2).sum(1)) < 0.8)[0], ROOTS0)[0].values())
+    kept = [(m.name, m.kind, m.mode, m.value) for m in data.masks]
+    paint = _grade(core_keep, 0.0, 0.5, evenness=False)       # the paint layer: its painted 0.5, Normal
+    half = _grade(core_x, 0.5, 0.0, evenness=False)           # the factor fill 0.5 under its mask: Multiply 0.5 there
+    # the dropped layers no longer change the hair
+    ring = np.nonzero(np.sqrt(((K.cen - Z["crown_whorl"]) ** 2).sum(1)) < 0.8)[0]
+    crown_roots = sum(K.roots_in(ring, G.roots())[0].values())
+    crown_auto = sum(K.roots_in(ring, ROOTS0)[0].values())
     hip = OUT + "/schema3.hiplc"
     hou.hipFile.save(hip)
     outf = OUT + "/reopen_schema3.json"
     text = hython([HERE + "/accept_v02a_sub.py", "reopen", SUITE, hip, outf, HERE], "reopen_schema3.log")
     got2 = json.load(open(outf, encoding="utf-8")) if os.path.isfile(outf) else {"error": "no file"}
     status = [ln for ln in text.splitlines() if "density layer" in ln and "dropped" in ln]
-    n0 = len(hou.undos.undoLabels())
-    ga.mask_set(node, keep, value=81.0)                       # the next edit writes the JSON at the current schema
+    ga.mask_set(node, keep, opacity=0.9)                      # the next edit writes the JSON at the current schema
     stored = json.loads(node.evalParm(config.DATA_PARM))
-    row = {"layers_kept": [m.name for m in data.masks], "said": said, "cook_error": err, "errors": lib.node_errors(node),
-           "kept_layer_per_cm2": r3(got), "painted": 80, "limit": r3(lim),
+    names = ["Old paint", "Old x0.5"]
+    row = {"layers_kept": kept, "said": said, "cook_error": err, "errors": lib.node_errors(node),
+           "paint_layer_0.5": paint, "factor_0.5_fill_is_multiply_0.5_under_its_mask": half,
            "dropped_layers_change_nothing_on_the_crown": [crown_auto, crown_roots],
            "reopen": {"stored_schema": got2.get("stored_schema"), "layers": [m["name"] for m in got2.get("layers", [])],
                       "dropped": got2.get("dropped"), "errors": got2.get("errors"), "error": got2.get("error"),
                       "status_line": status[:1], "traceback_in_output": "Traceback (most recent call last)" in text},
            "after_the_next_edit": {"schema": stored.get("schema"), "layers": [m["name"] for m in stored["masks"]],
                                    "said": ga.mask_dropped(node)}}
-    ok = (err is None and not row["errors"] and row["layers_kept"] == ["Keep = 80"] and "3 density layers" in said
-          and "Old x0.5" in said and abs(got / 80.0 - 1) <= lim and crown_roots == crown_auto
-          and got2.get("stored_schema") == 3 and row["reopen"]["layers"] == ["Keep = 80"] and not got2.get("errors")
+    ok = (err is None and not row["errors"] and [k[0] for k in kept] == names
+          and kept[0][1:3] == ("paint", "normal") and kept[1][1:] == ("paint", "multiply", 0.5)
+          and "2 density layers" in said and "Old + 40" in said and "Old x2" in said and paint["pass"] and half["pass"]
+          and crown_roots == crown_auto
+          and got2.get("stored_schema") == 3 and row["reopen"]["layers"] == names and not got2.get("errors")
           and not got2.get("error") and bool(status) and not row["reopen"]["traceback_in_output"]
-          and stored.get("schema") == model.SCHEMA and row["after_the_next_edit"]["layers"] == ["Keep = 80"]
+          and stored.get("schema") == model.SCHEMA and row["after_the_next_edit"]["layers"] == names
           and row["after_the_next_edit"]["said"] == "")
     clear_layers()
-    C.add("p4_dev_file_with_removed_layer_kinds_opens", ok, row,
-          "a schema 3 groom_data with a multiply, an add and a paint layer beside a \"= 80\" layer: it cooks without an "
-          "error, the three are dropped and named (mask_dropped; OnLoaded's status line in a new process, no traceback), "
-          "the \"= 80\" layer still gives 80, and the next edit stores schema %d" % model.SCHEMA)
+    C.add("p4_schema_3_dev_file_migrates", ok, row,
+          "a schema 3 groom_data: a paint layer in \"replace\" stays (Normal, its painted 0.5 gives 0.5 x lock density); "
+          "a fill layer of factor 0.5 in Multiply becomes a paint layer of 0.5 under its mask (the automatic roots x "
+          "0.5 there); a fill layer in strands / cm2 and one of factor 2 are dropped and named (mask_dropped; OnLoaded's "
+          "status line in a new process, no traceback) and change nothing; the next edit stores schema %d" % model.SCHEMA)
+    # schema 4: the "= D strands / cm2" layers of the build before this one
+    a = _paint("= 120", "ordinary_hair_back_06", 1.0)
+    f = ga.mask_add(node, "Kept folder", kind="folder", opacity=0.5)
+    cook_all()
+    raw = json.loads(node.evalParm(config.DATA_PARM))
+    raw["schema"] = 4
+    for m in raw["masks"]:
+        m.pop("mode", None)
+        if m["id"] == a:
+            m.update(kind="fill", value=120.0)
+    node.parm(config.DATA_PARM).set(json.dumps(raw))
+    err4 = None
+    try:
+        cook_all()
+    except hou.Error as e:
+        err4 = str(e)
+    data = ga.read_data(node)
+    said4 = ga.mask_dropped(node)
+    r1, l1 = G.roots()
+    auto = bool(r1.shape == ROOTS0[0].shape and np.array_equal(l1, ROOTS0[1]) and float(np.abs(r1 - ROOTS0[0]).max()) == 0.0)
+    new = ga.mask_add(node, "after")
+    row4 = {"layers_kept": [(m.name, m.kind) for m in data.masks if m.id != new], "said": said4, "cook_error": err4,
+            "errors": lib.node_errors(node), "the_groom_is_the_automatic_one": auto, "next_layer_id": new,
+            "dropped_id": a}
+    clear_layers()
+    C.add("p4_schema_4_dev_file_drops_its_density_layers",
+          err4 is None and not row4["errors"] and row4["layers_kept"] == [("Kept folder", "folder")] and "= 120" in said4
+          and auto and new > max(a, f), row4,
+          "a schema 4 groom_data (\"= 120 strands / cm2\" under a mask, a folder): the density layer is dropped and "
+          "named, the folder stays, the groom is the automatic one by root positions, and a new layer never takes the "
+          "dropped layer's id")
     with open(OUT + "/schema99.txt", "w", encoding="utf-8") as fh:
         try:
             model.GroomData.from_json(json.dumps({"schema": 99}))
@@ -1103,8 +1354,9 @@ def p4_migration():
 
 
 STEPS = [("s1", s1_stroke_speed), ("u1", u1_undo_chain), ("u2", u2_undo_chain_whorl), ("u3", u3_low_limit),
-         ("u4", u4_deformed_output), ("u5", u5_usage), ("d1", d1_density), ("d2", d2_black), ("d2t", d2_tiny),
-         ("d3", d3_grey), ("d4", d4_soft_edge), ("m1", m1_compose), ("m2", m2_value), ("m3", m3_folder),
+         ("u4", u4_deformed_output), ("u5", u5_usage), ("d1", d1_density), ("d2", d2_erase), ("d2t", d2_tiny),
+         ("d3", d3_partial), ("d4", d4_soft_edge), ("b1", b1_blend_modes), ("b2", b2_modes_over_the_automatic_groom),
+         ("b3", b3_multiply_bounds), ("m1", m1_compose), ("m2", m2_fill), ("m3", m3_folder),
          ("m4", m4_owner), ("r1", r1_states), ("r2", r2_counts), ("r3", r3_qc), ("q1", q1_painted_qc),
          ("p4", p4_migration)]
 

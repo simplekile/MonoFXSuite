@@ -576,45 +576,117 @@ def lock_name(group_prefix: str, taken: Sequence[str]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# v0.2a density masks (docs/plans/grooming_v0_2.md). Every function takes plain floats or numpy arrays
-# (one number per scalp point), so the HDA's mask_read, the brush and the tests share one rule.
-# One kind of layer: "= D strands / cm2" with a mask. Where layers cover the skin, the density is
-#     automatic x keep + add          keep = 1 - coverage, add = the layers' density x their coverage
+# v0.2a density masks (docs/plans/grooming_v0_2.md; the model: config.MASK_MODES). Every function takes plain
+# floats or numpy arrays (one number per scalp point), so the HDA's mask_read, the brush and the tests share
+# one rule.
+#
+# The mask at a point is carried as two numbers, its value being their sum:
+#     keep  what is left of the automatic groom there (1 at the bottom of the stack: the automatic groom counts
+#           as 1 for every blend)
+#     add   the absolute part: density that is the lock's own Density setting x add, whatever the tool did there
+# so the density of a lock is   automatic x keep + lock density x add   (`mask_density`), and where layers
+# cover the skin in full (keep 0) it is m x the lock's density, m = add.
 # ---------------------------------------------------------------------------
 
-def mask_compose(rows, start=1.0):
-    """(keep, add) through a stack with folders: how much of the automatic groom stays (1 where no layer
-    covers, 0 where one covers fully) and the density the layers put there (strands / cm2).
+def _np():
+    import numpy as np
+    return np
 
-    `rows`, bottom first: (layer, mask); `layer` has id, on, opacity, kind, parent and, a fill layer, its
-    density `value`; `mask` is a number or an array per scalp point (white 1 = the layer applies). A fill
-    layer with coverage e = mask x opacity makes of what lies below: keep x (1 - e), add x (1 - e) + D x e.
-    A folder does the same with what its layers make of what lies below it, through its own mask and
-    opacity: x + (inside - x) x mask x opacity, as Substance Painter's folders do. Layers and folders that
-    are off are skipped; a layer whose parent is not a folder of `rows` counts as outside any. `start`: 1.0,
-    or an array of ones (the shape of the result)."""
-    folders = {layer.id for layer, _a in rows if getattr(layer, "kind", "fill") == "folder"}
+
+def mask_blend(below, value, mode: str):
+    """What a layer of `value` makes of the mask value `below` at full coverage and opacity (config.MASK_MODES):
+    Normal value, Multiply below x value, Add, Subtract, Min, Max."""
+    np = _np()
+    if mode == "normal":
+        return value + below * 0
+    if mode == "multiply":
+        return below * value
+    if mode == "add":
+        return below + value
+    if mode == "subtract":
+        return below - value
+    if mode == "min":
+        return np.minimum(below, value)
+    if mode == "max":
+        return np.maximum(below, value)
+    raise ValueError(f"mask blend mode {mode!r}")
+
+
+def mask_layer(keep, add, value, effect, mode: str):
+    """One layer over (keep, add): the mask value t = keep + add becomes
+        t + (blend(t, value) - t) x effect           effect = coverage x opacity
+    clamped to 0..1, and the two parts move so that the result means what the mode says:
+      Normal    overrides what is below, automatic groom included: both parts x (1 - effect), add + value x effect
+      Multiply  scales what is below: both parts x (1 - effect + effect x value); over skin nothing covers it
+                thins the automatic groom itself, on top of painted skin it bounds it (0 removes the hair)
+      Add       adds absolute density: add + value x effect
+      Subtract  takes it away: add - value x effect (below 0 it eats into the automatic part: `mask_fold`)
+      Min       where t is over value, both parts are scaled down to it
+      Max       where t is under value, the difference is added as absolute density
+    Numbers or numpy arrays; returns (keep, add)."""
+    np = _np()
+    keep, add = np.asarray(keep, dtype=np.float64), np.asarray(add, dtype=np.float64)
+    t = keep + add
+    if mode == "normal":
+        keep, add = keep * (1.0 - effect), add * (1.0 - effect) + value * effect
+    elif mode == "multiply":
+        f = 1.0 - effect + effect * value
+        keep, add = keep * f, add * f
+    elif mode == "add":
+        add = add + value * effect
+    elif mode == "subtract":
+        add = add - value * effect
+    elif mode == "min":
+        f = np.where(t > value, 1.0 + (value / np.maximum(t, 1e-12) - 1.0) * effect, 1.0)
+        keep, add = keep * f, add * f
+    elif mode == "max":
+        add = add + np.maximum(value - t, 0.0) * effect
+    else:
+        raise ValueError(f"mask blend mode {mode!r}")
+    # the value stays inside 0..1, layer by layer (as a mask's layer stack clamps)
+    add = np.clip(add, -keep, 1.0 - keep)
+    return keep, add
+
+
+def mask_fold(keep, add):
+    """(keep, add) as the network reads them, both in 0..1: an absolute part below 0 (Subtract over skin whose
+    density is still the automatic groom's) is taken out of the automatic part."""
+    np = _np()
+    keep, add = np.asarray(keep, dtype=np.float64), np.asarray(add, dtype=np.float64)
+    keep = np.clip(keep + np.minimum(add, 0.0), 0.0, 1.0)
+    return keep, np.clip(add, 0.0, 1.0)
+
+
+def mask_compose(rows, start=1.0):
+    """(keep, add) through a stack with folders, folded (`mask_fold`). `rows`, bottom first: (layer, value,
+    coverage); `layer` has id, on, mode, opacity, kind, parent; `value` and `coverage` are numbers or arrays
+    per scalp point (a folder's are not read). A layer blends as `mask_layer` with effect = coverage x opacity.
+    A folder blends what its layers make of what lies below it through its own opacity:
+    x + (inside - x) x opacity. Layers and folders that are off are skipped; a layer whose parent is not a
+    folder of `rows` counts as outside any. `start`: 1.0, or an array of ones (the shape of the result)."""
+    np = _np()
+    folders = {layer.id for layer, _v, _a in rows if getattr(layer, "kind", "paint") == "folder"}
 
     def run(keep, add, parent):
-        for layer, mask in rows:
+        for layer, value, coverage in rows:
             inside = layer.parent if getattr(layer, "parent", None) in folders else None
             if inside != parent or not layer.on:
                 continue
-            e = mask * layer.opacity
-            if getattr(layer, "kind", "fill") == "folder":
+            if getattr(layer, "kind", "paint") == "folder":
                 if parent is None:
                     ki, ai = run(keep, add, layer.id)
-                    keep, add = keep + (ki - keep) * e, add + (ai - add) * e
+                    keep, add = keep + (ki - keep) * layer.opacity, add + (ai - add) * layer.opacity
             else:
-                keep, add = keep * (1.0 - e), add * (1.0 - e) + layer.value * e
+                keep, add = mask_layer(keep, add, value, coverage * layer.opacity, layer.mode)
         return keep, add
 
-    return run(start * 1.0, start * 0.0, None)
+    one = np.asarray(start, dtype=np.float64) * 1.0
+    return mask_fold(*run(one, one * 0.0, None))
 
 
-def mask_density(automatic, keep, add):
-    """The density where layers cover the skin: automatic x keep + add (strands / cm2)."""
-    return automatic * keep + add
+def mask_density(automatic, keep, add, lock_density):
+    """The density of a lock where layers cover the skin: automatic x keep + the lock's Density x add."""
+    return automatic * keep + lock_density * add
 
 
 def mask_scope_sets(masks: Sequence["object"], locks: Sequence[tuple]
@@ -631,7 +703,7 @@ def mask_scope_sets(masks: Sequence["object"], locks: Sequence[tuple]
         lock_id, group_id = lock[0], lock[1]
         reach = set()
         for m in masks:
-            if getattr(m, "kind", "fill") == "folder" or not m.on or not m.applies(lock_id, group_id):
+            if getattr(m, "kind", "paint") == "folder" or not m.on or not m.applies(lock_id, group_id):
                 continue
             folder = by_id.get(m.parent) if getattr(m, "parent", None) is not None else None
             if folder is not None and getattr(folder, "kind", "") == "folder":
@@ -662,6 +734,21 @@ def brush_weights(dist, radius: float, soft: float = config.BRUSH_SOFT):
     return w * w * (3.0 - 2.0 * w)
 
 
+def mask_dab(value, coverage, weight, paint: float, erase: bool = False):
+    """One dab on a paint layer's (value, coverage) with the brush `weight` there (numbers or arrays); returns
+    the new (value, coverage). Paint: skin not painted before takes the brush value outright (its coverage,
+    the weight, is what fades the edge), painted skin moves towards it by the weight; coverage only grows.
+    So black and white both override what is below. Erase removes the layer's own paint: coverage
+    x (1 - weight), the value stays (it means nothing where the layer has no coverage); it never paints black."""
+    np = _np()
+    value, coverage = np.asarray(value, dtype=np.float64), np.asarray(coverage, dtype=np.float64)
+    weight = np.asarray(weight, dtype=np.float64)
+    if erase:
+        return value, coverage * (1.0 - weight)
+    v = np.where(coverage <= 0, paint, value + (paint - value) * weight)
+    return np.where(weight > 0, v, value), np.maximum(coverage, weight)
+
+
 # density (strands / cm2) -> colour. Stops are shares of a reference density (the groom's default): the
 # ramp is fine round the set density and still tells 30 x from 50 x (Helen's crown: 5,100 against 7,000 / cm2)
 DENSITY_STOPS = (0.0, 0.5, 1.0, 2.0, 8.0, 48.0)
@@ -680,8 +767,9 @@ def density_color(density: float, reference: float) -> tuple[float, float, float
     return tuple(x + (y - x) * f for x, y in zip(DENSITY_RAMP[i], DENSITY_RAMP[i + 1]))   # type: ignore[return-value]
 
 
-def layer_color(mask: float) -> tuple[float, float, float]:
-    """Colour of the scalp in the "layer" view (one mask alone): white where the layer applies, fading into
-    LAYER_UNPAINTED where it does not."""
-    k = min(max(mask, 0.0), 1.0)
-    return tuple(u + (1.0 - u) * k for u in LAYER_UNPAINTED)   # type: ignore[return-value]
+def layer_color(value: float, coverage: float = 1.0) -> tuple[float, float, float]:
+    """Colour of the scalp in the "layer" view (one layer alone): its value as a grey (white 1, black 0) where
+    it has coverage, fading into LAYER_UNPAINTED where it has none."""
+    k = min(max(coverage, 0.0), 1.0)
+    v = min(max(value, 0.0), 1.0)
+    return tuple(u + (v - u) * k for u in LAYER_UNPAINTED)   # type: ignore[return-value]

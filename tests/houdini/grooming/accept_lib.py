@@ -224,21 +224,6 @@ class Groom:
             got[i:i + 500] = flag[j] & (d[np.arange(len(j)), j] <= reach_cm * reach_cm)
         return int(got.sum()), r[got]
 
-    def paint_prims(self, layer_id: int, prims: np.ndarray, radius_cm: float = 0.5, soft: float = 0.0,
-                    label: str = "Paint mask", level: float = 1.0) -> int:
-        """Paint the skin of `prims` through the real brush (one dab a prim centre): one undo step. The
-        layer's mask is painted `level` (1 white, 0 black). Returns the dabs that reached skin."""
-        from apps.houdini import grooming_masks as gm
-        cen = self.scalp()["cen_cm"][prims] / self.unit
-        session = gm.PaintSession(self.node, layer_id)
-        step = max(1, int(len(prims) // 4000) + 1)
-        landed = 0
-        for c in cen[::step]:
-            landed += int(session.dab(c, None, radius_cm, soft, level=level) > 0)
-        session.commit(label)
-        return landed
-
-
 def fresh(ga, node) -> None:
     """The groom as v0.1's end-to-end test makes it (t55): every parm at its default (a scene keeps the
     values it was saved with), no layer, fresh Detect, Update regions, Hair, Shot deform off."""
@@ -307,13 +292,15 @@ def disc_density(roots_cm: np.ndarray, centre, radius: float = 1.0) -> float:
 
 
 def mask_arrays(node, layer_id: int):
-    """(None, mask) of a layer as stored on the node, a copy; the mask is None when the layer was never
-    painted. (A pair, as when layers also had a value per point: the first is always None now.)"""
+    """(value, coverage) of a paint layer as stored on the node, copies; both None when it was never painted."""
     from tools.fx.grooming import config
     geo = node.parm(config.MASK_PARM).evalAsGeometry()
     if geo is None or geo.findPointAttrib(config.MASK_COVER_ATTR % layer_id) is None:
         return None, None
-    return None, np.frombuffer(geo.pointFloatAttribValuesAsString(config.MASK_COVER_ATTR % layer_id), np.float32).copy()
+    value = None
+    if geo.findPointAttrib(config.MASK_VALUE_ATTR % layer_id) is not None:
+        value = np.frombuffer(geo.pointFloatAttribValuesAsString(config.MASK_VALUE_ATTR % layer_id), np.float32).copy()
+    return value, np.frombuffer(geo.pointFloatAttribValuesAsString(config.MASK_COVER_ATTR % layer_id), np.float32).copy()
 
 
 def same_arrays(a, b) -> bool:
@@ -425,10 +412,10 @@ class Skin:
         """The lock's own skin among `prims`, cm2 (a shared prim counts 1 / its owners)."""
         return float(sum(self.area[p] / len(self.own[p]) for p in prims if lock_id in self.own[p]))
 
-    def paint_disc(self, layer_id: int, centre_cm, radius_cm: float, level: float = 1.0, soft: float = 0.0,
-                   dab_r: float = 0.3, label: str = "Paint mask") -> dict:
-        """A disc painted through the real brush (PaintSession): hard dabs of `dab_r` cm on the scalp points
-        inside it (sub-sampled). One undo step."""
+    def paint_disc(self, layer_id: int, centre_cm, radius_cm: float, value: float = 1.0, soft: float = 0.0,
+                   dab_r: float = 0.3, label: str = "Paint mask", erase: bool = False) -> dict:
+        """A disc painted on a paint layer through the real brush (PaintSession): hard dabs of `dab_r` cm on the
+        scalp points inside it (sub-sampled), the brush `value` (1 white, 0 black), or `erase`. One undo step."""
         from apps.houdini import grooming_masks as gm
         d = np.sqrt(((self.P - np.asarray(centre_cm)) ** 2).sum(1))
         pts = np.nonzero(d <= radius_cm)[0]
@@ -436,7 +423,7 @@ class Skin:
         s = gm.PaintSession(self.G.node, layer_id)
         landed = 0
         for i in pts[::step]:
-            landed += int(s.dab(self.P[i] / self.G.unit, None, dab_r, soft, level=level) > 0)
+            landed += int(s.dab(self.P[i] / self.G.unit, None, dab_r, value, soft, erase=erase) > 0)
         s.commit(label)
         return {"points_in_disc": int(len(pts)), "dabs": int(len(pts[::step])), "landed": landed}
 

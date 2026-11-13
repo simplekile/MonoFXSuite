@@ -372,7 +372,7 @@ class MaskPaint(object):
             if hit:
                 erase = bool(gm.BRUSH["erase"]) != bool(dev.isCtrlKey())
                 reached = self.session.stroke_to(tuple(pos), tuple(nrm), gm.BRUSH["radius_cm"],
-                                                 soft=gm.BRUSH["soft"], erase=erase, level=gm.BRUSH["level"])
+                                                 value=gm.BRUSH["value"], soft=gm.BRUSH["soft"], erase=erase)
                 if reached:
                     self.cur["dabs"] += 1
                     self.cur["points"] += reached

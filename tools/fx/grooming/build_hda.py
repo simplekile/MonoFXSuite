@@ -730,9 +730,10 @@ VEX_MASK_SKIN = """// density layers (v0.2a), only for a lock a layer covers (lo
 // with what the layers say there (mask_read's mask_keep_<k> / mask_add_<k> of the lock's scope set):
 //   mask_keep  how much of the automatic groom stays (1 - coverage): mask_thin keeps each automatic root
 //              by that chance where the root ends up
-//   density    the layers' density there, strands / cm2, divided where the lock shares the skin: what the
-//              second scatter (hairgen_layers) spreads its roots by. So under a white mask the roots are
-//              the layers' alone, at D; under grey: automatic x keep + D x coverage.
+//   density    the absolute part there (mask_add: x the lock's Density), divided where the lock shares the
+//              skin: what the second scatter (hairgen_layers) spreads its roots by; their number is
+//              lock_keys' mask_add_n. So where layers cover the skin in full the roots are the mask's alone,
+//              at mask x the lock's density; elsewhere: automatic x keep + the lock's density x add.
 // The automatic groom itself (region_frame ... root_place) never reads a layer: with none it is v0.1's.
 int k = prim(1, "mask_set", 0);
 float keep = 1, add = 0;
@@ -754,17 +755,238 @@ i@mask_root = 1;
 i@id = i@id + %(stride)d;
 """ % {"stride": 10000000}
 
-VEX_MASK_THIN = """// density layers: an automatic root stays by the chance mask_keep where it ends up (root_place's
-// root_at: a root the tool moved to the lock's start or to a whorl is judged where it landed), so skin
-// under a white mask holds none of them, wherever they were scattered. The chance is drawn per root from
-// its number in the automatic groom: a small change of the mask removes or returns a few roots and moves
-// no other (one scatter following a density map moved every root for a mask of 0.03).
+THIN_ORDER_MAX = 60000    # roots of one kind in a lock put in an even order: past this, see below
+THIN_ORDER_BITS = 10      # halvings: thin_u in steps of 1 / 1024
+THIN_ORDER_WINDOW = 10    # a root's partner is looked for among the next roots along the curve ...
+THIN_ORDER_EXACT = 64     # ... and among all of them once a half holds no more than this
+THIN_ORDER_NEAR = 24      # ... and which of a pair goes first is judged against the last roots that went first
+THIN_ORDER_SMALL = 400    # a lock's start grid of no more roots than this: a farthest-point order instead
+
+VEX_THIN_ORDER = """// density mask: the order in which a lock's automatic roots go when a mask thins them (f@thin_u, 0..1: a root
+// stays while thin_u < keep; mask_thin). Part of the automatic roots (kept with them in the cache): it does not
+// read the mask, so a stroke pays nothing for it, and a small change of the mask moves no root.
+// Start roots (a sunflower round the lock's root, the places off the region left out; by where they start) and
+// scattered roots (by where hairgen put them) are each ordered by PAIRING: every root is paired with the
+// nearest root not yet paired, one of the pair goes to the first half and the other to the second, and each
+// half is paired again, %(bits)d times; a root's halves, first to last, are the binary digits of thin_u. The
+// roots are first sorted along a Z-order curve, and a partner is looked for among the next %(window)d along it
+// (the halves stay in that order), among all of them once a half holds %(exact)d or fewer: every root against
+// every other cost 13 s on Helen's cold cook, and the window alone parted a lock's small start grid badly
+// (27 roots on 0.6 mm, thinned to 7: clumped share +0.07). So any
+// share is kept LOCALLY (of two neighbours one stays at a keep of 0.5, whatever the density there and however
+// near the edge), and the nearest roots are the first to be parted. Of a pair, the root farther from the roots
+// already in the first half goes there: taken in turn, a start grid of 163 roots thinned to a quarter read
+// as clumped (+0.15 to +0.19).
+// Whorl roots are a whole sunflower: their number with its bits reversed (0, 1/2, 1/4, 3/4, ...) does the same.
+// More roots of a kind than the limit: start roots keep the bit-reversed number, scattered roots -1 (mask_thin
+// dithers those by their place).
+// Tried and dropped: a farthest-point order (even in SPACE, not a share: the rim of a set comes first, a
+// patch inside a start grid kept 0.8 of the share, stacked skin 1.17, floating mesh 0.56; with distances in
+// the roots' own spacing the rim still came first).
+// A small start grid (%(small)d roots or fewer: a disc of a millimetre or two, several times denser than the
+// rest of the lock, so what is left of it must stand as evenly as it can or it reads as a bunch) is put in a
+// farthest-point order instead: each next root the one farthest from all before it. A grid that small is
+// thinned as a whole, so the rim coming first does not matter.
+void farthest(int idx[]; vector pos[]) {
+    int m = len(idx);
+    float d[]; resize(d, m);
+    for (int i = 0; i < m; i++) d[i] = 1e30;
+    int cur = 0;
+    for (int r = 0; r < m; r++) {
+        setprimattrib(0, "thin_u", idx[cur], (r + 0.5) / m);
+        vector c = pos[cur];
+        d[cur] = -1;
+        int best = 0; float bd = -2;
+        for (int i = 0; i < m; i++) {
+            float x = min(d[i], length2(pos[i] - c));
+            d[i] = x;
+            if (x > bd) { bd = x; best = i; }
+        }
+        cur = best;
+    }
+}
+void order(int idx[]; vector pos[]) {
+    int m = len(idx);
+    if (m < 2 || m > %(max)d) return;
+    int ord[]; resize(ord, m);
+    int code[]; resize(code, m);
+    // along a Z-order curve: 10 bits an axis of the place inside the bounding box, interleaved
+    vector lo = pos[0], hi = pos[0];
+    for (int i = 1; i < m; i++) { lo = min(lo, pos[i]); hi = max(hi, pos[i]); }
+    float size = max(max(hi.x - lo.x, hi.y - lo.y), max(hi.z - lo.z, 1e-9));
+    int key[]; resize(key, m);
+    for (int i = 0; i < m; i++) {
+        vector q = (pos[i] - lo) / size * 1023.0;
+        int qx = int(q.x), qy = int(q.y), qz = int(q.z), z = 0, w = 1;
+        for (int b = 0; b < 10; b++) {
+            z += w * (qx %% 2) + 2 * w * (qy %% 2) + 4 * w * (qz %% 2);
+            qx /= 2; qy /= 2; qz /= 2; w *= 8;
+        }
+        key[i] = z;
+        code[i] = 0;
+    }
+    ord = argsort(key);
+    int rs[] = array(0);
+    int re[] = array(m);
+    int flip = 0;
+    for (int level = 0; level < %(bits)d; level++) {
+        int nrs[]; int nre[];
+        int nord[] = ord;
+        int nr = len(rs);
+        for (int r = 0; r < nr; r++) {
+            int a = rs[r], n = re[r] - rs[r];
+            int used[]; resize(used, n);
+            float px[]; resize(px, n); float py[]; resize(py, n); float pz[]; resize(pz, n);
+            for (int x = 0; x < n; x++) {
+                used[x] = 0;
+                vector q = pos[ord[a + x]];
+                px[x] = q.x; py[x] = q.y; pz[x] = q.z;
+            }
+            int reach = n <= %(exact)d ? n : %(window)d;
+            int early[]; int late[];
+            float ex[]; float ey[]; float ez[];
+            for (int x = 0; x < n; x++) {
+                if (used[x]) continue;
+                used[x] = 1;
+                int i = ord[a + x];
+                float cx = px[x], cy = py[x], cz = pz[x];
+                int by = -1; float bd = 1e30;
+                int last = min(n, x + 1 + reach);
+                for (int y = x + 1; y < last; y++) {
+                    if (used[y]) continue;
+                    float dx = px[y] - cx, dy = py[y] - cy, dz = pz[y] - cz;
+                    float d = dx * dx + dy * dy + dz * dz;
+                    if (d < bd) { bd = d; by = y; }
+                }
+                if (by < 0) {
+                    if (flip %% 2) append(late, i);
+                    else { append(early, i); append(ex, cx); append(ey, cy); append(ez, cz); }
+                } else {
+                    // of the pair, the one farther from the roots already in the first half goes there
+                    used[by] = 1;
+                    int j = ord[a + by];
+                    float jx = px[by], jy = py[by], jz = pz[by];
+                    float di = 1e30, dj = 1e30;
+                    int ne0 = len(early);
+                    for (int e = max(0, ne0 - min(reach, %(near)d)); e < ne0; e++) {
+                        float ax = ex[e] - cx, ay = ey[e] - cy, az = ez[e] - cz;
+                        di = min(di, ax * ax + ay * ay + az * az);
+                        ax = ex[e] - jx; ay = ey[e] - jy; az = ez[e] - jz;
+                        dj = min(dj, ax * ax + ay * ay + az * az);
+                    }
+                    int first = ne0 == 0 ? flip %% 2 : (dj > di);
+                    if (first) { append(early, j); append(late, i); append(ex, jx); append(ey, jy); append(ez, jz); }
+                    else { append(early, i); append(late, j); append(ex, cx); append(ey, cy); append(ez, cz); }
+                }
+                flip++;
+            }
+            int ne = len(early), nl = len(late);
+            for (int x = 0; x < ne; x++) { nord[a + x] = early[x]; code[early[x]] = code[early[x]] * 2; }
+            for (int x = 0; x < nl; x++) { nord[a + ne + x] = late[x]; code[late[x]] = code[late[x]] * 2 + 1; }
+            if (ne > 0) { append(nrs, a); append(nre, a + ne); }
+            if (nl > 0) { append(nrs, a + ne); append(nre, a + ne + nl); }
+        }
+        ord = nord; rs = nrs; re = nre;
+    }
+    float top = pow(2.0, %(bits)d);
+    for (int i = 0; i < m; i++) setprimattrib(0, "thin_u", idx[i], (code[i] + 0.5) / top);
+}
+int n = nprimitives(0);
+int idx[]; vector pos[]; int sidx[]; vector spos[];
+for (int pr = 0; pr < n; pr++) {
+    int st = prim(0, "start_root", pr), wh = prim(0, "whorl_root", pr);
+    if (!st) {
+        setprimattrib(0, "thin_u", pr, -1.0);
+        vector q = point(0, "P", primpoint(0, pr, 0));
+        append(sidx, pr); append(spos, q);
+        continue;
+    }
+    float fk = prim(0, "start_k", pr);
+    int k = int(fk), r = 0;
+    for (int b = 0; b < 20; b++) { r = r * 2 + (k %% 2); k /= 2; }      // (VEX has no shift operators)
+    setprimattrib(0, "thin_u", pr, (r + 0.5) / 1048576.0);
+    if (!wh) { append(idx, pr); vector q = prim(0, "start_pos", pr); append(pos, q); }
+}
+if (len(idx) >= 3 && len(idx) <= %(small)d) farthest(idx, pos); else order(idx, pos);
+order(sidx, spos);
+""" % {"max": THIN_ORDER_MAX, "bits": THIN_ORDER_BITS, "window": THIN_ORDER_WINDOW,
+       "exact": THIN_ORDER_EXACT, "near": THIN_ORDER_NEAR, "small": THIN_ORDER_SMALL}
+
+MASK_APART = 0.45         # a layer's root stands at least this share of the root spacing asked there from a kept automatic root
+MASK_APART_MAX = 40000000  # ... looked up root by root (layer roots x automatic roots): past this, left as scattered
+
+VEX_MASK_APART = """// density mask, partial coverage (a soft brush edge, an opacity under 1): the lock holds automatic roots that
+// stayed AND the layers' own roots, two scatters that know nothing of each other, so a layer root could lie
+// right beside an automatic one (clumped share +0.06 to +0.16 on ordinary skin at opacity 0.25-0.75). Each
+// layer root nearer than %(apart)s of the root spacing asked there to a kept automatic root is moved straight
+// away from it to that distance, on the skin (up to six times: the move may bring it near another). Automatic roots
+// never move, the count does not change, and skin a layer covers in full has no automatic root to move from.
+int n = nprimitives(0);
+int li[]; vector lp[]; vector ap[];
+for (int pr = 0; pr < n; pr++) {
+    vector q = prim(0, "root_at", pr);
+    int mr = prim(0, "mask_root", pr);
+    if (mr) { append(li, pr); append(lp, q); } else append(ap, q);
+}
+int nl = len(li), na = len(ap);
+if (nl == 0 || na == 0 || float(nl) * na > %(most)d) return;
+float uc = max(chf("../unit_cm"), 1e-6);
+float ld = max(detail(3, "lock_density") * prim(2, "strand_factor", 0), 1e-6);     // roots / cm2 of the lock
+for (int i = 0; i < nl; i++) {
+    vector p = lp[i];
+    int rp; vector ruv;
+    xyzdist(1, p, rp, ruv);
+    if (rp < 0) continue;
+    float keep = primuv(1, "mask_keep", rp, ruv), add = primuv(1, "density", rp, ruv);
+    if (keep <= 0) continue;
+    float share = prim(1, "share", rp);                     // the lock's part of that skin (add is already divided)
+    float rmin = %(apart)s / sqrt(ld * max(keep / max(share, 1.0) + add, 0.05)) / uc;
+    int moved = 0;
+    for (int pass = 0; pass < 6; pass++) {
+        int b = -1; float bd = rmin * rmin;
+        for (int k = 0; k < na; k++) {
+            float d = length2(ap[k] - p);
+            if (d < bd) { bd = d; b = k; }
+        }
+        if (b < 0) break;
+        vector dir = p - ap[b];
+        if (length2(dir) < 1e-16) dir = cross(primuv(1, "N", rp, ruv), set(0.3, 1, 0.7));
+        p = ap[b] + normalize(dir) * rmin;
+        xyzdist(1, p, rp, ruv);
+        p = primuv(1, "P", rp, ruv);
+        moved = 1;
+    }
+    if (moved) setprimattrib(0, "root_at", li[i], p);
+}
+""" % {"apart": MASK_APART, "most": MASK_APART_MAX}
+
+VEX_MASK_THIN = """// density mask: an automatic root stays where keep (mask_skin) says so at the place it ends up
+// (root_place's root_at: a root the tool moved to the lock's start or to a whorl is judged where it landed),
+// so skin whose mask is painted in full holds none of them, wherever they were scattered.
+// Each root has a threshold of its own, kept when threshold < keep: thin_u, its place in an even order of the
+// lock's roots of its kind (thin_order), not a random number, so that a keep of 0.5 leaves an even half
+// (Multiply 0.5 thinned at random left the start grids in bunches: clumped share 0.014 -> 0.616 on the top of
+// the head). (A root's number in hairgen's scatter does not do: the scatter numbers its points patch by
+// patch, and a keep of 0.5 left 0.35 of the roots on one skin and 1.85 on another.) Only a scattered root of
+// a lock with more of them than thin_order sorts (thin_u -1) takes an ordered dither of its place instead:
+// its two coordinates in the region's frame, in units of the lock's root spacing, through the R2 sequence
+// (whole cells of that grid were tried: clumped +0.06 to +0.10 at a keep of 0.25).
+// The threshold never changes with the mask: a small change of the mask removes or returns a few roots and
+// moves no other.
 if (i@mask_root) return;
 int rp; vector ruv;
 xyzdist(1, v@root_at, rp, ruv);
 float keep = rp >= 0 ? primuv(1, "mask_keep", rp, ruv) : 1.0;
 if (keep >= 1) return;
-if (keep <= 0 || rand(set(@primnum, 4.7, prim(2, "lock_id", 0))) >= keep) removeprim(0, @primnum, 1);
+float u = f@thin_u;
+if (u < 0) {
+    float uc = max(chf("../unit_cm"), 1e-6);
+    float ld = max(detail(3, "lock_density") * prim(2, "strand_factor", 0), 1e-6);     // roots / cm2 of the lock
+    vector d = (v@root_at - detail(3, "rc")) * uc * sqrt(ld);      // in root spacings
+    vector ra = detail(3, "ra"), rb = detail(3, "rb");
+    u = frac(dot(d, ra) * 0.7548776662 + dot(d, rb) * 0.5698402910 + rand(prim(2, "lock_id", 0) + 0.31));
+}
+if (keep <= 0 || u >= keep) removeprim(0, @primnum, 1);
 """
 
 VEX_SURFACE_PARAMS = """// every hair-mesh point: where it sits along its lock (pu, the spine's parameter) and its offset
@@ -1578,7 +1800,8 @@ def build_network(sub) -> None:
     # the automatic roots (hairgen's scatter and root_pick: 8-16 % of a lock's cook) do not read the layers:
     # kept in the cache by the lock's key without its layers (lock_keys: auto_key), so a stroke lays out no
     # root again that it did not paint. Stored on every cook of a lock, so the first stroke finds them too
-    auto_store = _node(sub, "python", "auto_store", [pick, begin])
+    thin_order = _wrangle(sub, "thin_order", VEX_THIN_ORDER, DETAIL, [pick])
+    auto_store = _node(sub, "python", "auto_store", [thin_order, begin])
     auto_store.parm("python").set("from apps.houdini import grooming_adapter\n"
                                   "grooming_adapter.cook_auto_store(hou.pwd())\n")
     auto_load = _node(sub, "python", "auto_load", [begin])
@@ -1605,8 +1828,9 @@ def build_network(sub) -> None:
     roots_in = _node(sub, "switch", "roots_in", [auto, roots_ab])
     roots_in.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
     place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [roots_in, frame, begin, mesh_pu])
-    mask_thin = _wrangle(sub, "mask_thin", VEX_MASK_THIN, PRIM, [place, mask_skin, begin])
-    roots_out = _node(sub, "switch", "roots_out", [place, mask_thin])
+    mask_thin = _wrangle(sub, "mask_thin", VEX_MASK_THIN, PRIM, [place, mask_skin, begin, frame])
+    mask_apart = _wrangle(sub, "mask_apart", VEX_MASK_APART, DETAIL, [mask_thin, mask_skin, begin, frame])
+    roots_out = _node(sub, "switch", "roots_out", [place, mask_apart])
     roots_out.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
     spread = _wrangle(sub, "root_spread", VEX_ROOT_SPREAD, DETAIL, [roots_out])
     # the lock's own piece of the lookup cloud (SURFACE_PIECES: one packed fragment a piece; taking one out
