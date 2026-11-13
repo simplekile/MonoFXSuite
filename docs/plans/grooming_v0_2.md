@@ -76,7 +76,7 @@ push / merge / release, archiving sessions.
 | 2 Node | The feature on Helen in hython: results, errors, warnings on the node | the part's acceptance script | `accept.json` |
 | 3 Regression | No edits = the v0.1 groom: strand count and QC numbers unchanged | `qc_metrics.py` against the numbers of t55 | `qc_report.json` |
 | 4 Quality | Hair with the edits passes `grooming-check`, plus the part's own checks | `qc_metrics.py` | `qc_report.json` |
-| 5 Speed | An edit on one lock under 1 s; full cook within +10 % of v0.1 | timed in the acceptance script | `accept.json` |
+| 5 Speed | An edit costs at most 0.2 s per lock it recooks, plus 0.1 s (Helen, hython; decided 2026-11-13 after t57: skin is stacked, a stroke touches 4-9 locks); full cook within +10 % of v0.1 | timed in the acceptance script | `accept.json` |
 | 6 Persistence | Edits survive undo / redo, save and reopen, Detect, Update regions, Publish (read back) | acceptance script | `accept.json` |
 | 7 Interaction | The viewport tool and the panel really work: strokes, drags, undo per stroke | Houdini GUI on the secondary monitor, events sent by script (viewer state events, Qt test clicks), never by hand | flipbook frames before / after, panel grabs (`grab_offscreen.py`), `contrast_check.py` |
 | 8 Look | Whole groom and the edited area | `qc_capture.py` flipbooks | `shots/*.png`, described in words in the report |
@@ -113,8 +113,9 @@ what was not tested and why, open questions. A claim without a file is not in th
 - Edits are keyed by `lock_id` (and scalp UV for painted data), so they survive Detect, Update regions
   and a new hair mesh version; an orphaned lock keeps its edits in `orphans`.
 - Partial cook stays: an edit is part of the cache key of the locks it touches only (v0.1 "Partial
-  cook"), so a stroke on one area recooks the locks under it, not the groom. Target on Helen: under
-  1 s for an edit on one lock, as v0.1's slider edits.
+  cook"), so a stroke on one area recooks the locks under it, not the groom. Target on Helen: at
+  most 0.2 s per lock recooked, plus 0.1 s (decided 2026-11-13 after t57; "under 1 s for one lock" could
+  not be told apart from a stroke over stacked locks, which touches 4-9 of them).
 - Output 1 Groom and Publish include every edit; the publish JSON records them so a later version can
   read them back. `groom_data` `schema` bumps with a migration in `model.migrate()`; a v0.1 scene opens
   unchanged (no edits = v0.1 result, checked by the v0.1 QC numbers staying the same).
@@ -230,8 +231,12 @@ value, Fill and Clear for a layer. Mockups first.
 - Painting 0 removes every root under the stroke; 2 doubles them there; the roots stay even
   (`root_spacing_low` and `root_clumped` pass inside painted areas).
 - On Helen: the crown painted down to v006's density (~5,100 / cm2) and the thin skin under floating mesh
-  painted up, both by hand in the GUI, with the QC numbers before and after in the report.
-- A stroke on one lock's region recooks in under 1 s; undo removes exactly that stroke.
+  painted up, both in the GUI by scripted strokes, with the QC numbers before and after in the report
+  (the user's own try with a mouse or pen is the User look gate).
+- A stroke recooks only the locks under it, at most 0.2 s per lock plus 0.1 s; undo removes exactly
+  that stroke, in under 0.1 s and with no lock recooked, also with an anim wired and output 1 read
+  (the v0.1 fault of "Not sure yet" 6 is fixed in this part, as its own commit).
+- No layers = the v0.1 groom: strand count and QC numbers as t55.
 - Layers survive Detect, Update regions, save / reopen and Publish (read back from the publish JSON).
 
 ## v0.2b Lock redraw and control points
