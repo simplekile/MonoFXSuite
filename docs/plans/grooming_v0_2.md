@@ -16,10 +16,80 @@ their lock) are answered here by edits the artist makes, not by more tuning of t
 | **v0.2b Lock redraw** | Move a lock's control points, redraw its curve, draw a new lock where the mesh has none | The plan's reserved slot (after spine and measure); changes shape, not density |
 | **v0.2c Brush** | Comb, lift, cut and length brushes on the hair in the viewport | Most work and the most risk (edits must survive recooks); comes last, on what a and b settle |
 
-Each part: spike first (a hython / GUI test in the sandbox that settles the open questions below,
-like t02 did for shots), then the build, then `grooming-check` passes plus the part's own checks, then a
-MonoFX Suite release. A part is done when its "done when" list holds; no tuning past it inside the part.
-Panels go through the skill `dcc-panel-design` (mockups the user picks from, before building).
+Each part runs through the gates in "How the work runs" below. A part is done when its "done when"
+list holds; no tuning past it inside the part.
+
+## How the work runs (manager, executors, checker; decided 2026-11-13)
+
+Goal: agents test and check every step themselves; the user is asked only where a person must decide.
+
+### Roles
+
+| Role | Who | Does | Never |
+|---|---|---|---|
+| **Manager** | the lead session (004) | Owns this plan and the "done when" lists, writes briefs, starts sessions, reads every diff, runs the gate checks itself, merges, keeps the plan current, reports to the user | Writes feature code; passes on an executor's claim it has not checked |
+| **Executor** | one session per task, own worktree and branch | Spike or build of one task; tests its own work up the ladder below; writes the evidence report | Changes the contract or scope on its own; pushes, opens PRs, merges |
+| **Checker** | a fresh session per gate, started by the manager with the branch and the "done when" list only (not the executor's report) | Runs the acceptance script and the ladder again from a clean checkout, tries to break each "done when" item, answers pass / fail per item with evidence | Fixes code (it reports; the executor fixes) |
+
+The executor never grades its own work for the gate: a "done when" item counts only when the checker
+passed it and the manager saw the evidence.
+
+### Gates of one part (a, b, c)
+
+1. **Spike** (executor): answers the part's OPEN questions with measurements, writes the decisions into
+   this plan. Manager checks the numbers; a decision that changes the contract or what the artist sees
+   goes to the user.
+2. **Design** (executor, panels only): `dcc-panel-design` mockups; the user picks one.
+3. **Build** (executor, split into tasks that touch different files when they can run side by side):
+   feature, unit tests, the part's acceptance script, notes in `tools/fx/grooming/CLAUDE.md`.
+4. **Self-check** (executor): the whole ladder green, evidence report written. Not green = not handed over.
+5. **Independent check** (checker): pass / fail per "done when" item. A fail goes back to the executor
+   with the evidence; at most 2 rounds, then the manager decides (cut the item, change the approach,
+   or ask the user).
+6. **Merge** (manager): reads the diff, runs pytest and the acceptance script itself on the merged
+   branch, opens the PR. Push, PR merge and release stay the user's yes.
+7. **User look**: the flipbooks and a short GUI try of the feature; then the release.
+
+The user is asked only for: a contract or scope change, the mockup choice, how the hair looks (taste),
+push / merge / release, archiving sessions.
+
+### Test ladder (every build task climbs all of it; each rung leaves a file)
+
+| Rung | What | How | Evidence |
+|---|---|---|---|
+| 1 Unit | Logic, model, controller without Houdini | `python -m pytest -q` | pass count in the report |
+| 2 Node | The feature on Helen in hython: results, errors, warnings on the node | the part's acceptance script | `accept.json` |
+| 3 Regression | No edits = the v0.1 groom: strand count and QC numbers unchanged | `qc_metrics.py` against the numbers of t55 | `qc_report.json` |
+| 4 Quality | Hair with the edits passes `grooming-check`, plus the part's own checks | `qc_metrics.py` | `qc_report.json` |
+| 5 Speed | An edit on one lock under 1 s; full cook within +10 % of v0.1 | timed in the acceptance script | `accept.json` |
+| 6 Persistence | Edits survive undo / redo, save and reopen, Detect, Update regions, Publish (read back) | acceptance script | `accept.json` |
+| 7 Interaction | The viewport tool and the panel really work: strokes, drags, undo per stroke | Houdini GUI on the secondary monitor, events sent by script (viewer state events, Qt test clicks), never by hand | flipbook frames before / after, panel grabs (`grab_offscreen.py`), `contrast_check.py` |
+| 8 Look | Whole groom and the edited area | `qc_capture.py` flipbooks | `shots/*.png`, described in words in the report |
+
+**Acceptance script**: one per part in the repo, `tests/houdini/grooming/accept_v02<part>.py`, run with
+hython: `hython accept_v02a.py <suite> <scene> <out_dir>`. It turns the part's "done when" list into
+checks (one id per item) and writes `accept.json`: `{item, pass, value, limit, evidence}` per check and
+`passed`. The executor writes it during the build, the checker and the manager run the same file, so
+"done" means the same thing for all three. The Helen scene stays in the sandbox (path by argument),
+never in the repo. Hython's exit code is not reliable (segfault on exit): read the JSON.
+
+**Evidence report** (executor, at hand-over): `tests/<tNN>/report.md` in the sandbox with the branch
+and commit, each "done when" item with pass / fail and the file that shows it, each rung's result,
+what was not tested and why, open questions. A claim without a file is not in the report.
+
+### Rules between agents
+
+- One task = one session = one worktree = one branch; two sessions never edit the same files at once.
+  Tests write only under `sandbox/claude/grooming/tests/<tNN>/`, a new number per task.
+- Houdini GUI: one at a time across all sessions. Take `sandbox/claude/grooming/tests/gui.lock`
+  (a file with the session name and the PID) before starting it, delete it after; a lock whose PID is
+  gone may be taken. Secondary monitor only; kill only your own PID.
+- An executor stops and asks the manager when: the brief needs a contract change, the same fix failed
+  twice, the work grows past the brief, or a rung cannot be automated (it says which, never skips it
+  silently).
+- The manager answers from this plan; what the plan does not decide goes to the user, and the answer is
+  written into the plan in the same step.
+- Session names `NNN · Tag · việc`; a checker is `NNNb · DCC · Kiểm ...` of the task it checks.
 
 ## Rules for every part
 

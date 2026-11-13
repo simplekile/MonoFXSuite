@@ -2,7 +2,9 @@
 
 Notes for working on MONO Grooming, moved out of the suite's root `CLAUDE.md` (2026-11-13) so sessions on
 the other tools do not load them. The contract is `docs/plans/grooming_v0_1.md`, the next version's
-plan `docs/plans/grooming_v0_2.md` (masks, lock redraw, brush); read their scope before proposing a feature. Claude Code loads this file when it works on files in `tools/fx/grooming/`; when
+plan `docs/plans/grooming_v0_2.md` (masks, lock redraw, brush); read their scope before proposing a feature. v0.2 work
+runs by the roles and gates in that plan ("How the work runs": manager, executor, checker, the test ladder,
+the acceptance script per part, the GUI lock). Claude Code loads this file when it works on files in `tools/fx/grooming/`; when
 working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill, read it first.
 
 - Contract for v0.1: `docs/plans/grooming_v0_1.md` (scope, data model, geometry attributes, processing
