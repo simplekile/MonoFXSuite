@@ -651,7 +651,10 @@ def s5_crown():
               evidence=shots[-1])
         S["next"]()
 
-    _paint_disc("Crown = 5104", centre, normal, 2.0, 0.6, V006_CROWN, 1.0, done)
+    # the dense core only (rows over 1 cm, a 0.6 cm brush: about 1.6 cm across the centre). "= 5104" painted
+    # 3 cm wide raised the skin round the whorl tenfold: the fringe locks that own skin there took 8,000
+    # roots each at the crown and failed grooming-check's shape checks (t62, gui_run3)
+    _paint_disc("Crown = 5104", centre, normal, 1.0, 0.4, V006_CROWN, 0.6, done, frame_cm=3.0)
 
 
 @step
