@@ -278,9 +278,9 @@ def s0_open():
 def s1_strokes():
     """Paint, undo per stroke, soft edge, erase, the ring and the coloured scalp."""
     node = S["node"]
-    lid = ga().mask_add(node, "paint")
+    lid = ga().mask_add(node, "paint", kind="paint")      # a paint layer: the brush carries the value
     S["lid"] = lid
-    ga().set_brush(radius_cm=1.0, value=0.0, soft=0.5, erase=False)
+    ga().set_brush(radius_cm=1.0, value=0.0, soft=0.5, erase=False, view="factor", level=1.0)
     shots = [shot("s1_0_before")]
     S["undo_before_paint"] = list(hou.undos.undoLabels()[:3])
     entered = ga().paint_enter(node, lid)
@@ -433,7 +433,7 @@ def s1b_undo_look():
 
 @step
 def s1c_views():
-    """What the scalp shows: the final factor, the final density, or the painted layer alone."""
+    """What the scalp shows: the density as it is, the final factor, the painted layer alone, the roots."""
     from tools.fx.grooming import logic
     node = S["node"]
     lid = S["lid"]
@@ -442,52 +442,120 @@ def s1c_views():
     node.cook()
     set_view(S["zone"]["normal"], node.inputs()[0].geometry().boundingBox())
     v, a = lib.mask_arrays(node, lid)
-    cds, shots = {}, {}
+    cds, shots, took = {}, {}, {}
+    views = ("factor", "layer", "density", "roots")
 
     def go(i):
-        views = ("factor", "density", "layer")
         if i > 0:
             cds[views[i - 1]] = np.frombuffer(st.geo.pointFloatAttribValuesAsString("Cd"), np.float32).reshape(-1, 3).copy()
             shots[views[i - 1]] = shot("s1c_view_" + views[i - 1])
         if i >= len(views):
             return finish()
-        ga().set_brush(view=views[i])
+        t = time.perf_counter()
+        ga().set_brush(view=views[i])        # density and roots count the groom's roots (Guides: grows the hair)
+        took[views[i]] = round(time.perf_counter() - t, 2)
         later(500, lambda: go(i + 1))
 
     def finish():
-        ga().set_brush(view="factor")
         unpainted = a <= 0
         ok_layer = bool(np.allclose(cds["layer"][unpainted], logic.LAYER_UNPAINTED, atol=1e-5)) and int(unpainted.sum()) > 1000
-        base, reference = st.session.base_density()
-        factor = st.session.factor()
-        pick = np.linspace(0, len(factor) - 1, 300).astype(int)
-        want = np.array([logic.density_color(float(base[i] * factor[i]), reference) for i in pick])
+        ses = st.session
+        base, reference, point_area = ses.base_density()
+        dens = ses.density()
+        pick = np.linspace(0, len(dens) - 1, 300).astype(int)
+        want = np.array([logic.density_color(float(dens[i]), reference) for i in pick])
         err = float(np.abs(cds["density"][pick] - want).max())
-        painted = a > 0.5
-        differs = float(np.abs(cds["density"][painted] - cds["factor"][painted]).mean()) if painted.any() else 0.0
-        # ---- the roots as dots on the bare skin (Guides display): one a strand of the full groom
-        ga().set_brush(roots=True)
-        dots = state_mod().running().root_count
         strands = S["G"].strands()
-        shots["roots"] = shot("s1c_roots_as_dots_guides")
-        ga().set_brush(roots=False)
-        C.add("gui_views_factor_density_and_one_layer",
-              ok_layer and err < 1e-4 and differs > 0.05 and ga().brush()["view"] == "factor" and dots == strands > 1000,
-              {"layer_view_unpainted_skin_is_dark": ok_layer, "density_view_max_error_against_the_rule": err,
-               "density_reference_per_cm2": reference, "density_view_differs_from_factor_view_on_paint": round(differs, 3),
-               "unpainted_points": int(unpainted.sum()), "root_dots": dots, "strands_of_the_groom": strands,
-               "shots": shots},
-              "layer view: skin the layer does not cover is dark; density view: the colour of density x factor "
-              "on the ramp (300 points); roots: one dot a strand of the groom, on the bare skin in Guides display",
+        counted = float((ses.actual * point_area).sum()) if ses.actual is not None else 0.0
+        dots = st.root_count
+        plain = bool(np.allclose(cds["roots"], cds["roots"][0]))
+        ga().set_brush(view="density")
+        C.add("gui_views_density_factor_layer_roots",
+              ok_layer and ses.whole and err < 1e-4 and abs(counted / strands - 1) < 0.15 and dots == strands > 1000 and plain,
+              {"layer_view_unpainted_skin_is_dark": ok_layer, "groom_counted_whole": bool(ses.whole),
+               "density_view_max_error_against_the_ramp": err, "density_reference_per_cm2": reference,
+               "roots_the_density_adds_up_to": round(counted), "strands_of_the_groom": strands,
+               "densest_point_per_cm2": round(float(ses.actual.max())) if ses.actual is not None else None,
+               "root_dots": dots, "roots_view_scalp_is_plain": plain, "seconds_to_switch_view": took, "shots": shots},
+              "layer view: skin the layer does not cover is dark; density view: roots / cm2 counted from the groom "
+              "(it adds up to the strand count within 15 %), coloured by the ramp; roots view: one dot a strand on "
+              "a plain scalp",
               evidence=shots["density"],
-              note="on Helen every lock has the default density, so the density view is the factor view on "
-                   "another ramp; the dots show the roots as they are (relocated roots included)")
+              note="Guides display, so the scalp is in view: choosing density or roots grows the groom once to count it")
         ga().set_display(node, "hair", "lock")
         node.cook()
         set_view(S["zone"]["normal"], box_round(S["zone"]["centre_cm"], 3.5))
         later(600, lambda: calibrate(S["next"]))
 
     later(800, lambda: go(0))
+
+
+@step
+def s1d_fill_layer():
+    """Substance Painter's way: the layer holds one number, the brush paints its mask white or black."""
+    from tools.fx.grooming import logic
+    node = S["node"]
+    paint_layer = S["lid"]
+    ga().mask_set(node, paint_layer, on=False)
+    node.cook()
+    lid = ga().mask_add(node, "half", mode="multiply", value=0.5)
+    ga().set_brush(radius_cm=1.0, soft=0.5, erase=False, level=1.0, view="density")
+    ga().paint_enter(node, lid)
+    st = state_mod().running()
+    st.reroot(cook=True)
+    before = st.session.density().copy()
+    snaps, shots = {}, {}
+
+    def white():
+        drag(line(-120, -20, 120, n=30), after_white)
+
+    def after_white():
+        snaps["white"] = lib.mask_arrays(node, lid)
+        v, a = snaps["white"]
+        st = state_mod().running()
+        after = st.session.density()
+        core = a >= 0.99
+        fell = float(after[core].sum() / max(before[core].sum(), 1e-9))
+        snaps["fell"] = fell
+        shots["density"] = shot("s1d_0_fill_white_density_view")
+        ga().set_brush(view="layer")
+        later(400, mask_view)
+
+    def mask_view():
+        st = state_mod().running()
+        v, a = snaps["white"]
+        cd = np.frombuffer(st.geo.pointFloatAttribValuesAsString("Cd"), np.float32).reshape(-1, 3)
+        snaps["white_shown"] = bool(np.allclose(cd[a >= 1.0], 1.0, atol=1e-5)) and int((a >= 1.0).sum()) > 50 and bool(
+            np.allclose(cd[a <= 0], logic.LAYER_UNPAINTED, atol=1e-5))
+        shots["mask"] = shot("s1d_1_fill_mask_view")
+        ga().set_brush(level=0.0, radius_cm=0.6)
+        drag(line(-40, -20, 40, n=14), after_black)
+
+    def after_black():
+        v, a = lib.mask_arrays(node, lid)
+        w = snaps["white"][1]
+        less = int((a < w - 1e-6).sum())
+        more = int((a > w + 1e-6).sum())
+        shots["black"] = shot("s1d_2_fill_black_stroke")
+        hou.undos.performUndo()
+        undone = lib.same_arrays(lib.mask_arrays(node, lid), snaps["white"])
+        ga().set_brush(level=1.0, radius_cm=1.0, view="density")
+        C.add("gui_fill_layer_brush_paints_its_mask",
+              snaps["white"][0] is None and int((w > 0).sum()) > 50 and 0.35 < snaps["fell"] < 0.7 and snaps["white_shown"]
+              and less > 20 and more == 0 and undone,
+              {"layer": "multiply 0.5", "stored": "mask only" if snaps["white"][0] is None else "value and mask",
+               "points_painted_white": int((w > 0).sum()), "density_on_the_white_skin_after_over_before": round(snaps["fell"], 3),
+               "mask_view_white_on_dark": snaps["white_shown"], "black_stroke_points_lowered": less,
+               "black_stroke_points_raised": more, "undo_takes_the_black_stroke_off": undone, "shots": shots},
+              "a white stroke paints only the mask and the density view shows the skin under it at about half "
+              "(0.35 - 0.7: relocated roots included); the mask view is white on dark; a black stroke only "
+              "lowers the mask; undo takes it off", evidence=shots["mask"])
+        ga().mask_remove(node, lid)
+        ga().mask_set(node, paint_layer, on=True)
+        ga().paint_enter(node, paint_layer)
+        later(600, lambda: calibrate(S["next"]))
+
+    later(600, lambda: calibrate(white))
 
 
 @step
@@ -612,9 +680,9 @@ def s4_crown():
     brush = __import__("apps.houdini.grooming_masks", fromlist=["x"]).scalp_brush(node)
     normal = brush.N[((P - centre) ** 2).sum(1).argmin()]
     set_view(normal, box_round(centre, 4.0))
-    lid = ga().mask_add(node, "crown")
     value = round(V006_CROWN / per, 3)
-    ga().set_brush(radius_cm=1.0, value=value, soft=0.5, erase=False)
+    lid = ga().mask_add(node, "crown", mode="multiply", value=value)       # a fill layer: x value where white
+    ga().set_brush(radius_cm=1.0, soft=0.5, erase=False, level=1.0, view="density")
     shots = []
 
     def painted():
@@ -698,8 +766,8 @@ def s5_thin_skin():
         raise RuntimeError("no floating skin the camera sees square on")
     roots0 = G.roots()
     set_view(normal, box_round(centre, 4.0))
-    lid = ga().mask_add(node, "thin skin")
-    ga().set_brush(radius_cm=0.8, value=2.0, soft=0.3, erase=False)
+    lid = ga().mask_add(node, "thin skin", mode="multiply", value=2.0)     # a fill layer: x 2 where white
+    ga().set_brush(radius_cm=0.8, soft=0.3, erase=False, level=1.0, view="density")
     shots = []
 
     def painted():

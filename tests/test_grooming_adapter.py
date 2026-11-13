@@ -248,7 +248,7 @@ def test_publish_record_fields():
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1234, "/obj/g/n", "22.0")
     assert rec["asset"] == "char_Helen" and rec["version"] == "v007"
     assert rec["locks"] == 1 and rec["strands"] == 1234 and rec["department"] == "grooming"
-    assert rec["masks"] == {} and rec["schema"] == 2
+    assert rec["masks"] == {} and rec["schema"] == 3
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1, "/obj/g/n", masks={"file": "m.bgeo"})
     assert rec["masks"] == {"file": "m.bgeo"}
 
@@ -408,11 +408,11 @@ def test_mask_data_dab_and_factor():
     idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
     md.dab(0, idx, logic.brush_weights(dist, 0.025, 0.5), 0.0)
     assert md.painted(0) == int((logic.brush_weights(dist, 0.025, 0.5) > 0).sum())
-    layer = MaskLayer(0, "a")
+    layer = MaskLayer(0, "a", kind="paint")
     f = md.factor([layer])
     assert f[40] == 0.0 and f[0] == 1.0 and f.dtype == np.float32
-    assert md.factor([MaskLayer(0, "a", on=False)]).min() == 1.0
-    assert md.factor([MaskLayer(1, "never painted")]).min() == 1.0
+    assert md.factor([MaskLayer(0, "a", on=False, kind="paint")]).min() == 1.0
+    assert md.factor([MaskLayer(1, "never painted", kind="paint")]).min() == 1.0
     md.dab(0, idx, np.ones(len(idx), np.float32), 99.0)                   # a value is kept inside 0..MAX
     assert float(md.v[0].max()) == config.MASK_VALUE_MAX
     md.dab(0, idx, np.ones(len(idx), np.float32), 0.0, erase=True)
@@ -494,3 +494,45 @@ def test_brush_settings_are_clamped_and_kept_for_the_session():
         assert ga.paint_layer(None) is None
     finally:
         gm.BRUSH.update(before)
+
+
+def test_fill_layer_is_one_number_and_a_mask_painted_white_or_black():
+    gm, np, P, N, nb = _grid_brush()
+    from tools.fx.grooming.model import MaskLayer
+    md = gm.MaskData(P)
+    brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
+    idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
+    w = logic.brush_weights(dist, 0.025, 0.0)                      # a hard brush
+    fill = MaskLayer(0, "thin", mode="replace", value=80.0, unit="density")
+    assert md.factor([fill], 160.0).min() == 1.0                   # a new layer's mask is black: nothing yet
+    md.dab(0, idx, w, value=99.0, kind="fill", level=1.0)          # paint white (the brush value is not read)
+    f = md.factor([fill], 160.0)
+    assert f[40] == pytest.approx(0.5) and f[0] == 1.0             # 80 / cm2 on a lock set to 160
+    assert md.factor([fill], 40.0)[40] == pytest.approx(2.0)       # ... and on one set to 40
+    assert 0 not in md.v and md.painted(0) == len(idx)             # only the mask is stored
+    md.dab(0, idx, w * 0.5, value=0.0, kind="fill", level=0.0)     # half a dab of black
+    assert md.a[0][40] == pytest.approx(0.5)
+    md.dab(0, idx, w, value=0.0, erase=True, kind="fill")          # erase = black
+    assert md.painted(0) == 0 and md.factor([fill], 160.0).min() == 1.0
+
+
+def test_folder_mask_starts_white_and_gates_its_layers():
+    gm, np, P, N, nb = _grid_brush()
+    from tools.fx.grooming.model import MaskLayer
+    md = gm.MaskData(P)
+    brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
+    folder = MaskLayer(9, "crown", kind="folder")
+    child = MaskLayer(1, "less", mode="multiply", value=0.5, parent=9)
+    md.ensure(1, "fill")
+    md.a[1][:] = 1.0                                               # the child's mask: white everywhere
+    assert md.factor([folder, child]) == pytest.approx(np.full(len(P), 0.5))     # no folder mask: all of it
+    idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
+    md.dab(9, idx, logic.brush_weights(dist, 0.025, 0.0), 0.0, kind="folder", level=0.0)   # black on the folder
+    f = md.factor([folder, child])
+    assert f[40] == 1.0 and f[0] == pytest.approx(0.5)             # the child is gone where the folder is black
+    assert md.mask(MaskLayer(8, "other folder", kind="folder")).min() == 1.0
+    assert md.mask(MaskLayer(7, "fill")).max() == 0.0
+    shown = gm.layers_for_view([folder, child, MaskLayer(2, "g", scope="group", group="x")], 1)
+    assert [m.id for m in shown] == [9, 1]
+    white = gm.view_colours("layer", np.ones(3, np.float32), None, np.array([1.0, 0.0, 0.5], np.float32))
+    assert white[0] == pytest.approx([1, 1, 1]) and white[1] == pytest.approx(logic.LAYER_UNPAINTED)

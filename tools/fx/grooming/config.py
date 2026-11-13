@@ -114,6 +114,14 @@ LOCK_NAME_DIGITS = 2           # fringe_01
 # Blend modes of a mask layer (logic.mask_blend); a layer's value is a factor on the automatic density
 MASK_MODES: tuple[str, ...] = ("multiply", "add", "subtract", "replace", "min", "max")
 MASK_SCOPES: tuple[str, ...] = ("all", "group", "locks")   # every lock, one group's locks, chosen locks
+# Kinds of layer, as Substance Painter's (decided with the user, 2026-11-13):
+#   "fill"   one number for the whole layer (its `value`) and a mask painted white / black that says where
+#   "paint"  a value painted per scalp point (the first v0.2a build; kept, and what schema 2 layers become)
+#   "folder" holds layers (their `parent`); its own mask and opacity apply to all of them together
+MASK_KINDS: tuple[str, ...] = ("fill", "paint", "folder")
+# What a fill layer's value is: a factor on the automatic density, or a density in strands / cm2 (turned
+# into a factor by each lock's own density, so "= 80" gives 80 / cm2 whatever the lock is set to)
+MASK_UNITS: tuple[str, ...] = ("factor", "density")
 MASK_PARM = "mask_layers"      # hidden geometry parm: per fine-scalp point P, uv, mask_<id>_v, mask_<id>_a
 MASK_VALUE_ATTR = "mask_%d_v"  # a layer's painted value per scalp point
 MASK_COVER_ATTR = "mask_%d_a"  # its coverage there: 0 not painted, 1 painted, a dab's soft edge between

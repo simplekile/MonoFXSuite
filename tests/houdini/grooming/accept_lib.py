@@ -207,17 +207,18 @@ class Groom:
             got[i:i + 500] = flag[j] & (d[np.arange(len(j)), j] <= reach_cm * reach_cm)
         return int(got.sum()), r[got]
 
-    def paint_prims(self, layer_id: int, prims: np.ndarray, value: float, radius_cm: float = 0.5,
-                    soft: float = 0.0, label: str = "Paint mask") -> int:
-        """Paint the skin of `prims` through the real brush (one dab a prim centre, snaked so the brush's
-        joined-skin rule holds): one undo step. Returns the dabs that reached skin."""
+    def paint_prims(self, layer_id: int, prims: np.ndarray, value: float = 1.0, radius_cm: float = 0.5,
+                    soft: float = 0.0, label: str = "Paint mask", level: float = 1.0) -> int:
+        """Paint the skin of `prims` through the real brush (one dab a prim centre): one undo step. A paint
+        layer takes `value`; a fill layer or a folder has its mask painted `level` (1 white, 0 black).
+        Returns the dabs that reached skin."""
         from apps.houdini import grooming_masks as gm
         cen = self.scalp()["cen_cm"][prims] / self.unit
         session = gm.PaintSession(self.node, layer_id)
         step = max(1, int(len(prims) // 4000) + 1)
         landed = 0
         for c in cen[::step]:
-            landed += int(session.dab(c, None, radius_cm, value, soft) > 0)
+            landed += int(session.dab(c, None, radius_cm, value, soft, level=level) > 0)
         session.commit(label)
         return landed
 
@@ -290,17 +291,21 @@ def disc_density(roots_cm: np.ndarray, centre, radius: float = 1.0) -> float:
 
 
 def mask_arrays(node, layer_id: int):
-    """(value, coverage) of a layer as stored on the node, copies; (None, None) when it has none."""
+    """(value, mask) of a layer as stored on the node, copies. The mask (a paint layer's coverage) is None
+    when the layer was never painted; the value is None unless it is a paint layer."""
     from tools.fx.grooming import config
     geo = node.parm(config.MASK_PARM).evalAsGeometry()
     if geo is None or geo.findPointAttrib(config.MASK_COVER_ATTR % layer_id) is None:
         return None, None
-    return (np.frombuffer(geo.pointFloatAttribValuesAsString(config.MASK_VALUE_ATTR % layer_id), np.float32).copy(),
-            np.frombuffer(geo.pointFloatAttribValuesAsString(config.MASK_COVER_ATTR % layer_id), np.float32).copy())
+    value = None
+    if geo.findPointAttrib(config.MASK_VALUE_ATTR % layer_id) is not None:
+        value = np.frombuffer(geo.pointFloatAttribValuesAsString(config.MASK_VALUE_ATTR % layer_id), np.float32).copy()
+    return value, np.frombuffer(geo.pointFloatAttribValuesAsString(config.MASK_COVER_ATTR % layer_id), np.float32).copy()
 
 
 def same_arrays(a, b) -> bool:
-    """Both (value, coverage) pairs hold the same bytes (None = no layer stored)."""
-    if a[0] is None or b[0] is None:
-        return a[0] is None and b[0] is None
-    return bool(np.array_equal(a[0], b[0]) and np.array_equal(a[1], b[1]))
+    """Both (value, mask) pairs hold the same bytes (None = not stored)."""
+    for x, y in zip(a, b):
+        if (x is None) != (y is None) or (x is not None and not np.array_equal(x, y)):
+            return False
+    return True

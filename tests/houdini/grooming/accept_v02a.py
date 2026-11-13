@@ -13,7 +13,8 @@ saved over; the groom is made fresh first (every parm at its default, Detect, Up
 keeps the parm values it was saved with. Rung 7 (the brush in the viewport) is accept_v02a_gui.py.
 
 Check ids: dw1..dw5 are the "Done when" items in the plan's order, ns1..ns5 its "Not sure yet" items, r2..r6
-the ladder's rungs, api_* the adapter functions."""
+the ladder's rungs, api_* the adapter functions, fl_* the fill layers, masks and folders of the Substance
+Painter model (the dw / ns checks paint "paint" layers, the first build's kind, which stays)."""
 
 from __future__ import annotations
 
@@ -137,7 +138,7 @@ def main() -> None:
         else:
             C.add("r3_qc_numbers_as_v01", False, None, "needs --qc-now and --v01-qc")
         # an empty layer, and a painted layer switched off, are still the v0.1 groom and regrow nothing
-        lid = ga.mask_add(node, "empty")
+        lid = ga.mask_add(node, kind="paint", name="empty")
         d, r = cook_both()
         ok = not d["locks"] and not r["locks"] and r["strands"] == S["base_strands"]
         prims = G.region_prims(G.lock_id(ZONE_LOCK))[:400]
@@ -166,7 +167,7 @@ def main() -> None:
             half_a, half_b = half_b, half_a
         S["zone"] = {"L": L, "a": half_a, "b": half_b}
         roots0 = G.roots()
-        lid = ga.mask_add(node, "zones")
+        lid = ga.mask_add(node, kind="paint", name="zones")
         S["zone_layer"] = lid
 
         def inner(value):
@@ -364,7 +365,7 @@ def main() -> None:
         n0, _ = G.roots_on(patch, roots0)
         S["thin_patch"] = patch
         lock_before = int((roots0[1] == lock).sum())
-        lid = ga.mask_add(node, "thin skin")
+        lid = ga.mask_add(node, kind="paint", name="thin skin")
         G.paint_prims(lid, patch, 2.0)
         d, r = cook_both()
         lo, hi2 = G.prim_factor(ga.mask_factor(node).astype(float))
@@ -408,7 +409,7 @@ def main() -> None:
         S["crown"] = {"centre_cm": [round(float(c), 2) for c in centre], "v01_per_cm2": round(per, 1)}
         s = G.scalp()
         d2 = ((s["cen_cm"] - centre) ** 2).sum(1)
-        lid = ga.mask_add(node, "crown")
+        lid = ga.mask_add(node, kind="paint", name="crown")
         # ---- painted 0: whorl roots and start roots are gone too (they are placed by the tool, not hairgen)
         G.paint_prims(lid, np.nonzero(d2 <= 1.6 ** 2)[0], 0.0)
         cook_both()
@@ -446,7 +447,7 @@ def main() -> None:
         group = d0.lock(L).group
         base = G.strands_by_lock()
         prims = G.region_prims(L)[::2][:600]
-        lid = ga.mask_add(node, "group only", scope="group", group=group)
+        lid = ga.mask_add(node, kind="paint", name="group only", scope="group", group=group)
         G.paint_prims(lid, prims, 0.0)
         d, r = cook_both()
         now = G.strands_by_lock()
@@ -461,7 +462,7 @@ def main() -> None:
         shared = next(((p, o) for p, o in enumerate(s["owners"]) if len(o) >= 2), None)
         a, b = shared[1][0], shared[1][1]
         both = np.array([p for p, o in enumerate(s["owners"]) if a in o and b in o])
-        lid = ga.mask_add(node, "one lock", scope="locks", locks=[a])
+        lid = ga.mask_add(node, kind="paint", name="one lock", scope="locks", locks=[a])
         G.paint_prims(lid, both, 0.0)
         d, r = cook_both()
         now = G.strands_by_lock()
@@ -486,7 +487,7 @@ def main() -> None:
         L = G.lock_id(ZONE_LOCK)
         own = np.array([p for p in G.region_prims(L) if s["owners"][p] == (L,)])
         a, b = own[:120], own[-120:]
-        lid = ga.mask_add(node, "moves")
+        lid = ga.mask_add(node, kind="paint", name="moves")
         G.paint_prims(lid, a, 0.5)
         G.cook_display()
         k1 = _key(L)
@@ -537,8 +538,8 @@ def main() -> None:
         s = G.scalp()
         L = G.lock_id(ZONE_LOCK)
         prims = G.region_prims(L)
-        l0 = ga.mask_add(node, "bottom", mode="multiply")
-        l1 = ga.mask_add(node, "top", mode="multiply", opacity=0.6)
+        l0 = ga.mask_add(node, kind="paint", name="bottom", mode="multiply")
+        l1 = ga.mask_add(node, kind="paint", name="top", mode="multiply", opacity=0.6)
         G.paint_prims(l0, prims[:800], 0.4, radius_cm=0.6, soft=0.5)
         G.paint_prims(l1, prims[400:1400], 1.7, radius_cm=0.6, soft=0.5)
         v0, a0 = lib.mask_arrays(node, l0)
@@ -563,17 +564,17 @@ def main() -> None:
     def api():
         prims = G.region_prims(G.lock_id(ZONE_LOCK))
         p = G.scalp()["cen_cm"][prims[50]] / G.unit
-        first = ga.mask_add(node, "first")
+        first = ga.mask_add(node, kind="paint", name="first")
         state = {}
 
         def snap():
             d = data()
             return (json.dumps([m.__dict__ for m in d.masks], sort_keys=True),
-                    tuple(None if a[0] is None else (a[0].tobytes(), a[1].tobytes())
+                    tuple(tuple(None if x is None else x.tobytes() for x in a)
                           for a in (lib.mask_arrays(node, i) for i in range(d.mask_id_high + 1))))
 
         ops = [
-            ("mask_add", lambda: state.update(lid=ga.mask_add(node, "second", mode="add", opacity=0.5))),
+            ("mask_add", lambda: state.update(lid=ga.mask_add(node, kind="paint", name="second", mode="add", opacity=0.5))),
             ("mask_stroke paint", lambda: ga.mask_stroke(node, state["lid"], [p, p + 0.004], radius_cm=1.0, value=1.5)),
             ("mask_stroke erase", lambda: ga.mask_stroke(node, state["lid"], [p], radius_cm=0.5, erase=True)),
             ("mask_set mode", lambda: ga.mask_set(node, state["lid"], mode="max")),
@@ -583,7 +584,17 @@ def main() -> None:
             ("mask_set scope", lambda: ga.mask_set(node, state["lid"], scope="locks", locks=[3, 1])),
             ("mask_move", lambda: ga.mask_move(node, state["lid"], 0)),
             ("mask_fill", lambda: ga.mask_fill(node, first, 0.8)),
+            ("mask_invert", lambda: ga.mask_invert(node, first)),
             ("mask_clear", lambda: ga.mask_clear(node, first)),
+            ("mask_add fill", lambda: state.update(fill=ga.mask_add(node, "fill", mode="replace", value=80, unit="density"))),
+            ("mask_stroke white", lambda: ga.mask_stroke(node, state["fill"], [p, p + 0.004], radius_cm=1.0, level=1.0)),
+            ("mask_stroke black", lambda: ga.mask_stroke(node, state["fill"], [p], radius_cm=0.5, level=0.0)),
+            ("mask_set value", lambda: ga.mask_set(node, state["fill"], value=60.0)),
+            ("mask_set unit", lambda: ga.mask_set(node, state["fill"], unit="factor")),
+            ("mask_add folder", lambda: state.update(folder=ga.mask_add(node, kind="folder"))),
+            ("mask_move into folder", lambda: ga.mask_move(node, state["fill"], 99, parent=state["folder"])),
+            ("mask_stroke folder black", lambda: ga.mask_stroke(node, state["folder"], [p], radius_cm=0.5, level=0.0)),
+            ("mask_remove folder", lambda: ga.mask_remove(node, state["folder"])),
             ("mask_remove", lambda: ga.mask_remove(node, state["lid"])),
         ]
         rows, ok = {}, True
@@ -624,16 +635,131 @@ def main() -> None:
               "an unchanged row writes nothing, a wrong mode raises, Paint keeps its layer and brush")
         clear_layers()
 
+    # ------------------------------------------------------------------ fill layers, masks, folders
+    def fill_layers():
+        s = G.scalp()
+        L = S["zone"]["L"]
+        zone = S["zone"]["b"]
+        dens = data().resolve(L)["density"]
+        roots0 = G.roots()
+        base = G.strands_by_lock()
+
+        def inner_white(layer_id):
+            v, a = lib.mask_arrays(node, layer_id)
+            lo = np.full(len(s["area"]), np.inf)
+            np.minimum.at(lo, s["vprim"], a[s["vpoint"]])
+            return G.inner_prims(lo >= 1.0, 0.3)
+
+        def ratio(prims):
+            b, _ = G.roots_on(prims, roots0, lock_id=L)
+            a, _ = G.roots_on(prims, lock_id=L)
+            return a / max(b, 1), b, a
+
+        # ---- "= 80 strands / cm2": one number on the layer, the brush only paints the mask white
+        lid = ga.mask_add(node, "thin skin", mode="replace", value=80.0, unit="density")
+        d, r = cook_both()
+        nothing = not d["locks"] and r["strands"] == S["base_strands"]
+        G.paint_prims(lid, zone, level=1.0)
+        d, r = cook_both()
+        v, a = lib.mask_arrays(node, lid)
+        rt, b, aft = ratio(inner_white(lid))
+        C.add("fl_fill_layer_sets_a_density_where_its_mask_is_white",
+              nothing and v is None and abs(rt - 80.0 / dens) <= 0.06 and b > 100,
+              {"layer": "replace, 80 strands / cm2", "lock_density": dens, "roots_before": b, "roots_after": aft,
+               "ratio": round(rt, 3), "asked_ratio": round(80.0 / dens, 3), "new_layer_changed_nothing": nothing,
+               "stored": "mask only" if v is None else "value and mask", "locks_recooked": len(d["locks"])},
+              "roots of the lock on the white skin x 80 / its density, within 0.06; a new layer (black mask) "
+              "changes nothing; only the mask is stored")
+        # ---- the number is the layer's: changing it is one undo step and regrows the locks under the mask
+        n0 = len(hou.undos.undoLabels())
+        ga.mask_set(node, lid, mode="add", value=40.0)
+        one = len(hou.undos.undoLabels()) == n0 + 1
+        d2, _ = cook_both()
+        rt2, b2, a2 = ratio(inner_white(lid))
+        hou.undos.performUndo()
+        d3, _ = cook_both()
+        rt3, _b, _a = ratio(inner_white(lid))
+        C.add("fl_layer_value_is_changed_without_painting",
+              one and abs(rt2 - (1 + 40.0 / dens)) <= 0.08 and set(d2["locks"]) == set(d["locks"]) and not d3["locks"]
+              and abs(rt3 - rt) < 1e-9,
+              {"layer": "add, 40 strands / cm2", "ratio": round(rt2, 3), "asked_ratio": round(1 + 40.0 / dens, 3),
+               "one_undo_step": one, "same_locks_recooked_as_the_paint": set(d2["locks"]) == set(d["locks"]),
+               "undo_locks_regrown": d3["locks"], "ratio_after_undo": round(rt3, 3)},
+              "+ 40 / cm2 gives x (1 + 40 / density) within 0.08; one undo step; undo regrows nothing")
+        # ---- black paint, invert, white / black mask
+        half = zone[: len(zone) // 2]
+        G.paint_prims(lid, half, level=0.0)
+        v, a1 = lib.mask_arrays(node, lid)
+        ga.mask_invert(node, lid)
+        v, a2m = lib.mask_arrays(node, lid)
+        inverted = bool(np.allclose(a2m, 1.0 - a1, atol=1e-6))
+        hou.undos.performUndo()
+        ga.mask_fill(node, lid, 1.0)
+        white = bool((lib.mask_arrays(node, lid)[1] == 1.0).all())
+        d, r = cook_both()
+        all_lock = r["strands"]
+        ga.mask_clear(node, lid)
+        black = lib.mask_arrays(node, lid)[1] is None
+        d, r = cook_both()
+        C.add("fl_mask_black_paint_invert_white_and_black_mask",
+              int((a1 < 0.5).sum()) > 100 and inverted and white and black and r["strands"] == S["base_strands"]
+              and all_lock < S["base_strands"],
+              {"points_painted_black": int((a1 < 0.5).sum()), "invert_is_one_minus": inverted, "white_mask_everywhere": white,
+               "strands_with_white_mask": all_lock, "strands_with_black_mask": r["strands"], "no_layer_strands": S["base_strands"]},
+              "black paint lowers the mask, invert = 1 - mask, a white mask applies the layer everywhere, a black "
+              "one nowhere (the v0.1 strand count again)")
+        ga.mask_remove(node, lid)
+        # ---- a folder: its mask and opacity over all its layers
+        folder = ga.mask_add(node, "crown", kind="folder")
+        child = ga.mask_add(node, "less", mode="multiply", value=0.5, parent=folder)
+        G.paint_prims(child, zone, level=1.0)
+        cook_both()
+        full, bf, af = ratio(inner_white(child))
+        G.paint_prims(folder, half, level=0.0)                 # the folder's mask: black on half the zone
+        d, r = cook_both()
+        v, fa = lib.mask_arrays(node, folder)
+        lo = np.full(len(s["area"]), np.inf)
+        hi = np.full(len(s["area"]), -np.inf)
+        np.minimum.at(lo, s["vprim"], fa[s["vpoint"]])
+        np.maximum.at(hi, s["vprim"], fa[s["vpoint"]])
+        in_white = np.intersect1d(G.inner_prims(lo >= 1.0, 0.3), inner_white(child))
+        in_black = np.intersect1d(G.inner_prims(hi <= 0.0, 0.3), inner_white(child))
+        r_white, _b, _a = ratio(in_white)
+        r_black, _b, _a = ratio(in_black)
+        ga.mask_set(node, folder, opacity=0.5)
+        cook_both()
+        r_half, _b, _a = ratio(in_white)
+        ga.mask_set(node, folder, opacity=1.0, on=False)
+        d, r = cook_both()
+        off = r["strands"] == S["base_strands"]
+        C.add("fl_folder_mask_applies_to_all_its_layers",
+              abs(full - 0.5) <= 0.06 and abs(r_white - 0.5) <= 0.06 and abs(r_black - 1.0) <= 0.06
+              and abs(r_half - 0.75) <= 0.07 and off and len(in_white) > 50 and len(in_black) > 50,
+              {"layer_in_folder": "multiply 0.5, mask white on the zone", "no_folder_mask_ratio": round(full, 3),
+               "folder_mask_white_ratio": round(r_white, 3), "folder_mask_black_ratio": round(r_black, 3),
+               "folder_opacity_0.5_ratio": round(r_half, 3), "folder_off_is_the_v01_count": off,
+               "prims_counted": [int(len(in_white)), int(len(in_black))]},
+              "x 0.5 where the folder's mask is white, x 1 where it is black, x 0.75 at folder opacity 0.5, "
+              "nothing with the folder off (each within 0.06 - 0.07)",
+              note="one level of folders; deleting a folder keeps its layers")
+        clear_layers()
+        cook_both()
+
     # ------------------------------------------------------------------ rung 6 / dw5: persistence
     def persistence():
         nonlocal_G = S["G"]
         s = nonlocal_G.scalp()
         L = nonlocal_G.lock_id(ZONE_LOCK)
         prims = nonlocal_G.region_prims(L)
-        l0 = ga.mask_add(node, "keep all")
-        l1 = ga.mask_add(node, "keep locks", mode="add", opacity=0.7, scope="locks", locks=[L])
+        l0 = ga.mask_add(node, kind="paint", name="keep all")
+        l1 = ga.mask_add(node, kind="paint", name="keep locks", mode="add", opacity=0.7, scope="locks", locks=[L])
         nonlocal_G.paint_prims(l0, prims[:900], 0.3, radius_cm=0.6, soft=0.5)
         nonlocal_G.paint_prims(l1, prims[900:1500], 1.0, radius_cm=0.6, soft=0.5)
+        # a folder with a fill layer in it, both masks painted
+        fo = ga.mask_add(node, "keep folder", kind="folder")
+        l3 = ga.mask_add(node, "keep fill", mode="multiply", value=0.6, parent=fo)
+        nonlocal_G.paint_prims(l3, prims[1500:2100], radius_cm=0.6, soft=0.5, level=1.0)
+        nonlocal_G.paint_prims(fo, prims[1800:2000], radius_cm=0.4, soft=0.5, level=0.0)
         cook_both()
 
         def snap(g=None, n=None):
@@ -652,6 +778,7 @@ def main() -> None:
         after = snap()
         C.add("dw5_layers_survive_detect", same(ref, after) and total < S["base_strands"],
               {"layers": len(after["masks"]), "strands": sum(after["strands"].values()), "no_layer_strands": S["base_strands"],
+               "kinds": [m["kind"] for m in after["masks"]],
                "painted_points": [int((a[1] > 0).sum()) for a in after["arrays"]]},
               "layer list, painted bytes and every lock's strand count as before Detect")
         ga.split_regions(node)
@@ -694,7 +821,7 @@ def main() -> None:
                         layers_in_json=[m.name for m in layers], strands_after_wipe=wiped,
                         layers_read_back=n_in, strands_after_read_back=sum(back["strands"].values()),
                         record_schema=record.get("schema"))
-            ok = (same(ref, back) and usd_strands == total and wiped == S["base_strands"] and n_in == 2
+            ok = (same(ref, back) and usd_strands == total and wiped == S["base_strands"] and n_in == 4
                   and record["masks"].get("file") == gm.PUBLISH_MASK_FILE and geo is not None)
         C.add("dw5_layers_survive_publish_and_read_back", ok, info,
               "the published USD holds the masked groom; layers removed from the node and read back from the "
@@ -758,7 +885,8 @@ def main() -> None:
 
     for name, fn in (("no_layer", no_layer), ("zones", zones), ("strokes", strokes), ("thin_skin", thin_skin),
                      ("crown", crown), ("scope", scope), ("digest", digest), ("brush_side", brush_side),
-                     ("modes", modes), ("api", api), ("persistence", persistence), ("uv_transfer", uv_transfer),
+                     ("modes", modes), ("api", api), ("fill_layers", fill_layers), ("persistence", persistence),
+                     ("uv_transfer", uv_transfer),
                      ("full_cook", full_cook)):
         C.log("==", name)
         t = time.perf_counter()

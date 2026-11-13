@@ -129,8 +129,8 @@ def test_v01_data_migrates_to_masks_without_changing_anything_else():
            "orphans": [{"id": 4, "name": "gone", "group": "g"}], "id_high": 4, "regions_stale": True,
            "stale_why": ["Detect locks: 1 new"]}
     d = GroomData.from_json(json.dumps(old))
-    assert d.masks == [] and d.mask_id_high == -1 and d.schema == SCHEMA == 2
-    assert migrate(dict(old))["schema"] == 2 and "masks" not in old      # the input is not changed
+    assert d.masks == [] and d.mask_id_high == -1 and d.schema == SCHEMA == 3
+    assert migrate(dict(old))["schema"] == 3 and "masks" not in old      # the input is not changed
     back = json.loads(d.to_json())
     for key in ("asset", "defaults", "id_high", "regions_stale", "stale_why"):
         assert back[key] == old[key]
@@ -166,3 +166,34 @@ def test_mask_layers_from_json_are_cleaned():
     m = d.masks[0]
     assert (m.mode, m.opacity, m.scope, m.locks, m.on) == ("multiply", 1.0, "all", [3], True)
     assert d.mask_id_high == 5
+
+
+def test_schema_2_layers_become_paint_layers_and_new_ones_are_fill_layers():
+    d = GroomData.from_json(json.dumps({"schema": 2, "masks": [{"id": 0, "name": "old", "mode": "add"}]}))
+    assert d.schema == SCHEMA == 3 and d.masks[0].kind == "paint" and d.masks[0].mode == "add"
+    new = d.add_mask("Thin skin", mode="replace", value=80, unit="density")
+    assert (new.kind, new.value, new.unit, new.parent) == ("fill", 80.0, "density", None)
+    back = GroomData.from_json(d.to_json())
+    assert back.masks == d.masks
+    bad = GroomData.from_json(json.dumps({"schema": 3, "masks": [
+        {"id": 1, "name": "x", "kind": "smart", "value": -3, "unit": "kg", "parent": 9}]}))
+    m = bad.masks[0]
+    assert (m.kind, m.value, m.unit, m.parent) == ("fill", 0.0, "factor", None)    # cleaned, no folder 9
+
+
+def test_folders_hold_layers_one_level_deep():
+    d = GroomData()
+    folder = d.add_mask(kind="folder")
+    a = d.add_mask("a", parent=folder.id)
+    b = d.add_mask("b")
+    assert folder.name == "Folder 1" and a.parent == folder.id and b.parent is None
+    d.set_mask_parent(b.id, folder.id)
+    assert GroomData.from_json(d.to_json()).mask(b.id).parent == folder.id
+    other = d.add_mask(kind="folder")
+    with pytest.raises(ValueError):
+        d.set_mask_parent(other.id, folder.id)          # no folder in a folder
+    with pytest.raises(ValueError):
+        d.set_mask_parent(b.id, a.id)                   # only a folder holds layers
+    d.set_mask_parent(b.id, None)
+    assert d.mask(b.id).parent is None
+    assert d.remove_mask(folder.id) and d.mask(a.id).parent is None     # deleting a folder keeps its layers

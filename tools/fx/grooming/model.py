@@ -13,7 +13,7 @@ from typing import Any
 
 from tools.fx.grooming import config
 
-SCHEMA = 2      # 2: `masks` (v0.2a density mask layers)
+SCHEMA = 3      # 2: `masks` (v0.2a density mask layers); 3: fill layers, folders (kind, value, unit, parent)
 
 # Built-in defaults: the bottom of the resolution chain (defaults -> data.defaults -> group -> lock).
 BUILTIN_DEFAULTS: dict[str, float] = {
@@ -93,6 +93,10 @@ class MaskLayer:
     scope: str = "all"           # config.MASK_SCOPES: "all", "group" (`group`), "locks" (`locks`)
     group: str = ""              # scope "group": the group id
     locks: list[int] = field(default_factory=list)   # scope "locks": lock ids (kept for missing locks too)
+    kind: str = "fill"           # config.MASK_KINDS: "fill" (one `value` + a mask), "paint", "folder"
+    value: float = 1.0           # a fill layer's number: what the density becomes where its mask is white
+    unit: str = "factor"         # config.MASK_UNITS: `value` is a factor, or a density in strands / cm2
+    parent: int | None = None    # the folder this layer is in (one level: a folder is never in a folder)
 
     def applies(self, lock_id: int, group_id: str) -> bool:
         """This layer changes the density of that lock (whatever `on` says)."""
@@ -115,7 +119,22 @@ def _clean_mask(raw: dict[str, Any]) -> MaskLayer:
         scope=scope if scope in config.MASK_SCOPES else "all",
         group=str(raw.get("group", "")),
         locks=sorted({int(i) for i in raw.get("locks", ())}),
+        kind=str(raw.get("kind", "fill")) if raw.get("kind", "fill") in config.MASK_KINDS else "fill",
+        value=max(0.0, float(raw["value"])) if isinstance(raw.get("value"), (int, float))
+        and not isinstance(raw.get("value"), bool) else 1.0,
+        unit=str(raw.get("unit", "factor")) if raw.get("unit", "factor") in config.MASK_UNITS else "factor",
+        parent=int(raw["parent"]) if isinstance(raw.get("parent"), int) and not isinstance(raw.get("parent"), bool)
+        else None,
     )
+
+
+def _clean_parents(masks: list[MaskLayer]) -> list[MaskLayer]:
+    """A parent that is not a folder of this list (or a folder's own parent) is dropped."""
+    folders = {m.id for m in masks if m.kind == "folder"}
+    for m in masks:
+        if m.parent is not None and (m.parent not in folders or m.kind == "folder"):
+            m.parent = None
+    return masks
 
 
 STALE_WHY_KEPT = 6   # reasons the panel lists for regions out of date
@@ -173,24 +192,46 @@ class GroomData:
         return next((m for m in self.masks if m.id == layer_id), None)
 
     def add_mask(self, name: str = "", mode: str = "multiply", opacity: float = 1.0, scope: str = "all",
-                 group: str = "", locks=()) -> MaskLayer:
+                 group: str = "", locks=(), kind: str = "fill", value: float = 1.0, unit: str = "factor",
+                 parent: int | None = None) -> MaskLayer:
         """A new layer on top of the stack; its id is never one a layer had before."""
         layer_id = max([self.mask_id_high] + [m.id for m in self.masks]) + 1
         taken = {m.name for m in self.masks}
         if not name:
-            n = len(self.masks) + 1
-            while f"Layer {n}" in taken:
+            word = "Folder" if kind == "folder" else "Layer"
+            n = len([m for m in self.masks if (m.kind == "folder") == (kind == "folder")]) + 1
+            while f"{word} {n}" in taken:
                 n += 1
-            name = f"Layer {n}"
+            name = f"{word} {n}"
         layer = _clean_mask({"id": layer_id, "name": name, "mode": mode, "opacity": opacity, "scope": scope,
-                             "group": group, "locks": list(locks)})
+                             "group": group, "locks": list(locks), "kind": kind, "value": value, "unit": unit})
         self.masks.append(layer)
         self.mask_id_high = layer_id
+        if parent is not None:
+            self.set_mask_parent(layer_id, parent)
         return layer
 
+    def set_mask_parent(self, layer_id: int, parent: int | None) -> None:
+        """Put a layer into a folder (None: out of any). One level: a folder cannot go into a folder, and
+        only a folder holds layers."""
+        layer = self.mask(layer_id)
+        if layer is None:
+            raise KeyError(layer_id)
+        if parent is not None:
+            folder = self.mask(parent)
+            if folder is None or folder.kind != "folder":
+                raise ValueError(f"mask layer {parent} is not a folder")
+            if layer.kind == "folder":
+                raise ValueError("a folder cannot be put into a folder")
+        layer.parent = parent
+
     def remove_mask(self, layer_id: int) -> bool:
+        """Delete a layer. A folder's layers stay, out of it (deleting a folder never deletes paint)."""
         n = len(self.masks)
         self.masks = [m for m in self.masks if m.id != layer_id]
+        for m in self.masks:
+            if m.parent == layer_id:
+                m.parent = None
         return len(self.masks) != n
 
     def move_mask(self, layer_id: int, index: int) -> None:
@@ -299,7 +340,7 @@ class GroomData:
             regions_stale=bool(raw.get("regions_stale", False)),
             stale_why=[str(w) for w in raw.get("stale_why", [])][-STALE_WHY_KEPT:],
             id_high=int(raw.get("id_high", 0)),
-            masks=[_clean_mask(m) for m in raw.get("masks", [])],
+            masks=_clean_parents([_clean_mask(m) for m in raw.get("masks", [])]),
             mask_id_high=max([int(raw.get("mask_id_high", -1))] + [int(m["id"]) for m in raw.get("masks", [])]),
             schema=SCHEMA,
         )
@@ -317,6 +358,12 @@ def migrate(raw: dict[str, Any]) -> dict[str, Any]:
         raw.setdefault("masks", [])
         raw.setdefault("mask_id_high", -1)
         raw["schema"] = 2
+    if int(raw.get("schema", 2)) < 3:
+        # 2 -> 3: layers are fill layers (one value and a mask) by default; the layers of the first v0.2a
+        # build held a value painted per point and stay what they were, as "paint" layers
+        raw = dict(raw)
+        raw["masks"] = [dict(m, kind=m.get("kind", "paint")) for m in raw.get("masks", [])]
+        raw["schema"] = 3
     return raw
 
 

@@ -623,24 +623,82 @@ def mask_factor(layers, start=1.0):
     return _higher(m, 0.0)
 
 
-def mask_scope_sets(masks: Sequence["object"], locks: Sequence[tuple[int, str]]
-                    ) -> tuple[list[tuple[int, ...]], dict[int, int]]:
-    """Which layers reach which lock. `masks`: the layer stack, bottom first (`id`, `on`, `applies`);
-    `locks`: (lock id, group id). Returns the distinct scope sets (each the ids of the layers that are on
-    and apply, bottom first) and, per lock id, the index of its set, -1 when no layer reaches it (its
-    density is the automatic one). Locks with the same layers share one blended factor on the scalp, so
-    a groom with only "all locks" layers has one set whatever its lock count."""
-    sets: list[tuple[int, ...]] = []
+def mask_layer_value(layer, density: float | None = None):
+    """A fill layer's value as a factor on the automatic density. A value in strands / cm2 (`unit`
+    "density") is divided by the lock's own density, so "= 80" grows 80 / cm2 on a lock set to 150 and on
+    one set to 60 alike; without a density to divide by (or 0) it is taken as a factor."""
+    if getattr(layer, "unit", "factor") == "density" and density and density > 0:
+        return layer.value / density
+    return layer.value
+
+
+def mask_compose(rows, start=1.0):
+    """The final factor through a stack with folders. `rows`, bottom first: (layer, value, mask); `layer`
+    has id, on, mode, opacity, kind, parent; `value` and `mask` are numbers or arrays per scalp point (a
+    folder's value is not read). A layer blends as `mask_over` with its mask as the coverage. A folder
+    blends what its layers make of the factor below it, through its own mask and opacity:
+    m + (inside - m) x mask x opacity, as Substance Painter's folders do. Layers and folders that are off
+    are skipped; a layer whose parent is not a folder of `rows` counts as outside any. Never below 0."""
+    folders = {layer.id for layer, _v, _a in rows if getattr(layer, "kind", "fill") == "folder"}
+
+    def run(m, parent):
+        for layer, value, mask in rows:
+            inside = layer.parent if getattr(layer, "parent", None) in folders else None
+            if inside != parent or not layer.on:
+                continue
+            if getattr(layer, "kind", "fill") == "folder":
+                if parent is None:
+                    m = m + (run(m, layer.id) - m) * (mask * layer.opacity)
+            else:
+                m = mask_over(m, value, mask, layer.mode, layer.opacity)
+        return m
+
+    return _higher(run(start, None), 0.0)
+
+
+def mask_scope_keys(masks: Sequence["object"], locks: Sequence[tuple]
+                    ) -> tuple[list[tuple[tuple[int, ...], float | None]], dict[int, int]]:
+    """Which layers reach which lock. `masks`: the layer stack, bottom first; `locks`: (lock id, group id)
+    or (lock id, group id, the lock's density). Returns the distinct keys, each (ids of the layers and
+    folders that are on and reach the lock, bottom first; the lock's density when one of them is a fill
+    layer in strands / cm2, else None), and per lock id the index of its key, -1 when no layer reaches it
+    (its density is the automatic one). Locks with the same key share one blended factor on the scalp. A
+    layer in a folder that is off reaches nothing; a folder is in the key when one of its layers is."""
+    by_id = {m.id: m for m in masks}
+    keys: list[tuple[tuple[int, ...], float | None]] = []
     of: dict[int, int] = {}
-    for lock_id, group_id in locks:
-        ids = tuple(m.id for m in masks if m.on and m.applies(lock_id, group_id))
+    for lock in locks:
+        lock_id, group_id = lock[0], lock[1]
+        density = lock[2] if len(lock) > 2 else None
+        reach = set()
+        for m in masks:
+            if getattr(m, "kind", "fill") == "folder" or not m.on or not m.applies(lock_id, group_id):
+                continue
+            folder = by_id.get(m.parent) if getattr(m, "parent", None) is not None else None
+            if folder is not None and getattr(folder, "kind", "") == "folder":
+                if not folder.on:
+                    continue
+                reach.add(folder.id)
+            reach.add(m.id)
+        ids = tuple(m.id for m in masks if m.id in reach)
         if not ids:
             of[lock_id] = -1
             continue
-        if ids not in sets:
-            sets.append(ids)
-        of[lock_id] = sets.index(ids)
-    return sets, of
+        needs = any(getattr(by_id[i], "unit", "factor") == "density" and getattr(by_id[i], "kind", "fill") == "fill"
+                    for i in ids)
+        key = (ids, round(float(density), 6) if needs and density else None)
+        if key not in keys:
+            keys.append(key)
+        of[lock_id] = keys.index(key)
+    return keys, of
+
+
+def mask_scope_sets(masks: Sequence["object"], locks: Sequence[tuple[int, str]]
+                    ) -> tuple[list[tuple[int, ...]], dict[int, int]]:
+    """`mask_scope_keys` for stacks without a density unit: the distinct sets of layer ids, and per lock
+    id the index of its set (-1: no layer reaches it)."""
+    keys, of = mask_scope_keys(masks, [(lock[0], lock[1]) for lock in locks])
+    return [ids for ids, _density in keys], of
 
 
 def brush_weights(dist, radius: float, soft: float = config.BRUSH_SOFT):

@@ -703,3 +703,80 @@ def test_layer_color_shows_one_mask_alone():
     half = logic.layer_color(2.0, 0.5)                                              # a dab's soft edge
     assert half == pytest.approx([(u + c) / 2 for u, c in zip(logic.LAYER_UNPAINTED, logic.MASK_COLOR_MORE)])
     assert set(config.MASK_VIEWS) == {"density", "factor", "layer", "roots"}
+
+
+# ---- fill layers, folders (schema 3, Substance Painter's model) ----
+
+def _layer(i, **kw):
+    from tools.fx.grooming.model import MaskLayer
+    return MaskLayer(i, kw.pop("name", f"l{i}"), **kw)
+
+
+def test_fill_layer_value_in_density_units_follows_each_locks_density():
+    fill = _layer(0, mode="replace", value=80.0, unit="density")
+    assert logic.mask_layer_value(fill, 160.0) == pytest.approx(0.5)      # 80 / cm2 on a lock set to 160
+    assert logic.mask_layer_value(fill, 40.0) == pytest.approx(2.0)       # ... and on one set to 40
+    assert logic.mask_layer_value(fill, None) == 80.0 and logic.mask_layer_value(fill, 0.0) == 80.0
+    assert logic.mask_layer_value(_layer(1, value=0.7), 160.0) == 0.7     # a factor is a factor
+
+
+def test_mask_compose_is_mask_factor_without_folders():
+    a = _layer(0, mode="multiply")
+    b = _layer(1, mode="add", opacity=0.5)
+    rows = [(a, 2.0, 1.0), (b, 1.0, 0.5)]
+    assert logic.mask_compose(rows) == pytest.approx(logic.mask_factor([("multiply", 1.0, 2.0, 1.0), ("add", 0.5, 1.0, 0.5)]))
+    assert logic.mask_compose([]) == 1.0
+    assert logic.mask_compose([(_layer(2, mode="subtract"), 5.0, 1.0)]) == 0.0
+    assert logic.mask_compose([(_layer(3, on=False, mode="replace"), 0.0, 1.0)]) == 1.0
+
+
+def test_a_folders_mask_and_opacity_apply_to_all_its_layers():
+    folder = _layer(9, kind="folder")
+    inside = _layer(1, mode="replace", parent=9)
+    more = _layer(2, mode="multiply", parent=9)
+    rows = [(folder, None, 1.0), (inside, 0.5, 1.0), (more, 0.5, 1.0)]
+    assert logic.mask_compose(rows) == pytest.approx(0.25)                       # folder mask white: the layers
+    half = [(folder, None, 0.5), (inside, 0.5, 1.0), (more, 0.5, 1.0)]
+    assert logic.mask_compose(half) == pytest.approx(1 + (0.25 - 1) * 0.5)       # grey: halfway
+    assert logic.mask_compose([(folder, None, 0.0), (inside, 0.5, 1.0)]) == 1.0  # black: nothing of them
+    folder.opacity = 0.2
+    assert logic.mask_compose(rows) == pytest.approx(1 + (0.25 - 1) * 0.2)
+    folder.opacity, folder.on = 1.0, False
+    assert logic.mask_compose(rows) == 1.0                                       # the folder's eye
+    folder.on = True
+    # a layer below the folder is what the folder starts from; one above it comes after
+    below = _layer(0, mode="replace")
+    above = _layer(3, mode="add")
+    stack = [(below, 2.0, 1.0), (folder, None, 0.5), (inside, 0.5, 1.0), (above, 1.0, 1.0)]
+    assert logic.mask_compose(stack) == pytest.approx((2 + (0.5 - 2) * 0.5) + 1.0)
+    # a parent that is not a folder in the stack: the layer counts as outside
+    stray = _layer(4, mode="replace", parent=77)
+    assert logic.mask_compose([(stray, 0.3, 1.0)]) == pytest.approx(0.3)
+
+
+def test_mask_compose_on_arrays():
+    np = pytest.importorskip("numpy")
+    folder = _layer(9, kind="folder")
+    inside = _layer(1, mode="replace", parent=9)
+    fmask = np.array([1.0, 0.0, 0.5], np.float32)
+    lmask = np.array([1.0, 1.0, 1.0], np.float32)
+    got = logic.mask_compose([(folder, None, fmask), (inside, 0.0, lmask)], np.ones(3, np.float32))
+    assert got == pytest.approx([0.0, 1.0, 0.5])
+
+
+def test_scope_keys_keep_locks_of_another_density_apart_only_when_a_layer_is_in_density_units():
+    factor = _layer(0, mode="multiply", value=0.5)
+    dens = _layer(1, mode="replace", value=80.0, unit="density")
+    locks = [(1, "g", 150.0), (2, "g", 150.0), (3, "g", 60.0)]
+    keys, of = logic.mask_scope_keys([factor], locks)
+    assert keys == [((0,), None)] and of == {1: 0, 2: 0, 3: 0}
+    keys, of = logic.mask_scope_keys([factor, dens], locks)
+    assert keys == [((0, 1), 150.0), ((0, 1), 60.0)] and of == {1: 0, 2: 0, 3: 1}
+    # a folder is in the key with its layers; switched off, its layers reach nothing
+    folder = _layer(9, kind="folder")
+    child = _layer(2, parent=9, scope="locks", locks=[3])
+    keys, of = logic.mask_scope_keys([folder, child], locks)
+    assert keys == [((9, 2), None)] and of == {1: -1, 2: -1, 3: 0}
+    folder.on = False
+    assert logic.mask_scope_keys([folder, child], locks) == ([], {1: -1, 2: -1, 3: -1})
+    assert logic.mask_scope_sets([factor], [(1, "g"), (2, "g")]) == ([(0,)], {1: 0, 2: 0})

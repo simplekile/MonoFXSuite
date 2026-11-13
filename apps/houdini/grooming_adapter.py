@@ -26,7 +26,8 @@ except ImportError:
 
 from apps.houdini import grooming_masks
 from apps.houdini.grooming_masks import (  # noqa: F401  (the adapter API's mask functions; the HDA's mask_read)
-    brush, cook_mask_read, import_masks, mask_add, mask_clear, mask_factor, mask_fill, mask_move, mask_problem,
+    brush, cook_mask_read, import_masks, mask_add, mask_clear, mask_factor, mask_fill, mask_invert, mask_move,
+    mask_problem,
     mask_rebake, mask_remove, mask_set, mask_stroke, mask_values, masks_from_publish, paint_enter, paint_exit,
     paint_layer, set_brush,
 )
@@ -1669,7 +1670,8 @@ __all__ = [
     "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "deform_problem", "capture_flag", "set_shot_deform", "set_root_flip",
     "set_excluded",
     # v0.2a density masks (apps/houdini/grooming_masks.py)
-    "mask_add", "mask_remove", "mask_move", "mask_set", "mask_fill", "mask_clear", "mask_values", "mask_factor",
+    "mask_add", "mask_remove", "mask_move", "mask_set", "mask_fill", "mask_clear", "mask_invert", "mask_values",
+    "mask_factor",
     "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush", "paint_enter", "paint_exit", "paint_layer",
     "import_masks", "masks_from_publish",
 ]
