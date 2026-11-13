@@ -658,6 +658,9 @@ def preflight(node) -> dict:
     if xf is not None and not xf.isAlmostEqual(hou.hmath.identityTransform()):
         out["warnings"].append(f"{obj.name()} is moved or scaled: the groom is made in its own space, so"
                                " density and widths follow its scale")
+    problem = deform_problem(node)   # output 1 deforms by itself: a refused anim would cache the rest groom
+    if problem:
+        out["warnings"].append(problem)
     return out
 
 
@@ -1327,6 +1330,16 @@ def _key_parms(top) -> list[tuple[str, str]]:
     return out
 
 
+def capture_flag(groom: bool, wired: bool, deforming: bool) -> int:
+    """Whether a lock's strands are cooked with the Point Deform capture (`do_capture`, in the key).
+    Output 1 (Groom, groom=True) deforms whenever an animated hair mesh is wired (decided 2026-11-13:
+    a File Cache on it caches the shot whatever the view toggle); the display only while Shot deform is
+    on. Capturing every lock whenever the anim was wired, for the display too, held ~800 B a point
+    (Helen 5.9 GB after a cook, 9.5 GB after an edit, review t48), so the display's first Deform on
+    regrows its locks once."""
+    return int(wired and (groom or deforming))
+
+
 def cook_lock_keys(sop, groom: bool = False) -> None:
     """Python SOP "lock_keys", hair modes only: per spine `cache_key` (a digest of everything the
     per-lock hair loop reads for that lock: its spine and settings, its region, its mesh piece, the
@@ -1399,10 +1412,9 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
         # a dragged lock's strands are coarser (DRAG_SEGMENTS): kept apart from its full hair
         lock_mode = "drag" if drag else "hair" if f >= 1.0 else "hair_preview"
         modes.append(lock_mode)
-        # captured only while the shot deform runs. Capturing every full-hair lock whenever the anim was
-        # wired (so that turning the deform on regrew nothing) held ~800 B a point: Helen 5.9 GB after a
-        # cook, 9.5 GB after an edit (review t48). Now the first Deform on regrows the groom once.
-        cap = int(wired and deforming)
+        # captured only where a deform reads it (capture_flag): the display while Shot deform is on,
+        # the Groom output whenever an anim is wired (it cooks only when something reads it)
+        cap = capture_flag(groom, wired, deforming)
         captures.append(cap)
         piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
         idx = [p.number() for p in prim.points()]
@@ -1619,6 +1631,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "deform_problem", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "deform_problem", "capture_flag", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]

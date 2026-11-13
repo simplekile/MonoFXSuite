@@ -1730,8 +1730,10 @@ def _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean) -> 
     deform.parm("radius").setExpression('ch("../deform_radius")')
     ok = _node(sub, "switch", "groom_deform_ok", [rest, deform])
     ok.parm("input").setExpression('detail("../ANIM_HAIR", "deform_ok", 0)')
+    # output 1 deforms whenever an anim is wired (the Shot deform toggle drives only the display), so a
+    # File Cache on it caches the shot as the scene opens; it cooks only when something reads output 1
     use = _node(sub, "switch", "groom_use_deform", [rest, ok])
-    use.parm("input").setExpression('ch("../deform_active")')
+    use.parm("input").setExpression('ch("../anim_wired")')
     capt = _node(sub, "attribdelete", "groom_no_capture", [use], ptdel="pCaptPts pCaptWeights")
     groom = _node(sub, "null", "GROOM", [capt])
     out = _node(sub, "output", "output1", [groom])

@@ -48,7 +48,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   draws (hidden / isolated-out locks left out, packed, coloured, ghosts with Alpha, preview density,
   deformed with Shot deform on); 1 **Groom** (`GROOM`), the groom itself whatever the view: every lock
   not excluded, full density, only P + `config.GROOM_ATTRIBS` (width, lock_id, name, group, clump_id,
-  id), at rest or deformed while Shot deform is on. Anything downstream (File Cache, SOP Import, a
+  id), deformed whenever a matching anim is wired (Shot deform drives only output 0; `groom_use_deform`
+  reads `anim_wired`, `capture_flag(groom=True)` captures its locks whenever wired), else at rest; it
+  cooks only when read. Anything downstream (File Cache, SOP Import, a
   ROP, Guide Process) reads output 1; the review (t48 P0-1) found output 0 changing with every hide,
   isolate, focus and Display. Output 1 has its own keys (`groom_keys` = `cook_lock_keys(groom=True)`:
   factor 1, no drag, every lock not excluded) and its own copy of the per-lock loop (`groom_*`,
@@ -438,3 +440,5 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   (`deform_problem`, shown by Deform on), not only in VEX. v0.1 has no shot cache: a stock File Cache on
   output 1, Deform on. `qc_capture.py` with `QC_FRAMES=0,60,120` keeps the anim and shoots
   `shot_<view>_f<frame>` and the animated mesh beside it.
+- Output 1 deforms whenever a matching anim is wired (t56b): with the display at rest a lock edit cooks
+  no deform node (output 1 is not read), and a File Cache on output 1 caches deformed with Shot deform off.

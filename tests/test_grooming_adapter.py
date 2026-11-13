@@ -302,3 +302,12 @@ def test_anim_mismatch_text():
     assert ga.anim_mismatch_text(196102, 196202) == "Anim hair mesh: 196102 points, rest hair mesh 196202: no deform"
     assert "no prims named like" in ga.anim_mismatch_text(0, 196202)
     assert callable(ga.deform_problem)
+
+
+def test_groom_output_captures_whenever_an_anim_is_wired_the_display_only_while_deforming():
+    """Output 1 deforms whenever a matching anim is wired (a File Cache on it caches the shot whatever
+    the view toggle); the display captures only with Shot deform on (memory, review t48)."""
+    assert ga.capture_flag(groom=True, wired=True, deforming=False) == 1
+    assert ga.capture_flag(groom=False, wired=True, deforming=False) == 0
+    assert ga.capture_flag(groom=False, wired=True, deforming=True) == 1
+    assert ga.capture_flag(groom=True, wired=False, deforming=False) == 0
