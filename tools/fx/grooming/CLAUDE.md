@@ -591,3 +591,40 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     live set): every undo regrows its locks (1.0-1.2 s for 5), every state still equal to the stroke's.
   - `PREVIEW` no longer sums `region_keys` on every stroke (new wrangle `region_keys` on the split before
     `mask_read`): 20 of its 26 ms, paid by every stroke and every undo.
+- Stroke speed (round 3, t62 `speed*/`; limit 0.2 s a lock recooked + 0.1 s, unchanged). Profile a stroke
+  with `hou.perfMon.startProfile(name, hou.PerfMonRecordOptions(cook_stats=True, ...all else False))` and
+  read the CSV's self times and the per-node min / max over the loop's passes:
+  - `fit_to_lock` cost ~75 ms a lock WHATEVER the lock's size (min 74, max 82 over locks 5x apart in
+    strands): its two `xyzdist` lookups search SURFACE_CLOUD, every lock's mesh in one geometry, and VEX
+    builds that search structure again in each pass of the for-each (naming the cloud by `op:` path changed
+    nothing). Now each lock gets only its own piece: `surface_pack` (Pack by `piece_name`, one packed
+    fragment a piece, once per mesh) -> in the loop `piece_pick` (Blast on 61 packed prims) -> `piece_cloud`
+    (Unpack: costs the piece's faces). A Blast of the whole cloud per lock is the 73 ms the notes above
+    warn about; 61 Blast verbs up front took the cold cook from 11 to 15 s. Strokes 30-40 % faster, the
+    cold cook 10.9 -> 7.6 s.
+  - CONTRACT NOTE: the per-piece lookup does not give v0.1's hair bit for bit. Same roots, same strand
+    count per lock, but the nearest-face search answers within its own noise (flattened mesh with folds,
+    z = piece x 100 in float): Helen without layers, 45 % of strand points differ, half of them under
+    0.008 mm, 1 % over 1 mm, at most 4 mm. grooming-check: 27/27 pass, 19 numbers equal t55's to the last
+    digit, 8 move by 5e-5 to 1 % (kink p95 32.9566 -> 32.9534, uncovered 0.0699 -> 0.0701, lock uncovered
+    worst 0.1314 -> 0.1327, tip width off 0.4412 -> 0.44 ...; t62 `qc/nolayer_piece`). The node's toggle
+    "Fit lookup per lock" (`lookup_per_piece`, on by default, in every lock's key) switches back to the whole
+    cloud (`fit_cloud`): then the groom is v0.1's within its run-to-run noise (192-20,437 of 12.5 M
+    coordinates differ, at most 0.02 mm, as two cooks of v0.1 differ). Which default ships is the
+    manager's / user's call; the speed limit holds with margins of 3-9 % when it is off (one run in four
+    missed it on this machine) and 0.27 s or more when on.
+  - The lock's automatic roots (hairgen's scatter + `root_pick`, 8-16 % of a lock's cook; `root_pick` is a
+    single-threaded detail wrangle) are kept per lock under its key without layers (`auto_key`,
+    `auto_store` / `auto_load` / `auto_roots`, LockCache slot "auto:" + mode, one state a lock): a stroke
+    lays out no automatic root again. Stored on every cook of a lock, so a first stroke finds them.
+  - `fit_mid` is folded into `strand_smooth`, which now leaves its result as one array (`smooth_p`) for a
+    point wrangle (`strand_smooth_apply`): a trivial point wrangle costs ~10 ms a lock in the loop, and a
+    `setpointattrib` per point from a prim wrangle is applied one by one. `length_frizz` returns at once
+    when there is nothing to cut or frizz (it wrote every point back unchanged, 4 %).
+  - Helen, 8 places x 3 strokes on "= 120" (radius 0.8 cm): 3 locks 0.29-0.43 s (limit 0.7), 6 locks
+    0.66-0.85 s (1.3), 19-20 locks 1.07-1.13 s (3.9-4.1), the whorl 24-35 locks 1.43-2.33 s (4.9-7.1).
+    Before (same build, whole-cloud lookup, no root cache): 0.56-0.73 / 1.03-1.52 / 2.06-2.21 / 2.81-4.70 s.
+  - Timings on this machine swing 10-15 % from run to run even when idle: grade speed on the worst of
+    several runs, never on one.
+- Do not write `\n` inside a Python heredoc passed through the shell tool: it arrives as a real newline
+  (two build_hda.py edits broke that way). Use a patch file, or the editor.

@@ -1194,7 +1194,7 @@ v@fit_c0 = c0; v@fit_root = root;
 VEX_FIT = ("""// each strand point: the lock's mesh offset at (u, s, t), u running from where the strand joins the lock
 // (fit_u0) to its tip, eased from the root over fit_blend of the strand
 // Only every other point is looked up on the mesh (two surface lookups a point were 3 s of Helen's cook);
-// fit_mid puts the ones between halfway, and strand_smooth blurs along the strand after that
+// strand_smooth puts the ones between halfway and blurs along the strand after that
 int pr = pointprims(0, @ptnum)[0];
 int nv = primvertexcount(0, pr);
 int iv = vertexprimindex(0, pointvertex(0, @ptnum));
@@ -1207,27 +1207,22 @@ vector c0 = prim(0, "fit_c0", pr), root = prim(0, "fit_root", pr);
 @P = (u <= 0 ? c0 : place(lerp(u0, 1, u), s, t, aw, pz, wm, tm, cm, fl)) + (root - c0) * (1 - smooth(0, ub, u));
 """) % {"gap": PIECE_GAP, "sheet": SHEET_GAP}
 
-VEX_FIT_MID = """// the points fit_to_lock skipped: halfway between their neighbours
-int pr = pointprims(0, @ptnum)[0];
-int nv = primvertexcount(0, pr);
-int iv = vertexprimindex(0, pointvertex(0, @ptnum));
-if (iv % 2 == 0 || iv >= nv - 1) return;
-int pts[] = primpoints(0, pr);
-vector a = point(0, "P", pts[iv - 1]), b = point(0, "P", pts[iv + 1]);
-@P = 0.5 * (a + b);
-"""
-
 VEX_STRAND_SMOOTH = """// a surface lookup can land on a fold of the flattened mesh and throw one point off (Helen: 2-11 %
 // of points bent back over 90 deg). The strand's offset from its lock's spine (smooth already) gets a
 // median of 3, which removes single spikes, then a light blur; the root stays.
 int pts[] = primpoints(0, @primnum);
 int n = len(pts), it = chi("../strand_smooth");
-if (n < 4 || it <= 0) return;
+// the points fit_to_lock skipped (every other one) go halfway between their neighbours first: this was a
+// point wrangle of its own (fit_mid), 5 % of a lock's cook for one line
+vector P0[]; resize(P0, n);
+for (int i = 0; i < n; i++) P0[i] = point(0, "P", pts[i]);
+for (int i = 1; i < n - 1; i += 2) P0[i] = 0.5 * (P0[i - 1] + P0[i + 1]);
+if (n < 4 || it <= 0) { v[]@smooth_p = P0; return; }
 float u0 = f@fit_u0;                                // the strand runs along the spine from u0
 vector O[], S[];
 for (int i = 0; i < n; i++) {
     vector sp = primuv(1, "P", 0, set(lerp(u0, 1, float(i) / (n - 1)), 0, 0));
-    vector p = point(0, "P", pts[i]);
+    vector p = P0[i];
     append(S, sp); append(O, p - sp);
 }
 vector M[] = O;
@@ -1246,7 +1241,7 @@ for (int k = 0; k < it; k++) {
     M = W;
 }
 vector P[]; resize(P, n);
-for (int i = 0; i < n; i++) P[i] = i == 0 ? point(0, "P", pts[0]) : S[i] + M[i];
+for (int i = 0; i < n; i++) P[i] = i == 0 ? P0[0] : S[i] + M[i];
 // the root sits on the scalp while the next points already follow the mesh: the first joint was the
 // sharpest corner of most strands (Helen: 5 % of points in the first 5 % bent over 60 deg). The first
 // fifth of the strand is relaxed in place, root held, fading out along it (a hard stop made its own
@@ -1260,7 +1255,18 @@ for (int k = 0; k < it * 2; k++) {
     }
     P = Q;
 }
-for (int i = 1; i < n; i++) setpointattrib(0, "P", pts[i], P[i]);
+// the new positions as one array on the strand; strand_smooth_apply (a point wrangle) writes them: a
+// setpointattrib per point from this prim wrangle is applied one by one after the threads are done, and
+// was most of this node's time
+v[]@smooth_p = P;
+"""
+
+VEX_STRAND_SMOOTH_APPLY = """// each point takes its place from its strand's smooth_p (strand_smooth); the root stays
+int pr = pointprims(0, @ptnum)[0];
+int iv = vertexprimindex(0, pointvertex(0, @ptnum));
+if (iv < 1) return;
+vector q[] = prim(0, "smooth_p", pr);
+if (iv < len(q)) @P = q[iv];
 """
 
 VEX_STRAND_TAGS = """// lock attributes on every strand (no display colour or visibility: those change without a recook,
@@ -1278,9 +1284,12 @@ VEX_LENGTH_FRIZZ = """// length_mult (cut or extend along the strand), then friz
 int pts[] = primpoints(0, @primnum);
 int n = len(pts);
 if (n < 2) return;
+float lm = f@length_mult;
+// nothing to cut, extend or frizz (the defaults): the strand stays as it is. Writing every point back
+// unchanged was 4 % of a lock's cook
+if (!(abs(lm - 1) > 1e-4 && lm > 0) && !(f@frizz > 0)) return;
 vector P[];
 foreach (int p; pts) { vector pp = point(0, "P", p); append(P, pp); }
-float lm = f@length_mult;
 if (abs(lm - 1) > 1e-4 && lm > 0) {
     float cl[]; resize(cl, n);
     for (int i = 1; i < n; i++) cl[i] = cl[i - 1] + distance(P[i], P[i - 1]);
@@ -1491,6 +1500,12 @@ def build_network(sub) -> None:
     sextent = _wrangle(sub, "surface_extent", VEX_SURFACE_EXTENT, DETAIL, [sparams])
     scloud = _wrangle(sub, "surface_cloud", VEX_SURFACE_CLOUD, POINT, [sextent])
     surface = _node(sub, "null", "SURFACE_CLOUD", [scloud])
+    # ... and the same cloud as one packed fragment a piece, for the per-lock loop (piece_pick, piece_cloud)
+    sname = _wrangle(sub, "surface_piece_name", 's@piece_name = itoa(point(0, "piece", primpoint(0, @primnum, 0)));',
+                     PRIM, [scloud])
+    spack = _node(sub, "pack", "surface_pack", [sname], packbyname=1, nameattribute="piece_name",
+                  transfer_attributes="piece_name")
+    surface_pieces = _node(sub, "null", "SURFACE_PIECES", [spack])
     # the mesh itself with `pu`, `piece` on its prims: where a strand rooted under its lock joins it
     mesh_pu = _node(sub, "attribpromote", "mesh_pu", [sextent], inname="piece", inclass=2, outclass=1,
                     method=1, deletein=0)
@@ -1589,6 +1604,17 @@ def build_network(sub) -> None:
     # is exact per prim where stacked locks share the skin (averaged at shared points it ran 5-10 % off)
     mask_split = _node(sub, "facet", "mask_split", [rdens], unique=1)
     mask_skin = _wrangle(sub, "mask_skin", VEX_MASK_SKIN, POINT, [mask_split, begin])
+    # the automatic roots (hairgen's scatter and root_pick: 8-16 % of a lock's cook) do not read the layers:
+    # kept in the cache by the lock's key without its layers (lock_keys: auto_key), so a stroke lays out no
+    # root again that it did not paint. Stored on every cook of a lock, so the first stroke finds them too
+    auto_store = _node(sub, "python", "auto_store", [pick, begin])
+    auto_store.parm("python").set("from apps.houdini import grooming_adapter\n"
+                                  "grooming_adapter.cook_auto_store(hou.pwd())\n")
+    auto_load = _node(sub, "python", "auto_load", [begin])
+    auto_load.parm("python").set("from apps.houdini import grooming_adapter\n"
+                                 "grooming_adapter.cook_auto_load(hou.pwd())\n")
+    auto = _node(sub, "switch", "auto_roots", [auto_store, auto_load])
+    auto.parm("input").setExpression('prim("../foreach_begin", 0, "auto_cached", 0)')
     hairgen_b = _node(sub, "hairgen::2.0", "hairgen_layers", [mask_skin], useguides=0, growunguided=1,
                       useinitdirattrib=0, unguidedlength=0.01)
     hairgen_b.parm("unguidedsegments").setExpression(hairgen.parm("unguidedsegments").expression())
@@ -1604,19 +1630,35 @@ def build_network(sub) -> None:
     no_layer_roots = _node(sub, "add", "no_layer_roots")
     layer_roots = _node(sub, "switch", "layer_roots", [no_layer_roots, mask_tag])
     layer_roots.parm("input").setExpression('if(%s >= 1, 1, 0)' % layer_count)
-    roots_ab = _node(sub, "merge", "roots_with_layers", [pick, layer_roots])     # the automatic roots first
-    roots_in = _node(sub, "switch", "roots_in", [pick, roots_ab])
+    roots_ab = _node(sub, "merge", "roots_with_layers", [auto, layer_roots])     # the automatic roots first
+    roots_in = _node(sub, "switch", "roots_in", [auto, roots_ab])
     roots_in.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
     place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [roots_in, frame, begin, mesh_pu])
     mask_thin = _wrangle(sub, "mask_thin", VEX_MASK_THIN, PRIM, [place, mask_skin, begin])
     roots_out = _node(sub, "switch", "roots_out", [place, mask_thin])
     roots_out.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
     spread = _wrangle(sub, "root_spread", VEX_ROOT_SPREAD, DETAIL, [roots_out])
-    fit_root = _wrangle(sub, "fit_root", VEX_FIT_ROOT, PRIM, [spread, begin, frame, surface])
-    fit = _wrangle(sub, "fit_to_lock", VEX_FIT, POINT, [fit_root, begin, frame, surface])
-    fit_mid = _wrangle(sub, "fit_mid", VEX_FIT_MID, POINT, [fit])
-    sm_strand = _wrangle(sub, "strand_smooth", VEX_STRAND_SMOOTH, PRIM, [fit_mid, begin])
-    tags = _wrangle(sub, "strand_tags", VEX_STRAND_TAGS, PRIM, [sm_strand, begin])
+    # the lock's own piece of the lookup cloud (SURFACE_PIECES: one packed fragment a piece; taking one out
+    # costs its own faces): looked up in the whole cloud, fit_to_lock paid ~75 ms a lock whatever its size
+    # (the lookup structure over every lock's mesh, built again in each pass of the loop), a third of a
+    # small lock's cook. The same faces at the same places, and the other pieces lie a PIECE_GAP away, past
+    # the lookup's reach
+    piece_pick = _node(sub, "blast", "piece_pick", [surface_pieces], grouptype=4, negate=1)
+    piece_pick.parm("group").set('@piece_name=`prim("../foreach_begin", 0, "piece", 0)`')
+    piece_cloud = _node(sub, "unpack", "piece_cloud", [piece_pick])
+    piece_cloud.parm("transfer_attributes").set("*")
+    # the node's "Fit lookup per lock" (lookup_per_piece, on): off, the whole cloud as v0.1 looked it up.
+    # The two find the same spot on the mesh within the lookup's own noise (a nearest-face search in a
+    # flattened space with folds): Helen, no layer, 45 % of the strand points move, half of them under
+    # 0.008 mm, 1 % over 1 mm, at most 4 mm; every root and strand count is the same
+    fit_cloud = _node(sub, "switch", "fit_cloud", [surface, piece_cloud])
+    fit_cloud.parm("input").setExpression('ch("../lookup_per_piece")')
+    fit_root = _wrangle(sub, "fit_root", VEX_FIT_ROOT, PRIM, [spread, begin, frame, fit_cloud])
+    fit = _wrangle(sub, "fit_to_lock", VEX_FIT, POINT, [fit_root, begin, frame, fit_cloud])
+    sm_strand = _wrangle(sub, "strand_smooth", VEX_STRAND_SMOOTH, PRIM, [fit, begin])
+    sm_apply = _wrangle(sub, "strand_smooth_apply", VEX_STRAND_SMOOTH_APPLY, POINT, [sm_strand])
+    sm_clean = _node(sub, "attribdelete", "strand_smooth_clean", [sm_apply], primdel="smooth_p")
+    tags = _wrangle(sub, "strand_tags", VEX_STRAND_TAGS, PRIM, [sm_clean, begin])
     # clump on the lock's own region: hairgen's skinprim / skinprimuv index this region cut, so they
     # are valid on it as they are (one hairclump over the whole scalp needed them looked up again)
     clump_skin = _wrangle(sub, "clump_skin", "v@rest = @P;  // hairclump wants a rest skin\n", POINT,
@@ -2036,6 +2078,11 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     adv.addParmTemplate(active)
     adv.addParmTemplate(hou.FloatParmTemplate("deform_radius", "Deform radius", 1, default_value=(0.02,),
                                               min=0.0, max=1.0))
+    adv.addParmTemplate(hou.ToggleParmTemplate(
+        "lookup_per_piece", "Fit lookup per lock", default_value=True,
+        help="Each lock looks its strands up on its own mesh piece: a third less to cook per lock. Off: the "
+             "whole hair mesh at once, as v0.1 did (the same hair within a few hundredths of a millimetre for "
+             "most points, up to 4 mm for a few on folded mesh)."))
     # how much hair the per-lock cache may hold: the states an undo or redo returns to without a recook.
     # Saved with the hip; not in any lock's cache key (changing it regrows nothing)
     adv.addParmTemplate(hou.FloatParmTemplate(

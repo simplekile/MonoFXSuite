@@ -80,12 +80,13 @@ _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, config.MASK_PARM, config.UNDO
 # Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
 _KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_match", "cached", "cache_key",
                      "cache_mode", "disp", "row_display",   # a lock's display reaches its key as its factor
-                     "mask_set", "mask_add_n"}              # its layers reach it as the digest of their cover
+                     "mask_set", "mask_add_n",              # its layers reach it as the digest of their cover
+                     "auto_key", "auto_cached"}
 _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 MERGED_LOCK = -1                     # LockCache slot of a whole merge (hair_cache / groom_cache), not a lock
 MERGED_MODE = "merged:"
-CACHE_NET_VERSION = "partial-1-root-spread-6-mask-3"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "partial-1-root-spread-6-mask-7"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -1583,6 +1584,7 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     has_disp = geo.findPrimAttrib("disp") is not None
     preview_mode = config.DISPLAY_MODES.index("hair_preview")
     keys, flags, factors, modes, captures, drags, grows, msets, madds = [], [], [], [], [], [], [], [], []
+    akeys, aflags = [], []
     has_excluded = geo.findPrimAttrib("excluded") is not None
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
@@ -1617,6 +1619,10 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
         parts.append(f)
         parts.append(cap)
         parts.append(int(drag))
+        # the lock's automatic roots read everything above and no layer: their own key (cook_auto_store)
+        akey = lock_key(parts)
+        akeys.append(akey)
+        aflags.append(int(cache.has(sid, lid, AUTO_MODE + lock_mode, akey)))
         mset = mask_sets[lid] if 0 <= lid < len(mask_sets) else -1
         msets.append(mset)
         madds.append(float(mask_adds[lid]) if mset >= 0 and lid < len(mask_adds) else 0.0)
@@ -1636,8 +1642,50 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     geo.setPrimIntAttribValues("mask_set", msets)
     geo.addAttrib(hou.attribType.Prim, "mask_add_n", 0.0)
     geo.setPrimFloatAttribValues("mask_add_n", madds)
+    geo.addAttrib(hou.attribType.Prim, "auto_key", "")
+    geo.setPrimStringAttribValues("auto_key", akeys)
+    geo.addAttrib(hou.attribType.Prim, "auto_cached", 0)
+    geo.setPrimIntAttribValues("auto_cached", aflags)
     if groom:
         geo.setPrimIntAttribValues("grows", grows)
+
+
+AUTO_MODE = "auto:"      # LockCache slot (+ the hair's mode) of a lock's automatic roots, before the layers
+
+
+def _auto_slot(sop):
+    """(node session id, lock id, slot, key) of the automatic roots of the lock a loop node works on."""
+    spine = sop.inputs()[-1].geometry().prims()
+    if not spine:
+        return None
+    p = spine[0]
+    return (sop.parent().sessionId(), p.intAttribValue(config.ATTR_LOCK_ID),
+            AUTO_MODE + p.stringAttribValue("cache_mode"), p.stringAttribValue("auto_key"))
+
+
+def cook_auto_store(sop) -> None:
+    """Python SOP "auto_store" in the per-lock loop, after root_pick: keep the lock's automatic roots
+    (hairgen's scatter with the roots root_pick relocated) under its key without layers, and pass them on
+    unchanged. One state a lock: a stroke changes no automatic root, an edit of the lock replaces them.
+    Input 0 root_pick, input 1 the lock's keyed spine."""
+    slot = _auto_slot(sop)
+    if slot is None or not slot[3]:
+        return
+    cache = hair_cache()
+    cache.put_derived(*slot, sop.geometry().freeze(read_only=True))
+    cache.keep_only(slot[0], slot[1], slot[2], (slot[3],))
+
+
+def cook_auto_load(sop) -> None:
+    """Python SOP "auto_load": the lock's automatic roots from the cache (`lock_keys` saw them there:
+    `auto_cached`). Input 0 is the lock's keyed spine."""
+    slot = _auto_slot(sop)
+    geo = sop.geometry()
+    geo.clear()
+    got = hair_cache().get(*slot) if slot is not None else None
+    if got is None:
+        raise hou.NodeError("the lock's automatic roots are not in the cache")
+    geo.merge(got)
 
 
 def cook_cache_store(sop) -> None:

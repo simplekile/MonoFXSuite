@@ -252,6 +252,19 @@ and its locks are no longer captured inside the per-lock loop (800 B a point: on
 cached strands only when the deformed output is read. The deformed groom is point for point v0.1's.
 Helen, 2 GB: ~58 strokes on ordinary skin (26 MB each, 5 locks), ~28 on the whorl (55 MB, 26-35 locks).
 
+**Speed, and one change to the automatic groom that needs a decision (round 3).** A stroke missed the
+limit (0.2 s a lock + 0.1 s) on three places in the second check. Most of a small lock's cook was a fixed
+75 ms: the strand fit searched every lock's mesh for its own. Each lock now looks its strands up on its own
+mesh piece ("Fit lookup per lock" on the node, on by default), its automatic roots are kept between
+strokes, and two per-point passes were folded together: strokes on Helen 0.29-0.85 s for 3-6 locks (limits
+0.7 / 1.3), the whorl 1.4-2.3 s for 24-35 locks, a full cook 7.6 s instead of 10.9.
+**The per-lock lookup is not v0.1's hair bit for bit**: the same roots and strand counts, but 45 % of the
+strand points move (half under 0.008 mm, 1 % over 1 mm, at most 4 mm), and 8 of the 27 grooming-check numbers
+of the no-layer groom move by 5e-5 to 1 % (all 27 pass). With the toggle off the groom is v0.1's within its
+own run-to-run noise and the speed limit holds with 3-9 % to spare. OPEN for the manager / user: which
+default ships (the executor built it on, for the margin; "No layers = the v0.1 groom" below is graded by
+root positions and strand counts, and by the QC numbers with the toggle off).
+
 **Why two sets of roots, and not one scatter by a density map (round 3).** The first builds multiplied
 hairgen's density attribute by a factor and thinned the roots the tool relocates. Two checkers measured what
 that gave: x2 was x1.08 on the whorl and x5.3 under floating mesh, "= D" ran 11-19 % short where relocated
