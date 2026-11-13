@@ -1340,6 +1340,19 @@ def capture_flag(groom: bool, wired: bool, deforming: bool) -> int:
     return int(wired and (groom or deforming))
 
 
+CAPTURE_MODE = "+capture"
+
+
+def cache_mode(drag: bool, factor: float, capture: int) -> str:
+    """Pure: the LockCache slot of a lock's hair. A dragged lock's coarser strands, its preview and its full
+    hair are kept apart, and so are strands cooked with the Point Deform capture: with an anim wired the
+    Groom output captures and the display at rest does not, so the same lock has two keys at once. In one
+    slot of KEEP 2 those two filled it, and an undo found the hair from before the edit gone and regrew the
+    lock (0.65-1.5 s instead of 0.04 s, t57)."""
+    mode = "drag" if drag else "hair" if factor >= 1.0 else "hair_preview"
+    return mode + CAPTURE_MODE if capture else mode
+
+
 def cook_lock_keys(sop, groom: bool = False) -> None:
     """Python SOP "lock_keys", hair modes only: per spine `cache_key` (a digest of everything the
     per-lock hair loop reads for that lock: its spine and settings, its region, its mesh piece, the
@@ -1409,13 +1422,14 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
             f = 1.0
         factors.append(f)
         drags.append(int(drag))
-        # a dragged lock's strands are coarser (DRAG_SEGMENTS): kept apart from its full hair
-        lock_mode = "drag" if drag else "hair" if f >= 1.0 else "hair_preview"
-        modes.append(lock_mode)
         # captured only where a deform reads it (capture_flag): the display while Shot deform is on,
         # the Groom output whenever an anim is wired (it cooks only when something reads it)
         cap = capture_flag(groom, wired, deforming)
         captures.append(cap)
+        # a dragged lock's strands are coarser (DRAG_SEGMENTS): kept apart from its full hair, and
+        # captured strands apart from plain ones (cache_mode)
+        lock_mode = cache_mode(drag, f, cap)
+        modes.append(lock_mode)
         piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
         idx = [p.number() for p in prim.points()]
         parts: list[Any] = [shared, [(a.name(), prim.attribValue(a)) for a in rattrs]]
@@ -1504,7 +1518,8 @@ def geo_stats(node, lock_ids: Sequence[int] | None = None) -> dict:
         out["locks"] += 1
         out["prims"] += g.intrinsicValue("primitivecount")
         out["points"] += g.intrinsicValue("pointcount")
-        out["mode"] = out["mode"] or p.stringAttribValue("cache_mode")
+        # the panel reads "hair" / "hair_preview" / "drag": whether the strands carry the capture is not its
+        out["mode"] = out["mode"] or p.stringAttribValue("cache_mode").replace(CAPTURE_MODE, "")
         if not out["attribs"]:
             out["attribs"] = {
                 "point": sorted(a.name() for a in g.pointAttribs()),

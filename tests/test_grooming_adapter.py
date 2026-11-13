@@ -311,3 +311,19 @@ def test_groom_output_captures_whenever_an_anim_is_wired_the_display_only_while_
     assert ga.capture_flag(groom=False, wired=True, deforming=False) == 0
     assert ga.capture_flag(groom=False, wired=True, deforming=True) == 1
     assert ga.capture_flag(groom=True, wired=False, deforming=False) == 0
+
+
+def test_captured_strands_have_a_cache_slot_of_their_own():
+    # anim wired, display at rest: output 1 captures and the display does not, so a lock has two keys at
+    # once; in one slot of KEEP 2 they pushed out the hair an undo goes back to (v0.2 plan, Not sure 6)
+    assert ga.cache_mode(drag=False, factor=1.0, capture=0) == "hair"
+    assert ga.cache_mode(drag=False, factor=1.0, capture=1) == "hair" + ga.CAPTURE_MODE
+    assert ga.cache_mode(drag=False, factor=0.1, capture=0) == "hair_preview"
+    assert ga.cache_mode(drag=True, factor=1.0, capture=1) == "drag" + ga.CAPTURE_MODE
+    c = ga.LockCache()
+    plain, captured = ga.cache_mode(False, 1.0, 0), ga.cache_mode(False, 1.0, 1)
+    c.put(1, 7, plain, "before", "hair before")
+    c.put(1, 7, captured, "before", "captured before")
+    c.put(1, 7, plain, "after", "hair after")          # the edit: the display, then output 1
+    c.put(1, 7, captured, "after", "captured after")
+    assert c.has(1, 7, plain, "before") and c.has(1, 7, captured, "before")   # the undo finds both
