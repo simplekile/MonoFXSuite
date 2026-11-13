@@ -799,8 +799,34 @@ def deform_state(node) -> tuple[bool, bool]:
     return wired, bool(p.eval()) if p is not None else True
 
 
+def anim_mismatch_text(anim_points: int, rest_points: int) -> str:
+    """Why the shot deform is refused, "" when it can run: the animated hair mesh must have the rest hair
+    mesh's points (another count would move the wrong points). The same words as the HDA's warning."""
+    if anim_points == rest_points and rest_points > 0:
+        return ""
+    if anim_points <= 0:
+        return "Anim hair mesh: no prims named like the rest hair mesh: no deform"
+    return f"Anim hair mesh: {anim_points} points, rest hair mesh {rest_points}: no deform"
+
+
+def deform_problem(node) -> str:
+    """With an animated hair mesh wired in: why the deform does not run ("" when it does). Cooks the anim
+    input's hair (ANIM_HAIR) once; call it when the deform is turned on, not per frame."""
+    if not (len(node.inputs()) > 2 and node.inputs()[2] is not None):
+        return ""
+    anim, rest = node.node("ANIM_HAIR"), node.node("IN_HAIR")
+    try:
+        ga, gr = anim.geometry(), rest.geometry()
+    except (AttributeError, hou.Error):
+        return ""
+    if ga is None or gr is None:
+        return ""
+    return anim_mismatch_text(len(ga.iterPoints()), len(gr.iterPoints()))
+
+
 def set_shot_deform(node, on: bool) -> None:
-    """Shot deform on / off: a view choice, no undo step; a scene always opens with it off (OnLoaded)."""
+    """Shot deform on / off: a view choice, no undo step; in the UI a scene opens with it off
+    (OnLoaded); without a UI it stays as saved."""
     p = node.parm("shot_deform")
     if p is not None:
         with hou.undos.disabler():
@@ -1177,14 +1203,21 @@ def cook_assign(sop) -> None:
         sop.addWarning(f"{missing} locks are not in the groom data yet: press Detect locks")
 
 
+def loaded_resets(ui: bool) -> tuple[tuple[str, Any], ...]:
+    """(parm, value) OnLoaded puts back. View state always; Shot deform only in the UI: grooming is the
+    main mode there, but hython / hbatch / a farm job opening a shot scene to cache output 1 must keep
+    the deform it was saved with, else every frame of the cache is the rest groom (t56)."""
+    resets = ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_STRANDS, ""), (PARM_FOCUS, ""), (PARM_PLAYING, 0))
+    return resets + (("shot_deform", 0),) if ui else resets
+
+
 def on_loaded(node) -> None:
     """HDA OnLoaded: isolate is a temporary view, so a scene saved while isolated opens showing all;
-    a scene saved while playing opens at its Display; a scene saved with Shot deform on opens at rest
-    (grooming is the main mode: with the deform every lock is drawn as strands and focus cannot see
-    through the others)."""
+    a scene saved while playing opens at its Display; in the UI a scene saved with Shot deform on opens
+    at rest (grooming is the main mode: with the deform every lock is drawn as strands and focus cannot
+    see through the others). Without a UI (caching a shot) the deform stays as saved."""
     with hou.undos.disabler():
-        for name, empty in ((PARM_ISOLATE, ""), (PARM_DRAG_PREVIEW, ""), (PARM_STRANDS, ""), (PARM_FOCUS, ""),
-                            (PARM_PLAYING, 0), ("shot_deform", 0)):
+        for name, empty in loaded_resets(hou.isUIAvailable()):
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)
@@ -1586,6 +1619,6 @@ def cook_frozen_regions(sop) -> None:
 __all__ = [
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
-    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "set_shot_deform", "set_root_flip",
+    "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "deform_problem", "set_shot_deform", "set_root_flip",
     "set_excluded",
 ]

@@ -166,7 +166,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   its colour inside (a copy per lock and colour, in the hair cache): the viewport ignores a packed
   prim's Cd and drew the groom white.
 - Shot deform: toggle `shot_deform` (panel: the Anim button, shown when an animated hair mesh is wired;
-  no undo step). Off is the main mode: the default, and OnLoaded turns it off (the user groomed a scene
+  no undo step). Off is the main mode: the default, and OnLoaded turns it off in the UI only
+  (`loaded_resets(hou.isUIAvailable())`: a hython / farm job caching output 1 kept getting the rest groom
+  on every frame, t56) (the user groomed a scene
   saved with it on: every lock drawn as strands, focus only dimming, so select looked like strands /
   isolate). GUI tests open scenes as saved (t36), not with the deform forced off. Hidden `anim_wired` / `deform_active`. With it on, every edit deforms all 4 M points
   (~1.2 s), so grooming is done with it off (edits 0.1 s); with it on a drag applies on release. Each lock is captured to the rest hair mesh inside the per-lock loop and cached
@@ -429,3 +431,10 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   next free version again. hython t54 (`sandbox/.../t54_publish/`): ok, same version, disk full on the
   2nd rename, failure after the USD export, no permission, no `_vNNN` in the scene, file in the way: no
   temp file left, the renamed USD reads back with every strand (118,622 on Helen).
+- Shot check t56 (sh020 / sh025, sandbox `tests/t56_shot/`): the deform follows the anim (strands p95
+  0.54 cm off the animated mesh, as at rest, while it moves 76-195 cm); output 1 1.1 s a frame, output 0
+  +0.9 s, first frame after Deform on 12 s. A warning inside the locked HDA (ANIM_HAIR's point-count
+  check) never reaches `node.warnings()`, even on the cook chain: say it in the panel
+  (`deform_problem`, shown by Deform on), not only in VEX. v0.1 has no shot cache: a stock File Cache on
+  output 1, Deform on. `qc_capture.py` with `QC_FRAMES=0,60,120` keeps the anim and shoots
+  `shot_<view>_f<frame>` and the animated mesh beside it.

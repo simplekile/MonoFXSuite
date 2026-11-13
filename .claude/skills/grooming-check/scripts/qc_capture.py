@@ -13,6 +13,10 @@ Shots (PNG in QC_OUT): front, back, left, right, top, three-quarter, crown close
 locks of QC_REPORT (or QC_LOCKS=name,name) a close-up alone with the lock's mesh as a wire template
 (`lock_<name>_a/b`); with QC_REF the same 7 views of the reference
 (`ref_*`). A log in QC_OUT/capture_log.txt.
+
+Shot mode (QC_FRAMES=0,60,120): the animated hair mesh stays wired, Shot deform is turned on, and for
+each frame and view (QC_VIEWS, default threequarter) `shot_<view>_f<frame>` (ours deformed) and
+`shot_mesh_<view>_f<frame>` (the animated hair mesh, same camera); nothing else is shot.
 """
 
 import json
@@ -28,6 +32,7 @@ REF = os.environ.get("QC_REF")
 # QC_COMPARE=hair_bang_01,hair_bang_02 or group:hair_bang or all: one image per lock, its mesh, our hair
 # and the reference's strands of that lock side by side (front and side rows); whole-groom shots skipped
 COMPARE = os.environ.get("QC_COMPARE", "")
+FRAMES = [int(f) for f in os.environ.get("QC_FRAMES", "").split(",") if f.strip()]
 os.makedirs(OUT, exist_ok=True)
 _log = open(os.path.join(OUT, "capture_log.txt"), "w", encoding="utf-8")
 
@@ -55,6 +60,8 @@ VIEWS = {  # name: (rx, ry) camera rotation in degrees; "crown" frames the top o
 _only = [v for v in os.environ.get("QC_VIEWS", "").split(",") if v in VIEWS]
 if _only:                                    # QC_VIEWS=front,crown: just these
     VIEWS = {k: VIEWS[k] for k in _only}
+elif FRAMES:                                 # shot mode: one view a frame unless asked
+    VIEWS = {"threequarter": VIEWS["threequarter"]}
 
 
 def viewer():
@@ -215,7 +222,11 @@ def s_open():
     S["ga"], S["node"] = ga, ga.find_nodes()[0]
     node = S["node"]
     geo = node.parent()
-    node.setInput(2, None)                 # rest pose: the hair mesh is the target
+    if FRAMES and len(node.inputs()) > 2 and node.inputs()[2] is not None:
+        ga.set_shot_deform(node, True)     # OnLoaded opened it at rest; the shot is the target
+        S["anim_mesh"] = look_mesh(geo, node.inputs()[2], "anim_mesh")
+    else:
+        node.setInput(2, None)             # rest pose: the hair mesh is the target
     ga.set_display(node, "hair", "lock")
     # the strands themselves (output 1 "Groom", GROOM; HAIR on a node built before it), not the display:
     # it packs each lock with its colour inside, which the look's attribdelete / wrangle never reach
@@ -304,7 +315,34 @@ def add_views(prefix, which):
         STEPS.extend([_prep, _shot])
 
 
-if not COMPARE:
+def add_shot_frames():
+    for f in FRAMES:
+        for view in VIEWS:
+            def _prep(f=f, view=view):
+                hou.setFrame(f)
+                S["ours"].setDisplayFlag(True)
+                S["ours"].cook(force=False)
+                set_view(view, S["ours"].geometry().boundingBox())
+
+            def _shot(f=f, view=view):
+                grab(f"shot_{view}_f{f:04d}")
+
+            def _mesh(f=f):
+                if "anim_mesh" in S:
+                    S["anim_mesh"].setDisplayFlag(True)
+                    aim_looks()
+                    S["anim_mesh"].cook(force=True)
+
+            def _mshot(f=f, view=view):
+                if "anim_mesh" in S:
+                    grab(f"shot_mesh_{view}_f{f:04d}")
+
+            STEPS.extend([_prep, _shot, _mesh, _mshot])
+
+
+if FRAMES:
+    add_shot_frames()
+elif not COMPARE:
     add_views("", "ours")
     add_views("mesh_", "mesh")
     if REF:
@@ -406,7 +444,9 @@ if COMPARE:
     STEPS.append(s_compare)
 
 worst = [n for n in os.environ.get("QC_LOCKS", "").split(",") if n]
-if not worst and REPORT and os.path.exists(REPORT):
+if FRAMES:
+    worst = []
+elif not worst and REPORT and os.path.exists(REPORT):
     with open(REPORT, encoding="utf-8") as fh:
         worst = [r["name"] for r in json.load(fh).get("worst_locks", [])[:4]]
 for name in worst:
