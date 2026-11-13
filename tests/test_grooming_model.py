@@ -227,6 +227,19 @@ def test_folders_hold_layers_one_level():
     assert d.remove_mask(folder.id) and d.mask(a.id).parent is None     # deleting a folder keeps its layers
 
 
+def test_reassigning_a_missing_lock_carries_its_settings_and_its_layers():
+    from tools.fx.grooming.model import Group, Lock, Orphan
+    d = GroomData(groups=[Group("back", "back")],
+                  locks=[Lock(21, "hair_back_21", "back", match="new"), Lock(3, "hair_back_03", "back")],
+                  orphans=[Orphan(14, "hair_back_14", "back", {"density": 80.0})])
+    own = d.add_mask("Lock B = 0", value=0.0, scope="locks", locks=[14])
+    assert d.reassign_orphan(99, 21) is None and d.reassign_orphan(14, 99) is None and own.locks == [14]
+    assert d.reassign_orphan(14, 21) == ["Lock B = 0"]
+    assert own.locks == [21] and d.lock(21).overrides == {"density": 80.0} and d.lock(21).match == "ok"
+    assert d.orphans == [] and own.applies(21, "back") and not own.applies(14, "back")
+    assert GroomData.from_json(d.to_json()).mask(own.id).locks == [21]
+
+
 def test_a_layer_owned_by_a_missing_lock_follows_it_to_the_lock_it_is_given_to():
     d = GroomData()
     mine = d.add_mask("Lock B = 0", value=0.0, scope="locks", locks=[14, 3])

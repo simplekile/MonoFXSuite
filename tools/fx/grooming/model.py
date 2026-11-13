@@ -240,6 +240,20 @@ class GroomData:
         at = max(0, min(int(index), len(rest)))
         self.masks = rest[:at] + [layer] + rest[at:]
 
+    def reassign_orphan(self, orphan_id: int, lock_id: int) -> list[str] | None:
+        """A missing lock's settings go to lock `lock_id` (usually one Detect marked new: the same hair come
+        back under a new id) and the missing lock leaves the list: its overrides, and the density layers it
+        owned, which now belong to the lock. Returns the names of those layers, None when either id is
+        unknown (nothing changes). The lock keeps its id and name; its match is ok."""
+        orphan = next((o for o in self.orphans if o.id == orphan_id), None)
+        lk = self.lock(lock_id)
+        if orphan is None or lk is None:
+            return None
+        lk.overrides = dict(orphan.overrides)
+        lk.match = "ok"
+        self.orphans.remove(orphan)
+        return self.reassign_mask_lock(orphan_id, lock_id)
+
     def reassign_mask_lock(self, old_id: int, new_id: int) -> list[str]:
         """Layers owned by lock `old_id` (a missing lock) now belong to `new_id`: the names of those layers.
         A layer that already names the new lock just loses the old id."""
