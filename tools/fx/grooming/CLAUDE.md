@@ -442,3 +442,29 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   `shot_<view>_f<frame>` and the animated mesh beside it.
 - Output 1 deforms whenever a matching anim is wired (t56b): with the display at rest a lock edit cooks
   no deform node (output 1 is not read), and a File Cache on output 1 caches deformed with Shot deform off.
+- v0.2a mask spike (t57, sandbox `tests/t57_mask_spike/`; decisions and numbers in the v0.2 plan):
+  - Painting is our own Python viewer state: it reads `SCALP_FINE`, keeps the stroke in numpy, writes the
+    HDA node's parms once on release (one undo step). Nothing cooks while the button is down, so the brush
+    runs at the redraw rate (1.4-1.9 ms a dab on 24.5 k points) whatever the hair costs. Attribute Paint on
+    an editable inner node works in a locked HDA, but cooks the groom below it on every dab (1.4 a second).
+  - A state entered by name (`setCurrentState`) gets `onGenerate`, not `onEnter`, and no node in kwargs.
+    Selecting the node afterwards (`setCurrent`) makes Houdini enter the node's own state on its next
+    event loop and drops ours silently: `currentState()` still said ours right after the call.
+  - `hou.SimpleDrawable.setGeometry` with the same `hou.Geometry` object does not re-read `Cd`: hand it a
+    copy (`hou.Geometry(geo)`, 0.5 ms). `hou.GeometryDrawable` Face draws flat, no `Cd`. Drawables are in
+    flipbook shots.
+  - GUI tests can paint without the user's cursor: `QApplication.sendEvent` of QMouseEvents to the
+    widget under the viewport (`RE_WindowDrawable`), one a timer tick (Houdini merges several moves sent
+    in one tick; `postEvent`, QTest and Win32 messages did not reach the state). Real input
+    (`SetCursorPos`) fights the user's own mouse.
+  - hairgen's scatter follows the point `density` attribute, hard edges and soft ones (count x2.0 where
+    painted 2, 0 where painted 0, spacing 0.86-1.04, clumped 0): masks need no scatter of our own. What
+    does not follow it by itself: the start disc (`root_pick`) and whorl roots, which are placed by us.
+  - Every parm of the node is in each lock's key unless listed in `_KEY_SKIP_PARMS`: a new storage parm
+    must go there, or its first write regrows the groom.
+  - `node.parm(data_parm).set(hou.Geometry)` undoes and redoes exactly and is saved with the hip; a spare
+    parm can be added to a locked HDA node.
+  - A scene keeps its saved parms: `t17_check/char_Helen_grooming_v007.hiplc` still has `root_pull` 0.85
+    and Shot deform on (hython does not reset it), which bunches every root and deforms output 1; make a
+    scene with the current defaults first (`t57_make.py`). Output 1 is deformed while an anim is wired:
+    read roots from `GROOM_REST`.
