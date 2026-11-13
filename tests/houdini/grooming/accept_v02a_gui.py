@@ -471,6 +471,7 @@ def s1c_views():
         dots = st.root_count
         plain = bool(np.allclose(cds["roots"], cds["roots"][0]))
         ga().set_brush(view="density")
+        S["views_done"] = True
         C.add("gui_views_density_factor_layer_roots",
               ok_layer and ses.whole and err < 1e-4 and abs(counted / strands - 1) < 0.15 and dots == strands > 1000 and plain,
               {"layer_view_unpainted_skin_is_dark": ok_layer, "groom_counted_whole": bool(ses.whole),
@@ -483,6 +484,33 @@ def s1c_views():
               "a plain scalp",
               evidence=shots["density"],
               note="Guides display, so the scalp is in view: choosing density or roots grows the groom once to count it")
+        later(300, guides_stroke)
+
+    def guides_stroke():
+        # a stroke in Guides display must not grow hair to recount: the view goes on by prediction
+        ses = state_mod().running().session
+        before = ses.density().copy()
+        cooks0 = node.node("groom_cache").cookCount()
+        ga().set_brush(value=0.0, radius_cm=2.0, erase=False)
+        drag(line(-40, 70, 40, n=12), lambda: after_guides(before, cooks0))
+
+    def after_guides(before, cooks0):
+        ses = state_mod().running().session
+        st1 = stroke_stats()[0]
+        v1, a1 = lib.mask_arrays(node, lid)
+        core = (a1 >= 0.99) & (v1 == 0.0) & (before > 1.0)
+        now = ses.density()
+        fell = float(now[core].sum() / max(before[core].sum(), 1e-9)) if core.any() else 1.0
+        grew = node.node("groom_cache").cookCount() - cooks0
+        cost = (st1.get("cook_s") or 0) + (st1.get("count_s") or 0)
+        C.add("gui_stroke_in_guides_grows_no_hair", grew == 0 and cost < 0.3 and fell < 0.05 and int(core.sum()) > 20,
+              {"output1_cooks_by_the_stroke": grew, "cook_s": st1.get("cook_s"), "count_s": st1.get("count_s"),
+               "density_view_on_the_stroke_after_over_before": round(fell, 4), "points": int(core.sum()),
+               "counted_before": bool(ses.counted)},
+              "Guides display: a stroke cooks no hair (output 1 untouched), costs under 0.3 s, and the density "
+              "view still drops where 0 was painted (predicted from the last count)")
+        hou.undos.performUndo()
+        ga().set_brush(value=0.0, radius_cm=1.0)
         ga().set_display(node, "hair", "lock")
         node.cook()
         set_view(S["zone"]["normal"], box_round(S["zone"]["centre_cm"], 3.5))

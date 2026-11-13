@@ -752,6 +752,7 @@ class PaintSession:
         self.roots = _np().zeros((0, 3), _np().float32)
         self.actual = None
         self.whole = False
+        self.counted = False        # the groom's roots were counted at least once this session
         self.reload()
 
     def reload(self) -> None:
@@ -794,17 +795,18 @@ class PaintSession:
     def measure(self, cook: bool) -> bool:
         """Count the groom's roots: `roots` (their positions), `actual` (roots / cm2 per scalp point) and
         the factor they were grown with. With `cook` the locks whose full hair is not in the cache are
-        grown first (output 1); without it they are left out, and when any is missing nothing is kept
-        (`actual` None: the density view then shows what is asked). True when the whole groom was counted."""
+        grown first (output 1). Without it nothing cooks: when a lock's hair is missing the last count is
+        kept, and `density` goes on from it by the factor's change (a prediction; nothing is counted until
+        the hair is there again). True when the whole groom was counted now."""
         roots, whole = display_roots(self.node, cook=cook)
-        self.roots = roots
         self.whole = whole
         if not whole:
-            self.actual = None
             return False
+        self.roots = roots
         _base, _reference, point_area = self.base_density()
         self.actual = root_density(self.md.P, point_area, roots, config.ROOT_DENSITY_CELL_CM / self.unit_cm)
         self.actual_factor = self.factor().copy()
+        self.counted = True
         return True
 
     def density(self):

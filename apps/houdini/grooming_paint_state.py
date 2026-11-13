@@ -196,16 +196,18 @@ class MaskPaint(object):
         # a fresh copy: handed the same hou.Geometry again the drawable keeps the old colours
         self.draw.setGeometry(hou.Geometry(self.geo))
 
-    def reroot(self, cook: bool | None = None) -> None:
-        """Count the groom's roots again for the "density" and "roots" views (after a stroke's cook, an
-        undo, entering, a change of view) and show the dots in the "roots" view. `cook` None: grow what is
-        missing only when the whole groom was counted before (then a stroke's locks are all that miss)."""
+    def reroot(self, cook: bool = False) -> None:
+        """Count the groom's roots again for the "density" and "roots" views and show the dots in the
+        "roots" view. Without `cook` (after a stroke, an undo, entering) nothing is grown for it: when the
+        display holds the hair (Hair) the count is new, else (Guides, Hair preview) the last count stays
+        and the density view goes on from it by the factor's change, so a stroke in Guides costs no hair.
+        `cook` (the view chosen by hand, `recount`) grows what is missing and counts."""
         dots = getattr(self, "dots", None)
         if dots is None or self.node is None or self.session is None:
             return
         view = gm.BRUSH["view"]
         if view in ("density", "roots"):
-            self.session.measure(self.session.whole if cook is None else cook)
+            self.session.measure(cook)
         roots = self.session.roots if view == "roots" else ()
         self.root_count = int(len(roots))
         geo = hou.Geometry()
@@ -221,7 +223,7 @@ class MaskPaint(object):
             self.draw.setXray(bool(gm.BRUSH["xray"]))
             if self.session is not None and not self.down:
                 # the view may have changed; one chosen by hand may grow the hair it needs to count
-                self.reroot(cook=True if gm.BRUSH.pop("count_roots", False) else None)
+                self.reroot(cook=bool(gm.BRUSH.pop("count_roots", False)))
                 self.recolour()
             self.scene_viewer.curViewport().draw()
 
