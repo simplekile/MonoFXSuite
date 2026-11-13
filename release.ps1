@@ -42,10 +42,10 @@ function Assert-Clean {
     if ($dirty) { Fail "uncommitted changes:`n$dirty" }
 }
 
-function Get-Version { return (Get-Content (Join-Path $Root "VERSION") -Raw).Trim() }
+function Get-Version { return (Get-Content (Join-Path $Root "VERSION") -Raw -Encoding UTF8).Trim() }
 
 function Get-UnreleasedBody {
-    $content = Get-Content (Join-Path $Root "docs\changelog.md") -Raw
+    $content = Get-Content (Join-Path $Root "docs\changelog.md") -Raw -Encoding UTF8
     $m = [regex]::Match($content, '(?s)## \[Unreleased\]\r?\n(.*?)(?=\r?\n## |\z)')
     if (-not $m.Success) { Fail "docs/changelog.md has no [Unreleased] section" }
     return $m.Groups[1].Value.Trim()
@@ -88,7 +88,7 @@ $head = Invoke-Git @("rev-parse", "HEAD")
 $main = Invoke-Git @("rev-parse", "origin/main")
 if ($head -ne $main) { Fail "HEAD is not origin/main ($main). Merge the release commit, then check out origin/main." }
 
-$changelog = Get-Content (Join-Path $Root "docs\changelog.md") -Raw
+$changelog = Get-Content (Join-Path $Root "docs\changelog.md") -Raw -Encoding UTF8
 if ($changelog -notmatch "## \[$([regex]::Escape($version))\]") {
     Fail "docs/changelog.md has no [$version] section: run .\release.ps1 prepare first"
 }

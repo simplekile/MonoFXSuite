@@ -18,7 +18,7 @@ if (-not (Test-Path $VersionFile)) {
     exit 1
 }
 
-$current = (Get-Content $VersionFile -Raw).Trim()
+$current = (Get-Content $VersionFile -Raw -Encoding UTF8).Trim()
 $parts = $current -split '\.'
 if ($parts.Count -lt 3) {
     Write-Error "VERSION must be MAJOR.MINOR.PATCH (e.g. 0.1.0)"
@@ -46,7 +46,7 @@ if (-not (Test-Path $ChangelogPath)) {
 }
 
 $date = Get-Date -Format "yyyy-MM-dd"
-$content = Get-Content $ChangelogPath -Raw
+$content = Get-Content $ChangelogPath -Raw -Encoding UTF8
 
 # Find "## [Unreleased]" and content until next "## " or end
 $pattern = '(?s)(## \[Unreleased\]\r?\n)(.*?)(?=\r?\n## |\z)'

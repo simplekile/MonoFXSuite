@@ -21,7 +21,7 @@ if (-not (Test-Path $IssPath)) {
 $VersionFile = Join-Path $ProjectRoot "VERSION"
 $Version = "0.1.0"
 if (Test-Path $VersionFile) {
-    $Version = (Get-Content $VersionFile -Raw).Trim()
+    $Version = (Get-Content $VersionFile -Raw -Encoding UTF8).Trim()
 }
 Write-Host "Version: $Version"
 

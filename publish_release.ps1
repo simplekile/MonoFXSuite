@@ -22,7 +22,7 @@ if (-not (Test-Path $VersionFile)) {
     exit 1
 }
 
-$Version = (Get-Content $VersionFile -Raw).Trim()
+$Version = (Get-Content $VersionFile -Raw -Encoding UTF8).Trim()
 $Tag = "v$Version"
 
 # Kiểm tra tag đã tồn tại và đã push
@@ -38,13 +38,13 @@ if (-not $tagExists) {
 $ReleaseNotesPath = Join-Path $ProjectRoot "RELEASE_NOTES.md"
 $Notes = "Release $Tag`n`n"
 if (Test-Path $ReleaseNotesPath) {
-    $notesContent = (Get-Content $ReleaseNotesPath -Raw).Trim()
+    $notesContent = (Get-Content $ReleaseNotesPath -Raw -Encoding UTF8).Trim()
     if ($notesContent) {
         $Notes = $notesContent + "`n"
     }
 }
 if ($Notes -eq "Release $Tag`n`n" -and (Test-Path $ChangelogPath)) {
-    $content = Get-Content $ChangelogPath -Raw
+    $content = Get-Content $ChangelogPath -Raw -Encoding UTF8
     $verEscaped = [regex]::Escape($Version)
     $pattern = "(?s)## \[$verEscaped\][^\r\n]*(.*?)(?=\r?\n## |\z)"
     $m = [regex]::Match($content, $pattern)
