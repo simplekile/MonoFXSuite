@@ -1,4 +1,4 @@
-# MONO Grooming v0.2 (plan; decided 2026-11-13; v0.2a core rebuilt in round 3 on the user's final model: one 0..1 density mask from a stack of layers; panel and gates open)
+# MONO Grooming v0.2 (plan; decided 2026-11-13; v0.2a core rebuilt 2026-11-15 on the user's final model: density layers, each with its own number and its own mask; panel and gates open)
 
 v0.1 (released in MonoFX Suite v0.1.25, contract in `grooming_v0_1.md`) makes the whole groom
 automatically from the hair mesh. v0.2 lets the artist change that result where it is wrong, on top of
@@ -12,7 +12,7 @@ their lock) are answered here by edits the artist makes, not by more tuning of t
 
 | Part | What the artist gets | Why this order |
 |---|---|---|
-| **v0.2a Density masks** | Paint a density mask on the scalp (white = the lock's density, black = no hair) as a stack of paint and fill layers with blend modes, in folders (Substance Painter style) | Fixes most known issues (crown, thin skin) with the least new machinery; the layer system is reused by b and c |
+| **v0.2a Density layers** | Density layers over the automatic groom (Substance Painter style): each has its own density number and its own painted mask, so an area can be made thinner, denser or bare | Fixes most known issues (crown, thin skin) with the least new machinery; the layer system is reused by b and c |
 | **v0.2b Lock redraw** | Move a lock's control points, redraw its curve, draw a new lock where the mesh has none | The plan's reserved slot (after spine and measure); changes shape, not density |
 | **v0.2c Brush** | Comb, lift, cut and length brushes on the hair in the viewport | Most work and the most risk (edits must survive recooks); comes last, on what a and b settle |
 
@@ -121,58 +121,75 @@ what was not tested and why, open questions. A claim without a file is not in th
   unchanged (no edits = v0.1 result, checked by the v0.1 QC numbers staying the same).
 - No modal dialogs; results and warnings on the panel's message line.
 
-## v0.2a Density masks
+## v0.2a Density layers
 
-**What (round 3, the user's final model, 2026-11-14; it replaces "one kind of layer, = D strands / cm2" of
-2026-11-13, which itself replaced the first builds' factor layers).**
-One density mask per skin point, m in 0..1, made by blending a stack of layers bottom to top, as the layer
-stack of a mask in Substance Painter. On painted skin a lock grows **m x its own Density setting**: white is
-the lock's density, black is no hair. It is an absolute density: where the mask covers, the tool's own moves
-(roots gathered at a lock's start or a whorl, skin left thin under floating mesh) do not apply.
+**What (the user's final model, 2026-11-15: "the automatic density is a density layer of its own; the user makes
+a new density layer with another density number and a mask, to override the density"). It replaces the one 0..1
+mask x the lock's own Density of 2026-11-14 (t62), in which a layer could never be denser than the automatic groom
+and black meant "no hair"; that one had replaced "= D strands / cm2" layers (2026-11-13) and the first builds'
+factor layers.**
 
-- Every value is 0..1: what the brush paints, a fill layer's value. Nothing is above 1 and nothing is in
-  strands / cm2 (to grow more than a lock's density, raise the lock's or the group's Density setting).
-- **Paint layer**: the brush paints a value AND coverage. Black and white both override what is below
-  (Normal). Skin of the layer that was never painted is transparent. Erase removes the layer's own paint
-  (coverage back to 0); it does not paint black.
-- **Fill layer**: one value over all the skin of its owner (all locks, a group, chosen locks), full coverage.
-- Each layer has a blend mode (Normal, the default; Multiply, Add, Subtract, Min, Max), an opacity and an
-  owner; folders (one level) have an opacity over their layers.
-- The bottom of the stack is the automatic groom. Where no layer has coverage the groom is v0.1's, byte for
-  byte.
+1. **Density layer**: its own number **D** (strands / cm2, absolute), an opacity, an eye, an owner row in the lock
+   tree (All locks, a group, a lock) and a mask.
+2. **The mask of a density layer**: a stack of paint and fill layers, values 0..1, blended bottom to top as the
+   layer stack of a mask in Substance Painter, starting from black. It belongs to that one density layer; there is
+   no global mask. A new density layer's mask is black, so adding a layer changes nothing until it is painted.
+   - **Paint layer**: the brush paints a value AND coverage; skin of the layer never painted is transparent. Erase
+     removes the layer's own paint (coverage back to 0); it does not paint black.
+   - **Fill layer**: one value over all the skin, full coverage.
+   - Each mask layer has a blend mode (Normal, the default; Multiply, Add, Subtract, Min, Max) and an opacity:
+     m = below + (blend(below, value) - below) x coverage x opacity, clamped to 0..1 per layer. Multiply as the
+     top layer bounds the region.
+3. **Result at a skin point**, a density layer over what lies below it:
 
-**The rule.** One layer, with value v and effect e = its coverage x its opacity, over the mask below:
+       density = below + (D - below) x mask x opacity
 
-    m' = m + (blend(m, v) - m) x e, clamped to 0..1 per layer
-    blend: Normal v | Multiply m x v | Add m + v | Subtract m - v | Min min(m, v) | Max max(m, v)
+   Density layers stack as Normal only: there is no blend mode between density layers.
+4. **Order**: layers owned by All locks first, then the lock's group, then the lock (the more specific wins);
+   within one owner row the upper layer wins.
+5. **The bottom of the stack is the automatic groom**, stored and shown as the base density layer ("Automatic",
+   `kind` "base", always the first row of `groom_data.masks`): D = each lock's own Density setting, mask full; it
+   cannot be deleted, moved or switched off. With no other layer the groom is v0.1's, byte for byte.
+6. **Black in a mask = "this layer does not apply here"**: the density below shows. It is NOT "no hair". No hair =
+   a layer with D = 0 painted white. A layer may be denser than the automatic groom: D = 300 over locks at 150
+   gives 300 (measured 299-303 / cm2 on four kinds of skin, t63).
+7. **Folders are dropped from v0.2a.** A folder of density layers with a shared mask would need a second mask
+   level in the stack, the tree and the brush's target: not free. A group or lock row of the tree already gathers
+   its density layers, and a region shared by several layers is painted once and reused as a Multiply top layer.
+   Older dev files with folders open: a folder's opacity and eye go into its layers.
+8. Quick picks are densities: 0 / 75 / 150 / 300 (`config.MASK_DENSITY_PICKS`). The brush itself paints a grey into
+   the mask (1 white by default; `config.MASK_VALUE_PICKS` 0 / 0.5 / 1).
 
-A folder blends what its layers make with what was below it: x + (inside - x) x the folder's opacity.
+**What "= D" means where locks share the skin (decided by measuring, t63 `o2_*`).** A layer's D is what the locks
+it is owned for give on that skin TOGETHER:
+- owned by **All locks**: every lock on that skin together gives D (each D / the number of owners of that prim);
+  measured on eight kinds of skin, the most stacked included (7 locks): %(all_stacked)s of D.
+- owned by **a group**: the group's locks on that skin together give D; locks of other groups there keep what the
+  layers below give them.
+- owned by **one lock**: that lock alone gives D on every prim it owns, whole (not divided by the other owners),
+  and the other locks there keep what they had. Measured on the most stacked skin (a layer of 120, the four
+  largest owners in turn): %(lock_alone)s; the other locks' roots there unchanged, only that lock recooked. So a
+  lock layer of 120 on skin 7 locks share makes that skin 120 denser than the other six leave it: the artist
+  thins a stacked area with an All locks layer, and one lock with its own layer.
 
-The automatic groom at the bottom counts as m = 1, but it is not "1 x the lock's density": it is the
-automatic roots themselves. So the stack carries two numbers per skin point (`logic.mask_layer`,
-`logic.mask_compose`): **keep**, the share of the automatic roots still there, and **add**, the share of the
-lock's Density grown by the layers; the mask's value is keep + add, and
+**The rule in the tool's numbers.** The automatic groom at the bottom is not a number but the automatic ROOTS
+(gathered at lock starts and whorls, thin under floating mesh), so the stack carries two numbers per skin point
+(`logic.density_over`, `density_compose`): **keep**, the share of the automatic roots still there (the product of
+1 - mask x opacity over the layers that reach the lock), and **add**, the density the layers themselves ask in
+strands / cm2 (add x (1 - e) + D x e, layer by layer), and
 
-    density of a lock = its automatic density x keep + its Density setting x add     (`logic.mask_density`)
+    density of a lock = its automatic density x keep + add              (`logic.layer_density`)
 
-- Normal: keep x (1 - e), add x (1 - e) + v x e. Fully covered (e = 1) no automatic root is left and the lock
-  grows v x its Density. **Partial coverage** (a soft brush edge, an opacity under 1, a folder's opacity)
-  blends the two: density = automatic x (1 - e) + m x lock density x e.
-- Multiply scales both by 1 - e + e x v. Its typical use is a top layer that bounds a region: 0 outside
-  removes the hair, 1 inside keeps what is below. Over skin no lower layer covers it thins the automatic
-  groom, evenly (see "Even thinning").
-- Subtract and Min take from add first, then from keep; Add and Max raise add up to keep + add = 1, so over
-  unpainted skin (already 1) they change nothing: the automatic groom is never made denser by a layer.
-- A lock's Density is the lock's own, so on skin several locks share each grows m x its own Density on its
-  share of that skin.
+which is "below + (D - below) x e" written apart. Fully covered (keep 0) no automatic root is left and the lock
+grows the layer's D; partial coverage (a grey mask, a soft brush edge, an opacity under 1) blends the two.
 
 **Where in the order.** settings applied -> region split -> **layers** -> cache key per lock -> hairgen.
 The key of a lock includes a digest of the layers' cover (keep, add) on its region, so a stroke recooks
 only the locks under it.
 
 **Storage.** Per scalp point two float attributes a paint layer, `mask_<id>_v` (its value) and `mask_<id>_a`
-(its coverage), in a hidden geometry parm `mask_layers` (as `regions`); a fill layer and a folder store
-nothing there. The layer list (id, name, on, kind, blend mode, value, opacity, owner, parent, order) is in
+(its coverage), in a hidden geometry parm `mask_layers` (as `regions`); a fill layer and a density layer store
+nothing there. The layer list (id, name, on, kind, density, blend mode, value, opacity, owner, parent, order) is in
 `groom_data`. A new scalp topology transfers the layers by UV, with a warning.
 
 **Spike (run 2026-11-13, t57, `sandbox/.../tests/t57_mask_spike/`; Helen, fine scalp 24,320 prims /
@@ -225,29 +242,39 @@ nothing there. The layer list (id, name, on, kind, blend mode, value, opacity, o
    transfer) plus the 0.04 s every edit pays (keys, merge). "One lock under 1 s" holds; a stroke over
    stacked locks pays for each of them.
 
-**Build (core rebuilt in round 3, 2026-11-13, t62; the panel is a separate task). The spike above and the
-numbered decisions further down are the first builds' history: where they speak of factors, blend modes or
-paint layers they no longer hold.**
-- Data: `groom_data.masks` (`model.MaskLayer`, bottom first: id, name, on, `kind` "paint" / "fill" / "folder",
-  `mode` (`config.MASK_MODES`), `value` (a fill layer's value, 0..1), opacity, `scope` with its `group` or
-  `locks` (the owner), `parent`; the order is the place in the list), `mask_id_high` (a layer id is never
-  reused). `schema` 5. Schemas 2, 3 and 4 were never released; on reading (`model.migrate`) their layers move
-  where the meaning is clear: a paint layer stays ("replace" is Normal), a folder stays, a schema 3 fill
-  layer with a factor 0..1 becomes a paint layer of that value under its stored mask (the mask is its
-  coverage); a layer in strands / cm2 (schema 3 density fills, every schema 4 "= D" layer) or with a factor
-  over 1 is dropped. `model.dropped_masks` names them, OnLoaded says so on the status bar and
-  `mask_dropped(node)` gives the panel the sentence; never a dialog, never a traceback. The JSON on the node
-  is rewritten only by the next edit. A v0.1 scene opens with no layer.
+**Build (core rebuilt 2026-11-15, t63, on round 3's network; the panel is a separate task). The spike above and
+the numbered decisions further down are the first builds' history: where they speak of factors, of a 0..1 mask x
+the lock's density, of folders or of blend modes between layers they no longer hold.**
+- Data: `groom_data.masks` (`model.MaskLayer`, bottom first: the base, then each density layer followed by its
+  mask layers; fields id, name, on, `kind` "base" / "density" / "paint" / "fill", `density` (D), opacity, `scope`
+  with its `group` or `locks` (a density layer's owner), `mode` (`config.MASK_MODES`), `value` (a fill layer's,
+  0..1) and `parent` (a mask layer's density layer)), `mask_id_high` (a layer id is never reused). `schema` 6.
+  Schemas 2 to 5 were never released; on reading (`model.migrate`, `_density_layers`) their layers come over:
+  - **schema 4** ("= D strands / cm2" under a painted mask) and a schema 3 fill layer in strands / cm2 (Replace):
+    a density layer of that D, opacity and owner whose mask is one paint layer holding the stored mask (the paint
+    layer keeps the old id, so the paint on the node is found). The same result as before.
+  - **schema 5** (one 0..1 mask x the lock's own Density) and the 0..1 layers of **schema 2 / 3** (paint layers,
+    factor fills 0..1): the layers of one owner become the mask stack of ONE density layer of that owner, whose D
+    is the owner's Density setting when the file is read. White gives what it gave; black gave "no hair" and now
+    shows the density below; a soft edge mixes a little differently; a Multiply layer with nothing under it in
+    its mask now does nothing (it thinned the automatic groom).
+  - a **folder** (schemas 3 to 5) is gone: its opacity is multiplied into its layers', its eye switches them off.
+  - dropped, by name: a factor over 1, and a strands / cm2 layer in another blend mode than Replace (schema 3).
+  `model.dropped_masks` / `converted_masks` name them, OnLoaded says so on the status bar and `mask_dropped(node)`
+  gives the panel the sentence; never a dialog, never a traceback. The JSON on the node is rewritten only by the
+  next edit. A v0.1 scene opens with the base layer alone.
   Hidden geometry parm `mask_layers`: the fine scalp's points with `P`, `uv`, `mask_<id>_v`, `mask_<id>_a`; a
   layer never painted has no attribute. A stroke writes only `mask_layers` (the layer list did not change, and
   writing `groom_data` would recook the spines); a layer edit writes only `groom_data`; one undo group each.
   Neither is in the shared part of the cache key (`_KEY_SKIP_PARMS`).
 - Network: `mask_read` (Python SOP in line after `region_prims`, `grooming_masks.cook_mask_read`) composes the
-  layers per scope set in numpy into point attributes `mask_keep_<k>` / `mask_add_<k>` (keep and add of the rule,
-  both 0..1) on `SCALP_REGIONS`,
-  and writes the details `mask_sets`, `mask_set_of`, `mask_hash_of`, `mask_add_of` (by lock id) and the prim
-  `mask_dens` (PREVIEW's expected strands). With no layer on it adds nothing, so the geometry and the groom
-  are v0.1's. `lock_keys` gives each lock its `mask_set` and `mask_add_n` and puts the lock's digest in its key.
+  density layers per scope set (`logic.mask_scope_sets`: the ordered layers that reach a lock) in numpy into the
+  point attribute `mask_keep_<k>` and the VERTEX attribute `mask_add_<k>` (strands / cm2 one lock of the set is
+  asked on that prim: each layer's D divided by `layer_divisor`, which is per prim, hence a vertex attribute) on
+  `SCALP_REGIONS`, and writes the details `mask_sets`, `mask_set_of`, `mask_hash_of`, `mask_add_of` (by lock id)
+  and the prim `mask_dens` (PREVIEW's expected strands). With no density layer on it adds nothing, so the geometry
+  and the groom are v0.1's. `lock_keys` gives each lock its `mask_set` and `mask_add_n` and puts the lock's digest
+  in its key.
 - Inside the loop the automatic groom is v0.1's own nodes, unchanged (`region_cut` ... `root_pick`,
   `root_place`): no layer reaches them. A lock a layer covers (`mask_set` >= 0, read by switches; the others
   never cook the new nodes) gets two more steps:
@@ -256,10 +283,9 @@ paint layers they no longer hold.**
      own that never changes with the mask (`thin_order`, kept with the automatic roots), so a small change of
      the mask removes or returns a few roots and moves no other. See "Even thinning".
   2. `hairgen_layers`: a second scatter on the lock's region by the layers' density there (`mask_skin`:
-     the lock's Density x add / share, on unshared points so a prim's corners carry its own share), as many
-     roots as `mask_read` counted (`mask_add_n` = the lock's Density x sum of add x area / share over its
-     prims). They join the automatic roots before `root_place` (`roots_with_layers`), are never relocated and
-     never thinned.
+     `mask_add` on unshared points, so a prim's corners carry its own value), as many roots as `mask_read`
+     counted (`mask_add_n` = the sum of add x area over its prims; no cap at the lock's own Density). They join
+     the automatic roots before `root_place` (`roots_with_layers`), are never relocated and never thinned.
   The `groom_` loop is the same code (`_copy_loop`).
 - Paint: `apps/houdini/grooming_paint_state.py`, state `mono_grooming_mask_paint`, registered on first use
   (no `viewer_states/` folder to install), entered by `paint_enter`. A `SimpleDrawable` of the scalp recoloured
@@ -307,11 +333,11 @@ roots dominate, a grey mask on the whorl reached D faster than its grey, and a l
 every root of two locks by up to 20 mm (one scatter with a forced count re-places everything). Keeping the
 automatic roots as they are and thinning them where they end up makes unpainted (or erased) skin the automatic
 groom exactly, makes partial coverage linear everywhere, and leaves every other root in place when the mask
-changes a little. The same two sets carry the final model: keep thins the automatic roots, add x the lock's
-Density is the second scatter.
+changes a little. The same two sets carry the density layers: keep thins the automatic roots, the layers' own
+density (add, strands / cm2) is the second scatter.
 
-**Even thinning (round 3, final model).** A keep between 0 and 1 (Multiply, Subtract or Min over the automatic
-groom, any partial coverage) must leave an even share of the automatic roots, and the share must hold on every
+**Even thinning (round 3; it does not depend on the layer model).** A keep between 0 and 1 (a grey mask, a soft
+brush edge, an opacity under 1) must leave an even share of the automatic roots, and the share must hold on every
 part of the skin and for every lock: thinned at random, the start grids were left in bunches (rounds 1 and 2:
 clumped share 0.014 -> 0.616 at x 0.5 on the top of the head). Each automatic root gets a threshold `thin_u`
 and stays while thin_u < keep (`thin_order`, cached with the automatic roots: a stroke pays nothing for it):
@@ -332,26 +358,39 @@ dither of the root's position (stripes; two places just over the limit); the sam
 start grid kept 0.8 of the share, stacked skin 1.17, floating mesh 0.56); pairing every root against every
 other (+13 s on Helen's cold cook).
 Cost: Helen's cold cook 6.8 -> ~10 s (v0.1: 12.7 s); nothing on a stroke.
-OPEN: under partial coverage, a lock whose large start grid lies in the patch can read as clumped past the
-limit (2 of 24 measured cases: +0.087 on the top of the head at opacity 0.75, +0.122 for one lock on ordinary
-skin at opacity 0.25; limit +0.05): layer roots that land inside the dense grid have no free place to move to.
+Traced in t63 (the two partial-coverage cases round 3 left open, and its one lock over a density limit):
+- `hair_base_21` on ordinary skin (+0.122 in t62; +0.143 here at first): every root that read as bunched was a
+  layer root beside a kept automatic root. `mask_apart` sized its distance from the lock's set Density x keep;
+  that skin lies under floating mesh, where the automatic roots start the lock and 26 / cm2 of them are left
+  where 150 are set, so layer roots were held 0.037 cm off them while roots asked there stand 0.14 cm apart.
+  `mask_apart` now counts the automatic roots really kept round the place (the 8 nearest over the disc they
+  span): rise 0.0. `hair_base_12` on the top of the head (+0.087 in t62): at most 0.008 now. All 31 grey-mask
+  and opacity cases of t63 are inside +0.05; the report lists any case of the other checks that is not.
+- One lock over its density limit on a sliver of skin (t62: `hair_bang_20`, 3 roots where 0.8 are asked on
+  0.02 cm2; t63 also `hair_base_21` on the top of the head, 47 where 34 are asked on ONE prim of 0.22 cm2):
+  hairgen's scatter gives a forced count to single prims almost as a coin toss per root (400 equal quads asked
+  34 each: variance 26-31), and its relax pushes roots against the border of each prim island `mask_split`
+  makes, where the count gives them to either prim (of the 47, 38 lie inside the prim and 12 on its edge).
+  Over a lock's whole skin in a patch the counts are tight: 614 lock cases, (roots - asked) / sqrt(asked) has
+  a spread of 0.43 where a coin toss would give 1. Not fixed: it needs a scatter with a fixed count per prim.
 
 **Adapter API added in v0.2a** (`apps/houdini/grooming_masks.py`, re-exported by `grooming_adapter`; each
 function that changes something is one undo step named "MONO Grooming: ..."; the layer list itself is
-`read_data(node).masks`).
+`read_data(node).masks`, with `GroomData.density_layers()` and `.mask_layers(density_id)`).
 
 | Function | Returns / does |
 |---|---|
-| `mask_add(node, name="", mode="normal", opacity=1.0, scope="all", group="", locks=(), kind="paint", value=1.0, parent=None) -> int` | New layer on top: `kind` "paint" (transparent until painted), "fill" (`value` 0..1 over all its owner's skin) or "folder"; its id |
-| `mask_remove(node, layer_id) -> bool` | Delete the layer and what is painted on it |
-| `mask_move(node, layer_id, index, parent="keep")` | Put the layer at place `index` (0 = bottom), and into a folder (`parent` id, None = out) |
-| `mask_set(node, layer_id, name=, on=, mode=, opacity=, scope=, group=, locks=, value=) -> bool` | Change the layer's row (`value`: a fill layer's value, 0..1); False (and no undo step) when nothing changed |
+| `mask_add(node, name="", mode="normal", opacity=1.0, scope="all", group="", locks=(), kind=None, value=1.0, parent=None, density=150.0) -> int` | New layer, its id. `kind` "density" (the default without `parent`): a density layer on top, `density` D, `opacity`, owner (`scope` / `group` / `locks`); its mask is black until painted. "paint" (the default with `parent`) / "fill": a layer on top of density layer `parent`'s mask, `mode`, `opacity`, a fill layer's `value` 0..1 |
+| `mask_remove(node, layer_id) -> bool` | Delete the layer and what is painted on it; a density layer goes with its mask layers. The automatic layer: ValueError |
+| `mask_move(node, layer_id, index, parent="keep")` | Put the layer at place `index` among its like (0 = bottom): a density layer among the density layers, a mask layer in its mask or (`parent`) into another density layer's. The automatic layer: ValueError |
+| `mask_set(node, layer_id, name=, on=, mode=, opacity=, scope=, group=, locks=, value=, density=) -> bool` | Change the layer's row (`density`, owner: a density layer; `mode`, `value`: a mask layer); False (and no undo step) when nothing changed. The automatic layer: ValueError |
 | `mask_fill(node, layer_id, value=1.0)` / `mask_clear(node, layer_id)` / `mask_invert(node, layer_id)` | A paint layer painted `value` everywhere / nothing painted (transparent) / its values inverted where painted |
-| `mask_stroke(node, layer_id, points, radius_cm, value=1.0, soft, erase=False, normals=None) -> int` | One stroke through points on the skin, as the brush paints it: `value` (1 white, 0 black) with coverage, or `erase` (the layer's paint taken away) |
-| `mask_values(node, layer_id) -> (value, coverage)` / `mask_cover(node, lock_id=None) -> (keep, add)` | Arrays per fine-scalp point: a layer's own paint, or the stack's result (for one lock, or of the "all locks" layers): density = automatic x keep + lock Density x add |
-| `mask_dropped(node) -> str` | The sentence for the message line when the scene held layers this version drops (strands / cm2, a factor over 1) ("" when none) |
-| `paint_enter(node, layer_id) -> bool` / `paint_exit(node=None)` / `paint_layer(node) -> int \| None` | Paint on (the viewport's tool is the brush; False without a viewport) / off / the layer being painted |
-| `set_brush(radius_cm=, value=, soft=, erase=, xray=, view=) -> dict` / `brush() -> dict` | Brush of the session (not saved, no undo): radius cm, `value` painted (0..1: 1 white, 0 black), soft share of the radius, erase (takes paint away), scalp X-ray, `view` (density / layer / roots) |
+| `mask_stroke(node, layer_id, points, radius_cm, value=1.0, soft, erase=False, normals=None) -> int` | One stroke through points on the skin on a paint layer, as the brush paints it: `value` (1 white, 0 black) with coverage, or `erase` (the layer's paint taken away) |
+| `mask_values(node, layer_id) -> (a, b)` | Arrays per fine-scalp point. A mask layer: (value, coverage). A density layer: (its mask, its mask x its opacity) |
+| `mask_cover(node, lock_id=None) -> (keep, add)` | The stack's result per fine-scalp point for one lock (the layers that reach it, in the order they apply), or of the All locks layers: density = automatic x keep + add, add in strands / cm2 with each D as it is set |
+| `mask_dropped(node) -> str` | The sentence for the message line when the scene came from an older test build: layers dropped, layers now read as density layers ("" when none) |
+| `paint_enter(node, layer_id) -> bool` / `paint_exit(node=None)` / `paint_layer(node) -> int \| None` | Paint on a paint layer (the viewport's tool is the brush; False without a viewport; a fill, density or automatic layer: ValueError) / off / the layer being painted |
+| `set_brush(radius_cm=, value=, soft=, erase=, xray=, view=) -> dict` / `brush() -> dict` | Brush of the session (not saved, no undo): radius cm, `value` painted into the mask (0..1), soft share of the radius, erase, scalp X-ray, `view` (density / layer / roots) |
 | `undo_cache_usage(node) -> dict` | What the node's hair cache holds against "Undo cache, GB": `bytes`, `live_bytes`, `undo_bytes`, `undo_states`, `limit_bytes`, `dropped`, `gb`, `limit_gb`, `capture_bytes` (the adapter's, not a mask function) |
 | `mask_problem(node) -> str` / `mask_rebake(node) -> bool` | "moved over by UV" while the layers sit on another scalp / store them on the current one |
 | `import_masks(node, tool_dir) -> int` / `masks_from_publish(tool_dir)` | Layers of a publish's `_grooming/` folder into the node / read only |
@@ -385,62 +424,65 @@ Found on the way: Helen's scalp has a band of sliver polygons by the ears (12,41
 prims on 1.7 cm2). A 1 cm dab there holds ~7,000 points (2.9 ms a mouse move instead of ~1.5), and the first
 prototype of the GUI test painted it by mistake. The brush works on it; nothing to fix in v0.2a.
 
-**The layer model: Substance Painter's layer stack of one mask (the user, final, 2026-11-14).**
-History: the first build painted a factor per point (the artist had to think "paint 0.5 of what?"); the
-second added fill layers with six blend modes on factors up to 8, of which only "= D" gave what it said (two
-checks, t60 and t61); the third cut it to one kind of layer, "= D strands / cm2". The final model keeps the
-stack and the blend modes but makes the thing blended ONE mask in 0..1, whose meaning never changes: the
-share of the lock's own density.
-- **Base**: the automatic density, shown as the bottom row, locked (not paintable, not movable).
-- **Paint layer**: value and coverage per scalp point. The brush paints a value (quick picks 0 / 0.5 / 1,
-  `config.MASK_VALUE_PICKS`); the eraser takes paint away. A new layer has no paint, so adding one changes
-  nothing. Fill (`mask_fill`), clear (`mask_clear`), invert (`mask_invert`). Alt+click shows the layer alone
-  (view "layer": its value as a grey where painted, dark where not), Shift+click switches it off for a
-  moment (the panel's).
-- **Fill layer**: one value over all its owner's skin; changing the value is a panel edit, not paint. The
-  brush refuses it.
-- **Blend mode and opacity** per layer; **folders** (one level) with an opacity. Deleting a folder keeps its
-  layers.
-- **Owner** (`scope`: all locks / a group / chosen locks) stays per layer: it is Painter's Geometry mask. A
-  layer owned by a lock follows the lock: when the lock goes missing and comes back as a new lock, giving
-  the missing lock's settings to it (`controller.reassign_orphan`) moves the layer's ownership too.
-- **Views** (`set_brush(view=)`): `density` the result, roots / cm2 counted from the cooked groom (so
-  relocated roots are in it), moved while a stroke is down by what the layers ask now against what they
-  asked when counted, and the density asked until the groom has been counted; `layer` (the layer alone);
-  `roots` (a dot a root on a plain scalp). Choosing density or roots grows the locks the cache does not hold
-  in full (Guides display: the whole groom once, ~12 s).
-- Also from the user's try: Paint records no undo step of its own, and says so on the status bar when the
-  layer being painted is undone; a stroke in Guides display grows no hair (the density view goes on from the
-  last count); the painted colour is the final density map, no tint over it.
-- Still open: the result is not shown as hair while the button is down (the density view moves, the hair
-  cooks on release); a pen's pressure, radius by drag, mirror.
+**The layer model: density layers with a mask each (the user, final, 2026-11-15).**
+History: the first build painted a factor per point (the artist had to think "paint 0.5 of what?"); the second
+added fill layers with six blend modes on factors up to 8, of which only "= D" gave what it said (two checks, t60
+and t61); the third cut it to one kind of layer, "= D strands / cm2"; the fourth (t62) made the thing blended ONE
+mask in 0..1 x the lock's own Density, where no layer could be denser than the automatic groom and black removed
+the hair. The final model gives every layer its own number and keeps the 0..1 mask for where it applies.
+- **Base**: the automatic density, the bottom row "Automatic", locked (not paintable, not movable, no eye).
+- **Density layer**: D, opacity, eye, owner. Quick picks 0 / 75 / 150 / 300.
+- **Its mask layers**: paint (value and coverage per scalp point; the eraser takes paint away; fill / clear /
+  invert) and fill (one value; changing it is a panel edit, the brush refuses it), each with a blend mode, an
+  opacity and an eye.
+- **Owner** (`scope`: all locks / a group / a lock) is the density layer's: it is the row of the lock tree the
+  layer sits under. A layer owned by a lock follows the lock: when the lock goes missing it keeps its layers
+  (and their masks), and giving the missing lock's settings to the lock that comes back
+  (`controller.reassign_orphan`) moves the layers' ownership too.
+- **Views** (`set_brush(view=)`): `density` the result, roots / cm2 counted from the cooked groom (so relocated
+  roots are in it), moved while a stroke is down by what the layers ask now against what they asked when
+  counted, and the density asked until the groom has been counted; `layer` (the painted mask layer alone, its
+  value as a grey where painted); `roots` (a dot a root on a plain scalp). Choosing density or roots grows the
+  locks the cache does not hold in full (Guides display: the whole groom once, ~12 s).
+- Also from the user's try: Paint records no undo step of its own, and says so on the status bar when the layer
+  being painted is undone; a stroke in Guides display grows no hair; the painted colour is the final density map.
+- Still open: the result is not shown as hair while the button is down; a pen's pressure, radius by drag, mirror.
 
-**Panel.** (Mockup E2 of t59, with the final model's changes: a blend mode and an opacity per row, the value
-quick picks 0 / 0.5 / 1.) As Painter's layer stack: rows top to bottom with eye, name, blend mode, the
-layer's thumbnail (click to paint it, Alt+click to see it alone, Shift+click to switch it off), folders, the
-locked base row at the bottom; under it the selected layer's blend mode, opacity, owner, a fill layer's
-value, and the brush (value 0 / 0.5 / 1, eraser, radius, softness); over the viewport the view choice (result
-/ layer / roots) with the density ramp's legend. Mockups first (dcc-panel-design); the sketch the user saw is
-described in the notes folder (`t58-mask-core.md`).
+**Panel (for the panel task; not built here).** The lock tree has three levels, as Substance Painter's layer
+stack with masks: **lock row (All locks / a group / a lock) > its density layers > each layer's mask layers**,
+every row with an eye. The base "Automatic" row sits at the bottom of All locks, locked. The selected mask row is
+what the brush paints into (`paint_enter(node, that id)`); selecting a density layer row paints nothing.
+Properties shows only the selected row's parms: a density layer's D (quick picks 0 / 75 / 150 / 300), opacity
+and owner; a mask layer's blend mode, opacity and, for a fill layer, its value; with a paint layer selected, the
+brush (grey 0 / 0.5 / 1, eraser, radius, softness). Over the viewport the view choice (result / layer / roots)
+with the density ramp's legend. "Undo cache, GB" (node parm `undo_cache_gb`, default 2) with the readout of
+`undo_cache_usage(node)` belongs in the panel's settings. Mockups first (dcc-panel-design); the E2 mockup of t59
+predates this model.
 
 **Done when.**
-- Painted m gives m x the lock's density: on the seven kinds of skin (whorl, top of the head, lock starts,
-  stacked skin, skin under floating mesh, fringe, ordinary) a paint layer painted white / 0.5 / 0.25 / black
-  gives roots = m x lock density x skin within max(15 %, 2 / sqrt(N)), for all locks together and for each
-  lock on its own skin; black removes every root. Erase returns the skin to the automatic groom by root
-  positions. Partial coverage gives automatic x (1 - e) + m x lock density x e.
-- Each blend mode gives what the formula says, in the stack's numbers and in roots, on the whorl, the top of
-  the head and ordinary skin; Multiply 0 / 0.5 / 1 as a top layer over painted skin and over unpainted skin.
-- Evenness everywhere: each lock's clumped share on its own skin in a painted patch is not above its
-  no-layer value there + 0.05.
-- On Helen: the crown painted down to v006's density (~5,100 / cm2) and the thin skin under floating mesh
-  painted up, both in the GUI by scripted strokes, with the QC numbers before and after in the report
-  (the user's own try with a mouse or pen is the User look gate).
-- A stroke recooks only the locks under it, at most 0.2 s per lock plus 0.1 s; undo removes exactly
-  that stroke, in under 0.1 s and with no lock recooked, also with an anim wired and output 1 read, and for
-  a whole chain of strokes (30 in a row, then 30 undos and 30 redos) while the undo cache holds them.
+- A layer of D painted white gives D: on the eight kinds of skin (whorl, top of the head, a lock start, stacked
+  skin, skin under floating mesh, fringe, ordinary, the sliver band by the ear) D = 0 / 40 / 120 / 300 gives roots
+  = D x skin within max(15 %, 2 / sqrt(N)), for all locks together and for each lock on its own skin, also where D
+  is above the locks' own Density; 0 removes every root. A mask of 0.5 / 0.25, or an opacity, gives
+  below + (D - below) x mask x opacity.
+- Owner order: an All locks layer, a group layer and a lock layer over the same skin; the lock's wins on its skin,
+  whatever their order in the list; inside one owner the upper layer wins. A layer owned by one lock gives D for
+  that lock alone.
+- Black over a white area returns the density below within the same limit (the automatic groom root for root
+  when nothing lies below); every layer black, off, at opacity 0 or deleted = the v0.1 groom byte for byte.
+- The mask stack: each blend mode gives what the formula says, in the mask's numbers and in roots; Multiply 0 /
+  0.5 / 1 as the top layer; fill layers; erase; a soft edge; a tiny mask moves no root.
+- Evenness everywhere: each lock's clumped share on its own skin in a painted patch is not above its no-layer
+  value there + 0.05.
+- On Helen: the crown painted down to v006's density (~5,100 / cm2) and the thin skin under floating mesh painted
+  up, both in the GUI by scripted strokes, with the QC numbers before and after in the report (the user's own
+  try with a mouse or pen is the User look gate); grooming-check is two-sided on a painted scene.
+- A stroke recooks only the locks under it, at most 0.2 s per lock plus 0.1 s; undo removes exactly that stroke,
+  in under 0.1 s and with no lock recooked, also with an anim wired and output 1 read, and for a whole chain of
+  strokes (30 in a row, then 30 undos and 30 redos) while the undo cache ("Undo cache, GB") holds them.
 - No layers = the v0.1 groom: strand count and QC numbers as t55.
-- Layers survive Detect, Update regions, save / reopen and Publish (read back from the publish JSON).
+- Layers survive Detect, Update regions, save / reopen and Publish (read back from the publish JSON); a missing
+  lock keeps its layers; files of schema 3, 4 and 5 open.
 
 ## v0.2b Lock redraw and control points
 
