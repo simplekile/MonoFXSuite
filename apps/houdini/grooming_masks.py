@@ -1,18 +1,20 @@
 """
-The density mask of MONO Grooming (v0.2a, docs/plans/grooming_v0_2.md): storage, the HDA's `mask_read`, the
+The density layers of MONO Grooming (v0.2a, docs/plans/grooming_v0_2.md): storage, the HDA's `mask_read`, the
 brush and the layer functions of the adapter API. `grooming_adapter` re-exports what the panel uses.
 
-The model (config.MASK_MODES): one mask per skin point, 0..1, blended from a stack of layers; on painted skin a
-lock grows mask x its own Density setting. Where things live: the layer list (name, on, mode, opacity, owner,
-kind, a fill layer's value) in `groom_data` (`model.MaskLayer`), what paint layers hold in the node's hidden
-geometry parm `mask_layers`: one point per point of the fine scalp (`SCALP_FINE`) with `P`, `uv` and per paint
-layer `mask_<id>_v` (value) and `mask_<id>_a` (coverage). Parms, so every change is undoable and saved with the
-hip. A paint layer never painted has no attributes (coverage 0 everywhere: transparent).
+The model (config.MASK_MODES): density layers over the automatic groom, each with its own number D (strands /
+cm2), an opacity, an owner and a mask (a stack of paint and fill layers, 0..1, from black):
+density = below + (D - below) x mask x opacity. Where things live: the layer list (`model.MaskLayer`: the base,
+the density layers, their mask layers) in `groom_data`, what paint layers hold in the node's hidden geometry
+parm `mask_layers`: one point per point of the fine scalp (`SCALP_FINE`) with `P`, `uv` and per paint layer
+`mask_<id>_v` (value) and `mask_<id>_a` (coverage). Parms, so every change is undoable and saved with the hip.
+A paint layer never painted has no attributes (coverage 0 everywhere: transparent).
 
-In the network `mask_read` (Python SOP after the region split) composes the layers per scope set
-(`logic.mask_scope_sets`) into two point attributes: `mask_keep_<k>` (how much of the automatic groom stays)
-and `mask_add_<k>` (the absolute part: x the lock's density), and records, per lock, its set and a digest of
-both on its own skin: the lock's cache key takes that digest, so a stroke regrows the locks under it only.
+In the network `mask_read` (Python SOP after the region split) composes the density layers per scope set
+(`logic.mask_scope_sets`) into `mask_keep_<k>` (point: how much of the automatic groom stays) and
+`mask_add_<k>` (vertex: the density the layers ask of one lock there, strands / cm2), and records, per lock, its
+set and a digest of both on its own skin: the lock's cache key takes that digest, so a stroke regrows the locks
+under it only.
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ UNDO_PREFIX = "MONO Grooming: "
 PUBLISH_MASK_FILE = "mask_layers.bgeo"     # next to grooming_data.json in vNNN/_grooming/
 ATTR_SET_OF = "mask_set_of"       # detail int array by lock id: its scope set (-1: no layer reaches it)
 ATTR_HASH_OF = "mask_hash_of"     # detail string array by lock id: digest of keep and add on its skin
-ATTR_ADD_OF = "mask_add_of"       # detail float array by lock id: strands the layers scatter on its skin
+ATTR_ADD_OF = "mask_add_of"       # detail float array by lock id: strands the layers ask on its skin
 ATTR_KEEP_OF = "mask_keep_of"     # detail float array by lock id: expected share of its automatic roots kept
 ATTR_SETS = "mask_sets"           # detail int: number of scope sets (0: no layer is on)
 MOVED_TEXT = "Mask layers were painted on another scalp: moved over by UV, check them"
@@ -262,12 +264,41 @@ class MaskData:
             return self.a.get(layer.id, np.zeros(self.n, np.float32))
         return np.ones(self.n, np.float32)
 
-    def compose(self, layers: Iterable[model.MaskLayer]):
-        """(keep, add) per point through `layers` (bottom first, folders with their layers;
-        `logic.mask_compose`): density of a lock = automatic x keep + its Density x add. float32, both 0..1."""
+    def mask_of(self, data: model.GroomData, density_id: int):
+        """The mask of a density layer, 0..1 per point (`logic.mask_stack` over its paint and fill layers, from
+        black). float64."""
         np = _np()
-        rows = [(m, None, None) if m.kind == "folder" else (m, self.value(m), self.coverage(m)) for m in layers]
-        keep, add = logic.mask_compose(rows, np.ones(self.n, np.float64))
+        rows = [(m, self.value(m), self.coverage(m)) for m in data.mask_layers(density_id)]
+        return logic.mask_stack(rows, np.zeros(self.n, np.float64))
+
+    def weights(self, data: model.GroomData, layers: Sequence[model.MaskLayer], masks: dict | None = None):
+        """(keep, [w per layer]) per point through density `layers` (in the order they apply, bottom first):
+        keep = the product of (1 - e), e = mask x opacity; w of a layer = its e x the (1 - e) of every layer
+        over it, so the layers' density is the sum of D x w and density = automatic x keep + that sum.
+        `masks`: a dict that keeps each layer's mask (a layer is in several scope sets)."""
+        np = _np()
+        masks = masks if masks is not None else {}
+        effects = []
+        for layer in layers:
+            if layer.id not in masks:
+                masks[layer.id] = self.mask_of(data, layer.id)
+            effects.append(masks[layer.id] * layer.opacity)
+        keep = np.ones(self.n, np.float64)
+        ws = [None] * len(layers)
+        for i in range(len(layers) - 1, -1, -1):
+            ws[i] = effects[i] * keep
+            keep = keep * (1.0 - effects[i])
+        return keep, ws
+
+    def compose(self, data: model.GroomData, layers: Sequence[model.MaskLayer]):
+        """(keep, add) per point through density `layers` (bottom first): density = automatic x keep + add,
+        add in strands / cm2 with each layer's D as it is set (not divided among the locks sharing the skin).
+        float32."""
+        np = _np()
+        keep, ws = self.weights(data, layers)
+        add = np.zeros(self.n, np.float64)
+        for layer, w in zip(layers, ws):
+            add += layer.density * w
         return np.asarray(keep, dtype=np.float32), np.asarray(add, dtype=np.float32)
 
     def dab(self, layer_id: int, idx, weight, value: float = 1.0, erase: bool = False) -> None:
@@ -282,14 +313,15 @@ class MaskData:
 
 
 def layers_for_view(masks: Sequence[model.MaskLayer], layer_id: int | None) -> list[model.MaskLayer]:
-    """The layers whose blend the scalp shows while `layer_id` is painted: the "all locks" layers, the ones
-    with the painted layer's own scope (what a lock in that scope gets) and the folders. None: the "all
-    locks" layers and the folders."""
+    """The density layers whose result the scalp shows while mask layer `layer_id` is painted, in the order they
+    apply: the "all locks" layers and the ones with the owner of the painted layer's density layer (what a lock
+    under that owner gets, bar layers owned by a more specific row). None: the "all locks" layers."""
     active = next((m for m in masks if m.id == layer_id), None)
-
-    def same(m):
-        return active is not None and (m.scope, m.group, m.locks) == (active.scope, active.group, active.locks)
-    return [m for m in masks if m.kind == "folder" or m.scope == "all" or same(m)]
+    if active is not None and active.kind in ("paint", "fill"):
+        active = next((m for m in masks if m.id == active.parent), None)
+    owner = active.owner() if active is not None else ("all",)
+    shown = [m for m in masks if m.kind == "density" and m.on and (m.scope == "all" or m.owner() == owner)]
+    return sorted(shown, key=lambda m: {"all": 0, "group": 1, "locks": 2}.get(m.scope, 0))
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +514,7 @@ def _write(node, label: str, data: model.GroomData | None = None, md: MaskData |
     stroke leaves `groom_data` alone, so the spines do not recook."""
     with hou.undos.group(UNDO_PREFIX + label):
         if md is not None:
-            keep = [m.id for m in (data or _read(node)).masks]
+            keep = [m.id for m in (data or _read(node)).masks if m.kind == "paint"]
             node.parm(config.MASK_PARM).set(mask_geometry(node, md, keep))
         if data is not None:
             node.parm(config.DATA_PARM).set(data.to_json())
@@ -503,7 +535,8 @@ _REGION_POINTS: dict[int, tuple[bytes, dict]] = {}   # node session id -> (diges
 
 def _region_tables(top, geo) -> dict:
     """Of the split on `geo`: "points" (per lock the scalp points of its region; a shared prim's points
-    belong to each owner), "prims" (per lock its prims), "owners" (owners per prim), and the vertex tables
+    belong to each owner), "prims" (per lock its prims), "verts" (per lock the vertices of its prims),
+    "owners" (owners per prim), and the vertex tables
     ("vertex_prim", "vertex_point", "corners" per prim). Kept per node by a digest of the split
     (`lock_owner`, `share`, `owners_h` per prim): the split changes only on Update regions, the Python SOP
     cooks on every edit."""
@@ -522,7 +555,7 @@ def _region_tables(top, geo) -> dict:
     for pr, own in enumerate(geo.primIntListAttribValues("lock_owners")):
         for lock_id in own:
             prims_of.setdefault(lock_id, []).append(pr)
-    by_lock = {}
+    by_lock, verts = {}, {}
     n_prims = geo.intrinsicValue("primitivecount")
     inside = np.zeros(n_prims, dtype=bool)
     owners = np.zeros(n_prims, dtype=np.float32)
@@ -530,8 +563,9 @@ def _region_tables(top, geo) -> dict:
         inside[:] = False
         inside[prims] = True
         owners[prims] += 1
-        by_lock[lock_id] = np.unique(vertex_point[inside[vertex_prim]])
-    tables = {"points": by_lock, "prims": {k: np.asarray(v, dtype=np.int64) for k, v in prims_of.items()},
+        verts[lock_id] = np.nonzero(inside[vertex_prim])[0]
+        by_lock[lock_id] = np.unique(vertex_point[verts[lock_id]])
+    tables = {"points": by_lock, "verts": verts, "prims": {k: np.asarray(v, dtype=np.int64) for k, v in prims_of.items()},
               "owners": owners, "vertex_prim": vertex_prim, "vertex_point": vertex_point,
               "corners": np.maximum(np.bincount(vertex_prim, minlength=n_prims), 1).astype(np.float32)}
     _REGION_POINTS[top.sessionId()] = (key, tables)
@@ -574,23 +608,36 @@ def region_keys(top, geo) -> dict[int, tuple]:
     return out
 
 
+def layer_divisor(tables: dict, layer: model.MaskLayer, data: model.GroomData):
+    """Per prim of the split: how many of its owners a density layer's D is shared by (`logic.owners_sharing`:
+    the owners the layer is owned for), at least 1. "= D" owned by all locks: every owner, so all the locks on
+    that skin give D together; owned by a lock: 1 on its skin, the lock alone gives D."""
+    np = _np()
+    div = np.zeros(len(tables["owners"]), np.float32)
+    for lk in data.locks:
+        prims = tables["prims"].get(lk.id)
+        if prims is not None and layer.applies(lk.id, lk.group):
+            div[prims] += 1.0
+    return np.maximum(div, 1.0)
+
+
 def cook_mask_read(sop) -> None:
     """Python SOP "mask_read", on the scalp with its split (after region_prims): per scope set the point
-    attributes `mask_keep_<k>` / `mask_add_<k>` (`logic.mask_compose`: density of a lock = automatic x keep +
-    its Density x add), the details `mask_sets`, `mask_set_of`, `mask_hash_of` (by lock id: its set, and a
-    digest of keep and add on its own skin, "" where no layer changes it), `mask_add_of` (by lock id: the
-    strands the absolute part asks on its skin = its Density x the sum of add x area / share, the count the
-    lock's second scatter is given) and the prim `mask_dens` (PREVIEW's expected strands / cm2). With no
-    layer on it adds nothing: the geometry, and so the groom, is v0.1's."""
+    attribute `mask_keep_<k>` and the vertex attribute `mask_add_<k>` (density of a lock = automatic x keep +
+    add; add is one lock's part, each layer's D divided by `layer_divisor`), the details `mask_sets`,
+    `mask_set_of`, `mask_hash_of` (by lock id: its set, and a digest of keep and add on its own skin, "" where
+    no layer changes it), `mask_add_of` (by lock id: the strands the layers ask on its skin = the sum of add x
+    area over its prims, the count the lock's second scatter is given) and the prim `mask_dens` (PREVIEW's
+    expected strands / cm2). With no density layer on it adds nothing: the geometry, and so the groom, is
+    v0.1's."""
     top = sop.parent()
     geo = sop.geometry()
     text = top.evalParm(config.DATA_PARM)
     parm = top.parm(config.MASK_PARM)
-    if parm is None or not text or '"masks": []' in text:
+    if parm is None or not text or '"density"' not in text:
         return
     data = model.GroomData.from_json(text)
-    masks = [m for m in data.masks if m.on and m.kind != "folder"]
-    if not masks:
+    if not any(m.on for m in data.density_layers()):
         return
     stored = parm.evalAsGeometry()       # read even when nothing uses it: the node depends on the parm
     np = _np()
@@ -598,48 +645,62 @@ def cook_mask_read(sop) -> None:
     if md.moved:
         sop.addWarning(MOVED_TEXT)
     sets, set_of = logic.mask_scope_sets(data.masks, [(lk.id, lk.group) for lk in data.locks])
-    density_of = {lk.id: float(data.resolve(lk.id)["density"]) for lk in data.locks}
     by_id = {m.id: m for m in data.masks}
-    keeps, adds = [], []
-    for k, ids in enumerate(sets):
-        keep, add = md.compose([by_id[i] for i in ids])
-        keeps.append(keep)
-        adds.append(add)
-        for name, arr, default in ((config.MASK_KEEP_ATTR % k, keep, 1.0), (config.MASK_ADD_ATTR % k, add, 0.0)):
-            if geo.findPointAttrib(name) is None:
-                geo.addAttrib(hou.attribType.Point, name, default)
-            geo.setPointFloatAttribValuesFromString(name, arr.tobytes())
     tables = _region_tables(top, geo)
     regions = tables["points"]
     n_prims = len(tables["owners"])
+    vertex_prim, vertex_point = tables["vertex_prim"], tables["vertex_point"]
     area = np.frombuffer(geo.primFloatAttribValuesAsString("area_cm2"), np.float32)
     base = np.frombuffer(geo.primFloatAttribValuesAsString("density"), np.float32)
     share = np.maximum(tables["owners"], 1.0)
-
-    def prim_mean(values):
-        return np.bincount(tables["vertex_prim"], weights=values[tables["vertex_point"]],
-                           minlength=n_prims) / tables["corners"]
-
-    keep_prim = [prim_mean(k) for k in keeps]
-    add_prim = [prim_mean(a) for a in adds]
+    masks: dict[int, Any] = {}
+    divisors: dict[int, Any] = {}
+    keeps, vadds, keep_prim, add_prim = [], [], [], []
+    for k, ids in enumerate(sets):
+        layers = [by_id[i] for i in ids]
+        keep, ws = md.weights(data, layers, masks)
+        vadd = np.zeros(len(vertex_prim), np.float64)
+        for layer, w in zip(layers, ws):
+            if layer.density <= 0:
+                continue
+            if layer.id not in divisors:
+                divisors[layer.id] = layer_divisor(tables, layer, data)
+            vadd += (layer.density / divisors[layer.id])[vertex_prim] * w[vertex_point]
+        keep = keep.astype(np.float32)
+        vadd = vadd.astype(np.float32)
+        keeps.append(keep)
+        vadds.append(vadd)
+        name = config.MASK_KEEP_ATTR % k
+        if geo.findPointAttrib(name) is None:
+            geo.addAttrib(hou.attribType.Point, name, 1.0)
+        geo.setPointFloatAttribValuesFromString(name, keep.tobytes())
+        name = config.MASK_ADD_ATTR % k
+        if geo.findVertexAttrib(name) is None:
+            geo.addAttrib(hou.attribType.Vertex, name, 0.0)
+        geo.setVertexFloatAttribValuesFromString(name, vadd.tobytes())
+        keep_prim.append(np.bincount(vertex_prim, weights=keep[vertex_point], minlength=n_prims) / tables["corners"])
+        add_prim.append(np.bincount(vertex_prim, weights=vadd, minlength=n_prims) / tables["corners"])
     top_id = max([lk.id for lk in data.locks] + [-1])
     set_list = [-1] * (top_id + 1)
     hash_list = [""] * (top_id + 1)
     add_list = [0.0] * (top_id + 1)
-    dens = np.zeros(n_prims, np.float64)       # per prim: what its owners grow together, strands / cm2
+    auto = np.zeros(n_prims, np.float64)       # per prim: the automatic part its owners keep, summed
+    dens = np.zeros(n_prims, np.float64)       # per prim: what the layers ask of its owners, strands / cm2
     for lock_id, prims in tables["prims"].items():
         k = set_of.get(lock_id, -1) if 0 <= lock_id <= top_id else -1
         idx = regions.get(lock_id)
         # keep and 1 + add on the lock's skin: all 1 = no layer covers it, the hair without layers, no set
-        digest = values_digest(np.concatenate([keeps[k][idx], 1.0 + adds[k][idx]])) if k >= 0 and idx is not None else ""
+        digest = (values_digest(np.concatenate([keeps[k][idx], 1.0 + vadds[k][tables["verts"][lock_id]]]))
+                  if k >= 0 and idx is not None else "")
         if not digest:
-            dens[prims] += base[prims]
+            auto[prims] += base[prims]
             continue
         set_list[lock_id] = k
         hash_list[lock_id] = digest
-        add_list[lock_id] = density_of.get(lock_id, 0.0) * float((add_prim[k][prims] * area[prims] / share[prims]).sum())
-        dens[prims] += base[prims] * keep_prim[k][prims] + density_of.get(lock_id, 0.0) * add_prim[k][prims]
-    dens = np.where(tables["owners"] > 0, dens / share, base).astype(np.float32)
+        add_list[lock_id] = float((add_prim[k][prims] * area[prims]).sum())
+        auto[prims] += base[prims] * keep_prim[k][prims]
+        dens[prims] += add_prim[k][prims]
+    dens = np.where(tables["owners"] > 0, auto / share + dens, base).astype(np.float32)
     geo.addAttrib(hou.attribType.Prim, "mask_dens", 0.0)
     geo.setPrimFloatAttribValuesFromString("mask_dens", dens.tobytes())
     geo.addAttrib(hou.attribType.Global, ATTR_SETS, 0)
@@ -653,15 +714,13 @@ def cook_mask_read(sop) -> None:
 
 
 def layer_cover(top, regions_geo) -> dict[int, tuple[Any, Any, Any]]:
-    """Per lock id a layer changes: (its prims on SCALP_REGIONS, keep per prim, the absolute density per prim in
-    strands / cm2 = add x the lock's Density), from the means of `mask_keep_<k>` / `mask_add_<k>` over each
-    prim's corners for the lock's scope set. Empty when no layer is on. Shared by `lock_layer_counts` and
-    grooming-check's skin check."""
+    """Per lock id a layer changes: (its prims on SCALP_REGIONS, keep per prim, the density the layers ask of
+    that lock per prim in strands / cm2), from the means of `mask_keep_<k>` / `mask_add_<k>` over each prim's
+    corners for the lock's scope set. The lock's density on a prim is its automatic one x keep + that density.
+    Empty when no layer is on. Shared by `lock_layer_counts` and grooming-check's skin check."""
     if regions_geo is None or regions_geo.findGlobalAttrib(ATTR_SET_OF) is None:
         return {}
     np = _np()
-    data = _read(top)
-    density_of = {lk.id: float(data.resolve(lk.id)["density"]) for lk in data.locks}
     tables = _region_tables(top, regions_geo)
     set_of = regions_geo.intListAttribValue(ATTR_SET_OF)
     n_prims = len(tables["owners"])
@@ -672,13 +731,12 @@ def layer_cover(top, regions_geo) -> dict[int, tuple[Any, Any, Any]]:
         if k < 0 or not len(prims):
             continue
         if k not in means:
-            pair = []
-            for fmt in (config.MASK_KEEP_ATTR, config.MASK_ADD_ATTR):
-                f = np.frombuffer(regions_geo.pointFloatAttribValuesAsString(fmt % k), np.float32)
-                pair.append(np.bincount(tables["vertex_prim"], weights=f[tables["vertex_point"]],
-                                        minlength=n_prims) / tables["corners"])
-            means[k] = (pair[0], pair[1])
-        out[lock_id] = (prims, means[k][0][prims], means[k][1][prims] * density_of.get(lock_id, 0.0))
+            f = np.frombuffer(regions_geo.pointFloatAttribValuesAsString(config.MASK_KEEP_ATTR % k), np.float32)
+            a = np.frombuffer(regions_geo.vertexFloatAttribValuesAsString(config.MASK_ADD_ATTR % k), np.float32)
+            means[k] = (np.bincount(tables["vertex_prim"], weights=f[tables["vertex_point"]],
+                                    minlength=n_prims) / tables["corners"],
+                        np.bincount(tables["vertex_prim"], weights=a, minlength=n_prims) / tables["corners"])
+        out[lock_id] = (prims, means[k][0][prims], means[k][1][prims])
     return out
 
 
@@ -971,7 +1029,7 @@ class PaintSession:
         layer = self.data.mask(self.layer_id)
         self.kind = layer.kind if layer is not None else "paint"
         if layer is not None and layer.kind != "paint":
-            raise ValueError(f"mask layer {layer.name!r} is a {layer.kind} layer: only a paint layer is painted")
+            raise ValueError(f"layer {layer.name!r} is a {layer.kind} layer: only a paint layer of a mask is painted")
         self.md = read_masks(self.node, self.scalp)
         self.dirty = False
         self._last = None
@@ -980,8 +1038,9 @@ class PaintSession:
         return self.data.mask(self.layer_id)
 
     def cover(self):
-        """(keep, add) the scalp shows while this layer is painted (`layers_for_view`)."""
-        return self.md.compose(layers_for_view(self.data.masks, self.layer_id))
+        """(keep, add) the scalp shows while this layer is painted (`layers_for_view`): density = automatic x
+        keep + add, add in strands / cm2."""
+        return self.md.compose(self.data, layers_for_view(self.data.masks, self.layer_id))
 
     def base_density(self):
         """(automatic density per scalp point in strands / cm2, the groom's default density, each point's
@@ -1024,17 +1083,16 @@ class PaintSession:
         """Strands / cm2 per scalp point for the "density" view, the final density map: the roots as counted
         (`measure`), moved by what the layers ask now against what they asked when counted (a stroke in
         progress shows at once what it asks of the hair it is over): the automatic part of the count x keep,
-        plus add x the density set there. Before any count: the density asked (`logic.mask_density`)."""
+        plus the layers' own density. Before any count: the density asked (`logic.layer_density`)."""
         np = _np()
         base, _reference, _area = self.base_density()
         keep, add = self.cover()
-        asked = logic.mask_density(base, keep, add, base)
         if getattr(self, "actual", None) is None:
-            return asked.astype(np.float32)
+            return logic.layer_density(base, keep, add).astype(np.float32)
         keep0, add0 = self.actual_cover
         # the automatic density there, from the count: what was not the layers', over what was kept of it
-        auto = np.where(keep0 > 1e-3, np.maximum(self.actual - add0 * base, 0.0) / np.maximum(keep0, 1e-3), base)
-        return logic.mask_density(auto, keep, add, base).astype(np.float32)
+        auto = np.where(keep0 > 1e-3, np.maximum(self.actual - add0, 0.0) / np.maximum(keep0, 1e-3), base)
+        return logic.layer_density(auto, keep, add).astype(np.float32)
 
     def colours(self, view: str):
         """The scalp's colours for a view (config.MASK_VIEWS). "layer": the painted layer alone, its value
@@ -1051,8 +1109,9 @@ class PaintSession:
 
     def dab(self, centre, normal=None, radius_cm: float = config.BRUSH_RADIUS_CM,
             value: float = config.BRUSH_VALUE, soft: float = config.BRUSH_SOFT, erase: bool = False) -> int:
-        """One dab at `centre` (scene units, on the skin): the brush `value` (1 white, 0 black) with its
-        coverage; `erase` takes the layer's own paint away there. Returns the points it reached."""
+        """One dab at `centre` (scene units, on the skin): the brush `value` (1 white: the density layer
+        applies; 0 black: it does not) with its coverage; `erase` takes the layer's own paint away there.
+        Returns the points it reached."""
         radius = radius_cm / self.unit_cm
         idx, dist = self.brush.reach(centre, radius, normal)
         if len(idx):
@@ -1093,83 +1152,94 @@ class PaintSession:
 # ---------------------------------------------------------------------------
 
 def mask_add(node, name: str = "", mode: str = "normal", opacity: float = 1.0, scope: str = "all",
-             group: str = "", locks: Iterable[int] = (), kind: str = "paint", value: float = 1.0,
-             parent: int | None = None) -> int:
-    """A new layer on top of the stack. `kind` (config.MASK_KINDS): "paint", painted with the brush (a value
-    0..1 and a coverage per skin point; transparent until painted); "fill", one `value` (0..1) over all the
-    skin of its owner; "folder" holds layers (`parent`), with an opacity over them all. `mode`
-    (config.MASK_MODES) is how it blends with what lies below; `scope` its owner: every lock, a group, or
-    chosen locks. Returns its id."""
+             group: str = "", locks: Iterable[int] = (), kind: str | None = None, value: float = 1.0,
+             parent: int | None = None, density: float = config.MASK_DENSITY_DEFAULT) -> int:
+    """A new layer; returns its id. `kind` (None: "density" without a `parent`, "paint" with one):
+    "density": a density layer on top of the stack: `density` (D, strands / cm2), `opacity`, and its owner
+    (`scope`: every lock, a `group`, or `locks`). Its mask is black until a mask layer is added and painted, so
+    a new density layer changes nothing.
+    "paint" / "fill": a layer on top of density layer `parent`'s mask: "paint" is painted with the brush (a
+    value 0..1 and a coverage per skin point; transparent until painted), "fill" is one `value` (0..1) over all
+    the skin; `mode` (config.MASK_MODES) is how it blends with the mask below it, `opacity` how much."""
     _require_parm(node)
+    kind = kind or ("density" if parent is None else "paint")
     if mode not in config.MASK_MODES or scope not in config.MASK_SCOPES:
-        raise ValueError(f"mask layer mode {mode!r} / scope {scope!r}")
-    if kind not in config.MASK_KINDS:
-        raise ValueError(f"mask layer kind {kind!r}")
+        raise ValueError(f"layer mode {mode!r} / scope {scope!r}")
+    if kind not in ("density", "paint", "fill"):
+        raise ValueError(f"layer kind {kind!r}")
     data = _read(node)
-    layer = data.add_mask(name, mode, opacity, scope, group, locks, kind, value, parent)
-    _write(node, f"Add mask {'folder' if kind == 'folder' else 'layer'} {layer.name}", data=data)
+    layer = data.add_mask(name, mode, opacity, scope, group, locks, kind, value, parent, density)
+    _write(node, f"Add {'density' if kind == 'density' else 'mask'} layer {layer.name}", data=data)
     return layer.id
 
 
 def mask_remove(node, layer_id: int) -> bool:
-    """Delete a layer and what is painted on it; a folder's layers stay, out of it. False when there is no
-    such layer."""
+    """Delete a layer and what is painted on it; a density layer goes with its mask layers. False when there
+    is no such layer; the automatic layer cannot be deleted (ValueError)."""
     data = _read(node)
     layer = data.mask(layer_id)
     if layer is None:
         return False
-    data.remove_mask(layer_id)
+    gone = data.remove_mask(layer_id)
     md = read_masks(node)
-    md.drop(layer_id)
-    _write(node, f"Delete mask layer {layer.name}", data=data, md=md)
+    for i in gone:
+        md.drop(i)
+    _write(node, f"Delete {'density' if layer.kind == 'density' else 'mask'} layer {layer.name}", data=data, md=md)
     return True
 
 
 def mask_move(node, layer_id: int, index: int, parent: int | None | str = "keep") -> None:
-    """Put a layer at place `index` of the stack (0 = bottom) and, when `parent` is given, into that
-    folder (None: out of any)."""
+    """Put a layer at place `index` among its like (0 = bottom): a density layer among the density layers (the
+    automatic layer stays under them all and cannot be moved), a mask layer inside its density layer's mask
+    or, with `parent`, into another density layer's mask."""
     data = _read(node)
-    data.move_mask(layer_id, index)
-    if parent != "keep":
-        data.set_mask_parent(layer_id, parent)
-    _write(node, "Reorder mask layers", data=data)
+    data.move_mask(layer_id, index, parent)
+    _write(node, "Reorder layers", data=data)
 
 
 def mask_set(node, layer_id: int, name: str | None = None, on: bool | None = None, mode: str | None = None,
              opacity: float | None = None, scope: str | None = None, group: str | None = None,
-             locks: Iterable[int] | None = None, value: float | None = None) -> bool:
-    """Change a layer's row: any of name, on, blend mode, opacity, owner (scope with its group or locks), a
-    fill layer's value (0..1). One undo step; False when nothing changed."""
+             locks: Iterable[int] | None = None, value: float | None = None, density: float | None = None) -> bool:
+    """Change a layer's row: any of name, on, opacity; a density layer's `density` (strands / cm2) and owner
+    (scope with its group or locks); a mask layer's blend `mode` and a fill layer's `value` (0..1). One undo
+    step; False when nothing changed. The automatic layer has no settings of its own (ValueError): its density
+    is each lock's Density setting."""
     data = _read(node)
     layer = data.mask(layer_id)
     if layer is None:
         raise KeyError(layer_id)
+    if layer.kind == "base":
+        raise ValueError("the automatic layer has no settings of its own: its density is each lock's Density")
     if mode is not None and mode not in config.MASK_MODES:
-        raise ValueError(f"mask layer mode {mode!r}")
+        raise ValueError(f"layer mode {mode!r}")
     if scope is not None and scope not in config.MASK_SCOPES:
-        raise ValueError(f"mask layer scope {scope!r}")
+        raise ValueError(f"layer scope {scope!r}")
     before = model.MaskLayer(**{**layer.__dict__, "locks": list(layer.locks)})
     if name is not None:
         layer.name = str(name)
     if on is not None:
         layer.on = bool(on)
-    if mode is not None:
-        layer.mode = mode
     if opacity is not None:
         layer.opacity = min(1.0, max(0.0, float(opacity)))
-    if scope is not None:
-        layer.scope = scope
-    if group is not None:
-        layer.group = str(group)
-    if locks is not None:
-        layer.locks = sorted({int(i) for i in locks})
-    if value is not None:
-        layer.value = min(1.0, max(0.0, float(value)))
+    if layer.kind == "density":
+        if scope is not None:
+            layer.scope = scope
+        if group is not None:
+            layer.group = str(group)
+        if locks is not None:
+            layer.locks = sorted({int(i) for i in locks})
+        if density is not None:
+            layer.density = min(config.MASK_DENSITY_MAX, max(0.0, float(density)))
+    else:
+        if mode is not None:
+            layer.mode = mode
+        if value is not None:
+            layer.value = min(1.0, max(0.0, float(value)))
     if layer == before:
         return False
-    what = [k for k in ("name", "on", "mode", "opacity", "scope", "group", "locks", "value")
+    what = [k for k in ("name", "on", "mode", "opacity", "scope", "group", "locks", "value", "density")
             if getattr(layer, k) != getattr(before, k)]
-    _write(node, f"Mask layer {layer.name}: {', '.join(what)}", data=data)
+    _write(node, f"Layer {layer.name}: {', '.join(what)}", data=data)
     return True
 
 
@@ -1183,7 +1253,7 @@ def _layer_or_raise(data: model.GroomData, layer_id: int) -> model.MaskLayer:
 def _paint_layer(data: model.GroomData, layer_id: int) -> model.MaskLayer:
     layer = _layer_or_raise(data, layer_id)
     if layer.kind != "paint":
-        raise ValueError(f"mask layer {layer.name!r} is a {layer.kind} layer: only a paint layer holds paint")
+        raise ValueError(f"layer {layer.name!r} is a {layer.kind} layer: only a paint layer of a mask holds paint")
     return layer
 
 
@@ -1218,39 +1288,48 @@ def mask_invert(node, layer_id: int) -> None:
 
 
 def mask_values(node, layer_id: int):
-    """(value, coverage) per fine-scalp point of a layer, numpy float32: a paint layer's paint; a fill
-    layer's one value with coverage 1."""
+    """Two arrays per fine-scalp point, numpy float32. A mask layer: (value, coverage), a paint layer's paint or
+    a fill layer's one value with coverage 1. A density layer: (its mask, its mask x its opacity), the mask
+    being its mask layers blended from black (`logic.mask_stack`)."""
+    np = _np()
     data = _read(node)
     layer = _layer_or_raise(data, layer_id)
     md = read_masks(node)
+    if layer.kind == "density":
+        m = md.mask_of(data, layer_id)
+        return m.astype(np.float32), (m * layer.opacity).astype(np.float32)
+    if layer.kind == "base":
+        return np.ones(md.n, np.float32), np.ones(md.n, np.float32)
     return md.value(layer), md.coverage(layer)
 
 
 def mask_cover(node, lock_id: int | None = None):
-    """(keep, add) per fine-scalp point: density of a lock = automatic x keep + its Density x add
-    (`logic.mask_density`); keep + add is the mask's value. For one lock (the layers that reach it), or of
-    the "all locks" layers when `lock_id` is None."""
+    """(keep, add) per fine-scalp point: density = automatic x keep + add (`logic.layer_density`), add in
+    strands / cm2 with each layer's D as it is set. For one lock (the density layers that reach it, in the
+    order they apply), or of the "all locks" layers when `lock_id` is None. Where several locks share the
+    skin, a layer's D is what the locks it is owned for give there together (`layer_divisor`)."""
     data = _read(node)
     md = read_masks(node)
     if lock_id is None:
-        return md.compose([m for m in data.masks if m.kind == "folder" or m.scope == "all"])
+        return md.compose(data, [m for m in data.density_layers() if m.on and m.scope == "all"])
     lk = data.lock(lock_id)
-    group = lk.group if lk is not None else ""
-    return md.compose([m for m in data.masks if m.kind == "folder" or m.applies(lock_id, group)])
+    return md.compose(data, logic.density_order(data.masks, lock_id, lk.group if lk is not None else ""))
 
 
 def mask_dropped(node) -> str:
-    """What the artist is told about layers this version dropped on opening the scene (an older test
-    build's layers in strands / cm2 or with a factor over 1), "" when none: for the panel's message line. The
+    """What the artist is told about a scene of an older test build: the layers this version dropped on
+    opening it and the ones it now reads as density layers, "" when none: for the panel's message line. The
     stored JSON keeps them until the next edit writes it."""
-    return model.dropped_text(model.dropped_masks(node.evalParm(config.DATA_PARM)))
+    text = node.evalParm(config.DATA_PARM)
+    return model.dropped_text(model.dropped_masks(text), model.converted_masks(text))
 
 
 def mask_stroke(node, layer_id: int, points: Sequence[Sequence[float]], radius_cm: float = config.BRUSH_RADIUS_CM,
                 value: float = config.BRUSH_VALUE, soft: float = config.BRUSH_SOFT, erase: bool = False,
                 normals: Sequence[Sequence[float]] | None = None) -> int:
-    """One stroke through `points` (on the skin, scene units) on a paint layer, as the brush would paint it;
-    one undo step. `value`: what is painted (1 white, 0 black); `erase` removes the layer's paint instead.
+    """One stroke through `points` (on the skin, scene units) on a paint layer of a density layer's mask, as
+    the brush would paint it; one undo step. `value`: what is painted (1 white: the density layer applies
+    there; 0 black: it does not); `erase` removes the layer's paint instead.
     Returns the dabs that reached skin."""
     _paint_layer(_read(node), layer_id)
     session = PaintSession(node, layer_id)
@@ -1296,8 +1375,8 @@ PAINT: dict[str, Any] = {"node": None, "layer": None}    # node path and layer i
 
 def set_brush(radius_cm: float | None = None, value: float | None = None, soft: float | None = None,
               erase: bool | None = None, xray: bool | None = None, view: str | None = None) -> dict:
-    """Brush settings of the session (not saved, no undo): radius in cm, the `value` painted (0..1: 1 white,
-    the lock's density; 0 black, no hair), the soft share of the radius, `erase` (take the layer's paint
+    """Brush settings of the session (not saved, no undo): radius in cm, the `value` painted into the mask
+    (0..1: 1 white, the density layer applies; 0 black, it does not), the soft share of the radius, `erase` (take the layer's paint
     away), the scalp's X-ray, and what the scalp shows (`view`, config.MASK_VIEWS: the density as it is, the
     painted layer alone, or the roots as dots). Choosing "density" or "roots" counts the groom's roots, which
     grows the locks the cache does not hold in full. Returns them all."""
@@ -1359,13 +1438,14 @@ def publish_masks(node, staged, tool_dir: str) -> dict:
     """Stage what is painted next to grooming_data.json (`mask_layers.bgeo`); the record for publish.json.
     {} when the groom has no layer."""
     data = _read(node)
-    if not data.masks:
+    if not data.has_layers():
         return {}
     md = read_masks(node)
     final = os.path.join(tool_dir, PUBLISH_MASK_FILE).replace("\\", "/")
-    mask_geometry(node, md, [m.id for m in data.masks]).saveToFile(staged.stage(final))
-    return {"file": PUBLISH_MASK_FILE, "layers": [m.id for m in data.masks], "points": md.n,
-            "painted": {str(m.id): md.painted(m.id) for m in data.masks}}
+    ids = [m.id for m in data.masks if m.kind != "base"]
+    mask_geometry(node, md, ids).saveToFile(staged.stage(final))
+    return {"file": PUBLISH_MASK_FILE, "layers": ids, "points": md.n,
+            "painted": {str(m.id): md.painted(m.id) for m in data.masks if m.kind == "paint"}}
 
 
 def masks_from_publish(tool_dir: str) -> tuple[list[model.MaskLayer], Any]:
@@ -1395,8 +1475,8 @@ def import_masks(node, tool_dir: str) -> int:
     md = read_masks(node, stored=geo) if geo is not None else MaskData(_points(_scalp(node)))
     md.a = {i: a for i, a in md.a.items() if data.mask(i) is not None}     # a dropped layer's paint stays behind
     md.v = {i: v for i, v in md.v.items() if data.mask(i) is not None}
-    _write(node, "Mask layers from a publish", data=data, md=md)
-    return len(layers)
+    _write(node, "Layers from a publish", data=data, md=md)
+    return len([m for m in layers if m.kind != "base"])
 
 
 __all__ = [

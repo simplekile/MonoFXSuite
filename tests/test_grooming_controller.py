@@ -315,9 +315,9 @@ def test_reassigning_an_orphan_carries_the_density_layers_it_owned(env) -> None:
     # came back as a new lock: giving the missing lock's settings to it moves the layer's ownership too
     adapter, view, c = env
     data = adapter.read_data(None)
-    mine = data.add_mask("Bare patch", value=0.0, scope="locks", locks=[9])
-    both = data.add_mask("Two locks", value=80.0, scope="locks", locks=[9, 3])
-    everyone = data.add_mask("All", value=40.0)
+    mine = data.add_mask("Bare patch", kind="density", density=0.0, scope="locks", locks=[9])
+    both = data.add_mask("Two locks", kind="density", density=80.0, scope="locks", locks=[9, 3])
+    everyone = data.add_mask("All", kind="density", density=40.0)
     adapter.write_data(None, data, "layers")
     assert c.reassign_orphan(9, 4)
     data = adapter.read_data(None)

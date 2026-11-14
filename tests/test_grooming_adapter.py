@@ -313,7 +313,7 @@ def test_publish_record_fields():
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1234, "/obj/g/n", "22.0")
     assert rec["asset"] == "char_Helen" and rec["version"] == "v007"
     assert rec["locks"] == 1 and rec["strands"] == 1234 and rec["department"] == "grooming"
-    assert rec["masks"] == {} and rec["schema"] == 5
+    assert rec["masks"] == {} and rec["schema"] == 6
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1, "/obj/g/n", masks={"file": "m.bgeo"})
     assert rec["masks"] == {"file": "m.bgeo"}
 
@@ -466,38 +466,95 @@ def test_brush_reaches_only_joined_skin_facing_the_same_way():
     assert len(brush.reach((5.0, 0.0, 5.0), 0.025)[0]) == 0             # off the scalp: nothing
 
 
+def _layers(*density):
+    """A GroomData with one density layer per number, each with one paint layer: (data, [(density, paint)])."""
+    from tools.fx.grooming.model import GroomData
+    data = GroomData()
+    rows = []
+    for d in density:
+        layer = data.add_mask(kind="density", density=d)
+        rows.append((layer, data.add_mask(parent=layer.id)))
+    return data, rows
+
+
 def test_mask_data_dab_and_cover():
     gm, np, P, N, nb = _grid_brush()
-    from tools.fx.grooming.model import MaskLayer
+    data, [(layer, paint)] = _layers(300.0)
     md = gm.MaskData(P)
     brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
     idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
-    md.dab(0, idx, logic.brush_weights(dist, 0.025, 0.5), 0.5)            # value 0.5, soft edge
-    assert md.painted(0) == int((logic.brush_weights(dist, 0.025, 0.5) > 0).sum())
-    layer = MaskLayer(0, "a")
-    keep, add = md.compose([layer])
-    assert keep[40] == 0.0 and add[40] == pytest.approx(0.5)              # painted: m x the lock's density
+    md.dab(paint.id, idx, logic.brush_weights(dist, 0.025, 0.5), 1.0)     # white, soft edge
+    assert md.painted(paint.id) == int((logic.brush_weights(dist, 0.025, 0.5) > 0).sum())
+    keep, add = md.compose(data, [layer])
+    assert keep[40] == 0.0 and add[40] == pytest.approx(300.0)            # painted white: D, over the lock's 150 too
     assert keep[0] == 1.0 and add[0] == 0.0 and keep.dtype == np.float32  # not painted: the automatic groom
     edge = int(idx[np.argmax(dist)])
-    assert 0.0 < keep[edge] < 1.0 and add[edge] == pytest.approx(0.5 * (1.0 - keep[edge]), rel=1e-5)
-    off = md.compose([MaskLayer(0, "a", on=False)])
-    assert off[0].min() == 1.0 and off[1].max() == 0.0
-    never = md.compose([MaskLayer(1, "never painted")])
+    assert 0.0 < keep[edge] < 1.0 and add[edge] == pytest.approx(300.0 * (1.0 - keep[edge]), rel=1e-5)
+    layer.opacity = 0.5
+    keep, add = md.compose(data, [layer])
+    assert keep[40] == pytest.approx(0.5) and add[40] == pytest.approx(150.0)
+    layer.opacity = 1.0
+    assert md.mask_of(data, layer.id)[40] == 1.0 and md.mask_of(data, layer.id)[0] == 0.0
+    never = gm.MaskData(P).compose(data, [layer])
     assert never[0].min() == 1.0 and never[1].max() == 0.0               # a paint layer never painted is transparent
-    md.dab(0, idx, np.ones(len(idx), np.float32), 9.0)                    # a value is kept inside 0..1
-    assert float(md.v[0].max()) == 1.0
-    md.dab(0, idx, np.ones(len(idx), np.float32), erase=True)             # erase: the layer's paint is gone
-    assert md.painted(0) == 0 and md.compose([layer])[0].min() == 1.0
+    md.dab(paint.id, idx, np.ones(len(idx), np.float32), 9.0)             # a mask value is kept inside 0..1
+    assert float(md.v[paint.id].max()) == 1.0
+    md.dab(paint.id, idx, np.ones(len(idx), np.float32), 0.0)             # black over the white: the density below
+    keep, add = md.compose(data, [layer])
+    assert keep[40] == 1.0 and add[40] == 0.0 and md.painted(paint.id) == len(idx)
+    md.dab(paint.id, idx, np.ones(len(idx), np.float32), erase=True)      # erase: the layer's paint is gone
+    assert md.painted(paint.id) == 0 and md.compose(data, [layer])[0].min() == 1.0
 
 
-def test_layers_for_view_shows_what_a_lock_of_the_painted_scope_gets():
+def test_density_layers_stack_and_each_reads_its_own_mask():
+    gm, np, P, N, nb = _grid_brush()
+    data, [(low, low_paint), (high, high_paint)] = _layers(40.0, 300.0)
+    md = gm.MaskData(P)
+    brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
+    idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
+    w = logic.brush_weights(dist, 0.025, 0.0)                      # a hard brush
+    md.dab(low_paint.id, idx, w, 1.0)
+    md.dab(high_paint.id, idx, w, 0.5)                             # the upper layer at half
+    keep, add = md.compose(data, [low, high])
+    assert keep[40] == 0.0 and add[40] == pytest.approx(40.0 + (300.0 - 40.0) * 0.5)
+    keep_w, ws = md.weights(data, [low, high])
+    assert ws[0][40] == pytest.approx(0.5) and ws[1][40] == pytest.approx(0.5) and keep_w[40] == 0.0
+    # a fill layer: one value over all the skin, full coverage, nothing stored for it
+    fill = data.add_mask(kind="fill", parent=high.id, value=1.0)
+    assert fill.id not in md.a and md.coverage(fill).min() == 1.0 and md.value(fill)[0] == pytest.approx(1.0)
+    keep, add = md.compose(data, [low, high])
+    assert keep.max() == 0.0 and add == pytest.approx(np.full(len(P), 300.0))
+    # Multiply as the top layer of a mask bounds what is below it in that mask
+    fill.mode, fill.value = "multiply", 0.5
+    assert md.mask_of(data, high.id)[40] == pytest.approx(0.25) and md.mask_of(data, high.id)[0] == 0.0
+    # D = 0 painted white: no hair
+    data0, [(none, none_paint)] = _layers(0.0)
+    md0 = gm.MaskData(P)
+    md0.dab(none_paint.id, idx, w, 1.0)
+    keep, add = md0.compose(data0, [none])
+    assert keep[40] == 0.0 and add[40] == 0.0 and keep[0] == 1.0
+    # a layer carried over from an older file: coverage only, its row's one value under it
+    md2 = gm.MaskData(P)
+    md2.a[low_paint.id] = np.zeros(len(P), np.float32)
+    md2.a[low_paint.id][idx] = 1.0
+    low_paint.value = 0.5
+    assert md2.mask_of(data, low.id)[40] == pytest.approx(0.5)
+
+
+def test_layers_for_view_shows_what_a_lock_of_the_painted_owner_gets():
     from apps.houdini import grooming_masks as gm
-    from tools.fx.grooming.model import MaskLayer
-    masks = [MaskLayer(0, "all"), MaskLayer(1, "bang", scope="group", group="bang"),
-             MaskLayer(2, "back", scope="group", group="back")]
-    assert [m.id for m in gm.layers_for_view(masks, 0)] == [0]
-    assert [m.id for m in gm.layers_for_view(masks, 1)] == [0, 1]
-    assert [m.id for m in gm.layers_for_view(masks, None)] == [0]
+    from tools.fx.grooming.model import GroomData
+    data = GroomData()
+    everyone = data.add_mask(kind="density")
+    bang = data.add_mask(kind="density", scope="group", group="bang")
+    back = data.add_mask(kind="density", scope="group", group="back")
+    top = data.add_mask(kind="density")
+    paint = data.add_mask(parent=bang.id)
+    assert [m.id for m in gm.layers_for_view(data.masks, everyone.id)] == [everyone.id, top.id]
+    assert [m.id for m in gm.layers_for_view(data.masks, paint.id)] == [everyone.id, top.id, bang.id]
+    assert [m.id for m in gm.layers_for_view(data.masks, None)] == [everyone.id, top.id]
+    back.on = False
+    assert [m.id for m in gm.layers_for_view(data.masks, back.id)] == [everyone.id, top.id]
 
 
 def test_view_colours_density_and_one_layer_alone():
@@ -564,52 +621,6 @@ def test_brush_settings_are_clamped_and_kept_for_the_session():
         assert ga.paint_layer(None) is None
     finally:
         gm.BRUSH.update(before)
-
-
-def test_paint_and_fill_layers_blend_into_one_cover():
-    gm, np, P, N, nb = _grid_brush()
-    from tools.fx.grooming.model import MaskLayer
-    md = gm.MaskData(P)
-    brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
-    idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
-    w = logic.brush_weights(dist, 0.025, 0.0)                      # a hard brush
-    paint = MaskLayer(0, "paint")
-    md.dab(0, idx, w, 1.0)                                         # white
-    keep, add = md.compose([paint])
-    assert keep[40] == 0.0 and add[40] == 1.0 and keep[0] == 1.0
-    md.dab(0, idx, w, 0.0)                                         # black over it: black overrides too
-    keep, add = md.compose([paint])
-    assert keep[40] == 0.0 and add[40] == 0.0 and md.painted(0) == len(idx)
-    # a fill layer: one value over all the skin, full coverage, nothing stored for it
-    fill = MaskLayer(1, "fill", kind="fill", value=0.25)
-    keep, add = md.compose([fill])
-    assert keep.max() == 0.0 and add == pytest.approx(np.full(len(P), 0.25))
-    assert 1 not in md.a and md.coverage(fill).min() == 1.0 and md.value(fill)[0] == pytest.approx(0.25)
-    # Multiply as a top layer bounds what is below; over skin nothing covers it thins the automatic groom
-    md.dab(0, idx, w, 0.8)
-    bound = MaskLayer(2, "bound", mode="multiply", kind="fill", value=0.5)
-    keep, add = md.compose([paint, bound])
-    assert add[40] == pytest.approx(0.4) and keep[40] == 0.0
-    assert keep[0] == pytest.approx(0.5) and add[0] == 0.0
-    # a layer carried over from an older file: coverage only, its row's one value under it
-    md2 = gm.MaskData(P)
-    md2.a[5] = np.zeros(len(P), np.float32)
-    md2.a[5][idx] = 1.0
-    old = MaskLayer(5, "old fill", value=0.5)
-    keep, add = md2.compose([old])
-    assert add[40] == pytest.approx(0.5) and keep[0] == 1.0
-
-
-def test_folder_opacity_gates_its_layers_and_the_view_keeps_them():
-    gm, np, P, N, nb = _grid_brush()
-    from tools.fx.grooming.model import MaskLayer
-    md = gm.MaskData(P)
-    folder = MaskLayer(9, "crown", kind="folder", opacity=0.5)
-    child = MaskLayer(1, "less", kind="fill", value=0.0, parent=9)
-    keep, add = md.compose([folder, child])
-    assert keep == pytest.approx(np.full(len(P), 0.5)) and add.max() == 0.0      # half way to "no hair"
-    shown = gm.layers_for_view([folder, child, MaskLayer(2, "g", scope="group", group="x")], 1)
-    assert [m.id for m in shown] == [9, 1]
 
 
 def test_kept_share_follows_roots_to_where_they_end_up():

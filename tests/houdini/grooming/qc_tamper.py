@@ -1,4 +1,4 @@
-"""Does grooming-check catch a painted lock that grew too few strands?
+"""Does grooming-check catch a painted lock that grew too few strands, or (a negative --drop) too many?
 
     hython qc_tamper.py <suite> <hip> <out_dir> [--ref <v006.usd>] --drop 0.3 [--lock <name>]
 
@@ -52,9 +52,17 @@ def tampered(sop):
     if spine and spine[0].intAttribValue("lock_id") == pick(sop.parent()):
         geo = sop.geometry()
         prims = geo.prims()
-        cut = [p for i, p in enumerate(prims) if (i * 0.6180339887) % 1.0 < DROP]
-        INFO["cut"].append({"strands": len(prims), "removed": len(cut), "mode": spine[0].stringAttribValue("cache_mode")})
-        geo.deletePrims(cut)
+        cut = [p for i, p in enumerate(prims) if (i * 0.6180339887) % 1.0 < abs(DROP)]
+        INFO["cut"].append({"strands": len(prims), "removed" if DROP >= 0 else "added": len(cut),
+                            "mode": spine[0].stringAttribValue("cache_mode")})
+        if DROP >= 0:
+            geo.deletePrims(cut)
+        else:                                   # a negative share: that many strands too many (copies of its own)
+            more = hou.Geometry()
+            more.merge(geo)
+            chosen = {p.number() for p in cut}
+            more.deletePrims([p for p in more.prims() if p.number() not in chosen])
+            geo.merge(more)
         json.dump(INFO, open(OUT + "/qc_tamper.json", "w"), indent=1, default=str)   # qc_metrics exits by itself
     _store(sop)
 

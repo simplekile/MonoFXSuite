@@ -110,32 +110,44 @@ SECTION_MIN_THICK_RATIO = 0.3  # cross-section floor of a lock: thickness counte
 
 LOCK_NAME_DIGITS = 2           # fringe_01
 
-# ---- v0.2a density masks (docs/plans/grooming_v0_2.md) ----
-# The model (the user, final, 2026-11-14; it replaces the "= D strands / cm2" layers of the commit before, and the
-# factor layers of the first builds). One density mask per skin point, m in 0..1, made by blending a stack of
-# layers bottom to top, as the layer stack of a mask in Substance Painter. On painted skin a lock grows
-#     m x that lock's own Density setting            (white = the lock's density, black = no hair)
-# an absolute density: the tool moves no root off that skin and lays none of its relocated roots on it. The
-# bottom of the stack is the automatic groom, which counts as 1 for the blends and stays the automatic groom,
-# root for root, where no layer has coverage. Every value is 0..1: brush value, fill value.
-# Blend modes of a layer (logic.mask_layer): result = below + (blend(below, value) - below) x coverage x opacity
+# ---- v0.2a density layers (docs/plans/grooming_v0_2.md) ----
+# The model (the user, final, 2026-11-15: "the automatic density is a density layer of its own; the user makes
+# a new density layer with another number and a mask, to override the density"). It replaces the one 0..1 mask
+# x the lock's own Density of 2026-11-14, where a layer could never be denser than the automatic groom and
+# black meant "no hair".
+#   A DENSITY LAYER has its own number D (strands / cm2, absolute), an opacity, an eye, an owner (all locks, a
+#   group, a lock) and a MASK: a stack of paint and fill layers, values 0..1, blended bottom to top as the layer
+#   stack of a mask in Substance Painter, starting from black. At a skin point, layer over what lies below:
+#       density = below + (D - below) x mask x opacity
+#   Black in a mask = the layer does not apply there (the density below shows); no hair = a layer with D = 0
+#   painted white. The bottom of the stack is the BASE layer, the automatic groom (D = each lock's own Density
+#   setting, mask full): never deleted, never moved; with no other layer the groom is v0.1's.
+#   Density layers stack as Normal only, in this order: all locks, then the lock's group, then the lock; inside
+#   one owner the upper layer wins.
+# Blend modes of a MASK layer (logic.mask_stack): m = below + (blend(below, value) - below) x coverage x opacity
 MASK_MODES: tuple[str, ...] = ("normal", "multiply", "add", "subtract", "min", "max")
-MASK_SCOPES: tuple[str, ...] = ("all", "group", "locks")   # the layer's owner: every lock, a group, chosen locks
-#   "paint"  the brush paints a value and a coverage per skin point; skin it never painted is transparent
-#   "fill"   one value over all the skin of its owner, full coverage
-#   "folder" holds layers (their `parent`); its opacity applies to all of them together
-MASK_KINDS: tuple[str, ...] = ("paint", "fill", "folder")
-MASK_VALUE_PICKS: tuple[float, ...] = (0.0, 0.5, 1.0)     # the panel's quick picks for a value
+MASK_SCOPES: tuple[str, ...] = ("all", "group", "locks")   # a density layer's owner: every lock, a group, a lock
+#   "base"    the automatic groom, always first in the list (id MASK_BASE_ID); holds no mask layer
+#   "density" a density layer: `density` (D), opacity, owner; its mask layers name it as their `parent`
+#   "paint"   a mask layer: the brush paints a value and a coverage per skin point; unpainted skin is transparent
+#   "fill"    a mask layer: one value over all the skin, full coverage
+MASK_KINDS: tuple[str, ...] = ("base", "density", "paint", "fill")
+MASK_BASE_ID = -1
+MASK_DENSITY_MAX = 20000.0     # a layer's density is kept inside 0..this (Helen's crown: 7,000 / cm2)
+MASK_DENSITY_DEFAULT = 150.0   # a new density layer's number
+MASK_DENSITY_PICKS: tuple[float, ...] = (0.0, 75.0, 150.0, 300.0)   # the panel's quick picks for a layer's density
+MASK_VALUE_PICKS: tuple[float, ...] = (0.0, 0.5, 1.0)     # ... and for the grey the brush paints into a mask
 MASK_PARM = "mask_layers"      # hidden geometry parm: per fine-scalp point P, uv, mask_<id>_v, mask_<id>_a
 MASK_VALUE_ATTR = "mask_%d_v"  # a paint layer's value per scalp point, 0..1
 MASK_COVER_ATTR = "mask_%d_a"  # ... and its coverage there: 0 not painted, 1 painted, a dab's soft edge between
-# on SCALP_REGIONS, per scope set (logic.mask_scope_sets): density of a lock = automatic x keep + add x the
-# lock's Density setting. `keep`: how much of the automatic groom stays; `add`: the absolute part, 0..1
+# on SCALP_REGIONS, per scope set (logic.mask_scope_sets): density of a lock = automatic x keep + add.
+# `keep` (point): how much of the automatic groom stays; `add` (VERTEX: a prim's corner): the density the layers
+# ask of one lock of the set there, strands / cm2, already divided among the locks a layer's D is shared by
 MASK_KEEP_ATTR = "mask_keep_%d"
 MASK_ADD_ATTR = "mask_add_%d"
 BRUSH_RADIUS_CM = 1.0
 BRUSH_SOFT = 0.5               # share of the radius over which a dab fades out
-BRUSH_VALUE = 1.0              # what the brush paints: 1 white (the lock's density), 0 black (no hair)
+BRUSH_VALUE = 1.0              # what the brush paints into a mask: 1 white (the layer applies), 0 black
 # A dab reaches only skin connected to the point under the cursor and facing its way: the angle between a
 # point's normal and the hit's stays under this (the skin behind an ear is not painted through it)
 BRUSH_FACING_DEG = 75.0
@@ -143,7 +155,7 @@ BRUSH_FACING_DEG = 75.0
 # Painter's way: the final result, or one mask alone by Alt+click on it):
 #   "density" the result: roots / cm2 as the groom has them (counted from the cooked hair, so relocated
 #             roots are in it); while a stroke is down, what the layers ask of that count (automatic x keep +
-#             add x the density set there); before any hair is known, the density asked
+#             the layers' density); before any hair is known, the density asked
 #   "layer"   the painted layer alone: its value (white 1, black 0) where it has coverage, dark elsewhere
 #   "roots"   a dot at every root of the full groom on a plain scalp
 MASK_VIEWS: tuple[str, ...] = ("density", "layer", "roots")

@@ -577,14 +577,15 @@ def test_make_dirs_says_when_a_file_is_in_the_way(tmp_path) -> None:
     assert msg.startswith("a file is in the way, not a folder: ") and "\\" not in msg and msg.endswith("/publish")
 
 
-# ---- v0.2a density mask: one 0..1 mask from a stack of layers; a lock grows mask x its own density ----
+# ---- v0.2a density layers: each its own number D and its own 0..1 mask stack ----
 
 class _L:
-    """A layer row as mask_compose reads it."""
+    """A layer row as the rule reads it."""
 
-    def __init__(self, id, mode="normal", opacity=1.0, on=True, kind="paint", parent=None, scope="all", group="", locks=()):
+    def __init__(self, id, mode="normal", opacity=1.0, on=True, kind="paint", parent=None, scope="all", group="",
+                 locks=(), density=150.0):
         self.id, self.mode, self.opacity, self.on, self.kind, self.parent = id, mode, opacity, on, kind, parent
-        self.scope, self.group, self.locks = scope, group, list(locks)
+        self.scope, self.group, self.locks, self.density = scope, group, list(locks), density
 
     def applies(self, lock_id, group_id):
         if self.scope == "group":
@@ -594,15 +595,15 @@ class _L:
         return True
 
 
-def _value(keep, add):
-    return float(keep) + float(add)
+def _D(id, density=150.0, **kw):
+    return _L(id, kind="density", density=density, **kw)
 
 
-def test_the_model_is_one_mask_in_0_1():
+def test_the_model_is_density_layers_with_a_mask_each():
     assert config.MASK_MODES == ("normal", "multiply", "add", "subtract", "min", "max")
-    assert config.MASK_KINDS == ("paint", "fill", "folder")
-    assert config.MASK_VALUE_PICKS == (0.0, 0.5, 1.0) and config.BRUSH_VALUE == 1.0
-    assert not hasattr(config, "MASK_UNITS") and not hasattr(config, "MASK_DENSITY_PICKS")     # no strands / cm2 entry
+    assert config.MASK_KINDS == ("base", "density", "paint", "fill")
+    assert config.MASK_DENSITY_PICKS == (0.0, 75.0, 150.0, 300.0)       # the quick picks are densities
+    assert config.BRUSH_VALUE == 1.0 and config.MASK_BASE_ID == -1
     with pytest.raises(ValueError):
         logic.mask_blend(1.0, 0.5, "screen")
 
@@ -614,113 +615,80 @@ def test_mask_blend_modes(mode, want):
 
 
 @pytest.mark.parametrize("mode", config.MASK_MODES)
-@pytest.mark.parametrize("below", [(1.0, 0.0), (0.0, 0.7), (0.4, 0.3), (0.0, 0.0)])
+@pytest.mark.parametrize("below", [0.0, 0.25, 0.7, 1.0])
 @pytest.mark.parametrize("value", [0.0, 0.25, 1.0])
 @pytest.mark.parametrize("effect", [0.0, 0.5, 1.0])
-def test_a_layer_follows_the_formula_in_every_mode(mode, below, value, effect):
-    """value' = below + (blend(below, value) - below) x coverage x opacity, clamped to 0..1."""
-    keep, add = logic.mask_layer(below[0], below[1], value, effect, mode)
-    t = below[0] + below[1]
-    want = min(1.0, max(0.0, t + (float(logic.mask_blend(t, value, mode)) - t) * effect))
-    assert _value(keep, add) == pytest.approx(want, abs=1e-12)
-    assert 0.0 <= float(keep) <= 1.0
-    if effect == 0.0:                                   # unpainted skin of a layer is transparent
-        assert (float(keep), float(add)) == pytest.approx(below)
+def test_a_mask_layer_follows_the_formula_in_every_mode(mode, below, value, effect):
+    """m = below + (blend(below, value) - below) x coverage x opacity, clamped to 0..1."""
+    got = float(logic.mask_stack([(_L(0), below, 1.0), (_L(1, mode, opacity=effect), value, 1.0)]))
+    want = min(1.0, max(0.0, below + (float(logic.mask_blend(below, value, mode)) - below) * effect))
+    assert got == pytest.approx(want, abs=1e-12)
+    half = float(logic.mask_stack([(_L(0), below, 1.0), (_L(1, mode), value, effect)]))     # coverage does the same
+    assert half == pytest.approx(want, abs=1e-12)
 
 
-def test_normal_overrides_what_is_below_black_and_white_alike():
-    for v in (0.0, 0.25, 1.0):
-        keep, add = logic.mask_compose([(_L(0), v, 1.0)])
-        assert float(keep) == 0.0 and float(add) == pytest.approx(v)           # no automatic root left: m x density
-        assert logic.mask_density(7000.0, keep, add, 150.0) == pytest.approx(v * 150.0)
-    keep, add = logic.mask_compose([(_L(0), 0.2, 1.0), (_L(1), 1.0, 1.0)])     # white over dark: white
-    assert (float(keep), float(add)) == pytest.approx((0.0, 1.0))
-    keep, add = logic.mask_compose([(_L(0), 0.2, 0.0)])                        # no coverage: the automatic groom
+def test_a_mask_starts_black_and_unpainted_skin_is_transparent():
+    assert float(logic.mask_stack([])) == 0.0                                   # nothing painted: applies nowhere
+    assert float(logic.mask_stack([(_L(0), 1.0, 0.0)])) == 0.0                  # no coverage
+    assert float(logic.mask_stack([(_L(0), 1.0, 1.0)])) == 1.0
+    assert float(logic.mask_stack([(_L(0), 1.0, 1.0), (_L(1), 0.0, 1.0)])) == 0.0        # black over white
+    assert float(logic.mask_stack([(_L(0), 1.0, 1.0), (_L(1, on=False), 0.0, 1.0)])) == 1.0
+    assert float(logic.mask_stack([(_L(0), 0.8, 1.0), (_L(1, "multiply"), 0.5, 1.0)])) == pytest.approx(0.4)
+    assert float(logic.mask_stack([(_L(1, "multiply"), 0.5, 1.0)])) == 0.0      # Multiply over black bounds nothing
+    assert float(logic.mask_stack([(_L(0), 0.5, 1.0), (_L(1, "add"), 0.9, 1.0)])) == 1.0  # never over 1
+    assert float(logic.mask_stack([(_L(0), 0.5, 1.0), (_L(1, "subtract"), 0.9, 1.0)])) == 0.0
+    # a clamp per layer: subtract 1 then add 0.5 is 0.5
+    assert float(logic.mask_stack([(_L(0), 1.0, 1.0), (_L(1, "subtract"), 1.0, 1.0), (_L(2, "add"), 0.5, 1.0)])) == 0.5
+    np = pytest.importorskip("numpy")
+    m = logic.mask_stack([(_L(0), np.array([1.0, 0.5, 0.0]), np.array([1.0, 1.0, 0.0])),
+                          (_L(1, "multiply", 0.5), 0.0, np.ones(3))], np.zeros(3))
+    assert list(m) == pytest.approx([0.5, 0.25, 0.0])
+
+
+def test_a_density_layer_is_below_plus_d_minus_below_times_mask_times_opacity():
+    """density = below + (D - below) x e, on the automatic roots (keep) and the layers' own density (add)."""
+    for automatic in (150.0, 7000.0, 30.0):
+        for d in (0.0, 40.0, 300.0):
+            for e in (0.0, 0.25, 0.5, 1.0):
+                keep, add = logic.density_compose([(d, e)])
+                assert logic.layer_density(automatic, keep, add) == pytest.approx(automatic + (d - automatic) * e)
+    keep, add = logic.density_compose([(300.0, 1.0)])           # denser than the automatic groom: D, not a cap
+    assert (float(keep), float(add)) == (0.0, 300.0)
+    keep, add = logic.density_compose([(0.0, 1.0)])             # no hair = a layer of 0 painted white
+    assert (float(keep), float(add)) == (0.0, 0.0)
+    keep, add = logic.density_compose([(300.0, 0.0)])           # black: the density below shows
     assert (float(keep), float(add)) == (1.0, 0.0)
-
-
-def test_partial_coverage_blends_the_automatic_groom_with_the_mask():
-    keep, add = logic.mask_compose([(_L(0), 0.5, 0.4)])
-    assert float(keep) == pytest.approx(0.6) and float(add) == pytest.approx(0.2)
-    # density = automatic x (1 - coverage) + m x lock density x coverage
-    assert logic.mask_density(400.0, keep, add, 150.0) == pytest.approx(400.0 * 0.6 + 0.5 * 150.0 * 0.4)
-    keep, add = logic.mask_compose([(_L(0, opacity=0.4), 0.5, 1.0)])           # opacity does the same
-    assert float(keep) == pytest.approx(0.6) and float(add) == pytest.approx(0.2)
-
-
-def test_multiply_bounds_painted_skin_and_thins_the_automatic_groom():
-    paint = (_L(0), 0.8, 1.0)
-    for v in (0.0, 0.5, 1.0):
-        keep, add = logic.mask_compose([paint, (_L(1, "multiply"), v, 1.0)])   # as a top layer over painted skin
-        assert float(keep) == 0.0 and float(add) == pytest.approx(0.8 * v)
-        keep, add = logic.mask_compose([(_L(1, "multiply"), v, 1.0)])          # over skin no layer covers
-        assert float(keep) == pytest.approx(v) and float(add) == 0.0           # the automatic groom, thinned
+    # two layers: the upper over the result of the lower
+    keep, add = logic.density_compose([(120.0, 1.0), (300.0, 0.5)])
+    assert logic.layer_density(999.0, keep, add) == pytest.approx(120.0 + (300.0 - 120.0) * 0.5)
+    keep, add = logic.density_compose([(120.0, 0.5), (300.0, 0.0)])
+    assert logic.layer_density(200.0, keep, add) == pytest.approx(160.0)
     np = pytest.importorskip("numpy")
-    inside = np.array([1.0, 1.0, 0.0, 0.0])                                    # a region: 1 inside, 0 outside
-    keep, add = logic.mask_compose([(_L(0), np.full(4, 0.6), np.array([1.0, 0.0, 1.0, 0.0])),
-                                    (_L(1, "multiply"), inside, np.ones(4))], np.ones(4))
-    assert list(np.round(keep, 6)) == [0.0, 1.0, 0.0, 0.0] and list(np.round(add, 6)) == [0.6, 0.0, 0.0, 0.0]
+    keep, add = logic.density_compose([(120.0, np.array([0.0, 0.5, 1.0])), (40.0, np.array([1.0, 0.0, 0.5]))], np.ones(3))
+    assert list(keep) == pytest.approx([0.0, 0.5, 0.0]) and list(add) == pytest.approx([40.0, 60.0, 80.0])
 
 
-def test_add_subtract_min_max_on_painted_and_on_automatic_skin():
-    paint = (_L(0), 0.5, 1.0)
-    assert logic.mask_compose([paint, (_L(1, "add"), 0.3, 1.0)])[1] == pytest.approx(0.8)
-    assert logic.mask_compose([paint, (_L(1, "add"), 0.9, 1.0)])[1] == pytest.approx(1.0)       # never over 1
-    assert logic.mask_compose([paint, (_L(1, "subtract"), 0.3, 1.0)])[1] == pytest.approx(0.2)
-    assert logic.mask_compose([paint, (_L(1, "subtract"), 0.9, 1.0)])[1] == pytest.approx(0.0)  # never under 0
-    assert logic.mask_compose([paint, (_L(1, "min"), 0.3, 1.0)])[1] == pytest.approx(0.3)
-    assert logic.mask_compose([paint, (_L(1, "max"), 0.9, 1.0)])[1] == pytest.approx(0.9)
-    assert logic.mask_compose([paint, (_L(1, "max"), 0.3, 1.0)])[1] == pytest.approx(0.5)
-    # over the automatic groom (it counts as 1): Subtract and Min thin it, Add and Max leave it
-    assert tuple(float(x) for x in logic.mask_compose([(_L(1, "subtract"), 0.4, 1.0)])) == pytest.approx((0.6, 0.0))
-    assert tuple(float(x) for x in logic.mask_compose([(_L(1, "min"), 0.25, 1.0)])) == pytest.approx((0.25, 0.0))
-    assert tuple(float(x) for x in logic.mask_compose([(_L(1, "add"), 0.4, 1.0)])) == pytest.approx((1.0, 0.0))
-    assert tuple(float(x) for x in logic.mask_compose([(_L(1, "max"), 0.4, 1.0)])) == pytest.approx((1.0, 0.0))
-    # a clamp per layer: subtract 1 then add 0.5 is 0.5, not 0 (the first build clamped only at the end)
-    keep, add = logic.mask_compose([(_L(1, "subtract"), 1.0, 1.0), (_L(2, "add"), 0.5, 1.0)])
-    assert _value(keep, add) == pytest.approx(0.5)
+def test_density_layers_apply_all_locks_then_group_then_lock():
+    masks = [_L(-1, kind="base"), _D(5, scope="locks", locks=[7]), _L(6, parent=5), _D(1), _D(2, scope="group", group="bang"),
+             _D(3), _D(4, on=False), _D(8, scope="locks", locks=[9])]
+    order = [m.id for m in logic.density_order(masks, 7, "bang")]
+    assert order == [1, 3, 2, 5]            # all locks (in the list's order), the group, the lock: the lock's wins
+    assert [m.id for m in logic.density_order(masks, 7, "back")] == [1, 3, 5]
+    assert [m.id for m in logic.density_order(masks, 2, "back")] == [1, 3]
+    sets, of = logic.mask_scope_sets(masks, [(1, "back"), (2, "bang"), (3, "bang"), (7, "bang"), (9, "back")])
+    assert sets == [(1, 3), (1, 3, 2), (1, 3, 2, 5), (1, 3, 8)]
+    assert of == {1: 0, 2: 1, 3: 1, 7: 2, 9: 3}
+    sets, of = logic.mask_scope_sets([masks[4]], [(1, "back"), (2, "bang")])
+    assert sets == [(2,)] and of == {1: -1, 2: 0}
+    assert logic.mask_scope_sets([_L(-1, kind="base")], [(1, "back")]) == ([], {1: -1})     # the base alone: no set
 
 
-def test_a_folders_opacity_applies_to_all_its_layers():
-    folder = _L(9, kind="folder")
-    a, b = _L(1, parent=9), _L(2, "multiply", parent=9)
-    rows = [(folder, None, None), (a, 0.8, 1.0), (b, 0.5, 1.0)]
-    assert tuple(float(x) for x in logic.mask_compose(rows)) == pytest.approx((0.0, 0.4))
-    folder.opacity = 0.5                                # half way between the automatic groom and the folder
-    assert tuple(float(x) for x in logic.mask_compose(rows)) == pytest.approx((0.5, 0.2))
-    folder.on = False
-    assert tuple(float(x) for x in logic.mask_compose(rows)) == (1.0, 0.0)
-    assert tuple(float(x) for x in logic.mask_compose([(a, 0.8, 1.0)])) == pytest.approx((0.0, 0.8))   # parent not in the rows
-    off = _L(3, on=False)
-    assert tuple(float(x) for x in logic.mask_compose([(off, 0.0, 1.0)])) == (1.0, 0.0)
-
-
-def test_mask_compose_on_arrays_matches_the_numbers():
-    np = pytest.importorskip("numpy")
-    v0, a0 = np.array([0.0, 1.0, 0.5, 0.25]), np.array([0.0, 1.0, 0.5, 1.0])
-    v1, a1 = np.array([0.5, 0.5, 0.5, 0.5]), np.array([1.0, 0.0, 1.0, 0.3])
-    for mode in config.MASK_MODES:
-        keep, add = logic.mask_compose([(_L(0), v0, a0), (_L(1, mode, 0.7), v1, a1)], np.ones(4))
-        for i in range(4):
-            k, d = logic.mask_compose([(_L(0), float(v0[i]), float(a0[i])), (_L(1, mode, 0.7), float(v1[i]), float(a1[i]))])
-            assert keep[i] == pytest.approx(float(k)) and add[i] == pytest.approx(float(d))
-        assert keep.min() >= 0 and add.min() >= 0 and (keep + add).max() <= 1 + 1e-12
-
-
-def test_mask_scope_sets_share_one_cover_between_locks_with_the_same_layers():
-    masks = [_L(0), _L(1, scope="group", group="bang"), _L(2, scope="locks", locks=[5]), _L(3, on=False)]
-    sets, of = logic.mask_scope_sets(masks, [(1, "back"), (2, "bang"), (3, "bang"), (5, "back")])
-    assert sets == [(0,), (0, 1), (0, 2)]
-    assert of == {1: 0, 2: 1, 3: 1, 5: 2}
-    sets, of = logic.mask_scope_sets([masks[1]], [(1, "back"), (2, "bang")])
-    assert sets == [(1,)] and of == {1: -1, 2: 0}
-    folder = _L(9, kind="folder", on=False)
-    inside = _L(4, parent=9)
-    sets, of = logic.mask_scope_sets([folder, inside], [(1, "back")])
-    assert sets == [] and of == {1: -1}                                # a folder that is off: its layers reach nothing
-    folder.on = True
-    sets, of = logic.mask_scope_sets([folder, inside], [(1, "back")])
-    assert sets == [(9, 4)]
+def test_a_layers_density_is_what_the_locks_it_is_owned_for_give_together():
+    group_of = {1: "back", 2: "bang", 3: "bang"}
+    assert logic.owners_sharing(_D(0), [1, 2, 3], group_of) == 3                       # all locks: together
+    assert logic.owners_sharing(_D(0, scope="group", group="bang"), [1, 2, 3], group_of) == 2
+    assert logic.owners_sharing(_D(0, scope="locks", locks=[2]), [1, 2, 3], group_of) == 1     # that lock alone
+    assert logic.owners_sharing(_D(0, scope="locks", locks=[9]), [1, 2, 3], group_of) == 1     # never 0
 
 
 def test_brush_weights_soft_edge():

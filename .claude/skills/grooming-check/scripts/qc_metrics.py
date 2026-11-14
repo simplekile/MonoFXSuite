@@ -402,6 +402,10 @@ def layer_cover_of(node):
     if not cover:
         return None, None
     tables = gm._region_tables(node, geo)
+    # layer_cover gives the density the layers ask of ONE lock on the whole prim; the checks below count a
+    # lock's density on its own share of a prim (strands / (area / owners)), as its automatic density is
+    share = np.maximum(tables["owners"], 1.0)
+    cover = {lock_id: (prims, keep, add * share[prims]) for lock_id, (prims, keep, add) in cover.items()}
     P = np.frombuffer(geo.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3).astype(float)
     n = len(tables["owners"])
     cen = np.stack([np.bincount(tables["vertex_prim"], weights=P[tables["vertex_point"], k], minlength=n)

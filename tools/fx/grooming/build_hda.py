@@ -728,25 +728,23 @@ f@density = detail(0, "lock_density") / max(s, 1.0);
 
 VEX_MASK_SKIN = """// density layers (v0.2a), only for a lock a layer covers (lock_keys: mask_set >= 0). The lock's region
 // with what the layers say there (mask_read's mask_keep_<k> / mask_add_<k> of the lock's scope set):
-//   mask_keep  how much of the automatic groom stays (1 - coverage): mask_thin keeps each automatic root
-//              by that chance where the root ends up
-//   density    the absolute part there (mask_add: x the lock's Density), divided where the lock shares the
-//              skin: what the second scatter (hairgen_layers) spreads its roots by; their number is
-//              lock_keys' mask_add_n. So where layers cover the skin in full the roots are the mask's alone,
-//              at mask x the lock's density; elsewhere: automatic x keep + the lock's density x add.
+//   mask_keep  how much of the automatic groom stays (the product of 1 - mask x opacity over the density
+//              layers): mask_thin keeps each automatic root by that chance where the root ends up
+//   density    the density the layers ask of THIS lock there, strands / cm2 (mask_add, a vertex attribute:
+//              each layer's D already divided among the locks it is shared by on that prim; the points here
+//              are unshared, one vertex each): what the second scatter (hairgen_layers) spreads its roots by;
+//              their number is lock_keys' mask_add_n. So where a layer covers the skin in full the roots are
+//              the layer's alone, at its D, also when D is over the lock's own Density; elsewhere:
+//              automatic x keep + the layers' density.
 // The automatic groom itself (region_frame ... root_place) never reads a layer: with none it is v0.1's.
 int k = prim(1, "mask_set", 0);
 float keep = 1, add = 0;
 if (k >= 0) {
     keep = point(0, sprintf("mask_keep_%d", k), @ptnum);
-    add = point(0, sprintf("mask_add_%d", k), @ptnum);
+    add = vertex(0, sprintf("mask_add_%d", k), pointvertex(0, @ptnum));
 }
-int prs[] = pointprims(0, @ptnum);
-float s = 0;
-foreach (int pr; prs) { int sh = prim(0, "share", pr); s += sh; }
-s = len(prs) > 0 ? s / len(prs) : 1.0;
 f@mask_keep = keep;
-f@density = add / max(s, 1.0);
+f@density = add;
 """
 
 VEX_MASK_TAG = """// the layers' own roots: never thinned (mask_thin), never relocated (they come after root_pick), and
@@ -925,6 +923,8 @@ for (int pr = 0; pr < n; pr++) {
     setpointgroup(0, "auto_at", pt, 1);
 }
 setdetailattrib(0, "apart_ld", max(detail(1, "lock_density") * prim(2, "strand_factor", 0), 1e-6));
+float sf = prim(2, "strand_factor", 0);
+setdetailattrib(0, "apart_sf", sf);
 """
 
 VEX_MASK_APART = """// density mask, partial coverage (a soft brush edge, an opacity under 1): the lock holds automatic roots that
@@ -944,9 +944,10 @@ if (rp < 0) return;
 float keep = primuv(1, "mask_keep", rp, ruv), add = primuv(1, "density", rp, ruv);
 if (keep <= 0) return;
 float uc = max(chf("../unit_cm"), 1e-6);
-float ld = detail(2, "apart_ld");
+float ld = detail(2, "apart_ld");                       // the lock's roots / cm2 (x the strand factor)
+float sf = detail(2, "apart_sf");
 float share = prim(1, "share", rp);                     // the lock's part of that skin (add is already divided)
-float rmin = %(apart)s / sqrt(ld * max(keep / max(share, 1.0) + add, 0.05)) / uc;
+float rmin = %(apart)s / sqrt(max(ld * keep / max(share, 1.0) + add * sf, ld * 0.05)) / uc;
 int moved = 0;
 for (int pass = 0; pass < 6; pass++) {
     int b = nearpoint(2, "auto_at", p, rmin);
@@ -1795,8 +1796,9 @@ def build_network(sub) -> None:
     # through the v0.1 nodes alone). The automatic roots are grown as without layers and each is kept by
     # the chance mask_keep where it ends up (mask_thin); a second scatter lays the layers' own roots on the
     # region at their density (mask_skin's `density`), as many as mask_read counted (mask_add_n)
-    # points not shared between prims: a prim's corners then carry its own share, so the layers' density
-    # is exact per prim where stacked locks share the skin (averaged at shared points it ran 5-10 % off)
+    # points not shared between prims: a prim's corners then carry its own density (mask_add is a vertex
+    # attribute: a layer's D is divided per prim among the locks it is shared by), so the layers' density is
+    # exact per prim where stacked locks share the skin (averaged at shared points it ran 5-10 % off)
     mask_split = _node(sub, "facet", "mask_split", [rdens], unique=1)
     mask_skin = _wrangle(sub, "mask_skin", VEX_MASK_SKIN, POINT, [mask_split, begin])
     # the automatic roots (hairgen's scatter and root_pick: 8-16 % of a lock's cook) do not read the layers:
