@@ -9,11 +9,12 @@ stays the user's), pictures are viewport flipbooks (never a screen grab). It wri
 shape as accept.json), `shots/*.png` and `accept_v02a_gui_painted.hiplc` under the out folder, and ends its
 log with DONE. The panel is not part of it (it does not exist yet): Paint is entered through the adapter.
 
-Checks (round 3, the final model: a 0..1 mask from a stack of layers): the brush paints a paint layer white and
-black (black overrides: no hair), the eraser returns the automatic roots, undo per stroke and a chain of five, Esc
-ends Paint with the mouse up and with it held (keeping the stroke), another node selected ends Paint and a drag
-then paints nothing, the node selected again keeps Paint, and the plan's "crown painted down to v006's density,
-thin skin painted up, in the GUI by scripted strokes" (a Multiply layer on the crown, white on thin skin).
+Checks (density layers, each with its own number and its own mask): the brush paints the mask of a density layer
+of 300 white (300 / cm2 over the locks' own 150) and black (the density below shows: the automatic groom), the
+eraser returns the automatic roots, undo per stroke and a chain of five, Esc ends Paint with the mouse up and
+with it held (keeping the stroke), another node selected ends Paint and a drag then paints nothing, the node
+selected again keeps Paint, and the plan's "crown painted down to v006's density, thin skin painted up, in the
+GUI by scripted strokes" (a layer of 5,104 on the crown's dense core, a layer of 150 on thin skin).
 The painted scene is saved; run grooming-check on it for the QC numbers after painting."""
 
 from __future__ import annotations
@@ -264,7 +265,7 @@ def same_mask(a, b) -> bool:
 
 
 def clear_layers(node):
-    for m in list(ga().read_data(node).masks):
+    for m in ga().read_data(node).density_layers():
         ga().mask_remove(node, m.id)
     node.cook()
 
@@ -312,10 +313,11 @@ def s0_open():
 
 @step
 def s1_brush():
-    """The brush on a paint layer: white, the views, one undo step a stroke, black (no hair), the eraser back to the
-    automatic roots."""
-    node, G = S["node"], S["G"]
-    lid = ga().mask_add(node, "Paint")
+    """The brush on the paint layer of a density layer of 300 (the locks' own Density is 150): white gives 300, the
+    views, one undo step a stroke, black (the density below shows), the eraser back to the automatic roots."""
+    node, G, K = S["node"], S["G"], S["K"]
+    top = ga().mask_add(node, "= 300", density=300.0)
+    lid = ga().mask_add(node, "Paint", parent=top)
     S["lid"] = lid
     ga().set_brush(radius_cm=1.0, soft=0.5, erase=False, view="density", value=1.0)
     shots = [shot("s1_0_before")]
@@ -333,6 +335,13 @@ def s1_brush():
         snap["stroke"] = stroke_stats()[0]
         snap["label"] = hou.undos.undoLabels()[0]
         snap["strands_white"] = G.strands()
+        core = K.core(ga().mask_values(node, lid)[1], 1.0, margin=0.3)
+        area = float(K.area[core].sum())
+        got = sum(K.roots_in(core, G.roots())[0].values())
+        auto = sum(K.roots_in(core, S["roots0"])[0].values())
+        snap["core"] = {"fully_painted_core_cm2": round(area, 2), "automatic_per_cm2": round(auto / max(area, 1e-9), 1),
+                        "per_cm2": round(got / max(area, 1e-9), 1), "D": 300.0,
+                        "ratio": round(got / max(300.0 * area, 1e-9), 3), "limit": round(lib.density_limit(300.0 * area, 1.0), 3)}
         shots.append(shot("s1_1_white_density_view"))
         ga().set_brush(view="layer")
         st2 = state_mod().running()
@@ -356,14 +365,17 @@ def s1_brush():
         snap["redone"] = mask_of(node, lid)
         a = snap["white"]
         ok = (a is not None and int((a > 0).sum()) > 20 and float(a.max()) <= 1.0 and snap["label"].endswith("Paint mask")
-              and snap["stroke"].get("wrote") and snap["strands_white"] != S["base_strands"]
-              and snap["layer_view_white_where_painted"])
+              and snap["stroke"].get("wrote") and snap["strands_white"] > S["base_strands"]
+              and snap["layer_view_white_where_painted"] and snap["core"]["fully_painted_core_cm2"] > 0.3
+              and abs(snap["core"]["ratio"] - 1) <= snap["core"]["limit"])
         C.add("gui_brush_paints_the_layers_mask_white", ok,
               {"points_painted": 0 if a is None else int((a > 0).sum()), "mask_max": None if a is None else float(a.max()),
                "undo_label": snap["label"], "stroke": snap["stroke"], "strands": [S["base_strands"], snap["strands_white"]],
-               "layer_view_white_where_painted": snap["layer_view_white_where_painted"], "shots": shots},
-              "a drag in the viewport paints the layer white (coverage on over 20 points), one undo step named Paint mask, "
-              "the hair follows, the layer view shows the paint white on dark", evidence=shots[-1])
+               "layer_view_white_where_painted": snap["layer_view_white_where_painted"], "core": snap["core"],
+               "shots": shots},
+              "a drag in the viewport paints the mask of a density layer of 300 white (coverage on over 20 points), one "
+              "undo step named Paint mask, the hair follows: 300 / cm2 where the stroke covers in full (max(0.15, 2 / "
+              "sqrt(N))), over the locks' own 150; the layer view shows the paint white on dark", evidence=shots[-1])
         C.add("gui_undo_redo_a_stroke", snap["undone"] is None and same_mask(snap["redone"], a)
               and snap["state_after_undo"] == state_mod().STATE,
               {"mask_after_undo": "none" if snap["undone"] is None else int((snap["undone"] > 0).sum()),
@@ -378,15 +390,21 @@ def s1_brush():
         node.cook()
         full = a >= 0.999
         strands = G.strands()
+        mask_max = float(ga().mask_values(node, top)[0].max())
+        r1, l1 = G.roots()
+        r0, l0 = S["roots0"]
+        same = bool(r1.shape == r0.shape and np.array_equal(l1, l0) and float(np.abs(r1 - r0).max()) == 0.0)
         shots.append(shot("s1_3_black_over_it"))
-        C.add("gui_black_paint_overrides_no_hair", bool(full.sum() > 20 and float(v[full].max()) == 0.0
-                                                        and strands < S["base_strands"] and strands < snap["strands_white"]
-                                                        and hou.undos.undoLabels()[0].endswith("Paint mask")),
+        C.add("gui_black_paint_returns_the_density_below", bool(full.sum() > 20 and float(v[full].max()) == 0.0
+                                                                and mask_max == 0.0 and same and strands == S["base_strands"]
+                                                                and hou.undos.undoLabels()[0].endswith("Paint mask")),
               {"points_fully_covered": int(full.sum()), "value_there_max": float(v[full].max()) if full.any() else None,
+               "the_density_layers_mask_max": mask_max, "roots_at_the_same_places": same,
                "strands": {"automatic": S["base_strands"], "white": snap["strands_white"], "black": strands},
                "undo_label": hou.undos.undoLabels()[0]},
-              "a black stroke of the brush over the white one: where it covers in full the layer's value is 0 (black "
-              "is a value, it overrides) and the groom has fewer strands than the automatic one", evidence=shots[-1])
+              "a black stroke of the brush, wider, over the white one: the density layer's mask is 0 everywhere and "
+              "the groom is the automatic one again, every root where it was (black is not \"no hair\": the density "
+              "below shows)", evidence=shots[-1])
         ga().set_brush(value=1.0, erase=True, radius_cm=2.2, soft=0.3)          # the eraser, wider still
         drag(line(-190, 0, 190), after_erase)
 
@@ -619,11 +637,12 @@ def s4_selection():
     later(600, reselect)
 
 
-def _paint_disc(name, centre, normal, half_cm, spacing_cm, value, radius_cm, done, frame_cm=4.0, points=14, mode="normal"):
-    """A paint layer in `mode` painted `value` over a disc by rows of strokes in the viewport; done(layer id, shots)."""
+def _paint_disc(name, centre, normal, half_cm, spacing_cm, value, radius_cm, done, frame_cm=4.0, points=14, density=150.0):
+    """A density layer of `density` whose paint layer is painted `value` over a disc by rows of strokes in the
+    viewport; done(paint layer id, shots)."""
     node = S["node"]
     set_view(normal, box_round(centre, frame_cm))
-    lid = ga().mask_add(node, name, mode=mode)
+    lid = ga().mask_add(node, "paint", parent=ga().mask_add(node, name, density=density))
     ga().set_brush(radius_cm=radius_cm, soft=0.3, erase=False, value=value, view="density")
     shots = []
 
@@ -664,18 +683,17 @@ def s5_crown():
         densest = lib.densest_spot(r1[0], 1.0)[2]
         st = stroke_stats(len(S["rows"]))
         C.add("gui_crown_painted_down_to_v006", abs(same_disc / V006_CROWN - 1) <= 0.15 and abs(densest / V006_CROWN - 1) <= 0.15,
-              {"layer": "Multiply %s" % factor, "strokes": len(S["rows"]), "densest_1cm_before_per_cm2": round(per, 1),
+              {"layer": "= %g, painted white" % V006_CROWN, "strokes": len(S["rows"]), "densest_1cm_before_per_cm2": round(per, 1),
                "same_disc_after_per_cm2": round(same_disc, 1), "densest_1cm_after_per_cm2": round(densest, 1),
                "v006_per_cm2": V006_CROWN, "strands": [len(roots0[0]), len(r1[0])],
                "stroke_cook_s": [s.get("cook_s") for s in st], "shots": shots},
-              "a Multiply layer painted 5104 / automatic over the whorl with the brush: the densest 1 cm disc within 15 % of "
-              "v006's 5,104 / cm2",
+              "a density layer of 5,104 painted white over the whorl's dense core with the brush: the densest 1 cm disc "
+              "within 15 % of v006's 5,104 / cm2",
               evidence=shots[-1])
         S["next"]()
 
     # the dense core only (rows over 1 cm, a 0.6 cm brush: about 1.6 cm across the centre)
-    factor = round(V006_CROWN / per, 3)
-    _paint_disc("Crown x %s" % factor, centre, normal, 1.0, 0.4, factor, 0.6, done, frame_cm=3.0, mode="multiply")
+    _paint_disc("Crown 5104", centre, normal, 1.0, 0.4, 1.0, 0.6, done, frame_cm=3.0, density=float(V006_CROWN))
 
 
 @step
@@ -722,19 +740,18 @@ def s6_thin_skin():
         area = float(K.area[core].sum())
         b = K.roots_in(core, roots0)[0]
         a = K.roots_in(core, G.roots())[0]
-        data = ga().read_data(node)
-        want = sum(float(data.resolve(k)["density"]) * K.lock_area_in(core, k) for k in set(a) | set(b))
+        want = 150.0 * area              # a layer of 150 owned by all locks: every lock there together gives 150
         before, after = sum(b.values()), sum(a.values())
         lim = lib.density_limit(want, 1.0)
         C.add("gui_thin_skin_painted_up", area > 0.5 and abs(after / max(want, 1e-9) - 1) <= lim and before < 0.5 * want,
-              {"layer": "white", "lock": G.lock_names()[lock], "strokes": len(S["rows"]), "fully_painted_core_cm2": round(area, 2),
+              {"layer": "= 150, painted white", "lock": G.lock_names()[lock], "strokes": len(S["rows"]), "fully_painted_core_cm2": round(area, 2),
                "per_cm2_before": round(before / max(area, 1e-9), 1), "per_cm2_after": round(after / max(area, 1e-9), 1),
-               "lock_density_per_cm2": round(want / max(area, 1e-9), 1), "limit": round(lim, 3), "shots": shots},
-              "white painted on skin under floating mesh with the brush: the locks' own density there within "
+               "asked_per_cm2": round(want / max(area, 1e-9), 1), "limit": round(lim, 3), "shots": shots},
+              "a density layer of 150 painted white on skin under floating mesh with the brush: 150 / cm2 there within "
               "max(0.15, 2 / sqrt(N)), where the automatic groom had under half of it", evidence=shots[-1])
         S["next"]()
 
-    _paint_disc("Thin white", centre, normal, 1.3, 0.5, 1.0, 0.8, done, points=10)
+    _paint_disc("Thin 150", centre, normal, 1.3, 0.5, 1.0, 0.8, done, points=10, density=150.0)
 
 
 @step

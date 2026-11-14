@@ -1016,7 +1016,7 @@ def r1_states():
     cook_all()
     rows["back on"] = {"changed": rest_points()[0] != ref[0]}
     for lid, z in places:
-        K.paint_disc(lid, Z[z], 1.6, value=0.0)                                       # black over all of it
+        K.paint_disc(lid, Z[z], 1.3, value=0.0)                 # black over all of it (the same dabs as the white)
     ga.mask_set(node, f3, value=0.0)
     cook_all()
     same("every mask black")
