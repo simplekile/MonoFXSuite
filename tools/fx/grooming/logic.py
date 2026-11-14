@@ -750,8 +750,11 @@ COVER_GONE = 1e-6      # an erased coverage under this is no coverage
 def mask_dab(value, coverage, weight, paint: float, erase: bool = False):
     """One dab on a paint layer's (value, coverage) with the brush `weight` there (numbers or arrays); returns
     the new (value, coverage). Paint: skin not painted before takes the brush value outright (its coverage,
-    the weight, is what fades the edge), painted skin moves towards it by the weight; coverage only grows.
-    So black and white both override what is below in the mask. Erase removes the layer's own paint: coverage
+    the weight, is what fades the edge), painted skin moves towards it by the weight against the coverage it
+    has (weight / coverage, at most 1); coverage only grows. So black and white both override what is below in
+    the mask, and a stroke painted again in another value with the same brush replaces it to its very edge:
+    moving by the weight alone, soft black over soft white left (1 - w) x w of the white along the rim (up
+    to a quarter of the layer's density, a ring). Erase removes the layer's own paint: coverage
     x (1 - weight), the value stays (it means nothing where the layer has no coverage); it never paints black.
     What is left under COVER_GONE is none: a brush weight of 0.99999994 left 1e-21 after three dabs, and the
     skin still counted as painted."""
@@ -761,7 +764,8 @@ def mask_dab(value, coverage, weight, paint: float, erase: bool = False):
     if erase:
         left = coverage * (1.0 - weight)
         return value, np.where(left < COVER_GONE, 0.0, left)
-    v = np.where(coverage <= 0, paint, value + (paint - value) * weight)
+    v = np.where(coverage <= 0, paint,
+                 value + (paint - value) * np.minimum(1.0, weight / np.maximum(coverage, 1e-12)))
     return np.where(weight > 0, v, value), np.maximum(coverage, weight)
 
 

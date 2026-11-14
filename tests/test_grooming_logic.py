@@ -745,6 +745,14 @@ def test_a_dab_paints_value_and_coverage_and_erase_removes_the_paint():
     assert list(gone) == pytest.approx([0.0, 0.0, 0.5]) and gone[0] == 0.0 and gone[1] == 0.0     # no 6e-8 left behind
     v3, a3 = logic.mask_dab(v, a, np.array([0.0, 0.0, 0.0]), 1.0)
     assert list(v3) == pytest.approx(list(v)) and list(a3) == pytest.approx(list(a))     # no weight: untouched
+    # a soft white stroke painted over in black with the same brush is black to its very edge (it left
+    # (1 - w) x w of the white along the rim); a weaker dab moves the value by its weight against the coverage
+    w = np.array([1.0, 0.5, 0.2, 0.0])
+    v, a = logic.mask_dab(np.ones(4), np.zeros(4), w, 1.0)
+    vb, ab = logic.mask_dab(v, a, w, 0.0)
+    assert list(vb * ab) == [0.0, 0.0, 0.0, 0.0] and list(ab) == pytest.approx(list(w))
+    vh, _ = logic.mask_dab(v, a, w * 0.5, 0.0)
+    assert list(vh[:3]) == pytest.approx([0.5, 0.5, 0.5])
 
 
 def test_density_color_is_fine_round_the_set_density_and_reaches_the_crown():
