@@ -220,7 +220,8 @@ def test_schema_4_density_layers_become_density_layers_with_their_mask():
     assert d.mask_id_high == 4 and d.add_mask(kind="density").id == 5
     assert dropped_masks(four) == [] and converted_masks(four) == ["= 120", "Bare"]
     said = dropped_text(dropped_masks(four), converted_masks(four))
-    assert "2 layers" in said and "density layers" in said and "density below" in said
+    assert "2 layers" in said and "density layers" in said and "black = no hair" in said
+    assert not d.mask(3).legacy and not d.mask(4).legacy                # "= D" layers are plain density layers
     assert converted_masks(d.to_json()) == [] and dropped_text([]) == ""
 
 
@@ -237,9 +238,13 @@ def test_schema_5_mask_layers_become_one_density_layer_per_owner():
                                  {"id": 4, "name": "G", "kind": "paint", "scope": "group", "group": "bang"}]})
     d = GroomData.from_json(five)
     rows = [(m.id, m.kind, m.name, m.parent) for m in d.masks[1:]]
-    assert rows == [(5, "density", "Density 1", None), (0, "paint", "A", 5), (3, "paint", "C", 5),
-                    (6, "density", "Density 2", None), (2, "fill", "B", 6),
-                    (7, "density", "Density 3", None), (4, "paint", "G", 7)]
+    assert rows == [(5, "density", "Older build 1", None), (0, "paint", "A", 5), (3, "paint", "C", 5),
+                    (6, "density", "Older build 2", None), (2, "fill", "B", 6),
+                    (7, "density", "Older build 3", None), (4, "paint", "G", 7)]
+    # each keeps the older build's rule for its mask (black = no hair, Multiply thins), also after a save
+    assert all(d.mask(i).legacy for i in (5, 6, 7)) and not d.mask(0).legacy
+    again = GroomData.from_json(d.to_json())
+    assert all(again.mask(i).legacy for i in (5, 6, 7)) and not again.add_mask(kind="density").legacy
     # D = the owner's Density setting when the file is read: the groom's, the lock's, the group's
     assert (d.mask(5).density, d.mask(6).density, d.mask(7).density) == (200.0, 60.0, 90.0)
     assert (d.mask(6).scope, d.mask(6).locks, d.mask(7).group) == ("locks", [3], "bang")
@@ -262,9 +267,10 @@ def test_schema_3_layers_carry_over_what_has_a_meaning_and_name_what_is_dropped(
     d = GroomData.from_json(text)
     assert d.schema == 6
     assert [(m.id, m.kind, m.name, m.parent) for m in d.masks[1:]] == [
-        (8, "density", "Density 1", None), (0, "paint", "Half", 8),
+        (8, "density", "Older build 1", None), (0, "paint", "Half", 8),
         (9, "density", "Thin skin", None), (1, "paint", "Mask", 9),
-        (10, "density", "Density 2", None), (3, "paint", "Hand", 10)]
+        (10, "density", "Older build 2", None), (3, "paint", "Hand", 10)]
+    assert (d.mask(8).legacy, d.mask(9).legacy, d.mask(10).legacy) == (True, False, True)
     assert (d.mask(0).mode, d.mask(0).value, d.mask(0).opacity) == ("multiply", 0.5, 0.8)
     assert d.mask(9).density == 80.0                                   # strands / cm2 under its mask: as it was
     assert (d.mask(10).scope, d.mask(10).locks, d.mask(3).mode, d.mask(3).opacity) == ("locks", [14], "normal", 0.7)

@@ -627,6 +627,50 @@ def mask_stack(rows, start=0.0):
     return m
 
 
+def legacy_mask(rows, start=1.0):
+    """(keep, add) of a 0..1 mask as the test build before density layers read it (`groom_data` schema 5, and
+    the 0..1 layers of schemas 2 / 3): the stack's value t = keep + add starts at 1, the automatic groom (keep 1,
+    add 0), and a layer changes it to t + (blend(t, value) - t) x coverage x opacity, moving the two parts as
+    its mode means:
+      Normal    overrides what is below, automatic groom included: both x (1 - e), add + value x e
+      Multiply  scales what is below: both x (1 - e + e x value)
+      Add       add + value x e          Subtract  add - value x e (under 0 it eats into keep)
+      Min       where t is over value both are scaled down to it
+      Max       where t is under value the difference goes to add
+    The density was automatic x keep + the lock's Density x add: white = the lock's Density, black = no hair,
+    Multiply and Min thin the automatic groom. `rows`, bottom first: (layer, value, coverage) as `mask_stack`.
+    A density layer marked `legacy` carries such a stack: over (keep, add) below it gives keep x keep',
+    add x keep' + D x add' (`MaskData.weights`), D the owner's Density when the file was read."""
+    np = _np()
+    keep = np.asarray(start, dtype=np.float64) * 1.0
+    add = keep * 0.0
+    for layer, value, coverage in rows:
+        if not layer.on:
+            continue
+        e = coverage * layer.opacity
+        t = keep + add
+        mode = layer.mode
+        if mode == "normal":
+            keep, add = keep * (1.0 - e), add * (1.0 - e) + value * e
+        elif mode == "multiply":
+            f = 1.0 - e + e * value
+            keep, add = keep * f, add * f
+        elif mode == "add":
+            add = add + value * e
+        elif mode == "subtract":
+            add = add - value * e
+        elif mode == "min":
+            f = np.where(t > value, 1.0 + (value / np.maximum(t, 1e-12) - 1.0) * e, 1.0)
+            keep, add = keep * f, add * f
+        elif mode == "max":
+            add = add + np.maximum(value - t, 0.0) * e
+        else:
+            raise ValueError(f"mask blend mode {mode!r}")
+        add = np.clip(add, -keep, 1.0 - keep)
+    keep = np.clip(keep + np.minimum(add, 0.0), 0.0, 1.0)
+    return keep, np.clip(add, 0.0, 1.0)
+
+
 def density_over(keep, add, density, effect):
     """One density layer of `density` (strands / cm2) over (keep, add) with effect = its mask x its opacity:
     below + (D - below) x effect, on both parts. Returns (keep, add)."""

@@ -101,6 +101,9 @@ class MaskLayer:
     value: float = 1.0           # 0..1. A fill layer's value; a paint layer's where only its coverage is stored
     parent: int | None = None    # a mask layer's density layer
     density: float = config.MASK_DENSITY_DEFAULT   # a density layer's number D, strands / cm2
+    # a density layer read from a file of an older test build (schema 2 / 3 / 5): its mask layers blend as that
+    # build's 0..1 mask did (`logic.legacy_mask`: black = no hair, white = D, Multiply / Min thin what is below)
+    legacy: bool = False
 
     def applies(self, lock_id: int, group_id: str) -> bool:
         """This density layer is owned by a row that lock is under (whatever `on` says)."""
@@ -143,6 +146,7 @@ def _clean_mask(raw: dict[str, Any]) -> MaskLayer:
         parent=int(raw["parent"]) if isinstance(raw.get("parent"), int) and not isinstance(raw.get("parent"), bool)
         else None,
         density=min(config.MASK_DENSITY_MAX, max(0.0, _number(raw.get("density"), config.MASK_DENSITY_DEFAULT))),
+        legacy=bool(raw.get("legacy", False)) and raw.get("kind") == "density",
     )
 
 
@@ -487,9 +491,15 @@ def _density_layers(raw: dict[str, Any], version: int) -> tuple[list[dict], list
         Replace): a density layer of that D, opacity and owner, whose mask is one paint layer holding the
         stored mask (it keeps the old id, so the paint on the node is found). The same result as before.
       - a layer of the 0..1 mask (schema 5; schema 2 / 3 paint layers and factor fills 0..1, read as schema 5
-        read them): the layers of one owner become the mask stack of ONE density layer of that owner, whose D
-        is the owner's Density setting when the file is read. White gives what it gave. Black gave "no hair"
-        and now gives the density below; a soft edge mixes a little differently.
+        read them): the layers of one owner become the mask stack of ONE density layer of that owner, marked
+        `legacy`, whose D is the owner's Density setting when the file is read. A legacy layer's mask blends by
+        the older build's own rule (`logic.legacy_mask`), so it gives what it gave: white the owner's Density,
+        black no hair, Multiply / Min / a grey fill the automatic groom thinned (a factor m over unpainted skin
+        is exactly a layer of D = 0 with the mask 1 - m: m x the density below). What differs: the older build
+        blended the layers of every owner that reach a lock as ONE stack in the list's order, here each
+        owner's stack starts on its own and the owners apply all locks, group, lock; Normal, Multiply, Add and
+        Subtract give the same either way, a Min or Max layer of a group or lock over skin an all-locks layer
+        also painted compares with its own stack only.
       - a folder: gone; its opacity is multiplied into its layers', its eye switches them off.
       - dropped: a factor over 1 and a strands / cm2 layer in another blend mode than Replace (schema 3)."""
     stored = list(raw.get("masks", []))
@@ -530,9 +540,9 @@ def _density_layers(raw: dict[str, Any], version: int) -> tuple[list[dict], list
         owner = by_owner.get(key)
         if owner is None:
             high += 1
-            owner = {"id": high, "kind": "density", "name": f"Density {len(by_owner) + 1}", "on": True,
+            owner = {"id": high, "kind": "density", "name": f"Older build {len(by_owner) + 1}", "on": True,
                      "opacity": 1.0, "density": _owner_density(raw, row), "scope": key[0], "group": key[1],
-                     "locks": list(key[2])}
+                     "locks": list(key[2]), "legacy": True}
             by_owner[key] = owner
             rows.append(owner)
         rows.append(through_folder(m, {
@@ -595,7 +605,9 @@ def dropped_text(names: list[str], converted: list[str] | None = None) -> str:
     if converted:
         parts.append(f"{len(converted)} layer{'s' if len(converted) != 1 else ''} from an older test build "
                      f"{'are' if len(converted) != 1 else 'is'} now in density layers ({_names(converted)}): "
-                     "check them, black in a mask now shows the density below")
+                     'a "= D" layer became a density layer of D under its mask; 0..1 mask layers are kept in '
+                     '"Older build" layers that blend as before (white = the Density setting, black = no hair, '
+                     "Multiply and Min thin the automatic groom)")
     return "; ".join(parts)
 
 

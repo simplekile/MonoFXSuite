@@ -541,6 +541,40 @@ def test_density_layers_stack_and_each_reads_its_own_mask():
     assert md2.mask_of(data, low.id)[40] == pytest.approx(0.5)
 
 
+def test_a_layer_of_an_older_build_thins_and_keeps_black_as_no_hair():
+    """A `legacy` density layer (a schema 5 file's 0..1 mask): its mask layers blend by that build's rule."""
+    import json
+    from tools.fx.grooming.model import GroomData
+    gm, np, P, N, nb = _grid_brush()
+    five = json.dumps({"schema": 5, "defaults": {"density": 200.0}, "masks": [
+        {"id": 0, "name": "Paint", "kind": "paint"},
+        {"id": 1, "name": "Min", "kind": "fill", "mode": "min", "value": 0.9},
+        {"id": 2, "name": "Group", "kind": "fill", "mode": "multiply", "value": 0.5, "scope": "group", "group": "g"}]})
+    data = GroomData.from_json(five)
+    old, grp = data.density_layers()
+    assert old.legacy and grp.legacy and old.density == 200.0
+    md = gm.MaskData(P)
+    md.ensure(0)
+    md.a[0][:3] = 1.0
+    md.v[0][:3] = (1.0, 0.0, 0.5)                                  # white, black, grey
+    keep, add = md.compose(data, [old])
+    # white: 0.9 of the owner's Density (the Min fill over it); black: no hair; grey: 0.5 of it; unpainted
+    # skin: the automatic groom thinned to 0.9 by the Min fill (it did nothing before the fix)
+    assert list(keep[:4]) == pytest.approx([0.0, 0.0, 0.0, 0.9]) and list(add[:4]) == pytest.approx([180.0, 0.0, 100.0, 0.0])
+    assert list(md.mask_of(data, old.id)[:4]) == pytest.approx([1.0, 1.0, 1.0, 0.1])     # what it takes of the density below
+    keep, add = md.compose(data, [old, grp])                       # the group's stack over it: x 0.5 on both parts
+    assert list(keep[:4]) == pytest.approx([0.0, 0.0, 0.0, 0.45]) and list(add[:4]) == pytest.approx([90.0, 0.0, 50.0, 0.0])
+    old.opacity = 0.5                                              # the layer's own opacity: half way to what is below
+    keep, add = md.compose(data, [old])
+    assert list(keep[:4]) == pytest.approx([0.5, 0.5, 0.5, 0.95]) and list(add[:4]) == pytest.approx([90.0, 0.0, 50.0, 0.0])
+    # under a plain density layer nothing changed: a layer of 300 over the older build's
+    old.opacity = 1.0
+    top = data.add_mask(kind="density", density=300.0)
+    data.add_mask(kind="fill", parent=top.id, value=0.5)
+    keep, add = md.compose(data, [old, top])
+    assert keep[3] == pytest.approx(0.45) and add[0] == pytest.approx(180.0 * 0.5 + 150.0)
+
+
 def test_layers_for_view_shows_what_a_lock_of_the_painted_owner_gets():
     from apps.houdini import grooming_masks as gm
     from tools.fx.grooming.model import GroomData

@@ -668,6 +668,38 @@ def test_a_density_layer_is_below_plus_d_minus_below_times_mask_times_opacity():
     assert list(keep) == pytest.approx([0.0, 0.5, 0.0]) and list(add) == pytest.approx([40.0, 60.0, 80.0])
 
 
+def test_an_older_builds_mask_keeps_its_rule():
+    """`legacy_mask`: the 0..1 mask of the build before density layers, as (keep, add): the density was
+    automatic x keep + the lock's Density x add."""
+    def parts(*rows):
+        k, a = logic.legacy_mask(list(rows))
+        return float(k), float(a)
+    assert parts() == (1.0, 0.0)                                                # nothing painted: the automatic groom
+    assert parts((_L(0), 1.0, 1.0)) == (0.0, 1.0)                               # white: the lock's Density
+    assert parts((_L(0), 0.0, 1.0)) == (0.0, 0.0)                               # black: no hair
+    assert parts((_L(0), 0.5, 1.0)) == (0.0, 0.5)
+    assert parts((_L(0), 1.0, 0.25)) == (0.75, 0.25)                            # a soft edge mixes the two
+    # thinning the automatic groom: a factor m is exactly a layer of D = 0 under the mask 1 - m
+    for mode, value, m in (("multiply", 0.5, 0.5), ("min", 0.9, 0.9), ("multiply", 0.0, 0.0), ("min", 0.0, 0.0)):
+        keep, add = parts((_L(0, mode), value, 1.0))
+        assert (keep, add) == pytest.approx((m, 0.0))
+        k0, a0 = logic.density_compose([(0.0, 1.0 - m)])
+        assert logic.layer_density(700.0, keep, add) == pytest.approx(logic.layer_density(700.0, k0, a0))
+    assert parts((_L(0, "multiply", opacity=0.5), 0.5, 1.0)) == pytest.approx((0.75, 0.0))
+    assert parts((_L(0, "subtract"), 0.25, 1.0)) == pytest.approx((0.75, 0.0))  # under 0 it eats into the automatic part
+    assert parts((_L(0, "add"), 0.5, 1.0)) == pytest.approx((1.0, 0.0))         # never over 1
+    assert parts((_L(0, "max"), 0.5, 1.0)) == pytest.approx((1.0, 0.0))
+    # on painted skin Multiply bounds both parts; a layer that is off is skipped
+    assert parts((_L(0), 1.0, 0.5), (_L(1, "multiply"), 0.5, 1.0)) == pytest.approx((0.25, 0.25))
+    assert parts((_L(0), 1.0, 1.0), (_L(1, "multiply", on=False), 0.0, 1.0)) == (0.0, 1.0)
+    with pytest.raises(ValueError):
+        logic.legacy_mask([(_L(0, "screen"), 1.0, 1.0)])
+    np = pytest.importorskip("numpy")
+    k, a = logic.legacy_mask([(_L(0, "min"), 0.9, np.ones(3)), (_L(1), np.array([1.0, 0.0, 0.5]), np.array([0.0, 1.0, 1.0]))],
+                             np.ones(3))
+    assert list(k) == pytest.approx([0.9, 0.0, 0.0]) and list(a) == pytest.approx([0.0, 0.0, 0.5])
+
+
 def test_density_layers_apply_all_locks_then_group_then_lock():
     masks = [_L(-1, kind="base"), _D(5, scope="locks", locks=[7]), _L(6, parent=5), _D(1), _D(2, scope="group", group="bang"),
              _D(3), _D(4, on=False), _D(8, scope="locks", locks=[9])]

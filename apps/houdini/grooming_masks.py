@@ -268,26 +268,43 @@ class MaskData:
         """The mask of a density layer, 0..1 per point (`logic.mask_stack` over its paint and fill layers, from
         black). float64."""
         np = _np()
+        layer = data.mask(density_id)
+        if layer is not None and layer.legacy:      # what it takes of the density below: 1 - its keep
+            return 1.0 - self.parts_of(data, layer)[0]
         rows = [(m, self.value(m), self.coverage(m)) for m in data.mask_layers(density_id)]
         return logic.mask_stack(rows, np.zeros(self.n, np.float64))
+
+    def parts_of(self, data: model.GroomData, layer: model.MaskLayer):
+        """(keep', add') of one density layer at opacity 1, per point: over (keep, add) below, the layer gives
+        keep x keep' and add x keep' + D x add'. A density layer: (1 - mask, mask). A layer of an older test
+        build (`legacy`): its 0..1 mask read by that build's rule (`logic.legacy_mask`: Multiply and Min thin
+        what is below, black is no hair, white the owner's Density)."""
+        np = _np()
+        if layer.legacy:
+            rows = [(m, self.value(m), self.coverage(m)) for m in data.mask_layers(layer.id)]
+            return logic.legacy_mask(rows, np.ones(self.n, np.float64))
+        m = self.mask_of(data, layer.id)
+        return 1.0 - m, m
 
     def weights(self, data: model.GroomData, layers: Sequence[model.MaskLayer], masks: dict | None = None):
         """(keep, [w per layer]) per point through density `layers` (in the order they apply, bottom first):
         keep = the product of (1 - e), e = mask x opacity; w of a layer = its e x the (1 - e) of every layer
-        over it, so the layers' density is the sum of D x w and density = automatic x keep + that sum.
-        `masks`: a dict that keeps each layer's mask (a layer is in several scope sets)."""
+        over it, so the layers' density is the sum of D x w and density = automatic x keep + that sum. (A
+        `legacy` layer takes 1 - keep' of what is below and adds D x add': `parts_of`.)
+        `masks`: a dict that keeps each layer's parts (a layer is in several scope sets)."""
         np = _np()
         masks = masks if masks is not None else {}
-        effects = []
+        parts = []
         for layer in layers:
             if layer.id not in masks:
-                masks[layer.id] = self.mask_of(data, layer.id)
-            effects.append(masks[layer.id] * layer.opacity)
+                masks[layer.id] = self.parts_of(data, layer)
+            k, a = masks[layer.id]
+            parts.append((1.0 - (1.0 - k) * layer.opacity, a * layer.opacity))
         keep = np.ones(self.n, np.float64)
         ws = [None] * len(layers)
         for i in range(len(layers) - 1, -1, -1):
-            ws[i] = effects[i] * keep
-            keep = keep * (1.0 - effects[i])
+            ws[i] = parts[i][1] * keep
+            keep = keep * parts[i][0]
         return keep, ws
 
     def compose(self, data: model.GroomData, layers: Sequence[model.MaskLayer]):
