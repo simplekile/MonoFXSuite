@@ -1656,7 +1656,10 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
         # the lock's automatic roots read everything above and no layer: their own key (cook_auto_store)
         akey = lock_key(parts)
         akeys.append(akey)
-        aflags.append(int(cache.has(sid, lid, AUTO_MODE + lock_mode, akey)))
+        # 0 not kept, 1 kept, 2 kept with the order they are thinned in (thin_u: made the first time a layer
+        # covers the lock, thin_store)
+        held = cache.get(sid, lid, AUTO_MODE + lock_mode, akey)
+        aflags.append(0 if held is None else 2 if held.findPrimAttrib("thin_u") is not None else 1)
         mset = mask_sets[lid] if 0 <= lid < len(mask_sets) else -1
         msets.append(mset)
         madds.append(float(mask_adds[lid]) if mset >= 0 and lid < len(mask_adds) else 0.0)
@@ -1701,7 +1704,8 @@ def cook_auto_store(sop) -> None:
     """Python SOP "auto_store" in the per-lock loop, after root_pick: keep the lock's automatic roots
     (hairgen's scatter with the roots root_pick relocated) under its key without layers, and pass them on
     unchanged. One state a lock: a stroke changes no automatic root, an edit of the lock replaces them.
-    Input 0 root_pick, input 1 the lock's keyed spine."""
+    Input 0 root_pick, input 1 the lock's keyed spine. "thin_store" is the same call after thin_order: the
+    entry is replaced by the roots with `thin_u` (only for a lock a layer covers, the first time)."""
     slot = _auto_slot(sop)
     if slot is None or not slot[3]:
         return

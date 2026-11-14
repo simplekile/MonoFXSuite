@@ -761,8 +761,9 @@ THIN_ORDER_NEAR = 24      # ... and which of a pair goes first is judged against
 THIN_ORDER_SMALL = 400    # a lock's start grid of no more roots than this: a farthest-point order instead
 
 VEX_THIN_ORDER = """// density mask: the order in which a lock's automatic roots go when a mask thins them (f@thin_u, 0..1: a root
-// stays while thin_u < keep; mask_thin). Part of the automatic roots (kept with them in the cache): it does not
-// read the mask, so a stroke pays nothing for it, and a small change of the mask moves no root.
+// stays while thin_u < keep; mask_thin). Part of the automatic roots (kept with them in the cache once a layer
+// first covers the lock): it does not read the mask, so only a lock's first stroke pays for it, and a small
+// change of the mask moves no root.
 // Start roots (a sunflower round the lock's root, the places off the region left out; by where they start) and
 // scattered roots (by where hairgen put them) are each ordered by PAIRING: every root is paired with the
 // nearest root not yet paired, one of the pair goes to the first half and the other to the second, and each
@@ -1816,15 +1817,24 @@ def build_network(sub) -> None:
     # the automatic roots (hairgen's scatter and root_pick: 8-16 % of a lock's cook) do not read the layers:
     # kept in the cache by the lock's key without its layers (lock_keys: auto_key), so a stroke lays out no
     # root again that it did not paint. Stored on every cook of a lock, so the first stroke finds them too
-    thin_order = _wrangle(sub, "thin_order", VEX_THIN_ORDER, DETAIL, [pick])
-    auto_store = _node(sub, "python", "auto_store", [thin_order, begin])
+    auto_store = _node(sub, "python", "auto_store", [pick, begin])
     auto_store.parm("python").set("from apps.houdini import grooming_adapter\n"
                                   "grooming_adapter.cook_auto_store(hou.pwd())\n")
     auto_load = _node(sub, "python", "auto_load", [begin])
     auto_load.parm("python").set("from apps.houdini import grooming_adapter\n"
                                  "grooming_adapter.cook_auto_load(hou.pwd())\n")
     auto = _node(sub, "switch", "auto_roots", [auto_store, auto_load])
-    auto.parm("input").setExpression('prim("../foreach_begin", 0, "auto_cached", 0)')
+    auto.parm("input").setExpression('if(prim("../foreach_begin", 0, "auto_cached", 0) >= 1, 1, 0)')
+    # the order the automatic roots go in when a layer thins them (thin_u) is made only for a lock a layer
+    # covers, the first time, and kept with its automatic roots (the same cache entry, now with thin_u:
+    # auto_cached 2). Made for every lock on every cook it was 4.5 s of Helen's cold cook (a single-threaded
+    # detail wrangle, 38 us a root), with or without layers: the display's cold cook was 1.13 x v0.1's
+    thin_order = _wrangle(sub, "thin_order", VEX_THIN_ORDER, DETAIL, [auto])
+    thin_store = _node(sub, "python", "thin_store", [thin_order, begin])
+    thin_store.parm("python").set("from apps.houdini import grooming_adapter\n"
+                                  "grooming_adapter.cook_auto_store(hou.pwd())\n")
+    auto_thin = _node(sub, "switch", "auto_thin", [thin_store, auto])
+    auto_thin.parm("input").setExpression('if(prim("../foreach_begin", 0, "auto_cached", 0) >= 2, 1, 0)')
     hairgen_b = _node(sub, "hairgen::2.0", "hairgen_layers", [mask_skin], useguides=0, growunguided=1,
                       useinitdirattrib=0, unguidedlength=0.01)
     hairgen_b.parm("unguidedsegments").setExpression(hairgen.parm("unguidedsegments").expression())
@@ -1840,7 +1850,7 @@ def build_network(sub) -> None:
     no_layer_roots = _node(sub, "add", "no_layer_roots")
     layer_roots = _node(sub, "switch", "layer_roots", [no_layer_roots, mask_tag])
     layer_roots.parm("input").setExpression('if(%s >= 1, 1, 0)' % layer_count)
-    roots_ab = _node(sub, "merge", "roots_with_layers", [auto, layer_roots])     # the automatic roots first
+    roots_ab = _node(sub, "merge", "roots_with_layers", [auto_thin, layer_roots])     # the automatic roots first
     roots_in = _node(sub, "switch", "roots_in", [auto, roots_ab])
     roots_in.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
     place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [roots_in, frame, begin, mesh_pu])
