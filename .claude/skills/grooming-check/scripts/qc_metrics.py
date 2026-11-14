@@ -530,7 +530,7 @@ def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5, far
     P = np.array(rg.pointFloatAttribValues("P")).reshape(-1, 3)
     cen = np.array([P[[v.point().number() for v in pr.vertices()]].mean(0) for pr in rg.prims()]) * unit_cm
     # each owner's automatic density (its count without layers over its skin); under layers a prim asks
-    # automatic x keep + the layers' density of each owner (logic.mask_density), without layers the automatic
+    # automatic x keep + the layers' density of each owner (logic.layer_density), without layers the automatic
     dens = {i.id: (getattr(i, "auto_strands", 0) or i.strands) / max(i.region_area_cm2, 1e-6) for i in infos}
     keep_of, add_of = {}, {}
     for lock_id, (prims, keep, add) in (cover or {}).items():

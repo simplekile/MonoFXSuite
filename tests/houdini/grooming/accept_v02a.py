@@ -16,7 +16,7 @@ by the ear), with the roots of ALL locks counted in the core of a painted disc a
 its own skin there; limits are the plan's, never tuned to a result.
 
 Definitions this script makes on its own (each named DEFINITION where it is used, for the checker to judge):
-  1. a lock asked under one root in a core (0 < N < 1) may hold at most 2 there (`_grade`);
+  1. a lock asked under one root in a core (N < 1; also a lock with no skin in it) may hold at most 2 there (`_grade`);
   2. where a lock is asked no root, a strand rooted over 0.1 cm off the skin is listed, not counted (`_grade`);
   3. "= D" owned by all locks: every lock on that skin gives D together; by a group: the group's locks there
      together; by one lock: that lock alone on the skin it owns (`_sharing`, measured by o2)."""
@@ -369,8 +369,10 @@ def _want(core, stack):
 def _grade(core, stack, evenness=True):
     """Roots on `core` against the rule (`_want`), for all locks together and for each lock on its own skin
     there; limit |measured / expected - 1| <= max(0.15, 2 / sqrt(N)).
-    DEFINITION 1 (round 3's, kept): that limit has no meaning for a lock asked under one root there (0 < N < 1:
-    a lock whose skin only touches the core); such a lock may hold at most 2 roots, and is listed.
+    DEFINITION 1 (round 3's, kept): that limit has no meaning for a lock asked under one root there (N < 1: a
+    lock whose skin only touches the core, or a lock with no skin in the core at all: a root is counted to the
+    prim whose centre is nearest, so a root of the prim beside the core can be counted to it); such a lock may
+    hold at most 2 roots, and is listed.
     DEFINITION 2 (round 3's, kept): where a lock is asked no root at all (a layer of 0 painted white), a strand
     whose root floats over OFF_SKIN_CM off the skin is listed, not counted: v0.1 leaves a few start roots there
     (hair_base_20: 1 of 7,172, 0.24 cm up), and the tool judges a root where it lands on its lock's skin."""
@@ -391,14 +393,16 @@ def _grade(core, stack, evenness=True):
     for k in sorted(set(want) | set(a)):
         w = want.get(k, 0.0)
         got = a.get(k, 0)
+        skin = K.lock_area_in(core, k)
         lim = lib.density_limit(w, 1.0) if w >= 1.0 else 0.0
-        if w <= 1e-9:
-            ok = got == 0                                   # no root asked: none at all
+        if w <= 1e-9 and skin > 0:
+            ok = got == 0                                   # the lock has skin here and is asked no root: none at all
         elif w < 1.0:
-            ok = got <= 2
+            ok = got <= 2                                   # DEFINITION 1 (also a lock with no skin in the core)
         else:
             ok = abs(got / w - 1) <= lim
-        locks[K.names[k]] = {"skin_cm2": r3(K.lock_area_in(core, k)), "automatic": b.get(k, 0), "expected": r3(w),
+        ok = bool(ok)
+        locks[K.names[k]] = {"skin_cm2": r3(skin), "automatic": b.get(k, 0), "expected": r3(w),
                              "roots": got, "ratio": r3(got / w) if w >= 1.0 else None, "limit": r3(lim), "pass": ok}
         if not ok:
             bad.append(K.names[k])
@@ -409,7 +413,7 @@ def _grade(core, stack, evenness=True):
            "measured_per_cm2": r3(got / area), "ratio": r3(got / target) if target > 0 else None, "limit": r3(lim),
            "locks_on_core": len(locks), "locks_outside_their_limit": bad, "locks": locks,
            "roots_floating_off_the_skin_not_counted": floating,
-           "locks_asked_under_one_root": {k: v["roots"] for k, v in locks.items() if 0 < v["expected"] < 1.0 and v["roots"]},
+           "locks_asked_under_one_root": {k: v["roots"] for k, v in locks.items() if v["expected"] < 1.0 and v["roots"]},
            "worst_lock": max(locks.items(), key=lambda kv: abs((kv[1]["ratio"] or 1) - 1) / max(kv[1]["limit"], 1e-9))
            if locks else None,
            "pass": (got == 0 if target <= 0 else abs(got / target - 1) <= lim) and not bad}
@@ -814,16 +818,22 @@ def b3_multiply_bounds():
             dist = np.sqrt(((K.cen - Z[zname]) ** 2).sum(1))
             lo, hi = K.prim_minmax(mask.astype(float))
             ring = np.nonzero((dist > 1.05) & (dist < 1.35) & (hi <= 0.0) & (K.nown > 0))[0]
-            b0, a0 = K.roots_in(ring, ROOTS0)[0], K.roots_in(ring, G.roots())[0]
-            row["outside_the_region_but_under_the_white"] = {"prims": int(len(ring)), "automatic_roots": sum(b0.values()),
-                                                             "roots": sum(a0.values()), "same_per_lock": a0 == b0}
-            row["pass"] = row["pass"] and a0 == b0 and len(ring) > 0 and len(inside) > 0
+            # every automatic root of that ring is still there, at the same place (a root is given to the prim
+            # whose centre is nearest, so the layer's own roots beside the ring are not counted against it)
+            b0, rb0, lb0 = K.roots_in(ring, ROOTS0)
+            r_now, l_now = G.roots()
+            here = {(int(k), x.tobytes()) for k, x in zip(l_now, r_now)}
+            gone = sum(1 for k, x in zip(lb0, rb0) if (int(k), x.tobytes()) not in here)
+            row["outside_the_region_but_under_the_white"] = {
+                "prims": int(len(ring)), "automatic_roots": sum(b0.values()), "of_them_gone_or_moved": gone,
+                "roots_counted_there_now": sum(K.roots_in(ring, (r_now, l_now))[0].values())}
+            row["pass"] = row["pass"] and gone == 0 and len(ring) > 0 and len(inside) > 0 and sum(b0.values()) > 0
             rows["a white region of 0.6 cm in a black Multiply layer over white"] = row
             clear_layers()
         C.add("b3_multiply_as_the_top_layer_of_a_mask_" + zname, _all(rows), rows,
               "over a mask painted white on a layer of 300, a Multiply paint layer at 0 / 0.5 / 1: the automatic groom "
               "byte for byte / automatic x 0.5 + 150 x skin / 300; on three kinds of skin also a Multiply layer filled "
-              "black with a white region: 300 inside, the automatic roots outside it; " + LIMIT)
+              "black with a white region: 300 inside, every automatic root outside it still at its place; " + LIMIT)
         C.add("b3_roots_even_" + zname, _even(rows), {k: v.get("even") for k, v in rows.items()}, EVEN_LIMIT)
 
 

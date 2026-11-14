@@ -930,7 +930,8 @@ setdetailattrib(0, "apart_sf", sf);
 VEX_MASK_APART = """// density mask, partial coverage (a soft brush edge, an opacity under 1): the lock holds automatic roots that
 // stayed AND the layers' own roots, two scatters that know nothing of each other, so a layer root could lie
 // right beside an automatic one (clumped share +0.06 to +0.16 on ordinary skin at opacity 0.25-0.75). Each
-// layer root nearer than %(apart)s of the root spacing asked there to a kept automatic root is moved straight
+// layer root nearer than %(apart)s of the root spacing there (the kept automatic roots round it, counted, and
+// the layers' own density) to a kept automatic root is moved straight
 // away from it to that distance, on the skin (up to six times: the move may bring it near another). Automatic
 // roots never move, the count does not change, and skin a layer covers in full has no automatic root to move
 // from. The nearest automatic root comes from a point lookup (apart_cloud): every layer root against every
@@ -947,7 +948,18 @@ float uc = max(chf("../unit_cm"), 1e-6);
 float ld = detail(2, "apart_ld");                       // the lock's roots / cm2 (x the strand factor)
 float sf = detail(2, "apart_sf");
 float share = prim(1, "share", rp);                     // the lock's part of that skin (add is already divided)
-float rmin = %(apart)s / sqrt(max(ld * keep / max(share, 1.0) + add * sf, ld * 0.05)) / uc;
+// The automatic roots really kept round this place, roots / cm2: the 8 nearest over the disc they span. The
+// lock's set density x keep says too much where the tool left the skin thin (under floating mesh the automatic
+// roots start the lock: Helen's hair_base_21 holds 26 / cm2 where 150 are set), and the distance came out under
+// what reads as bunched (0.037 cm where the roots asked there stand 0.14 cm apart: clumped share +0.14).
+float set_dens = max(ld * keep / max(share, 1.0), 1e-6);
+float rmax = 3.0 / sqrt(set_dens) / uc;
+int near[] = nearpoints(2, "auto_at", p, rmax, 8);
+if (len(near) == 0) return;                             // no automatic root within three spacings: nothing to move from
+vector far = point(2, "P", near[-1]);
+float rr = len(near) == 8 ? max(distance(p, far), 1e-9) : rmax;
+float kept = len(near) / (3.14159265 * rr * rr * uc * uc);
+float rmin = %(apart)s / sqrt(max(kept + add * sf, ld * 0.05)) / uc;
 int moved = 0;
 for (int pass = 0; pass < 6; pass++) {
     int b = nearpoint(2, "auto_at", p, rmin);

@@ -634,7 +634,9 @@ def cook_mask_read(sop) -> None:
     geo = sop.geometry()
     text = top.evalParm(config.DATA_PARM)
     parm = top.parm(config.MASK_PARM)
-    if parm is None or not text or '"density"' not in text:
+    # a file of this schema without a density layer (the usual groom): nothing to read, not even the JSON. An
+    # older file is always read: its layers become density layers on reading (model.migrate)
+    if parm is None or not text or ('"schema": %d' % model.SCHEMA in text and '"kind": "density"' not in text):
         return
     data = model.GroomData.from_json(text)
     if not any(m.on for m in data.density_layers()):
