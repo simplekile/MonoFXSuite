@@ -92,6 +92,7 @@ C.meta["lookup_per_piece"] = int(node.evalParm("lookup_per_piece"))
 CC = lib.CookCount(ga)
 K = lib.Skin(G)
 ROOTS0 = G.roots()
+IDS0 = G.strands_by_id()        # per lock: strand ids, roots, tips of the groom without layers
 BASE = G.strands_by_lock()
 C.meta["strands"] = sum(BASE.values())
 Z = K.zones(ROOTS0)
@@ -818,22 +819,41 @@ def b3_multiply_bounds():
             dist = np.sqrt(((K.cen - Z[zname]) ** 2).sum(1))
             lo, hi = K.prim_minmax(mask.astype(float))
             ring = np.nonzero((dist > 1.05) & (dist < 1.35) & (hi <= 0.0) & (K.nown > 0))[0]
-            # every automatic root of that ring is still there, at the same place (a root is given to the prim
-            # whose centre is nearest, so the layer's own roots beside the ring are not counted against it)
+            # every automatic strand rooted in that ring is still there, its root where it was. Followed by strand
+            # id, within 0.05 cm (the tiny-mask check's limit): the locks are under the layer elsewhere, so they
+            # recook, and a recooked lock's kept roots differ in the last bit (measured: under 0.00001 cm). A root
+            # is given to the prim whose centre is nearest, so the layer's own roots beside the ring are not counted
             b0, rb0, lb0 = K.roots_in(ring, ROOTS0)
-            r_now, l_now = G.roots()
-            here = {(int(k), x.tobytes()) for k, x in zip(l_now, r_now)}
-            gone = sum(1 for k, x in zip(lb0, rb0) if (int(k), x.tobytes()) not in here)
+            now = G.strands_by_id()
+            gone = moved = 0
+            far = 0.0
+            for k in b0:
+                id0, r0, _t0 = IDS0[k]
+                id1, r1, _t1 = now.get(k, (np.zeros(0, np.int32), np.zeros((0, 3)), None))
+                at1 = {int(i_): n for n, i_ in enumerate(id1)}
+                there = {x.tobytes() for x in rb0[lb0 == k]}
+                for n, x in enumerate(r0):
+                    if x.tobytes() not in there:
+                        continue
+                    m = at1.get(int(id0[n]))
+                    if m is None:
+                        gone += 1
+                    else:
+                        step = float(np.sqrt(((r1[m] - x) ** 2).sum()))
+                        far = max(far, step)
+                        moved += int(step > 0.05)
             row["outside_the_region_but_under_the_white"] = {
-                "prims": int(len(ring)), "automatic_roots": sum(b0.values()), "of_them_gone_or_moved": gone,
-                "roots_counted_there_now": sum(K.roots_in(ring, (r_now, l_now))[0].values())}
-            row["pass"] = row["pass"] and gone == 0 and len(ring) > 0 and len(inside) > 0 and sum(b0.values()) > 0
+                "prims": int(len(ring)), "automatic_roots": sum(b0.values()), "of_them_gone": gone,
+                "of_them_moved_over_0.05_cm": moved, "largest_move_cm": round(far, 6)}
+            row["pass"] = (row["pass"] and gone == 0 and moved == 0 and len(ring) > 0 and len(inside) > 0
+                           and sum(b0.values()) > 0)
             rows["a white region of 0.6 cm in a black Multiply layer over white"] = row
             clear_layers()
         C.add("b3_multiply_as_the_top_layer_of_a_mask_" + zname, _all(rows), rows,
               "over a mask painted white on a layer of 300, a Multiply paint layer at 0 / 0.5 / 1: the automatic groom "
               "byte for byte / automatic x 0.5 + 150 x skin / 300; on three kinds of skin also a Multiply layer filled "
-              "black with a white region: 300 inside, every automatic root outside it still at its place; " + LIMIT)
+              "black with a white region: 300 inside, every automatic strand outside it still there with its root within "
+              "0.05 cm (by strand id); " + LIMIT)
         C.add("b3_roots_even_" + zname, _even(rows), {k: v.get("even") for k, v in rows.items()}, EVEN_LIMIT)
 
 
