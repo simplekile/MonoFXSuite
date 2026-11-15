@@ -1247,10 +1247,16 @@ def r6_old_scene_and_new_node():
     if not V01:
         C.add("r6_an_old_scene_opens_with_the_lookup_off", False, None, "--v01 <suite>", note="not run: no v0.1 suite given")
         return
+    # a v0.1 scene: the Helen scene with a fresh groom made and saved by the v0.1 suite itself
+    old_hip = OUT + "/saved_by_v01.hiplc"
+    hython([HERE + "/accept_v02a_sub.py", "makeold", V01, SCENE, OUT + "/saved_by_v01.json", HERE], "saved_by_v01.log")
+    if not os.path.isfile(old_hip):
+        C.add("r6_an_old_scene_opens_with_the_lookup_off", False, None, note="the v0.1 suite did not save the scene: saved_by_v01.log")
+        return
     got = {}
     for tag, suite, extra in (("opened", SUITE, []), ("on", SUITE, ["on"]), ("v01", V01, [])):
         outf = OUT + "/asopened_%s.json" % tag
-        hython([HERE + "/accept_v02a_sub.py", "asopened", suite, SCENE, outf, HERE] + extra, "asopened_%s.log" % tag)
+        hython([HERE + "/accept_v02a_sub.py", "asopened", suite, old_hip, outf, HERE] + extra, "asopened_%s.log" % tag)
         if not os.path.isfile(outf) or not os.path.isfile(OUT + "/asopened_%s.npz" % tag):
             C.add("r6_an_old_scene_opens_with_the_lookup_off", False, tag, note="see asopened_%s.log" % tag)
             return
@@ -1265,7 +1271,7 @@ def r6_old_scene_and_new_node():
     ok = (row["lookup_as_opened"] == 0 and row["points_byte_identical_to_v01"] and row["lock_ids_identical"]
           and not row["errors"] and (row["stored_schema"] or 1) < 5)
     C.add("r6_an_old_scene_opens_with_the_lookup_off", ok, row,
-          "the Helen scene as v0.1 saved it, opened with this HDA: \"Fit lookup per lock\" reads off (set on the node "
+          "the Helen scene with a groom made and saved by the v0.1 suite (saved_by_v01.hiplc), opened with this HDA: \"Fit lookup per lock\" reads off (set on the node "
           "by OnLoaded, once), and the rest groom is v0.1's byte for byte (every coordinate, every lock id)",
           evidence="asopened_opened.json / .npz, asopened_v01.json / .npz")
     # the toggle on: what a new node gives

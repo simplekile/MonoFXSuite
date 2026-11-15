@@ -722,9 +722,11 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     (`keep_old_lookup`, user data `monofx_fit_lookup`), so a v0.1 scene reopens as v0.1's groom byte for byte.
     Test scripts that open the Helen scene "as saved" now run with it off; `accept_lib.fresh` reverts every
     parm to its default, so the acceptance's fresh groom has it on (checks `s2`, `r5b`, `r6` cover off).
-  - Whorl roots are ordered by pairing on where they land (thin_order computes root_place's sunflower place
-    itself): the bit-reversed sunflower number left arms at a keep of 1/2 and 1/4 (local clumped share +0.06 /
-    +0.12 for fringe locks in the whorl), which the per-patch measure never saw.
+  - Evenness by the local measure misses +0.05 at the crown whorl under partial coverage for a few small fringe
+    locks (hair_bang_04 / 13 / 16 / 19, hair_base_09: +0.054 to +0.119 in 7 of 43 cases; every other place and
+    lock is inside). Not the whorl roots' order: ordering them by pairing on where they land (thin_order
+    computing root_place's sunflower place) moved the misses to other locks (hair_base_18 +0.12), same count;
+    dropped. Cause not found.
   - The acceptance counts a root to the prim nearest it on the surface (`Skin.assign`), follows strands within
     1e-5 cm, does not grade a lock asked under one root alone, and judges evenness by `lock_even_local` (each
     root against the spacing asked where it stands; the plan has the definition). New checks: `u6` (Shot

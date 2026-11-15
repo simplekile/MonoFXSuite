@@ -9,6 +9,8 @@
         open a saved scene as it is and cook the rest groom: "Fit lookup per lock" as the node holds it after
         opening (None on a suite without the parm), and <out>.npz with the groom's points, the points a strand
         and the lock ids. `on`: the toggle switched on before the cook. Works on a v0.1 suite too.
+    hython accept_v02a_sub.py makeold <suite> <scene> <out.json> <accept_lib dir>
+        the scene with a fresh groom made and saved by <suite> as <out>.hiplc (with the v0.1 suite: a v0.1 scene).
     fullcook takes a 7th argument `lookup_off`: the toggle off before the cooks.
 """
 import hashlib
@@ -66,6 +68,14 @@ try:
                       for a in geo.pointAttribs() if a.name().startswith("mask_")} if geo is not None else {}
         R["errors"] = lib.node_errors(node)
         R["undo_cache_gb"] = node.evalParm(config.UNDO_CACHE_PARM) if node.parm(config.UNDO_CACHE_PARM) else None
+    elif MODE == "makeold":
+        # a scene as THIS suite saves it (run with the v0.1 suite: a v0.1 scene): fresh groom, cooked, saved
+        lib.fresh(ga, node)
+        node.node("GROOM_REST").cook()
+        text = node.evalParm("groom_data")
+        R["stored_schema"] = json.loads(text).get("schema", 1) if text.strip() else None
+        R["has_lookup_parm"] = node.parm("lookup_per_piece") is not None
+        hou.hipFile.save(os.path.splitext(OUTF)[0] + ".hiplc")
     elif MODE == "asopened":
         p = node.parm("lookup_per_piece")
         R["lookup_as_opened"] = int(p.eval()) if p is not None else None

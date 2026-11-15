@@ -407,10 +407,9 @@ automatic roots: see "Cost" below):
   next 10 (among all, once a half holds 64 or fewer).
 - A small start grid (400 roots or fewer: a disc of a millimetre or two, several times denser than the rest of
   the lock) takes a farthest-point order instead: what is left of it must stand as evenly as it can.
-- Whorl roots: ordered by pairing too, by where they land (t65). By their sunflower number with its bits
-  reversed (t62 to t64) a keep of 1/2 or 1/4 left every 2nd or 4th point of the sunflower, which stand in arms:
-  under the local evenness measure a fringe lock's roots in the whorl read +0.06 at a keep of 0.5 and +0.12
-  at 0.25.
+- Whorl roots: their sunflower number with its bits reversed. (t65: ordering them by pairing on where they
+  land was tried against the local evenness measure's misses at the whorl, below: it changed which locks
+  miss, not how many, and was dropped.)
 - Partial coverage puts the layers' own roots among automatic roots that stayed; a layer root nearer than
   0.45 of the root spacing asked there to an automatic one is moved off it, on the skin (`mask_apart`).
 Tried and dropped: the root's number in hairgen's scatter (0.35 to 1.85 of the share from skin to skin); a
