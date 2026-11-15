@@ -12,7 +12,7 @@ their lock) are answered here by edits the artist makes, not by more tuning of t
 
 | Part | What the artist gets | Why this order |
 |---|---|---|
-| **v0.2a Density layers** | Density layers over the automatic groom (Substance Painter style): each has its own density number and its own painted mask, so an area can be made thinner, denser or bare | Fixes most known issues (crown, thin skin) with the least new machinery; the layer system is reused by b and c |
+| **v0.2a Density layers** | Density layers over the automatic groom (Substance Painter style): each has its own density number and its own painted mask, so an area can be made thinner, denser or bare; the tool's own workspace and pie menu | Fixes most known issues (crown, thin skin) with the least new machinery; the layer system is reused by b and c |
 | **v0.2b Lock redraw** | Move a lock's control points, redraw its curve, draw a new lock where the mesh has none | The plan's reserved slot (after spine and measure); changes shape, not density |
 | **v0.2c Brush** | Comb, lift, cut and length brushes on the hair in the viewport | Most work and the most risk (edits must survive recooks); comes last, on what a and b settle |
 
@@ -38,16 +38,21 @@ passed it and the manager saw the evidence.
 
 | Work | Model | Effort | Why |
 |---|---|---|---|
-| Manager (plan, briefs, diff review, gate decisions) | Fable 5.2 | high | The decisions every other session builds on |
-| Spike; build of the hard core (viewport state, HDA network, root and density logic, storage and cache keys) | Fable 5.2 | high | Design under open questions; a wrong choice costs the whole part |
-| Build of a task the spike already settled (panel from the picked mockup, adapter functions, unit tests, the acceptance script) | Opus 5.5 | high | Careful work with a clear target |
-| Checker | Opus 5.5 | high | A different model from the hard-core executor, so it does not share its blind spots; strong enough to try to break each item |
+| Manager (plan, briefs, diff review, gate decisions) | Opus 5.5 (the user picks it in the app); Fable 5.2 only while a design question is open | high | The decisions every other session builds on |
+| Spike; design with no known answer (a new scatter, the cause of a miss nobody has traced) | Fable 5.2 | high | Design under open questions; a wrong choice costs the whole part |
+| Build of a task the spike already settled (panel from the picked mockup, adapter functions, unit tests, the acceptance script); a fix round from a checker's list (bug, cause and script given) | Opus 5.5 | high | Careful work with a clear target |
+| Checker of new work (no scripts yet; has to try to break each item) | Opus 5.5 when the executor ran on Fable 5.2, Sonnet 5.5 when it ran on Opus 5.5 | high | A different model from the executor, so it does not share its blind spots |
+| Re-check of a fix round (the earlier checker's scripts run again unchanged, numbers compared, docs against numbers) | Sonnet 5.5 | high | The scripts and limits exist; the work is running and comparing |
 | Mechanical runs (rebuild the HDA, run the acceptance script and QC again, flipbooks, changelog and release steps, moving notes) | Sonnet 5.5 | medium | Follows written steps; nothing to design |
 | Read-only look-ups (find a function, list sessions, read a log) | Haiku 5.5, as a subagent | low | Cheap and fast; the result comes back in the same turn |
 
+Changed 2026-11-15 on the user's decision (cost): Fable 5.2 was the executor of every core round and
+the manager; most of that work was fixing from a checker's list and running scripts again.
+
 A session never gets a model above the manager's (the app ignores it). When a cheaper model fails a
-task twice, the manager restarts the task one row up, not a third try. The checker of a task built on
-Opus 5.5 runs on Fable 5.2 for the same reason as above: never the executor's own model.
+task twice, the manager restarts the task one row up, not a third try. The checker is never on the
+executor's own model. The manager reports to the user when a session's final report is in, not at
+each "still running" note.
 
 ### Gates of one part (a, b, c)
 
@@ -708,6 +713,38 @@ redraw its spine; the brushed look must stay. If fields cannot give the look, th
 guide-level edits (lost on some changes, with a warning) and stopping at a and b.
 
 **Done when.** Decided after the spike; written here before the build starts.
+
+## v0.2a, last task: the tool's own workspace and pie menu (asked by the user 2026-11-13)
+
+A place of its own for grooming, so the artist does not rebuild a layout or hunt for commands. Built
+after the mask panel, since the pie menu's entries are that panel's commands. One session.
+
+**What.**
+- **Desktop "MONO Grooming"** (a `.desk` file in the suite's `desktop/`, listed next to Build): a large
+  viewport, the Grooming panel docked on the right, a small network editor, the shelves that do not
+  matter here hidden. The user's other desktops are not changed.
+- **Radial menu "MONO Grooming"** (a file in the suite's `radialmenu/`, listed next to Main, key C in the
+  viewport): Paint / Erase, Guides / Hair preview / Hair, Isolate the selected locks, Scalp X-ray, Update
+  regions, Detect locks. Each entry calls the same controller function as the panel's button (no second
+  code path). In the Paint state: brush hotkeys and a right-click menu (radius, value) belong to the
+  viewer state.
+- Installer: `MonoFXSuite.iss` ships `desktop/` and `radialmenu/` (in the same change).
+
+**Spike first (OPEN).**
+1. Can the tool switch the viewport to its radial menu when the panel opens and put the user's back when
+   it closes, by script, in Houdini 22? If not: the user picks it in the menu, and the panel says so once.
+2. Does a `.desk` file keep the Python panel (by its interface name) on another machine and survive a
+   Houdini build update? If fragile: build the layout by script from a shelf tool ("Grooming workspace")
+   and ship no `.desk`.
+
+**Done when.**
+- From a fresh Houdini with the suite installed: the desktop is in the list, choosing it shows the
+  viewport and the docked panel on the node in the scene (checked by script: pane types and the panel's
+  interface); switching back restores the earlier desktop unchanged.
+- Every radial entry does what its panel button does (same resulting node state, checked by script for
+  each entry); none raises when no MONO Grooming node exists (a status line message instead).
+- The installer build contains both folders (ISCC log).
+- The user's own try of the pie menu and the layout is the User look gate.
 
 ## Not in v0.2 (later, when production needs it)
 
