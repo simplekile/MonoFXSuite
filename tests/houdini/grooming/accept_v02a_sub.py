@@ -5,6 +5,11 @@
         process: the fresh no-layer groom, the node's cache dropped before each. Works on a v0.1 suite too.
     hython accept_v02a_sub.py reopen <suite> <hip> <out.json> <accept_lib dir>
         open a saved scene as it is: layers, each mask's digest, strands per lock, what was dropped, errors.
+    hython accept_v02a_sub.py asopened <suite> <hip> <out.json> <accept_lib dir> [on]
+        open a saved scene as it is and cook the rest groom: "Fit lookup per lock" as the node holds it after
+        opening (None on a suite without the parm), and <out>.npz with the groom's points, the points a strand
+        and the lock ids. `on`: the toggle switched on before the cook. Works on a v0.1 suite too.
+    fullcook takes a 7th argument `lookup_off`: the toggle off before the cooks.
 """
 import hashlib
 import json
@@ -29,6 +34,9 @@ try:
     if MODE == "fullcook":
         repeats = int(sys.argv[6]) if len(sys.argv) > 6 else 3
         lib.fresh(ga, node)
+        if len(sys.argv) > 7 and sys.argv[7] == "lookup_off" and node.parm("lookup_per_piece") is not None:
+            node.parm("lookup_per_piece").set(0)
+        R["lookup_per_piece"] = int(node.evalParm("lookup_per_piece")) if node.parm("lookup_per_piece") is not None else None
         rest, keys = node.node("GROOM_REST"), node.node("groom_keys")
         rest.cook()
         times = []
@@ -58,6 +66,28 @@ try:
                       for a in geo.pointAttribs() if a.name().startswith("mask_")} if geo is not None else {}
         R["errors"] = lib.node_errors(node)
         R["undo_cache_gb"] = node.evalParm(config.UNDO_CACHE_PARM) if node.parm(config.UNDO_CACHE_PARM) else None
+    elif MODE == "asopened":
+        p = node.parm("lookup_per_piece")
+        R["lookup_as_opened"] = int(p.eval()) if p is not None else None
+        R["note"] = node.userData("monofx_fit_lookup")
+        text = node.evalParm("groom_data")
+        R["stored_schema"] = json.loads(text).get("schema", 1) if text.strip() else None
+        if len(sys.argv) > 6 and sys.argv[6] == "on" and p is not None:
+            p.set(1)
+        R["lookup_cooked"] = int(p.eval()) if p is not None else None
+        rest = node.node("GROOM_REST")
+        rest.cook()
+        geo = rest.geometry()
+        P = np.frombuffer(geo.pointFloatAttribValuesAsString("P"), np.float32)
+        lock = np.frombuffer(geo.primIntAttribValuesAsString("lock_id"), np.int32)
+        counts = np.array([pr.numVertices() for pr in geo.prims()], np.int32)
+        R["strands"] = int(len(lock))
+        R["points"] = int(len(P) // 3)
+        R["unit_cm"] = float(node.evalParm("unit_cm"))
+        R["sha1_points"] = hashlib.sha1(P.tobytes()).hexdigest()
+        R["sha1_lock_ids"] = hashlib.sha1(lock.tobytes()).hexdigest()
+        np.savez(os.path.splitext(OUTF)[0] + ".npz", P=P, lock=lock, counts=counts)
+        R["errors"] = lib.node_errors(node)
     else:
         raise ValueError(MODE)
 except Exception:

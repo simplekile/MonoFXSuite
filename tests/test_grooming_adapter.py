@@ -378,6 +378,18 @@ def test_anim_mismatch_text():
     assert callable(ga.deform_problem)
 
 
+def test_a_scene_from_before_the_fit_lookup_keeps_it_off():
+    """Only a stored groom_data of schema 1 to 4 is such a scene; a new node (no data) keeps the default."""
+    import json
+    assert ga.scene_before_lookup(json.dumps({"schema": 1, "locks": []}))
+    assert ga.scene_before_lookup(json.dumps({"locks": []}))               # v0.1 wrote schema 1; none = 1
+    assert ga.scene_before_lookup(json.dumps({"schema": 4}))
+    assert not ga.scene_before_lookup(json.dumps({"schema": ga.LOOKUP_SINCE_SCHEMA}))
+    assert not ga.scene_before_lookup(json.dumps({"schema": 6}))
+    assert not ga.scene_before_lookup("") and not ga.scene_before_lookup(None) and not ga.scene_before_lookup("{broken")
+    assert callable(ga.keep_old_lookup) and "off" in ga.LOOKUP_KEPT_TEXT
+
+
 def test_no_output_captures_in_the_loop():
     """Every output's locks are the rest strands, one cache entry a state; the capture a deform needs is made
     apart (cook_groom_captured). In the loop it held 800 B a point for every state of every lock, and with

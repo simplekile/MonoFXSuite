@@ -142,7 +142,7 @@ def speed_layer(name):
 # speed first, in a young process (the limits are absolute)
 # ---------------------------------------------------------------------------
 
-def s1_stroke_speed():
+def _stroke_rows():
     c, _n, _p = lib.densest_spot(ROOTS0[0], 1.0)
     top, lid = speed_layer("speed")
     cook_all()
@@ -162,10 +162,34 @@ def s1_stroke_speed():
                          "label": hou.undos.undoLabels()[0]})
     ga.mask_remove(node, top)
     cook_all()
+    return rows
+
+
+def s2_stroke_speed_lookup_off():
+    """The same strokes with "Fit lookup per lock" off, as a scene from before the parm opens (B4): the limit is
+    the same, nothing is loosened; the default (on) is what s1 grades."""
+    node.parm("lookup_per_piece").set(0)
+    try:
+        cook_all()
+        rows = _stroke_rows()
+    finally:
+        node.parm("lookup_per_piece").set(1)
+        cook_all()
+    worst = max(rows, key=lambda r: r["display_s"] - r["limit_s"])
+    C.add("s2_stroke_speed_with_the_lookup_off", all(r["display_s"] <= r["limit_s"] and r["locks"] > 0 for r in rows),
+          {"strokes": rows, "worst": worst, "failed": [r for r in rows if r["display_s"] > r["limit_s"]],
+           "smallest_margin_s": round(min(r["limit_s"] - r["display_s"] for r in rows), 3)},
+          "\"Fit lookup per lock\" off (a scene from before the parm): every stroke: display cook <= 0.2 s x locks "
+          "recooked + 0.1 s")
+
+
+def s1_stroke_speed():
+    rows = _stroke_rows()
     worst = max(rows, key=lambda r: r["display_s"] - r["limit_s"])
     C.add("s1_stroke_speed_8_places_x3", all(r["display_s"] <= r["limit_s"] and r["locks"] > 0 for r in rows),
-          {"strokes": rows, "worst": worst, "failed": [r for r in rows if r["display_s"] > r["limit_s"]]},
-          "every stroke: display cook <= 0.2 s x locks recooked + 0.1 s")
+          {"strokes": rows, "worst": worst, "failed": [r for r in rows if r["display_s"] > r["limit_s"]],
+           "smallest_margin_s": round(min(r["limit_s"] - r["display_s"] for r in rows), 3)},
+          "\"Fit lookup per lock\" on (a new node's default): every stroke: display cook <= 0.2 s x locks recooked + 0.1 s")
     C.add("s1_stroke_recooks_only_the_locks_under_it", all(r["only_under"] for r in rows),
           {"strokes_with_other_locks": [r for r in rows if not r["only_under"]], "strokes": len(rows)},
           "locks recooked (LockCache.put) == the locks owning skin whose cover changed")
@@ -1186,24 +1210,82 @@ def r5_fullcook():
     if not V01:
         C.add("r5_full_cook_within_10pct_of_v01", False, None, "--v01 <suite>", note="not run: no v0.1 suite given")
         return
-    runs = {"new": [], "v01": []}
+    runs = {"new": [], "new_off": [], "v01": []}
     for i in range(3):                                   # interleaved, each in a new process
-        for tag, suite in (("new", SUITE), ("v01", V01)):
+        for tag, suite, extra in (("new", SUITE, []), ("new_off", SUITE, ["lookup_off"]), ("v01", V01, [])):
             outf = OUT + "/fullcook_%s_%d.json" % (tag, i)
-            hython([HERE + "/accept_v02a_sub.py", "fullcook", suite, SCENE, outf, HERE, "3"], "fullcook_%s_%d.log" % (tag, i))
+            hython([HERE + "/accept_v02a_sub.py", "fullcook", suite, SCENE, outf, HERE, "3"] + extra,
+                   "fullcook_%s_%d.log" % (tag, i))
             if os.path.isfile(outf):
                 with open(outf, encoding="utf-8") as fh:
                     got = json.load(fh)
                 if "median_s" in got:
-                    runs[tag].append({"runs_s": got["runs_s"], "median_s": got["median_s"], "strands": got["strands"]})
-    if len(runs["new"]) < 3 or len(runs["v01"]) < 3:
+                    runs[tag].append({"runs_s": got["runs_s"], "median_s": got["median_s"], "strands": got["strands"],
+                                      "lookup_per_piece": got.get("lookup_per_piece")})
+    if min(len(v) for v in runs.values()) < 3:
         C.add("r5_full_cook_within_10pct_of_v01", False, runs, note="a timing process failed: see fullcook_*.log")
         return
     new = float(np.median([r["median_s"] for r in runs["new"]]))
+    off = float(np.median([r["median_s"] for r in runs["new_off"]]))
     old = float(np.median([r["median_s"] for r in runs["v01"]]))
-    C.add("r5_full_cook_within_10pct_of_v01", new <= old * 1.10 and runs["new"][0]["strands"] == runs["v01"][0]["strands"],
-          {"new_median_s": r3(new), "v01_median_s": r3(old), "ratio": r3(new / old), "runs": runs},
-          "cold full cook of the rest groom, 3 processes each, interleaved: median <= 1.10 x v0.1's")
+    same = runs["new"][0]["strands"] == runs["v01"][0]["strands"] == runs["new_off"][0]["strands"]
+    row = {"new_median_s": r3(new), "v01_median_s": r3(old), "ratio": r3(new / old),
+           "lookup_off_median_s": r3(off), "lookup_off_ratio": r3(off / old), "runs": runs}
+    C.add("r5_full_cook_within_10pct_of_v01", new <= old * 1.10 and same, row,
+          "cold full cook of the rest groom, 3 processes each, interleaved, \"Fit lookup per lock\" on (a new node's "
+          "default): median <= 1.10 x v0.1's")
+    C.add("r5b_full_cook_with_the_lookup_off", off <= old * 1.10 and same,
+          {"lookup_off_median_s": r3(off), "v01_median_s": r3(old), "ratio": r3(off / old)},
+          "the same with \"Fit lookup per lock\" off (what a scene from before the parm opens with): median <= 1.10 x "
+          "v0.1's")
+
+
+def r6_old_scene_and_new_node():
+    """B4 (the user's decision): a scene saved before "Fit lookup per lock" opens with it off and gives v0.1's
+    groom byte for byte; with it on (a new node's default) the roots and the strand count of every lock are
+    v0.1's and no strand point is farther than 0.41 cm from v0.1's."""
+    if not V01:
+        C.add("r6_an_old_scene_opens_with_the_lookup_off", False, None, "--v01 <suite>", note="not run: no v0.1 suite given")
+        return
+    got = {}
+    for tag, suite, extra in (("opened", SUITE, []), ("on", SUITE, ["on"]), ("v01", V01, [])):
+        outf = OUT + "/asopened_%s.json" % tag
+        hython([HERE + "/accept_v02a_sub.py", "asopened", suite, SCENE, outf, HERE] + extra, "asopened_%s.log" % tag)
+        if not os.path.isfile(outf) or not os.path.isfile(OUT + "/asopened_%s.npz" % tag):
+            C.add("r6_an_old_scene_opens_with_the_lookup_off", False, tag, note="see asopened_%s.log" % tag)
+            return
+        with open(outf, encoding="utf-8") as fh:
+            got[tag] = (json.load(fh), np.load(OUT + "/asopened_%s.npz" % tag))
+    (jo, zo), (jn, zn), (jv, zv) = got["opened"], got["on"], got["v01"]
+    unit = jv.get("unit_cm", 1.0)
+    row = {"stored_schema": jo.get("stored_schema"), "lookup_as_opened": jo.get("lookup_as_opened"), "note_on_the_node": jo.get("note"),
+           "strands": jo.get("strands"), "v01_strands": jv.get("strands"), "coordinates": int(len(zv["P"])),
+           "points_byte_identical_to_v01": bool(zo["P"].tobytes() == zv["P"].tobytes()),
+           "lock_ids_identical": bool(np.array_equal(zo["lock"], zv["lock"])), "errors": jo.get("errors")}
+    ok = (row["lookup_as_opened"] == 0 and row["points_byte_identical_to_v01"] and row["lock_ids_identical"]
+          and not row["errors"] and (row["stored_schema"] or 1) < 5)
+    C.add("r6_an_old_scene_opens_with_the_lookup_off", ok, row,
+          "the Helen scene as v0.1 saved it, opened with this HDA: \"Fit lookup per lock\" reads off (set on the node "
+          "by OnLoaded, once), and the rest groom is v0.1's byte for byte (every coordinate, every lock id)",
+          evidence="asopened_opened.json / .npz, asopened_v01.json / .npz")
+    # the toggle on: what a new node gives
+    same_locks = bool(np.array_equal(zn["lock"], zv["lock"]) and np.array_equal(zn["counts"], zv["counts"]))
+    row2 = {"lookup_cooked": jn.get("lookup_cooked"), "strands": jn.get("strands"), "same_strands_per_lock": same_locks}
+    ok2 = False
+    if same_locks:
+        a = zn["P"].reshape(-1, 3).astype(np.float64) * unit
+        b = zv["P"].reshape(-1, 3).astype(np.float64) * unit
+        d = np.sqrt(((a - b) ** 2).sum(1))
+        starts = np.concatenate(([0], np.cumsum(zv["counts"])[:-1]))
+        row2.update({"root_moved_max_cm": float("%.3g" % d[starts].max()), "point_moved_max_cm": round(float(d.max()), 4),
+                     "points_moved_share": round(float((d > 0).mean()), 4),
+                     "points_moved_over_0.1_cm_share": round(float((d > 0.1).mean()), 5),
+                     "coordinates_different": int((zn["P"] != zv["P"]).sum()), "bound_cm": 0.41})
+        ok2 = row2["lookup_cooked"] == 1 and d[starts].max() <= SAME_ROOT_CM and d.max() <= 0.41
+    C.add("r6b_the_lookup_on_keeps_roots_and_counts", ok2, row2,
+          "the same scene with \"Fit lookup per lock\" on (a new node's default): every lock's strand count is v0.1's, "
+          "every root within 1e-5 cm of v0.1's, and no strand point farther than 0.41 cm from v0.1's (t64 measured "
+          "4.10 mm at most)", evidence="asopened_on.json / .npz")
 
 
 # ---------------------------------------------------------------------------
@@ -1630,7 +1712,7 @@ def p4_migration():
             fh.write(str(e))
 
 
-STEPS = [("s1", s1_stroke_speed), ("u1", u1_undo_chain), ("u2", u2_undo_chain_whorl), ("u3", u3_low_limit),
+STEPS = [("s1", s1_stroke_speed), ("s2", s2_stroke_speed_lookup_off), ("u1", u1_undo_chain), ("u2", u2_undo_chain_whorl), ("u3", u3_low_limit),
          ("u4", u4_deformed_output), ("u5", u5_usage), ("u6", u6_shot_deform_on), ("d1", d1_density), ("d2", d2_black_and_erase), ("d2t", d2_tiny),
          ("d3", d3_partial), ("d4", d4_soft_edge), ("o1", o1_owner_order), ("o2", o2_what_d_means_for_one_lock),
          ("b1", b1_blend_modes), ("b3", b3_multiply_bounds), ("m1", m1_compose), ("m2", m2_fill),
@@ -1661,6 +1743,12 @@ if wanted("r5"):
         r5_fullcook()
     except Exception:
         C.add("r5_raised", False, traceback.format_exc()[-2500:], note="the check raised")
+if wanted("r6"):
+    C.log("---- r6")
+    try:
+        r6_old_scene_and_new_node()
+    except Exception:
+        C.add("r6_raised", False, traceback.format_exc()[-2500:], note="the check raised")
 errors = lib.node_errors(node)
 C.add("z_no_error_on_the_node", not errors, errors, "no node of the HDA holds an error at the end")
 C.meta["warnings"] = lib.node_warnings(node)

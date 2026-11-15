@@ -1421,12 +1421,52 @@ def on_loaded(node) -> None:
             if p is not None and p.eval():
                 p.set(empty)
         mark_old_regions(node)
+        kept = keep_old_lookup(node)
+    if kept:
+        _status(f"{config.HDA_LABEL}: {LOOKUP_KEPT_TEXT}")
     # layers of an older test build's removed kinds are dropped on reading (model.migrate): said once, on
     # the status bar, never in a dialog
     dropped = grooming_masks.mask_dropped(node)
     if dropped:
         _status(f"{config.HDA_LABEL}: {dropped}")
     install_playbar_callback()
+
+
+LOOKUP_PARM = "lookup_per_piece"         # the node's "Fit lookup per lock"
+LOOKUP_SINCE_SCHEMA = 5                  # groom_data schema of the build that added it (round 3, t62)
+LOOKUP_NOTE = "monofx_fit_lookup"        # node user data: the choice for a scene from before the parm was made
+LOOKUP_KEPT_TEXT = ("this scene was saved before \"Fit lookup per lock\": it is off, so the groom is the one "
+                    "the scene was saved with, byte for byte. Turn it on on the node for faster strokes "
+                    "(strand points then move by up to ~4 mm)")
+
+
+def scene_before_lookup(stored: str | None) -> bool:
+    """Pure: the stored `groom_data` is of a scene saved before "Fit lookup per lock" existed (v0.1, schema 1,
+    and the test builds up to schema 4). A node with no data yet is a new node: not such a scene."""
+    if not stored or not stored.strip():
+        return False
+    try:
+        return int(json.loads(stored).get("schema", 1)) < LOOKUP_SINCE_SCHEMA
+    except (ValueError, TypeError, AttributeError):
+        return False
+
+
+def keep_old_lookup(node) -> bool:
+    """OnLoaded: a scene saved before "Fit lookup per lock" existed opens with it OFF, written on the node (the
+    user's decision, 2026-11-15, t64 B4): such a scene holds no value for the parm, so it would take the
+    default, on, and its groom would no longer be the one it was saved and published with (same roots and
+    strand counts, strand points up to 4.1 mm off). Off, the groom is v0.1's byte for byte. Done once a node
+    (user data `monofx_fit_lookup`, saved with the hip): after that the parm is the artist's, who may turn it
+    on. A new node keeps the default, on. True when the parm was set."""
+    p = node.parm(LOOKUP_PARM)
+    if p is None or node.userData(LOOKUP_NOTE) is not None:
+        return False
+    if not scene_before_lookup(node.evalParm(config.DATA_PARM)):
+        return False
+    with hou.undos.disabler():
+        p.set(0)
+        node.setUserData(LOOKUP_NOTE, "off: the scene was saved before the parm existed")
+    return True
 
 
 OLD_REGIONS_WHY = "Regions were split by an older rule: Update regions"
