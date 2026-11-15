@@ -659,11 +659,11 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     digit, 8 move by 5e-5 to 1 % (kink p95 32.9566 -> 32.9534, uncovered 0.0699 -> 0.0701, lock uncovered
     worst 0.1314 -> 0.1327, tip width off 0.4412 -> 0.44 ...; t62 `qc/nolayer_piece`). The node's toggle
     "Fit lookup per lock" (`lookup_per_piece`, on by default, in every lock's key) switches back to the whole
-    cloud (`fit_cloud`): then the groom is v0.1's byte for byte (the t64 check: all 12,554,097 coordinates
-    equal; v0.1 is byte-identical from run to run, and so is this build. The "192-20,437 coordinates differ"
-    written here before was wrong). Which default ships is the
-    manager's / user's call; the speed limit holds with margins of 3-9 % when it is off (one run in four
-    missed it on this machine) and 0.27 s or more when on.
+    cloud (`fit_cloud`): then the groom is v0.1's within v0.1's own run-to-run difference. v0.1 is NOT
+    byte-identical from run to run (t66, 10 runs on a groom v0.1 made and saved: 6 identical, 1 off by one
+    coordinate, 2 by 2-3 strands at 0.0016 cm, 1 by 1,695 strands at 1.7e-5 cm; on Helen as v0.1 saved it, up
+    to 0.0098 cm), and this build with the toggle off falls in the same groups. The default (on for a new node,
+    off for an old scene) is the user's decision: "B4" below and the plan.
   - The lock's automatic roots (hairgen's scatter + `root_pick`, 8-16 % of a lock's cook; `root_pick` is a
     single-threaded detail wrangle) are kept per lock under its key without layers (`auto_key`,
     `auto_store` / `auto_load` / `auto_roots`, LockCache slot "auto:" + mode, one state a lock): a stroke
@@ -700,9 +700,10 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     `lock_capture` / `captured` nodes stay, unused). The display's deform: `disp_capture_*` (`_capture_loop`,
     slot `capture_slot(mode)`: the full hair shares output 1's captures) -> `deform` -> `deform_no_capture` ->
     `deform_store`, or `deform_load` when `deform_keys` finds the state (`DEFORMED_MODE`, a whole deformed
-    groom, ~251 MB on Helen; `LockCache.keep_bytes` holds them to half the limit, `FIRST_TO_GO` drops them
-    before any hair; states of another frame are dropped; with the deform off `lock_keys` drops them and the
-    display's merge). The mesh and guide parts are deformed apart (`deform_mesh_guide`), the hair is coloured
+    groom, ~251-264 MB on Helen; held APART from "Undo cache, GB" (`LockCache.APART`, not in its count) in a
+    limit of their own, the node's "Deformed undo, GB" (`undo_deform_gb`, default 4: the user's decision on B6,
+    memory and not a packed display), `LockCache.keep_bytes` dropping the oldest; states of another frame are
+    dropped; with the deform off `lock_keys` drops them and the display's merge). The mesh and guide parts are deformed apart (`deform_mesh_guide`), the hair is coloured
     after the deform (`hair_color_deformed`). Toggling Shot deform no longer regrows the groom.
   - grooming-check under layers (B7): a painted lock's count is held to max(0.15, 2 / sqrt(expected)), written
     on the 0.15 scale (`density_limit`; an unpainted lock: 0.15 as before, so the no-layer numbers do not
@@ -712,28 +713,65 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - Paint (B8): `_others_selected` looks at every network (the node's own ancestors apart), `_not_ours` also
     ends Paint when no node is selected, `_came_back` turns Paint off when the viewer cannot take the brush,
     and `_EscFilter` takes Esc as ShortcutOverride too (where Houdini has Esc as a shortcut the KeyPress never
-    comes; a GUI test must POST the key, `app.postEvent`, to see it: a sent event skips the shortcuts).
+    comes; a GUI test must POST the key, `app.postEvent`, to see it: a sent event skips the shortcuts). `esc()`
+    turns Paint off FIRST and stores the held stroke after: storing it cooks the node, a cook runs Qt's event
+    loop, and Paint stayed on for as long as that cook took (0.45-0.67 s; t66 B8(b), which looked like it
+    depended on the steps run before: it depended on how many points the stroke had painted).
   - The per-lock "= D" miss (B1) is one fixed draw of hairgen's scatter, not a bias: over 40 seeds the prim
-    holds 33.6 where 33.7 are asked (sd 4.6), with or without relax; the seed is the lock's id, so the draw is
-    the same at every D. `hairgen_layers.geometry()` has `skinprim`: count per skin prim without any
+    holds 35.1 where 33.66 are asked (sd 5.15, the t66 check; the shipped seed draws 45, the highest of the
+    40); the seed is the lock's id, so the draw is the same at every D. The user's decision (2026-11-15): no
+    new scatter in v0.2a; the acceptance grades each lock over the whole painted patch and lists a lock on
+    one polygon without passing or failing it. `hairgen_layers.geometry()` has `skinprim`: count per skin prim without any
     assignment (isolate the lock, read `mask_skin` and `hairgen_layers`).
-  - "Fit lookup per lock" (B4, decided by the user): a new node has it on; a scene saved before it existed
-    (stored `groom_data` schema under `LOOKUP_SINCE_SCHEMA` 5) gets it written OFF by OnLoaded, once
-    (`keep_old_lookup`, user data `monofx_fit_lookup`), so a v0.1 scene reopens as v0.1's groom byte for byte.
-    v0.1 itself is not byte-identical in every run: 1 run in 4 (v0.1's suite and this one alike) moves the same
-    2 strands of one lock by up to 0.002 cm, so check `r6` can miss by those 64 points; rerun before reading
-    a miss as a change.
-    Test scripts that open the Helen scene "as saved" now run with it off; `accept_lib.fresh` reverts every
-    parm to its default, so the acceptance's fresh groom has it on (checks `s2`, `r5b`, `r6` cover off).
+  - "Fit lookup per lock" (B4, decided by the user): a new node has it on; a scene saved before it existed gets
+    it written OFF by OnLoaded, once (`keep_old_lookup`, user data `monofx_fit_lookup`), so a v0.1 scene
+    reopens as v0.1's groom within v0.1's own run-to-run difference. Two things learnt in t66 / t67:
+    - It must run BEFORE anything writes `groom_data` again. `mark_old_regions` rewrote the data of a scene
+      whose regions carry no rule number (Helen as v0.1 saved it, `helen_v01.hiplc`) in today's schema
+      first, so the toggle stayed on (N1: points moved up to 0.958 cm, silently).
+    - "Before the parm" is decided by the saved hip itself: it names every parm it holds, in plain text, a
+      .hiplc too (`hip_holds`). The parm came in the middle of the schema 4 test builds (245f480 has it, on;
+      two schema 4 commits before it do not), so no schema number tells (N2). The file decides whenever it
+      can be read, whatever the schema (t67: a scene opened while another checkout's library, without the
+      parm, was installed had its data rewritten as schema 6 by that load's `mark_old_regions`, and OnUpdated
+      then kept the toggle on). A node made now is marked by OnCreated (`on_created`) and never judged.
+      Without a file to read, schema under 4 decides.
+    - hython on this machine may bind a scene to ANOTHER worktree's `mono_grooming.hdalc` at load (the
+      installed package) before a test's `installFile(force_use_assets=True)` switches to its own: the rule
+      then runs from OnUpdated. A test that reads the toggle must read it after the switch.
+    Test scripts that open the Helen scene "as saved" run with it off; `accept_lib.fresh` reverts every parm
+    to its default, so the acceptance's fresh groom has it on (checks `s2`, `r5b`, `r6`, `r6c` cover off).
+  - With the toggle off the thinning order is made with the roots on every cook (`thin_order_eager`,
+    `auto_pre`), lazy with it on: off, the whole-cloud lookup leaves a first stroke no margin, and the order
+    made at that stroke put it over the limit (t66: 3 of 8 first strokes). The cold cook pays instead:
+    2.48 s on Helen (perfMon), so the display's cold cook of Helen as v0.1 saved it is 1.16 x v0.1's (t67,
+    over the 1.10 x limit; the rest cook 0.96 x). Lazy or eager, one of the two limits is unmet: the user's call.
+  - Acceptance counting gap (t67, `stray_roots.py`): a lock's skin in the acceptance is `Skin.own` (whole
+    prims), the HDA's is the scalp split along region borders, so near a border a lock's layer roots sit on a
+    prim the table gives to other locks (44 of 963 at D 300 on hair_base_12's start). Graded per lock with
+    N < 1 by count (ceil(N + 2 sqrt(N))), such a lock reads N = 0 with 1-2 roots and fails `d1` / `d2` / `b3`
+    there although all locks together pass. Fixing it means counting by the HDA's split skin.
   - Evenness by the local measure misses +0.05 at the crown whorl under partial coverage for a few small fringe
-    locks (hair_bang_04 / 13 / 16 / 19, hair_base_09: +0.054 to +0.119 in 7 of 43 cases; every other place and
-    lock is inside). Not the whorl roots' order: ordering them by pairing on where they land (thin_order
-    computing root_place's sunflower place) moved the misses to other locks (hair_base_18 +0.12), same count;
-    dropped. Cause not found.
+    locks (hair_bang_04 / 16 / 19, hair_base_09: +0.054 to +0.119). Traced in t67 (`evenness/` there): the roots
+    that read as bunched are PAIRS OF TWO KINDS of automatic root of the same lock that already stood that close
+    before any layer: a whorl root (root_place's sunflower) on top of one of the lock's scattered roots (9-14
+    of the 12-16 roots in pairs; two 0.0003 cm apart), and start roots whose grid places are far apart in the
+    farthest-point order but land 0.012 cm apart. Each kind is thinned by its own order, so a keep of k keeps
+    both roots of a cross-kind pair with a chance near k x k; at keep 1 the pair does not read as bunched (the
+    spacing asked is small). That is also why ordering the whorl roots by place on their own (t65) only moved
+    the misses. The fix would be ONE order for all of a lock's automatic roots by where they land; the user
+    decides (the plan has the cost). hair_bang_05's +0.105 at the fringe start (t66) is one other pair: a
+    layer root 0.065 cm from a kept automatic root where the measure calls under 0.068 cm close.
   - The acceptance counts a root to the prim nearest it on the surface (`Skin.assign`), follows strands within
-    1e-5 cm, does not grade a lock asked under one root alone, and judges evenness by `lock_even_local` (each
-    root against the spacing asked where it stands; the plan has the definition). New checks: `u6` (Shot
-    deform on), GUI `s4b` (Esc posted, another network, nothing selected).
+    1e-5 cm, holds a lock asked under one root to at most ceil(N + 2 sqrt(N)) roots (t67; before: any count),
+    and judges evenness by `lock_even_local` (each root against the spacing asked where it stands; the plan
+    has the definition). Per lock it grades over the whole painted patch (`_patch`: every prim the paint
+    covers in full, no margin) in d1 / d2 / b1 / b3, and lists a lock whose skin there is one polygon
+    (`locks_on_one_polygon`) without passing or failing it. A grade that also took the partly painted rim
+    (each automatic root's own mask value, `Skin.sample`, tried in t67) read the crown whorl's rim 1.77 x at
+    D 0: not used, as it cannot tell a measuring error from a tool's. New checks: `u6` (Shot deform on: every
+    undo and redo inside the count "Deformed undo, GB" holds < 0.1 s), `r6c` / `r6d` (Helen as v0.1 saved
+    it), GUI `s4b` (Esc posted, another network, nothing selected).
   - A patch script for a CRLF file must turn its own LF into CRLF before matching (qc_metrics.py is CRLF in
     the repo), and `\n` / `\r` typed in a shell heredoc arrive as real characters: write the script with the
     editor.

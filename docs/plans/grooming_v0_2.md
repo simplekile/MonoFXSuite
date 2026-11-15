@@ -152,10 +152,12 @@ factor layers.**
    `kind` "base", always the first row of `groom_data.masks`): D = each lock's own Density setting, mask full; it
    cannot be deleted, moved or switched off. With no other layer the groom is the automatic groom, byte for
    byte whatever was painted and removed before. Against v0.1 ("Fit lookup per lock", decided 2026-11-15, see
-   "Speed" below): with the toggle OFF, which is how every scene saved before the toggle existed opens, it is
-   v0.1's groom byte for byte; with it ON, a new node's default, every lock has v0.1's roots and strand count
-   and its strand points lie within 5 mm of v0.1's (Helen: 45 % of them move, 0.7-1 % by more than 1 mm, the
-   farthest 4.1-4.7 mm).
+   "Speed" below): with the toggle OFF, which is how a scene saved by a build without the parm opens (v0.1 and
+   the test builds before 245f480), it is v0.1's groom within v0.1's own run-to-run difference (v0.1 against
+   itself: up to 0.0016 cm on a groom it made and saved, 0.0098 cm on the Helen scene as it saved it); with it
+   ON, a new node's default, every lock has v0.1's roots and strand count, and the strand points move: measured
+   0.469 cm at most on a fresh v0.1 groom (44.6 % of points move) and 0.958 cm on the Helen scene as v0.1 saved
+   it (57 %). No bound is claimed for that move.
 6. **Black in a mask = "this layer does not apply here"**: the density below shows. It is NOT "no hair". No hair =
    a layer with D = 0 painted white. A layer may be denser than the automatic groom: D = 300 over locks at 150
    gives 300 (measured 299-303 / cm2 on four kinds of skin, t63).
@@ -341,12 +343,22 @@ Measured (Helen, hython, frame 12, the t64 check's `speed.py`): 10 strokes, 10 u
 of them (65e782c: 0-5), each undo 0.026-0.032 s when its deformed state is held and 1.2-1.5 s when it is not
 (the whole groom deformed again; 65e782c: 0.83-1.87 s); switching Shot deform on no longer regrows the groom
 (first cook 4.2 s, was ~12 s); with the deform off again the live set is what it was (646 MB). A deformed state
-is the whole deformed groom, 251 MB on Helen by `memoryusage`: together they may take half the limit and go
-before any hair state, so 2 GB holds 2 to 4 of them. NOT MET with Shot deform on: "undo under 0.1 s" for
-every undo of a chain; it holds only for the newest 2-4. Holding a chain needs the deformed hair per lock (26 MB
-a stroke, as the hair itself) drawn as the packed display the rest pose has, which changes what the artist
-sees with Deform on: not built, a decision for the user. The captures are still 3.3 GB for the whole groom
-(one a lock, made only once a deformed output is read), outside "Undo cache, GB" as decided in round 3.
+is the whole deformed groom, 251-264 MB on Helen by `memoryusage`.
+**Decided by the user (2026-11-15, t66 B6): the memory route**, not a packed display. The deformed states are
+held APART from "Undo cache, GB" (`LockCache.APART`: not in its count, never pushed out by hair or pushing
+hair out), in a limit of their own on the node, **"Deformed undo, GB"** (`undo_deform_gb`, default 4 GB;
+`cook_deform_store` keeps them under it, the oldest going first, the newest always kept). Never more than the
+user's limit (+ the state being stored). Why 4 GB (the t67 `u6`, Helen, frame 12, a deformed state 264.1 MB):
+it holds 15 undos of a chain (the limit over one state, less the one shown), so a normal undo chain of 10-15
+strokes with Shot deform on stays under 0.1 s; 2 GB would hold 7, 8 GB 31 at twice the memory. Measured at
+4 GB, 20 strokes, 20 undos, 20 redos: the 15 undos and 15 redos inside the count 0.026-0.082 s, 0 locks grown
+by any undo or redo; outside the count (the 5 oldest each way) 1.71-1.87 s each, the whole groom deformed again
+(0 locks grown: the rest strands are cached; the cost is Point Deform of the whole groom). Peak memory: the
+deformed states 4,227.8 MB (16 held, limit 4,295 MB), the hair cache 1,523.7 MB (limit 2,147.5 MB), the
+captures 3,338.7 MB (one a lock, made once a deformed output is read, outside both limits as decided in
+round 3): 9,090 MB together; with the deform off again the live set is 646.5 MB and no deformed state is
+held. On a machine that cannot spare it the artist lowers "Deformed undo, GB": fewer fast undos, the same
+hair.
 
 **Speed, and one change to the automatic groom that needs a decision (round 3).** A stroke missed the
 limit (0.2 s a lock + 0.1 s) on three places in the second check. Most of a small lock's cook was a fixed
@@ -357,27 +369,47 @@ strokes, and two per-point passes were folded together: strokes on Helen 0.29-0.
 **The per-lock lookup is not v0.1's hair bit for bit**: the same roots and strand counts, but 45 % of the
 strand points move (half under 0.008 mm, 1 % over 1 mm, at most 4 mm; the t64 check: 5,309,021 of 12,554,097
 coordinates, at most 4.10 mm, 21,801 over 1 mm), and 8 of the 27 grooming-check numbers of the no-layer groom
-move by 5e-5 to 1 % (all 27 pass). With the toggle off the groom is v0.1's byte for byte (the t64 check: all
-12,554,097 coordinates) in most runs. Not in every run (t65): of four runs of each build on the scene v0.1
-saved, one run of this build and one run of v0.1 ITSELF gave the same 2 strands of one lock (64 points) up to
-0.002 cm away from the other runs; every other coordinate equal. v0.1 carries that run-to-run difference, so
-"byte for byte" holds between runs that do not hit it. The speed limit with the toggle off: see below.
+move by 5e-5 to 1 % (all 27 pass). With the toggle off the groom is v0.1's within v0.1's own run-to-run
+difference: v0.1 is NOT byte-identical from run to run (the t66 check, 10 runs on a groom v0.1 made and saved:
+6 identical, 1 off by one coordinate at 2.3e-8 cm, 2 by the same 2-3 strands at 0.0016 cm, 1 by 1,695 strands
+at 1.7e-5 cm; on the Helen scene as v0.1 saved it, 206,007 coordinates up to 0.0098 cm), and every run of this
+build with the toggle off falls in a group a v0.1 run falls in. The speed limit with the toggle off: below.
 **Decided (the user, 2026-11-15, t64 B4):**
 - A node created new: on. Strokes 0.27 s or more inside the limit (t62), the cold full cook 0.72 x v0.1's (t63).
-- A scene saved before the toggle existed (v0.1 scenes, and test builds up to `groom_data` schema 4): OnLoaded
-  writes it OFF on the node, once (`grooming_adapter.keep_old_lookup`; the node's user data `monofx_fit_lookup`
-  records that the choice was made, so the artist may turn it on afterwards and it stays), and says so on the
-  status bar. Such a scene holds no value for the parm, so it would otherwise take the default and a published
-  v0.1 groom would reopen with its strand points moved. The acceptance grades the limit with the toggle on
+- A scene saved before the toggle existed: OnLoaded writes it OFF on the node, once
+  (`grooming_adapter.keep_old_lookup`; the node's user data `monofx_fit_lookup` records that the choice was
+  made, so the artist may turn it on afterwards and it stays), and says so on the status bar. Such a scene
+  holds no value for the parm, so it would otherwise take the default and a published v0.1 groom would reopen
+  with its strand points moved. "Saved before the toggle" is read from the saved file itself: a hip names every
+  parm it holds (`hip_holds`). The parm came in the middle of the schema 4 test builds (245f480 has it, on), so
+  a schema number cannot tell (t66 N2). The file decides whenever it can be read, whatever the data's schema:
+  a scene opened while another copy of the library without the parm was installed had its data rewritten in
+  today's schema before this library took over, and OnUpdated then read schema 6 and kept the toggle on (t67);
+  a node made in this session is marked by OnCreated and never judged. Only without a file to read does the
+  schema decide (under 4: off). The choice is made before
+  OnLoaded writes anything else (`mark_old_regions` rewrote the data of a scene whose regions carry no rule
+  number, Helen as v0.1 saved it, in today's schema first, and the toggle stayed on: t66 N1, points moved up to
+  0.958 cm). The acceptance grades the limit with the toggle on
   (`s1`, `r5`) and reports the same checks with it off as their own items (`s2`, `r5b`), on the same limits.
-  Measured on the final build (t65): on, every stroke inside the limit by 0.22 s or more and the cold full cook
-  0.48 x v0.1's; off, the cold full cook 0.72 x v0.1's, and the stroke limit is NOT MET for the first stroke
-  on locks not painted before (1.377 s where 1.3 s for 6 locks in the final run; 4 of 8 places and 2.05 s
-  where 1.3 s in an earlier run), later strokes on the same locks are inside it.
-- "No layers = the v0.1 groom" is graded both ways (`r6`): the Helen scene as v0.1 saved it opens with the
-  toggle off and its rest groom equals v0.1's byte for byte; with the toggle on every lock's strand count and
-  every root are v0.1's and no strand point is farther than 0.5 cm from v0.1's (measured 4.1 mm on a fresh groom, t64, and 4.7 mm on a
-  scene saved by v0.1, t65).
+  With the toggle off the thinning order is made eagerly, with the roots, on every cook (`thin_order_eager`,
+  t67), and lazily, at a lock's first stroke, with it on: off, the order made at a first stroke left it no
+  margin (t66: 3 of 8 first strokes over). Measured on the final build (t67, fd074e4; the t66 check's
+  `t66_firststroke.py` and `speed.py`, `fullcook.py` 3 interleaved pairs): on, 24 of 24 strokes inside the
+  limit (worst margin 0.067 s, first strokes 0.097 s) and the cold rest cook 0.47 x v0.1's (`r5`); off, two
+  runs of 24 strokes, 0 over (worst margin 0.070 / 0.072 s, first strokes 0.127 / 0.130 s), `speed.py` 20 of
+  20 (0.065 s), the cold rest cook 0.93 x v0.1's on a fresh groom (`r5b`) and 0.96 x on Helen as v0.1 saved it
+  (13.48 / 14.00 s). **NOT MET with the toggle off: the display's cold cook on Helen as v0.1 saved it (saved
+  with Shot deform on, so both builds deform the groom) is 1.16 x v0.1's** (medians 17.67 / 15.21 s, 3 of 3
+  pairs; limit 1.10 x): the eager order is 2.48 s of it (perfMon, `thin_order_eager`; the per-lock capture
+  outside the loop costs what v0.1's capture in the loop did, 3.07 / 2.98 s). Lazy, that cook is inside the
+  limit and the first strokes are not; one of the two is unmet whichever way, a decision for the user.
+- "No layers = the v0.1 groom" (decided by the user, 2026-11-15): with the toggle off, "v0.1's groom within
+  v0.1's own run-to-run difference". The acceptance: a groom v0.1 made and saved opens with the toggle off,
+  every lock's strand count equal and no point farther than 0.002 cm from v0.1's (`r6`; v0.1 against itself
+  0.0016 cm); the Helen scene as v0.1 saved it opens with the toggle off, the counts equal and no point farther
+  than 0.0098 cm, the most v0.1 differs from itself there (`r6c`, `r6d`). No rerun until it passes. With the
+  toggle on (`r6b`): every lock's strand count and every root (within 1e-5 cm) are v0.1's; how far the strand
+  points move is printed, not graded (0.469 cm at most on a fresh v0.1 groom, 0.958 cm on Helen as saved).
 
 **Paint belongs to the painted node (round 3; t65).** Paint is on only while the painted node is the
 selection. Esc ends Paint from anywhere in Houdini's window, also while the mouse is held: what was painted so
@@ -416,7 +448,7 @@ automatic roots: see "Cost" below):
   the lock) takes a farthest-point order instead: what is left of it must stand as evenly as it can.
 - Whorl roots: their sunflower number with its bits reversed. (t65: ordering them by pairing on where they
   land was tried against the local evenness measure's misses at the whorl, below: it changed which locks
-  miss, not how many, and was dropped.)
+  miss, not how many, and was dropped. t67 traced why: the misses are pairs of roots of two KINDS, below.)
 - Partial coverage puts the layers' own roots among automatic roots that stayed; a layer root nearer than
   0.45 of the root spacing asked there to an automatic one is moved off it, on the skin (`mask_apart`).
 Tried and dropped: the root's number in hairgen's scatter (0.35 to 1.85 of the share from skin to skin); a
@@ -427,8 +459,9 @@ other (+13 s on Helen's cold cook).
 Cost (t65): the order is made only for a lock a layer covers, the first time, and kept with the lock's
 automatic roots (38 us a root: Helen's largest lock, 7,400 roots, 0.28 s once, on its first stroke; a stroke
 on a lock already ordered pays nothing). Made for every lock on every cook, as at 65e782c, it was 4.5 s of
-Helen's cold cook with or without layers, and the display's cold cook was 1.13 x v0.1's (t64 B5): now 0.87 x
-(3 pairs, all three faster). A per-element VEX pass over chunks of the order was tried to run it on all cores:
+Helen's cold cook with or without layers, and the display's cold cook was 1.13 x v0.1's (t64 B5): with the
+toggle on 0.91 x (t66, 3 pairs); with it off the order is made eagerly again (2.48 s) and the display's cold
+cook of Helen as v0.1 saved it is 1.16 x (t67, "Speed" above). A per-element VEX pass over chunks of the order was tried to run it on all cores:
 array code runs ~30 x slower outside a detail wrangle (6 s for one lock), dropped.
 Traced in t63 (the two partial-coverage cases round 3 left open, and its one lock over a density limit):
 - `hair_base_21` on ordinary skin (+0.122 in t62; +0.143 here at first): every root that read as bunched was a
@@ -443,7 +476,8 @@ Traced in t63 (the two partial-coverage cases round 3 left open, and its one loc
   The t64 check found the same excess at every D (1.337 x at 120 / 280 / 300 / 320) and asked whether the split
   is biased there. Traced in t65 (`b1_trace*.py`): it is not. Inside the network the lock's layer scatter is
   asked 33.7 roots on that prim (density x area, all four corners 150) and, over 40 scatter seeds, puts 33.6
-  there on average (sd 4.6; with hairgen's relax off 33.9, sd 5.0), and the seven prims beside it whose corners
+  there on average (sd 4.6; with hairgen's relax off 33.9, sd 5.0; the t66 check's own 40 seeds: 35.1, sd 5.15,
+  the shipped seed drawing 45, the highest of the 40), and the seven prims beside it whose corners
   hold other densities get 0.95-1.06 of what they are asked: no bias in `mask_split`, `mask_skin` or the count.
   The scatter's seed is the lock's id, so the one draw this lock gets (43 by the scatter's own `skinprim`, 45-47
   by the nearest prim) is the same at every D: fixed, not a new toss a D, and not a bias. hairgen's scatter
@@ -451,8 +485,15 @@ Traced in t63 (the two partial-coverage cases round 3 left open, and its one loc
   variance 26-31), so a lock asked N roots on ONE prim misses max(0.15, 2 / sqrt(N)) in a few per cent of cases
   (t64: 1.5 % of (lock, prim) cases over the whole scalp at D 300, never a lock on its whole skin, not visible
   in a flipbook). Over a lock's whole skin in a patch the counts are tight ((roots - asked) / sqrt(asked): spread
-  0.43). NOT FIXED: it needs a scatter with a fixed count per prim (each prim floor or ceil of what it is asked,
-  the total kept), which means our own scatter and relax in place of hairgen's for the layers' roots; not built.
+  0.43). **Decided by the user (2026-11-15, t66 B1): no new scatter in v0.2a.** The known case, stated: on
+  Helen's top of the head `hair_base_21` holds 45 roots where 33.7 are asked on its ONE prim of 0.22 cm2 (the
+  shipped seed's draw; the t66 check's 40 seeds: mean 35.1, sd 5.15), and over the scalp 1.5 % of (lock, prim)
+  cases miss the limit on one prim. The limit max(0.15, 2 / sqrt(N)) is not changed; it applies to all locks
+  together and to each lock on its own skin inside the painted area (the whole painted patch), not to a lock
+  on one polygon: the acceptance (`d1`, `d2`, `b1`, `b3` on the top of the head) grades each lock over the
+  patch and lists a lock whose skin there is one polygon with its numbers, unpassed and unfailed. A scatter
+  with a fixed count per prim (each prim floor or ceil of what it is asked, the total kept: our own scatter
+  and relax in place of hairgen's for the layers' roots) is deferred.
 
 **Adapter API added in v0.2a** (`apps/houdini/grooming_masks.py`, re-exported by `grooming_adapter`; each
 function that changes something is one undo step named "MONO Grooming: ..."; the layer list itself is
@@ -471,7 +512,7 @@ function that changes something is one undo step named "MONO Grooming: ..."; the
 | `mask_dropped(node) -> str` | The sentence for the message line when the scene came from an older test build: layers dropped, layers now read as density layers ("" when none) |
 | `paint_enter(node, layer_id) -> bool` / `paint_exit(node=None)` / `paint_layer(node) -> int \| None` | Paint on a paint layer (the viewport's tool is the brush; False without a viewport; a fill, density or automatic layer: ValueError) / off / the layer being painted |
 | `set_brush(radius_cm=, value=, soft=, erase=, xray=, view=) -> dict` / `brush() -> dict` | Brush of the session (not saved, no undo): radius cm, `value` painted into the mask (0..1), soft share of the radius, erase, scalp X-ray, `view` (density / layer / roots) |
-| `undo_cache_usage(node) -> dict` | What the node's hair cache holds against "Undo cache, GB": `bytes`, `live_bytes`, `undo_bytes`, `undo_states`, `limit_bytes`, `dropped`, `gb`, `limit_gb`, `capture_bytes` (the adapter's, not a mask function) |
+| `undo_cache_usage(node) -> dict` | What the node's hair cache holds against "Undo cache, GB": `bytes`, `live_bytes`, `undo_bytes`, `undo_states`, `limit_bytes`, `dropped`, `gb`, `limit_gb`, `capture_bytes`; the deformed states apart, against "Deformed undo, GB": `deformed_bytes`, `deformed_states`, `deformed_limit_bytes` (the adapter's, not a mask function) |
 | `mask_problem(node) -> str` / `mask_rebake(node) -> bool` | "moved over by UV" while the layers sit on another scalp / store them on the current one |
 | `import_masks(node, tool_dir) -> int` / `masks_from_publish(tool_dir)` | Layers of a publish's `_grooming/` folder into the node / read only |
 | `grooming_masks.HOOKS["stroke"](node)`, `HOOKS["exit"]()` | Set by the panel: after a stroke is stored (it cooks in its loading line); Paint ended without the panel |
@@ -550,7 +591,8 @@ predates this model.
   that lock alone.
 - Black over a white area returns the density below within the same limit (the automatic groom root for root
   when nothing lies below); every layer black, off, at opacity 0 or deleted = the automatic groom byte for byte.
-  "Over a white area" means the black covers it: every white point lies inside a black dab at full weight (a
+  "Over a white area" means the black covers it (accepted by the user, 2026-11-15: black removes white at
+  every point inside a black dab): every white point lies inside a black dab at full weight (a
   hard brush over the same area on any dab centres; a soft brush wider by its soft part; the same soft brush
   again on the same path, t65). A black stroke that leaves part of the white outside its dabs, or under the
   soft part of a brush of the same size, leaves that part white, as paint does: the t64 check's "same size,
@@ -558,7 +600,21 @@ predates this model.
 - The mask stack: each blend mode gives what the formula says, in the mask's numbers and in roots; Multiply 0 /
   0.5 / 1 as the top layer; fill layers; erase; a soft edge; a tiny mask moves no root.
 - Evenness everywhere: each lock's local clumped share in a painted patch is not above the same lock's
-  no-layer value there + 0.05 ("Evenness, the measure" below).
+  no-layer value there + 0.05 ("Evenness, the measure" below). NOT MET at the crown whorl under partial
+  coverage for a few small fringe locks (t67 final run: `hair_bang_04` +0.065 at D 0 mask 0.5, +0.062 at D 40
+  mask 0.5, +0.119 at D 120 opacity 0.75; `hair_base_09` +0.067; the t66 check's `hair_bang_05` +0.105 at the
+  fringe start). **Decided by the user (2026-11-15): the limit stays +0.05 and these checks stay failing;**
+  the cause was traced (t67 `evenness/analysis.md`): the roots that read as bunched are pairs of two kinds of
+  automatic root of the same lock that stood as close before any layer (a whorl root of `root_place`'s
+  sunflower on one of the lock's scattered roots, 9-14 of the 12-16 roots in pairs, two of them 0.0003 cm
+  apart; start roots whose grid places are far apart in the farthest-point order but land 0.012 cm apart).
+  Each kind is thinned by its own order, so a keep k keeps both roots of such a pair with a chance near k x k;
+  at keep 1 they do not read as bunched, and a layer of high D shrinks the spacing asked so the same pairs
+  pass again. `hair_bang_05` at the fringe start is one layer root 0.0648 cm from a kept automatic root where
+  the measure's line is 0.0684 cm (`mask_apart`'s spacing estimate and the measure's differ ~2 x at a lock's
+  start edge). The fix, not built: ONE thinning order for all of a lock's automatic roots by where each lands
+  (about half a day, plus a day of re-checks; which roots a partial mask keeps changes once for every painted
+  groom). Dropping the near-coincident pairs at the source would change the automatic groom itself: no.
 - On Helen: the crown painted down to v006's density (~5,100 / cm2) and the thin skin under floating mesh painted
   up, both in the GUI by scripted strokes, with the QC numbers before and after in the report (the user's own
   try with a mouse or pen is the User look gate); grooming-check is two-sided on a painted scene.
@@ -566,8 +622,9 @@ predates this model.
   in under 0.1 s and with no lock recooked, also with an anim wired and output 1 read, and for a whole chain of
   strokes (30 in a row, then 30 undos and 30 redos) while the undo cache ("Undo cache, GB") holds them.
 - No layers = the v0.1 groom: strand count and QC numbers as t55; a scene from before "Fit lookup per lock"
-  opens with it off and is v0.1's groom byte for byte; with it on, the same roots and strand count per lock
-  and strand points within 5 mm of v0.1's (measured 4.1-4.7 mm).
+  opens with it off and is v0.1's groom within v0.1's own run-to-run difference (0.002 cm on a groom v0.1
+  made and saved, 0.0098 cm on Helen as v0.1 saved it); with it on, the same roots and strand count per lock,
+  the strand points' move stated as measured (0.469 cm / 0.958 cm at most), not bounded.
 - Layers survive Detect, Update regions, save / reopen and Publish (read back from the publish JSON); a missing
   lock keeps its layers; files of schema 3, 4 and 5 open and give the strand counts they gave.
 
@@ -578,9 +635,19 @@ user, 2026-11-15): a group or lock row gathers its layers, and a shared region i
 SURFACE (the exact distance to the prim's triangles, `accept_lib.Skin.assign`), not to the nearest prim centre,
 and every root counts: none is left out for standing off the skin (by the surface no root of Helen's groom is
 over 0.002 cm off it; the "floating" roots of round 3 came from the nearest-centre count). A lock asked under
-one root in a core is not graded alone, as the t64 checker does not: max(0.15, 2 / sqrt(N)) allows such a lock
-floor(N + 2 sqrt(N)) roots, 0 to 2, and says nothing more; its roots are in the count of all locks together and
-it is listed. Strands followed by id are where they were within 1e-5 cm (measured: under 4e-7 cm).
+one root (N < 1) is graded by count (t67, after the t66 check): at most ceil(N + 2 sqrt(N)) roots, the upper
+side of the limit; its roots are also in the count of all locks together. Each lock is graded on its own skin
+in the whole painted patch (every prim the paint covers in full, no margin; partly painted rim prims are left
+out: estimated root by root they read 1.77 x on the crown whorl's rim at D 0, which this count cannot tell
+from a measuring error), a lock on one polygon there listed, not graded (B1 above). Known gap of this count
+(t67, `stray_roots.py`): which locks own a prim comes from the acceptance's own table (`Skin.own`), while the
+HDA's lock skin is the scalp split along region borders, so a lock's layer roots near a border land on a
+prim the table gives to other locks (44 of 963 at D 300 on hair_base_12's start, all on the skin within
+2e-5 cm, 0.18-0.34 cm from a prim of their own lock's). Such a lock reads "no skin here, yet a root", N = 0,
+and fails `d1` / `d2` / `b3` at the lock start, the crown and the ear slivers with 1-2 roots; all locks
+together pass there (0.961-1.016). Not changed in this round: counting by the HDA's own split skin would
+change what every density check measures. Strands followed by id are where they were within 1e-5 cm
+(measured: under 4e-7 cm).
 
 **Evenness, the measure (the t64 checker's, `even_local.py`; `accept_lib.lock_even_local`).** For each lock
 with 30 roots or more in the painted patch: a root is clumped when its nearest neighbour of the same lock is
