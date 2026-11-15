@@ -181,6 +181,8 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   capturing every full-hair lock whenever the anim was wired held ~800 B a point (Helen, anim wired:
   5.8 GB after a cook, 9.5 GB after an All-locks edit; now 2.1 / 2.7 GB, t49). The first Deform on
   regrows the groom once (~12 s, was 1.7 s); frames and the deformed hair are the same (max 0.5 mm off).
+  (Since t65 the display captures outside the loop too, as output 1 does: no lock is captured in the loop,
+  Deform on regrows nothing, and the deformed hair is kept by its state. See the t65 notes below.)
   The packed display's coloured / see-through copies never carry the capture (`_display_copy`);
   capturing the merged 4 M points cost 3-9 s per hide or show. Only mesh / guide parts are captured at
   display time. Two switches (`use_deform`, `deform_ok`): one hscript if() evaluated both sides and
