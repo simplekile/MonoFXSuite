@@ -133,7 +133,8 @@ factor layers.**
    tree (All locks, a group, a lock) and a mask.
 2. **The mask of a density layer**: a stack of paint and fill layers, values 0..1, blended bottom to top as the
    layer stack of a mask in Substance Painter, starting from black. It belongs to that one density layer; there is
-   no global mask. A new density layer's mask is black, so adding a layer changes nothing until it is painted.
+   no global mask. A new density layer's mask is black, so adding a layer changes nothing until it is painted
+   (confirmed by the user, 2026-11-15).
    - **Paint layer**: the brush paints a value AND coverage; skin of the layer never painted is transparent. Erase
      removes the layer's own paint (coverage back to 0); it does not paint black.
    - **Fill layer**: one value over all the skin, full coverage.
@@ -150,13 +151,15 @@ factor layers.**
 5. **The bottom of the stack is the automatic groom**, stored and shown as the base density layer ("Automatic",
    `kind` "base", always the first row of `groom_data.masks`): D = each lock's own Density setting, mask full; it
    cannot be deleted, moved or switched off. With no other layer the groom is the automatic groom, byte for
-   byte whatever was painted and removed before; against v0.1's own bytes it is identical with "Fit lookup per
-   lock" off, and with it on (the default, OPEN: "Speed" below) it has v0.1's roots and strand counts while
-   42 % of the strand coordinates differ, by at most 4.1 mm (t64 B4).
+   byte whatever was painted and removed before. Against v0.1 ("Fit lookup per lock", decided 2026-11-15, see
+   "Speed" below): with the toggle OFF, which is how every scene saved before the toggle existed opens, it is
+   v0.1's groom byte for byte; with it ON, a new node's default, every lock has v0.1's roots and strand count
+   and its strand points lie within 4.1 mm of v0.1's (Helen: 45 % of them move, 1 % by more than 1 mm).
 6. **Black in a mask = "this layer does not apply here"**: the density below shows. It is NOT "no hair". No hair =
    a layer with D = 0 painted white. A layer may be denser than the automatic groom: D = 300 over locks at 150
    gives 300 (measured 299-303 / cm2 on four kinds of skin, t63).
-7. **Folders are dropped from v0.2a.** A folder of density layers with a shared mask would need a second mask
+7. **Folders are not in v0.2a (confirmed by the user, 2026-11-15; moved to a later part, see "Not in v0.2a"
+   under "Done when").** A folder of density layers with a shared mask would need a second mask
    level in the stack, the tree and the brush's target: not free. A group or lock row of the tree already gathers
    its density layers, and a region shared by several layers is painted once and reused as a Multiply top layer.
    Older dev files with folders open: a folder's opacity and eye go into its layers.
@@ -355,9 +358,19 @@ strand points move (half under 0.008 mm, 1 % over 1 mm, at most 4 mm; the t64 ch
 coordinates, at most 4.10 mm, 21,801 over 1 mm), and 8 of the 27 grooming-check numbers of the no-layer groom
 move by 5e-5 to 1 % (all 27 pass). With the toggle off the groom is v0.1's byte for byte (the t64 check: all
 12,554,097 coordinates; v0.1 itself is byte-identical from run to run, and so is this build: there is no
-run-to-run noise) and the speed limit holds with 3-9 % to spare. OPEN for the manager / user: which
-default ships (the executor built it on, for the margin; "No layers = the v0.1 groom" below is graded by
-root positions and strand counts, and by the QC numbers with the toggle off).
+run-to-run noise) and the speed limit holds with 3-9 % to spare.
+**Decided (the user, 2026-11-15, t64 B4):**
+- A node created new: on. Strokes 0.27 s or more inside the limit (t62), the cold full cook 0.72 x v0.1's (t63).
+- A scene saved before the toggle existed (v0.1 scenes, and test builds up to `groom_data` schema 4): OnLoaded
+  writes it OFF on the node, once (`grooming_adapter.keep_old_lookup`; the node's user data `monofx_fit_lookup`
+  records that the choice was made, so the artist may turn it on afterwards and it stays), and says so on the
+  status bar. Such a scene holds no value for the parm, so it would otherwise take the default and a published
+  v0.1 groom would reopen with its strand points moved. Off, the speed limit holds with 3-9 % to spare (t62: one
+  run in four missed it on this machine); the acceptance grades the limit with the toggle on (`s1`, `r5`) and
+  reports the same checks with it off as their own items (`s2`, `r5b`), on the same limits.
+- "No layers = the v0.1 groom" is graded both ways (`r6`): the Helen scene as v0.1 saved it opens with the
+  toggle off and its rest groom equals v0.1's byte for byte; with the toggle on every lock's strand count and
+  every root are v0.1's and no strand point is farther than 0.41 cm from v0.1's.
 
 **Paint belongs to the painted node (round 3; t65).** Paint is on only while the painted node is the
 selection. Esc ends Paint from anywhere in Houdini's window, also while the mouse is held: what was painted so
@@ -394,7 +407,10 @@ automatic roots: see "Cost" below):
   next 10 (among all, once a half holds 64 or fewer).
 - A small start grid (400 roots or fewer: a disc of a millimetre or two, several times denser than the rest of
   the lock) takes a farthest-point order instead: what is left of it must stand as evenly as it can.
-- Whorl roots: their sunflower number with its bits reversed.
+- Whorl roots: ordered by pairing too, by where they land (t65). By their sunflower number with its bits
+  reversed (t62 to t64) a keep of 1/2 or 1/4 left every 2nd or 4th point of the sunflower, which stand in arms:
+  under the local evenness measure a fringe lock's roots in the whorl read +0.06 at a keep of 0.5 and +0.12
+  at 0.25.
 - Partial coverage puts the layers' own roots among automatic roots that stayed; a layer root nearer than
   0.45 of the root spacing asked there to an automatic one is moved off it, on the skin (`mask_apart`).
 Tried and dropped: the root's number in hairgen's scatter (0.35 to 1.85 of the share from skin to skin); a
@@ -543,9 +559,14 @@ predates this model.
 - A stroke recooks only the locks under it, at most 0.2 s per lock plus 0.1 s; undo removes exactly that stroke,
   in under 0.1 s and with no lock recooked, also with an anim wired and output 1 read, and for a whole chain of
   strokes (30 in a row, then 30 undos and 30 redos) while the undo cache ("Undo cache, GB") holds them.
-- No layers = the v0.1 groom: strand count and QC numbers as t55.
+- No layers = the v0.1 groom: strand count and QC numbers as t55; a scene from before "Fit lookup per lock"
+  opens with it off and is v0.1's groom byte for byte; with it on, the same roots and strand count per lock
+  and strand points within 4.1 mm of v0.1's.
 - Layers survive Detect, Update regions, save / reopen and Publish (read back from the publish JSON); a missing
   lock keeps its layers; files of schema 3, 4 and 5 open and give the strand counts they gave.
+
+**Not in v0.2a (moved to a later part).** Folders of density layers with a shared mask (confirmed by the
+user, 2026-11-15): a group or lock row gathers its layers, and a shared region is a Multiply top layer.
 
 **How the acceptance counts (t65, after the t64 check).** A root belongs to the skin prim nearest it ON THE
 SURFACE (the exact distance to the prim's triangles, `accept_lib.Skin.assign`), not to the nearest prim centre,

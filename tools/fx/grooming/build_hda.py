@@ -776,9 +776,9 @@ VEX_THIN_ORDER = """// density mask: the order in which a lock's automatic roots
 // near the edge), and the nearest roots are the first to be parted. Of a pair, the root farther from the roots
 // already in the first half goes there: taken in turn, a start grid of 163 roots thinned to a quarter read
 // as clumped (+0.15 to +0.19).
-// Whorl roots are a whole sunflower: their number with its bits reversed (0, 1/2, 1/4, 3/4, ...) does the same.
-// More roots of a kind than the limit: start roots keep the bit-reversed number, scattered roots -1 (mask_thin
-// dithers those by their place).
+// Whorl roots (a sunflower round the whorl's centre, moved onto the lock's region) are ordered the same way, by
+// where they land. More roots of a kind than the limit: start and whorl roots keep their sunflower number with
+// its bits reversed (0, 1/2, 1/4, 3/4, ...), scattered roots -1 (mask_thin dithers those by their place).
 // Tried and dropped: a farthest-point order (even in SPACE, not a share: the rim of a set comes first, a
 // patch inside a start grid kept 0.8 of the share, stacked skin 1.17, floating mesh 0.56; with distances in
 // the roots' own spacing the rim still came first).
@@ -891,7 +891,20 @@ void order(int idx[]; vector pos[]) {
     for (int i = 0; i < m; i++) setprimattrib(0, "thin_u", idx[i], (code[i] + 0.5) / top);
 }
 int n = nprimitives(0);
-int idx[]; vector pos[]; int sidx[]; vector spos[];
+int idx[]; vector pos[]; int sidx[]; vector spos[]; int widx[]; vector wpos[];
+// where a whorl root lands (root_place's own sunflower round the whorl's centre, moved onto the lock's region:
+// inputs 1 the region, 2 the lock's keyed spine), so that the whorl roots are ordered by PLACE as the start
+// roots are. By their sunflower number with its bits reversed (t62 to t64) a keep of 1/2 or 1/4 left every 2nd
+// or 4th point of the sunflower, which stand in arms (4 x the golden angle is 190 deg): by the local measure
+// a fringe lock's roots in the whorl read +0.06 at a keep of 0.5 and +0.12 at 0.25 (t65)
+vector wc = prim(2, "whorl_c", 0), wnrm = {0, 1, 0};
+float uc = max(chf("../unit_cm"), 1e-6);
+float wrad = %(wdisk)s / uc;
+int wp; vector wuv;
+xyzdist(1, wc, wp, wuv);
+if (wp >= 0) { wc = primuv(1, "P", wp, wuv); wnrm = prim_normal(1, wp, wuv); }
+vector e1 = normalize(cross(wnrm, abs(wnrm.y) < 0.9 ? {0, 1, 0} : {1, 0, 0})), e2 = cross(wnrm, e1);
+float a0 = rand(float(prim(2, "lock_id", 0)) + 0.77) * 2 * M_PI;
 for (int pr = 0; pr < n; pr++) {
     int st = prim(0, "start_root", pr), wh = prim(0, "whorl_root", pr);
     if (!st) {
@@ -905,11 +918,22 @@ for (int pr = 0; pr < n; pr++) {
     for (int b = 0; b < 20; b++) { r = r * 2 + (k %% 2); k /= 2; }      // (VEX has no shift operators)
     setprimattrib(0, "thin_u", pr, (r + 0.5) / 1048576.0);
     if (!wh) { append(idx, pr); vector q = prim(0, "start_pos", pr); append(pos, q); }
+    else {
+        float cnt = prim(0, "start_cnt", pr);
+        cnt = max(1, cnt);
+        float a = fk * 2.39996323 + a0, d = sqrt((fk + 0.5) / cnt) * wrad;
+        int rp; vector ruv;
+        vector q = point(0, "P", primpoint(0, pr, 0));
+        xyzdist(1, wc + (e1 * cos(a) + e2 * sin(a)) * d, rp, ruv);
+        if (rp >= 0) q = primuv(1, "P", rp, ruv);
+        append(widx, pr); append(wpos, q);
+    }
 }
 if (len(idx) >= 3 && len(idx) <= %(small)d) farthest(idx, pos); else order(idx, pos);
+if (len(widx) >= 3 && len(widx) <= %(small)d) farthest(widx, wpos); else order(widx, wpos);
 order(sidx, spos);
 """ % {"max": THIN_ORDER_MAX, "bits": THIN_ORDER_BITS, "window": THIN_ORDER_WINDOW,
-       "exact": THIN_ORDER_EXACT, "near": THIN_ORDER_NEAR, "small": THIN_ORDER_SMALL}
+       "exact": THIN_ORDER_EXACT, "near": THIN_ORDER_NEAR, "small": THIN_ORDER_SMALL, "wdisk": config.WHORL_DISK_CM}
 
 MASK_APART = 0.45         # a layer's root stands at least this share of the root spacing asked there from a kept automatic root
 
@@ -1829,8 +1853,8 @@ def build_network(sub) -> None:
     # covers, the first time, and kept with its automatic roots (the same cache entry, now with thin_u:
     # auto_cached 2). Made for every lock on every cook it was 4.5 s of Helen's cold cook (a single-threaded
     # detail wrangle, 38 us a root), with or without layers: the display's cold cook was 1.13 x v0.1's
-    thin_order = _wrangle(sub, "thin_order", VEX_THIN_ORDER, DETAIL, [auto])
-    thin_store = _node(sub, "python", "thin_store", [thin_order, begin])
+    thin_order = _wrangle(sub, "thin_order", VEX_THIN_ORDER, DETAIL, [auto, frame, begin])
+    thin_store = _node(sub, "python", "thin_store", [thin_order, begin])     # (the spine is its last input)
     thin_store.parm("python").set("from apps.houdini import grooming_adapter\n"
                                   "grooming_adapter.cook_auto_store(hou.pwd())\n")
     auto_thin = _node(sub, "switch", "auto_thin", [thin_store, auto])

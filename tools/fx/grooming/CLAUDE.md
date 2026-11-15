@@ -717,6 +717,14 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     holds 33.6 where 33.7 are asked (sd 4.6), with or without relax; the seed is the lock's id, so the draw is
     the same at every D. `hairgen_layers.geometry()` has `skinprim`: count per skin prim without any
     assignment (isolate the lock, read `mask_skin` and `hairgen_layers`).
+  - "Fit lookup per lock" (B4, decided by the user): a new node has it on; a scene saved before it existed
+    (stored `groom_data` schema under `LOOKUP_SINCE_SCHEMA` 5) gets it written OFF by OnLoaded, once
+    (`keep_old_lookup`, user data `monofx_fit_lookup`), so a v0.1 scene reopens as v0.1's groom byte for byte.
+    Test scripts that open the Helen scene "as saved" now run with it off; `accept_lib.fresh` reverts every
+    parm to its default, so the acceptance's fresh groom has it on (checks `s2`, `r5b`, `r6` cover off).
+  - Whorl roots are ordered by pairing on where they land (thin_order computes root_place's sunflower place
+    itself): the bit-reversed sunflower number left arms at a keep of 1/2 and 1/4 (local clumped share +0.06 /
+    +0.12 for fringe locks in the whorl), which the per-patch measure never saw.
   - The acceptance counts a root to the prim nearest it on the surface (`Skin.assign`), follows strands within
     1e-5 cm, does not grade a lock asked under one root alone, and judges evenness by `lock_even_local` (each
     root against the spacing asked where it stands; the plan has the definition). New checks: `u6` (Shot
