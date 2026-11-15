@@ -358,17 +358,22 @@ strokes, and two per-point passes were folded together: strokes on Helen 0.29-0.
 strand points move (half under 0.008 mm, 1 % over 1 mm, at most 4 mm; the t64 check: 5,309,021 of 12,554,097
 coordinates, at most 4.10 mm, 21,801 over 1 mm), and 8 of the 27 grooming-check numbers of the no-layer groom
 move by 5e-5 to 1 % (all 27 pass). With the toggle off the groom is v0.1's byte for byte (the t64 check: all
-12,554,097 coordinates; v0.1 itself is byte-identical from run to run, and so is this build: there is no
-run-to-run noise) and the speed limit holds with 3-9 % to spare.
+12,554,097 coordinates) in most runs. Not in every run (t65): of four runs of each build on the scene v0.1
+saved, one run of this build and one run of v0.1 ITSELF gave the same 2 strands of one lock (64 points) up to
+0.002 cm away from the other runs; every other coordinate equal. v0.1 carries that run-to-run difference, so
+"byte for byte" holds between runs that do not hit it. The speed limit with the toggle off: see below.
 **Decided (the user, 2026-11-15, t64 B4):**
 - A node created new: on. Strokes 0.27 s or more inside the limit (t62), the cold full cook 0.72 x v0.1's (t63).
 - A scene saved before the toggle existed (v0.1 scenes, and test builds up to `groom_data` schema 4): OnLoaded
   writes it OFF on the node, once (`grooming_adapter.keep_old_lookup`; the node's user data `monofx_fit_lookup`
   records that the choice was made, so the artist may turn it on afterwards and it stays), and says so on the
   status bar. Such a scene holds no value for the parm, so it would otherwise take the default and a published
-  v0.1 groom would reopen with its strand points moved. Off, the speed limit holds with 3-9 % to spare (t62: one
-  run in four missed it on this machine); the acceptance grades the limit with the toggle on (`s1`, `r5`) and
-  reports the same checks with it off as their own items (`s2`, `r5b`), on the same limits.
+  v0.1 groom would reopen with its strand points moved. The acceptance grades the limit with the toggle on
+  (`s1`, `r5`) and reports the same checks with it off as their own items (`s2`, `r5b`), on the same limits.
+  Measured on the final build (t65): on, every stroke inside the limit by 0.22 s or more and the cold full cook
+  0.48 x v0.1's; off, the cold full cook 0.72 x v0.1's, and the stroke limit is NOT MET for the first stroke
+  on locks not painted before (1.377 s where 1.3 s for 6 locks in the final run; 4 of 8 places and 2.05 s
+  where 1.3 s in an earlier run), later strokes on the same locks are inside it.
 - "No layers = the v0.1 groom" is graded both ways (`r6`): the Helen scene as v0.1 saved it opens with the
   toggle off and its rest groom equals v0.1's byte for byte; with the toggle on every lock's strand count and
   every root are v0.1's and no strand point is farther than 0.5 cm from v0.1's (measured 4.1 mm on a fresh groom, t64, and 4.7 mm on a

@@ -720,6 +720,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - "Fit lookup per lock" (B4, decided by the user): a new node has it on; a scene saved before it existed
     (stored `groom_data` schema under `LOOKUP_SINCE_SCHEMA` 5) gets it written OFF by OnLoaded, once
     (`keep_old_lookup`, user data `monofx_fit_lookup`), so a v0.1 scene reopens as v0.1's groom byte for byte.
+    v0.1 itself is not byte-identical in every run: 1 run in 4 (v0.1's suite and this one alike) moves the same
+    2 strands of one lock by up to 0.002 cm, so check `r6` can miss by those 64 points; rerun before reading
+    a miss as a change.
     Test scripts that open the Helen scene "as saved" now run with it off; `accept_lib.fresh` reverts every
     parm to its default, so the acceptance's fresh groom has it on (checks `s2`, `r5b`, `r6` cover off).
   - Evenness by the local measure misses +0.05 at the crown whorl under partial coverage for a few small fringe
