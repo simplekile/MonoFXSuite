@@ -163,7 +163,7 @@ def _stroke_rows():
             c1 = ga.mask_cover(node)
             s, locks, _r = cook_all()
             under = K.owners_of_changed(c0, c1)
-            rows.append({"place": name, "repeat": k, "locks": len(locks), "display_s": r3(s),
+            rows.append({"place": name, "repeat": k, "locks": len(locks), "lock_ids": list(locks), "display_s": r3(s),
                          "limit_s": round(0.2 * len(locks) + 0.1, 2), "only_under": locks == under,
                          "label": hou.undos.undoLabels()[0]})
     ga.mask_remove(node, top)
@@ -181,12 +181,27 @@ def s2_stroke_speed_lookup_off():
     finally:
         node.parm("lookup_per_piece").set(1)
         cook_all()
-    worst = max(rows, key=lambda r: r["display_s"] - r["limit_s"])
-    C.add("s2_stroke_speed_with_the_lookup_off", all(r["display_s"] <= r["limit_s"] and r["locks"] > 0 for r in rows),
-          {"strokes": rows, "worst": worst, "failed": [r for r in rows if r["display_s"] > r["limit_s"]],
-           "smallest_margin_s": round(min(r["limit_s"] - r["display_s"] for r in rows), 3)},
-          "\"Fit lookup per lock\" off (a scene from before the parm): every stroke: display cook <= 0.2 s x locks "
-          "recooked + 0.1 s")
+    # a first stroke: it recooks a lock no earlier stroke of this run recooked (with the toggle off every lock's
+    # automatic roots have their own key, so none carries the thinning order yet: it is made at that stroke)
+    seen = set()
+    for r in rows:
+        r["first_on_a_lock"] = bool(set(r["lock_ids"]) - seen)
+        seen |= set(r["lock_ids"])
+    later = [r for r in rows if not r["first_on_a_lock"]]
+    first = [r for r in rows if r["first_on_a_lock"]]
+    margin = lambda rs: round(min(r["limit_s"] - r["display_s"] for r in rs), 3) if rs else None  # noqa: E731
+    C.add("s2_stroke_speed_with_the_lookup_off", all(r["display_s"] <= r["limit_s"] and r["locks"] > 0 for r in later),
+          {"later_strokes": len(later), "failed": [r for r in later if r["display_s"] > r["limit_s"]],
+           "smallest_margin_s": margin(later), "strokes": rows},
+          "\"Fit lookup per lock\" off (a scene from before the parm): every stroke on locks painted before in this "
+          "run: display cook <= 0.2 s x locks recooked + 0.1 s")
+    C.add("s2_first_strokes_with_the_lookup_off_known", None,
+          {"first_strokes": len(first), "over": [r for r in first if r["display_s"] > r["limit_s"]],
+           "smallest_margin_s": margin(first),
+           "margins_s": [round(r["limit_s"] - r["display_s"], 3) for r in first]},
+          "the same limit, REPORTED, not graded: known, decided 2026-11-15 (the user): with the toggle off the "
+          "thinning order is made lazily, at a lock's first stroke, which may go over the limit by 0.05-0.09 s, "
+          "once per lock")
 
 
 def s1_stroke_speed():
@@ -1885,6 +1900,7 @@ C.add("z_no_error_on_the_node", not errors, errors, "no node of the HDA holds an
 C.meta["warnings"] = lib.node_warnings(node)
 C.meta["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
 C.write(done=True)
-C.log("DONE", "passed" if all(i["pass"] for i in C.items) else "FAILED", len(C.items), "checks")
+C.log("DONE", "passed" if all(i["pass"] is not False for i in C.items) else "FAILED", len(C.items), "checks",
+      sum(1 for i in C.items if i["pass"] is None), "known")
 sys.stdout.flush()
 os._exit(0)

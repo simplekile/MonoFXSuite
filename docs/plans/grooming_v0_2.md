@@ -391,18 +391,19 @@ build with the toggle off falls in a group a v0.1 run falls in. The speed limit 
   number, Helen as v0.1 saved it, in today's schema first, and the toggle stayed on: t66 N1, points moved up to
   0.958 cm). The acceptance grades the limit with the toggle on
   (`s1`, `r5`) and reports the same checks with it off as their own items (`s2`, `r5b`), on the same limits.
-  With the toggle off the thinning order is made eagerly, with the roots, on every cook (`thin_order_eager`,
-  t67), and lazily, at a lock's first stroke, with it on: off, the order made at a first stroke left it no
-  margin (t66: 3 of 8 first strokes over). Measured on the final build (t67, fd074e4; the t66 check's
-  `t66_firststroke.py` and `speed.py`, `fullcook.py` 3 interleaved pairs): on, 24 of 24 strokes inside the
-  limit (worst margin 0.067 s, first strokes 0.097 s) and the cold rest cook 0.47 x v0.1's (`r5`); off, two
-  runs of 24 strokes, 0 over (worst margin 0.070 / 0.072 s, first strokes 0.127 / 0.130 s), `speed.py` 20 of
-  20 (0.065 s), the cold rest cook 0.93 x v0.1's on a fresh groom (`r5b`) and 0.96 x on Helen as v0.1 saved it
-  (13.48 / 14.00 s). **NOT MET with the toggle off: the display's cold cook on Helen as v0.1 saved it (saved
-  with Shot deform on, so both builds deform the groom) is 1.16 x v0.1's** (medians 17.67 / 15.21 s, 3 of 3
-  pairs; limit 1.10 x): the eager order is 2.48 s of it (perfMon, `thin_order_eager`; the per-lock capture
-  outside the loop costs what v0.1's capture in the loop did, 3.07 / 2.98 s). Lazy, that cook is inside the
-  limit and the first strokes are not; one of the two is unmet whichever way, a decision for the user.
+  **Decided by the user (2026-11-15): the thinning order is LAZY with the toggle off too**, made at a lock's
+  first stroke and kept with its automatic roots, as with it on. **Known, stated cost, not a pass:** with the
+  toggle off (scenes from before the toggle) the first stroke on a lock never painted may go over the stroke
+  limit by 0.05-0.09 s, once per lock (t66: 3 of 8 first strokes over); later strokes on those locks are inside
+  it, and the cold cook stays inside 1.10 x. The acceptance's `s2` keeps the limit's number: strokes on locks
+  painted before in the run pass or fail; first strokes are reported with their margin as "known, decided
+  2026-11-15" (`s2_first_strokes_with_the_lookup_off_known`, counted neither as a pass nor as a fail). Tried
+  in t67 and reverted: the order made eagerly with the roots when the toggle is off (`thin_order_eager`): 0 of
+  48 first strokes over, but 2.48 s of the cold cook (perfMon), and the display's cold cook of Helen as v0.1
+  saved it (with Shot deform on) 1.16 x v0.1's (17.67 / 15.21 s; the per-lock capture outside the loop costs
+  what v0.1's capture in the loop did, 3.07 / 2.98 s). Measured with the toggle on (t67, fd074e4): 24 of 24
+  strokes inside the limit (worst margin 0.067 s) and the cold rest cook 0.47 x v0.1's (`r5`); the numbers
+  with it off, lazy, are in the t67 report ("Lazy again").
 - "No layers = the v0.1 groom" (decided by the user, 2026-11-15): with the toggle off, "v0.1's groom within
   v0.1's own run-to-run difference". The acceptance: a groom v0.1 made and saved opens with the toggle off,
   every lock's strand count equal and no point farther than 0.002 cm from v0.1's (`r6`; v0.1 against itself
@@ -460,8 +461,8 @@ Cost (t65): the order is made only for a lock a layer covers, the first time, an
 automatic roots (38 us a root: Helen's largest lock, 7,400 roots, 0.28 s once, on its first stroke; a stroke
 on a lock already ordered pays nothing). Made for every lock on every cook, as at 65e782c, it was 4.5 s of
 Helen's cold cook with or without layers, and the display's cold cook was 1.13 x v0.1's (t64 B5): with the
-toggle on 0.91 x (t66, 3 pairs); with it off the order is made eagerly again (2.48 s) and the display's cold
-cook of Helen as v0.1 saved it is 1.16 x (t67, "Speed" above). A per-element VEX pass over chunks of the order was tried to run it on all cores:
+toggle on 0.91 x (t66, 3 pairs); made eagerly with the toggle off (t67, reverted by the user's decision) it
+was 2.48 s and the display's cold cook of Helen as v0.1 saved it 1.16 x ("Speed" above). A per-element VEX pass over chunks of the order was tried to run it on all cores:
 array code runs ~30 x slower outside a detail wrangle (6 s for one lock), dropped.
 Traced in t63 (the two partial-coverage cases round 3 left open, and its one lock over a density limit):
 - `hair_base_21` on ordinary skin (+0.122 in t62; +0.143 here at first): every root that read as bunched was a

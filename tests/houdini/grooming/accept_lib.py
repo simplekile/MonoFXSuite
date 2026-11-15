@@ -29,13 +29,16 @@ class Checks:
         with open(self.log_path, "a", encoding="utf-8") as fh:
             fh.write(" ".join(str(p) for p in parts) + "\n")
 
-    def add(self, item: str, passed: bool, value=None, limit=None, evidence: str = "", note: str = "") -> bool:
-        entry = {"item": item, "pass": bool(passed), "value": value, "limit": limit,
+    def add(self, item: str, passed, value=None, limit=None, evidence: str = "", note: str = "") -> bool:
+        """`passed` None: a KNOWN, decided miss, reported with its numbers and counted neither as a pass nor as a
+        fail (listed under "known")."""
+        entry = {"item": item, "pass": None if passed is None else bool(passed), "value": value, "limit": limit,
                  "evidence": evidence or os.path.basename(self.path)}
         if note:
             entry["note"] = note
         self.items = [i for i in self.items if i["item"] != item] + [entry]
-        self.log("PASS" if passed else "FAIL", item, json.dumps(value, default=str)[:300], "limit", limit, note)
+        word = "KNOWN" if passed is None else "PASS" if passed else "FAIL"
+        self.log(word, item, json.dumps(value, default=str)[:300], "limit", limit, note)
         self.write()
         return bool(passed)
 
@@ -49,8 +52,9 @@ class Checks:
     def write(self, done: bool = False) -> None:
         data = dict(self.meta)
         data["checks"] = self.items
-        data["passed"] = bool(self.items) and all(i["pass"] for i in self.items)
-        data["failed"] = [i["item"] for i in self.items if not i["pass"]]
+        data["passed"] = bool(self.items) and all(i["pass"] is not False for i in self.items)
+        data["failed"] = [i["item"] for i in self.items if i["pass"] is False]
+        data["known"] = [i["item"] for i in self.items if i["pass"] is None]
         data["done"] = done
         with open(self.path, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=1, default=str)

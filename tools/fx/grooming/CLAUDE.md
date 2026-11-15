@@ -741,11 +741,11 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
       then runs from OnUpdated. A test that reads the toggle must read it after the switch.
     Test scripts that open the Helen scene "as saved" run with it off; `accept_lib.fresh` reverts every parm
     to its default, so the acceptance's fresh groom has it on (checks `s2`, `r5b`, `r6`, `r6c` cover off).
-  - With the toggle off the thinning order is made with the roots on every cook (`thin_order_eager`,
-    `auto_pre`), lazy with it on: off, the whole-cloud lookup leaves a first stroke no margin, and the order
-    made at that stroke put it over the limit (t66: 3 of 8 first strokes). The cold cook pays instead:
-    2.48 s on Helen (perfMon), so the display's cold cook of Helen as v0.1 saved it is 1.16 x v0.1's (t67,
-    over the 1.10 x limit; the rest cook 0.96 x). Lazy or eager, one of the two limits is unmet: the user's call.
+  - The thinning order is lazy with the toggle on AND off (the user, 2026-11-15). With it off the whole-cloud
+    lookup leaves a first stroke no margin, so the first stroke on a lock never painted may go over the stroke
+    limit by 0.05-0.09 s, once per lock: a known, stated cost; `s2` reports first strokes apart
+    (`Checks.add(passed=None)`: KNOWN, neither pass nor fail). Do not make it eager again: tried in t67
+    (`thin_order_eager`), 2.48 s of the cold cook, the display's cold cook of Helen as v0.1 saved it 1.16 x.
   - Acceptance counting gap (t67, `stray_roots.py`): a lock's skin in the acceptance is `Skin.own` (whole
     prims), the HDA's is the scalp split along region borders, so near a border a lock's layer roots sit on a
     prim the table gives to other locks (44 of 963 at D 300 on hair_base_12's start). Graded per lock with

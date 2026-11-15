@@ -1817,14 +1817,10 @@ def build_network(sub) -> None:
     # the automatic roots (hairgen's scatter and root_pick: 8-16 % of a lock's cook) do not read the layers:
     # kept in the cache by the lock's key without its layers (lock_keys: auto_key), so a stroke lays out no
     # root again that it did not paint. Stored on every cook of a lock, so the first stroke finds them too
-    # "Fit lookup per lock" OFF (a scene from before the toggle): the thinning order is made with the roots,
-    # on every cook of a lock, as up to t64. Off, the whole-cloud lookup leaves a stroke no margin, and the
-    # order made at the first stroke on a lock put 3 of 8 first strokes over the limit (t66); the cold cook
-    # pays for it instead. On (a new node), it stays lazy: thin_order below
-    thin_eager = _wrangle(sub, "thin_order_eager", VEX_THIN_ORDER, DETAIL, [pick])
-    auto_pre = _node(sub, "switch", "auto_pre", [thin_eager, pick])
-    auto_pre.parm("input").setExpression('ch("../lookup_per_piece")')
-    auto_store = _node(sub, "python", "auto_store", [auto_pre, begin])
+    # The thinning order is lazy with "Fit lookup per lock" off too (the user, 2026-11-15): made eagerly it
+    # cost 2.48 s of the cold cook (display 1.16 x v0.1's, t67); lazily, with the toggle off, a lock's first
+    # stroke may go over the stroke limit by 0.05-0.09 s, once per lock (a known, stated cost)
+    auto_store = _node(sub, "python", "auto_store", [pick, begin])
     auto_store.parm("python").set("from apps.houdini import grooming_adapter\n"
                                   "grooming_adapter.cook_auto_store(hou.pwd())\n")
     auto_load = _node(sub, "python", "auto_load", [begin])
@@ -1841,10 +1837,7 @@ def build_network(sub) -> None:
     thin_store.parm("python").set("from apps.houdini import grooming_adapter\n"
                                   "grooming_adapter.cook_auto_store(hou.pwd())\n")
     auto_thin = _node(sub, "switch", "auto_thin", [thin_store, auto])
-    # (1: the roots as they come already carry thin_u: loaded with it, or just made with the toggle off)
-    auto_thin.parm("input").setExpression(
-        'if(prim("../foreach_begin", 0, "auto_cached", 0) >= 2 || '
-        '(prim("../foreach_begin", 0, "auto_cached", 0) == 0 && ch("../lookup_per_piece") == 0), 1, 0)')
+    auto_thin.parm("input").setExpression('if(prim("../foreach_begin", 0, "auto_cached", 0) >= 2, 1, 0)')
     hairgen_b = _node(sub, "hairgen::2.0", "hairgen_layers", [mask_skin], useguides=0, growunguided=1,
                       useinitdirattrib=0, unguidedlength=0.01)
     hairgen_b.parm("unguidedsegments").setExpression(hairgen.parm("unguidedsegments").expression())
