@@ -671,6 +671,7 @@ def s4b_paint_is_the_selected_nodes():
         def press():
             out["undo_before"] = len(hou.undos.undoLabels())
             out["errors_before"] = len(sm.STATS["errors"])
+            sm.STATS["esc_seen"] = []
             _send(QtCore.QEvent.MouseMove, pts[0], QtCore.Qt.NoButton)
             later(100, lambda: (_send(QtCore.QEvent.MouseButtonPress, pts[0], QtCore.Qt.LeftButton), later(30, lambda: move(1))))
 
@@ -705,7 +706,10 @@ def s4b_paint_is_the_selected_nodes():
                    "the_drag_after_esc_painted_nothing": same_mask(a, out["mask_at_esc"]),
                    "undo_steps_added": len(hou.undos.undoLabels()) - out["undo_before"],
                    "after_release": {"state": viewer().currentState(), "paint_layer": ga().paint_layer(node)},
-                   "errors": sm.STATS["errors"][out["errors_before"]:]}
+                   "errors": sm.STATS["errors"][out["errors_before"]:],
+                   "esc_events_the_filter_saw": [list(e) for e in sm.STATS.get("esc_seen", [])],
+                   "the_stroke_esc_stored": {k: sm.STATS["strokes"][-1].get(k) for k in ("write_s", "cook_s", "count_s")}
+                   if sm.STATS["strokes"] else None, "esc_to_paint_off_s": sm.STATS.get("esc_off_s")}
             ok = (row["button_down_when_esc_came"] and row["right_after_esc"]["paint_layer"] is None
                   and row["kept_what_was_painted"] and row["the_drag_after_esc_painted_nothing"]
                   and row["undo_steps_added"] == 1 and row["after_release"]["state"] != sm.STATE

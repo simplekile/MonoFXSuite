@@ -17,9 +17,9 @@ its own skin there; limits are the plan's, never tuned to a result.
 
 How roots are counted (t65, after the t64 check): a root belongs to the skin prim nearest it ON THE SURFACE
 (`accept_lib.Skin.assign`, the exact distance to the triangles), and every root counts, however far off the skin
-(by the surface none of Helen's is over 0.002 cm off it). A lock asked under one root in a core (N < 1) is not
-graded alone: the limit max(0.15, 2 / sqrt(N)) says nothing of a count that small; its roots are in the count of
-all locks together, and it is listed. Strands are followed by id within 1e-5 cm (measured: under 4e-7 cm).
+(by the surface none of Helen's is over 0.002 cm off it). A lock asked under one root in a core (N < 1) may hold
+at most ceil(N + 2 sqrt(N)) roots there (the limit's upper side; t66: any count passed before), and its roots
+are in the count of all locks together. Strands are followed by id within 1e-5 cm (measured: under 4e-7 cm).
 Evenness is the local measure (`accept_lib.lock_even_local`): each root against the spacing asked where it stands.
 
 Definition this script makes on its own (named DEFINITION where it is used, for the checker to judge):
@@ -28,6 +28,7 @@ Definition this script makes on its own (named DEFINITION where it is used, for 
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import sys
@@ -59,7 +60,11 @@ HYTHON = os.path.join(hou.expandString("$HFS"), "bin", "hython.exe" if os.name =
 QC = SUITE + "/.claude/skills/grooming-check/scripts/qc_metrics.py"
 DENSITIES = (0.0, 40.0, 120.0, 300.0)   # strands / cm2; every Helen lock's own Density is 150
 EVEN_RISE = 0.05        # a lock's roots in a painted patch: its local clumped share, over its no-layer value there
-LOOKUP_BOUND_CM = 0.5   # "Fit lookup per lock" on: no strand point farther than this from v0.1's (measured 0.41-0.47)
+# "Fit lookup per lock" off on an old scene: v0.1's groom within v0.1's own run-to-run difference (the user,
+# 2026-11-15). v0.1 against itself, t66: a groom v0.1 made and saved, 4 of 10 runs differ, at most 0.00164 cm;
+# Helen as v0.1 saved it, at most 0.0098 cm
+OLD_SCENE_CM = 0.002
+OLD_SCENE_HELEN_CM = 0.0098
 SAME_ROOT_CM = 1e-5     # a strand followed by id is where it was: its root within this (measured: under 4e-7 cm)
 EVEN_SPACING = 0.45     # where every root is the layers': spacing ratio, grooming-check's root_spacing_low limit
 UNDO_S = 0.1
@@ -209,6 +214,11 @@ def _chain(place, n, radius=0.8, out1=None):
     cook_all()
     use0 = ga.undo_cache_usage(node)
     states, strokes, peak = [], [], use0["bytes"]
+    dpeak = [use0.get("deformed_bytes", 0), use0.get("deformed_states", 0)]
+
+    def dtrack(u):
+        dpeak[0] = max(dpeak[0], u.get("deformed_bytes", 0))
+        dpeak[1] = max(dpeak[1], u.get("deformed_states", 0))
 
     def read():
         if out1 is not None:
@@ -224,6 +234,7 @@ def _chain(place, n, radius=0.8, out1=None):
         caps = read()
         use = ga.undo_cache_usage(node)
         peak = max(peak, use["bytes"])
+        dtrack(use)
         strokes.append({"display_s": r3(s), "locks": len(d), "mb": round((use["bytes"] - before) / 1e6, 2),
                         "captures": len(caps)})
         states.append(G.strands_by_lock())
@@ -238,6 +249,7 @@ def _chain(place, n, radius=0.8, out1=None):
         G.rest.cook()
         r = CC.take()
         caps = read()
+        dtrack(ga.undo_cache_usage(node))
         return {"s": r3(s), "display": len(d), "rest": len(r), "captures": len(caps),
                 "same": want is None or G.strands_by_lock() == want}
 
@@ -259,7 +271,9 @@ def _chain(place, n, radius=0.8, out1=None):
             "every_state_right": all(u["same"] for u in undos + redos),
             "peak_mb": round(peak / 1e6, 1), "limit_mb": round(use["limit_bytes"] / 1e6, 1),
             "live_mb": round(use0["live_bytes"] / 1e6, 1), "dropped": use["dropped"],
-            "capture_mb": round(use["capture_bytes"] / 1e6, 1)}
+            "capture_mb": round(use["capture_bytes"] / 1e6, 1),
+            "deformed_peak_mb": round(dpeak[0] / 1e6, 1), "deformed_states_peak": dpeak[1],
+            "deformed_limit_mb": round(use.get("deformed_limit_bytes", 0) / 1e6, 1)}
 
 
 def _chain_ok(r, no_grow=True):
@@ -318,11 +332,16 @@ def u4_deformed_output():
           note="undo + display seconds are graded in u1; here a capture of the stroke's locks follows each")
 
 
+U6_STROKES = 20     # more than the default "Deformed undo, GB" holds on Helen (16 states): inside and outside it
+
+
 def u6_shot_deform_on():
-    """Shot deform ON for the display (the t64 check's B6): strokes, undos and redos at a frame of the anim.
-    The hair is the rest strands whatever deforms them, so no undo may grow a lock, and the cache must hold what
-    it holds at rest once the deform is off again. An undo is as fast as at rest while the deformed state it
-    returns to is in the cache; a state is the whole deformed groom, so the limit holds only a few of them."""
+    """Shot deform ON for the display (the t64 check's B6; the user's decision: memory, "Deformed undo, GB"):
+    strokes, undos and redos at a frame of the anim. The hair is the rest strands whatever deforms them, so no
+    undo may grow a lock, and the cache must hold what it holds at rest once the deform is off again. The
+    deformed states are held apart from "Undo cache, GB", in a limit of their own: the count it holds is that
+    limit over one state's size, measured here (`held`); every undo and redo inside that count is graded
+    < 0.1 s, the ones outside it are reported with their cost (they deform the groom again, growing nothing)."""
     use0 = ga.undo_cache_usage(node)
     frame = hou.frame()
     node.parm("shot_deform").set(1)
@@ -331,28 +350,43 @@ def u6_shot_deform_on():
         t = time.perf_counter()
         cook_all()
         first = time.perf_counter() - t
-        r = _chain("ordinary_hair_back_06", 6)
+        one = ga.undo_cache_usage(node)
+        state_bytes = max(one.get("deformed_bytes", 0), 1)       # the one deformed state shown now
+        r = _chain("ordinary_hair_back_06", U6_STROKES)
         on = ga.undo_cache_usage(node)
     finally:
         node.parm("shot_deform").set(0)
         hou.setFrame(frame)
     cook_all()
     off = ga.undo_cache_usage(node)
-    fast = sum(1 for s in r["undo_s"] if s < UNDO_S)
-    r.update({"first_cook_with_the_deform_on_s": r3(first), "undos_under_0.1_s": fast,
+    # the states the limit holds: the one shown and `held` an undo goes back through
+    held = max(0, int(on["deformed_limit_bytes"] // state_bytes) - 1)
+    n = U6_STROKES
+    inside_u, inside_r = r["undo_s"][:min(held, n)], r["redo_s"][:min(held, n)]
+    outside = r["undo_s"][min(held, n):] + r["redo_s"][min(held, n):]
+    r.update({"first_cook_with_the_deform_on_s": r3(first), "deformed_state_mb": round(state_bytes / 1e6, 1),
+              "deformed_limit_gb": round(on["deformed_limit_bytes"] / 2 ** 30, 2), "undos_the_limit_holds": held,
+              "undos_under_0.1_s": sum(1 for s in r["undo_s"] if s < UNDO_S),
+              "redos_under_0.1_s": sum(1 for s in r["redo_s"] if s < UNDO_S),
+              "inside_worst_s": max(inside_u + inside_r) if inside_u + inside_r else None,
+              "outside_count": len(outside), "outside_s": [min(outside), max(outside)] if outside else None,
               "live_mb_before": round(use0["live_bytes"] / 1e6, 1), "live_mb_with_the_deform_on": round(on["live_bytes"] / 1e6, 1),
               "live_mb_after_the_deform_is_off": round(off["live_bytes"] / 1e6, 1),
-              "capture_mb": round(off["capture_bytes"] / 1e6, 1)})
+              "deformed_mb_after_the_deform_is_off": round(off.get("deformed_bytes", 0) / 1e6, 1),
+              "capture_mb": round(off["capture_bytes"] / 1e6, 1),
+              "peak_all_mb": round(r["peak_mb"] + r["deformed_peak_mb"] + off["capture_bytes"] / 1e6, 1)})
     ok = (r["every_state_right"] and sum(r["undo_locks_grown"]) == 0 and sum(r["redo_locks_grown"]) == 0
-          and r["peak_mb"] <= r["limit_mb"] and r["undo_s"][0] < UNDO_S
-          and off["live_bytes"] <= use0["live_bytes"] * 1.1 + 1e6)
+          and r["peak_mb"] <= r["limit_mb"] and r["deformed_peak_mb"] <= r["deformed_limit_mb"] + state_bytes / 1e6
+          and held >= 1 and all(s < UNDO_S for s in inside_u + inside_r)
+          and off["live_bytes"] <= use0["live_bytes"] * 1.1 + 1e6 and off.get("deformed_bytes", 0) == 0)
     C.add("u6_shot_deform_on_undo_grows_no_lock", ok, r,
-          "Shot deform on, frame 12, 6 strokes, 6 undos, 6 redos: 0 locks grown by any undo or redo, every state the "
-          "stroke's, cache memory <= the node's limit, the newest undo < 0.1 s, and with the deform off again the "
-          "cache's live set is what it was before (+10 %)",
-          note="undos under 0.1 s are those whose deformed state the cache still held (a state is the whole deformed "
-               "groom, ~250 MB on Helen; they share half the limit and go before any hair); the others deform again, "
-               "1.2-1.5 s, growing nothing. The captures (one a lock, 800 B a point) are outside the limit's count")
+          "Shot deform on, frame 12, %d strokes, %d undos, %d redos: 0 locks grown by any undo or redo, every state "
+          "the stroke's; every undo and redo inside the count \"Deformed undo, GB\" holds (that limit over one "
+          "state's size, measured) < 0.1 s; the hair cache <= \"Undo cache, GB\" and the deformed states <= their "
+          "own limit (+ the state being stored); with the deform off again the hair cache's live set is what it "
+          "was before (+10 %%) and no deformed state is held" % (n, n, n),
+          note="outside the count an undo or redo deforms the groom again (outside_s), growing no lock. The "
+               "captures (one a lock, 800 B a point) are outside both limits")
 
 
 def u5_usage():
@@ -434,13 +468,60 @@ def _want(core, stack):
     return out, b, kept
 
 
-def _grade(core, stack, evenness=True):
+def _patch(*paint_layers):
+    """The whole painted patch: every prim of the fine scalp that all the given paint layers cover in full, to
+    the edge of the paint (no margin; `_core` keeps 0.35 cm off the edge). Partly painted prims at the rim are
+    left out: estimated root by root (t67) they read 1.77 x on the crown whorl's rim at D 0, a measuring
+    error or a real one that this check cannot tell apart."""
+    out = None
+    for lid in paint_layers:
+        got = K.core(ga.mask_values(node, lid)[1], 1.0, margin=0.0)
+        out = got if out is None else np.intersect1d(out, got)
+    return out
+
+
+def _lock_rows(prims, stack):
+    """Per lock on `prims`: (rows by lock name, names outside their limit, expected by id, automatic by id)."""
+    want, b, _kept = _want(prims, stack)
+    keep_now, _off = K.roots_index(prims, G.roots())
+    ids_, cnt_ = np.unique(G.roots()[1][keep_now], return_counts=True)
+    a = {int(i): int(c) for i, c in zip(ids_, cnt_)}
+    rows, bad = {}, []
+    for k in sorted(set(want) | set(a)):
+        w = want.get(k, 0.0)
+        got = a.get(k, 0)
+        skin = K.lock_area_in(prims, k)
+        lim = lib.density_limit(w, 1.0) if w >= 1.0 else 0.0
+        if w <= 1e-9 and skin > 0:
+            ok = got == 0                                   # the lock has skin here and is asked no root: none at all
+        elif w < 1.0:
+            lim = float(math.ceil(w + 2.0 * math.sqrt(w)))   # under one root asked: a count, not a ratio
+            ok = got <= lim
+        else:
+            ok = abs(got / w - 1) <= lim
+        rows[K.names[k]] = {"skin_cm2": r3(skin), "polygons": sum(1 for p in prims if k in K.own[p]),
+                            "automatic": b.get(k, 0), "expected": r3(w), "roots": got,
+                            "ratio": r3(got / w) if w >= 1.0 else None, "limit": r3(lim), "pass": bool(ok)}
+        if not ok:
+            bad.append(K.names[k])
+    return rows, bad, want, b
+
+
+def _grade(core, stack, evenness=True, patch=None):
     """Roots on `core` against the rule (`_want`), for all locks together and for each lock on its own skin
     there; limit |measured / expected - 1| <= max(0.15, 2 / sqrt(N)).
+    `patch` (the whole painted patch, `_patch`): each lock is graded on its own skin THERE instead (the user,
+    2026-11-15, B1: the limit is for all locks together and for each lock on its own skin inside the painted
+    area, not for a lock on one polygon). A lock whose skin there is ONE polygon is not passed or failed on it:
+    its numbers are listed (`locks_on_one_polygon`, with what the limit would say there), and its roots are in
+    the count of all locks together. The layers' scatter is one fixed draw a lock id, and on Helen's
+    hair_base_21 that draw is 45 roots where 33.7 are asked on one prim of 0.22 cm2 (t66: 40 seeds, mean 35.1,
+    sd 5.15; 1.5 % of (lock, prim) cases over the scalp; a scatter with a fixed count a prim is deferred).
+    The lock's numbers on `core` stay in the row as information (`locks_on_the_core`).
     A root is counted to the skin prim nearest it on the surface, and every root counts (no root is left out
-    for standing off the skin). A lock asked under one root there (N < 1: its skin only touches the core) is
-    not graded alone, as the t64 checker does not: the limit says nothing of a count under one (it allows
-    floor(N + 2 sqrt(N)) roots, 0 to 2); its roots are in the count of all locks together, and it is listed.
+    for standing off the skin). A lock asked under one root there (N < 1: its skin only touches the core)
+    may hold at most ceil(N + 2 sqrt(N)) roots (the upper side of the limit; none is also right), and its
+    roots are in the count of all locks together.
     Where no root at all is asked (a layer of 0 painted white), every lock must hold none."""
     area = float(K.area[core].sum())
     want, b, kept = _want(core, stack)
@@ -451,29 +532,28 @@ def _grade(core, stack, evenness=True):
     ida = G.root_ids()[keep_now]
     ids_, cnt_ = np.unique(la, return_counts=True)
     a = {int(i): int(c) for i, c in zip(ids_, cnt_)}
-    locks, bad = {}, []
-    for k in sorted(set(want) | set(a)):
-        w = want.get(k, 0.0)
-        got = a.get(k, 0)
-        skin = K.lock_area_in(core, k)
-        lim = lib.density_limit(w, 1.0) if w >= 1.0 else 0.0
-        if w <= 1e-9 and skin > 0:
-            ok = got == 0                                   # the lock has skin here and is asked no root: none at all
-        elif w < 1.0:
-            ok = True                                       # under one root asked: graded with all locks together
-        else:
-            ok = abs(got / w - 1) <= lim
-        ok = bool(ok)
-        locks[K.names[k]] = {"skin_cm2": r3(skin), "automatic": b.get(k, 0), "expected": r3(w),
-                             "roots": got, "ratio": r3(got / w) if w >= 1.0 else None, "limit": r3(lim), "pass": ok}
-        if not ok:
-            bad.append(K.names[k])
+    core_rows, core_bad, _w, _b2 = _lock_rows(core, stack)
+    one_poly = {}
+    if patch is not None and len(patch):
+        locks, bad, _wp, _bp = _lock_rows(patch, stack)
+        for name, v in locks.items():
+            if v["polygons"] == 1 and v["expected"] > 1e-9:
+                one_poly[name] = dict(v, inside_the_limit_on_that_polygon=v["pass"])
+                v.update({"pass": True, "graded": False})
+        bad = [k for k in bad if k not in one_poly]
+        graded_on = "the whole painted patch (%d prims, %.3f cm2, no margin)" % (len(patch), float(K.area[patch].sum()))
+    else:
+        locks, bad = core_rows, core_bad
+        graded_on = "the core"
     target = sum(want.values())
     got = sum(a.values())
     lim = lib.density_limit(target, 1.0) if target > 0 else 0.0
     row = {"core_cm2": r3(area), "automatic_per_cm2": r3(sum(b.values()) / area), "expected_per_cm2": r3(target / area),
            "measured_per_cm2": r3(got / area), "ratio": r3(got / target) if target > 0 else None, "limit": r3(lim),
-           "locks_on_core": len(locks), "locks_outside_their_limit": bad, "locks": locks,
+           "locks_on_core": len(core_rows), "locks_outside_their_limit": bad, "locks": locks,
+           "each_lock_graded_on": graded_on,
+           "locks_on_the_core": core_rows if patch is not None else None,
+           "locks_on_one_polygon": one_poly,
            "farthest_root_off_the_skin_cm": round(float(off_skin.max()), 4) if len(off_skin) else 0.0,
            "locks_asked_under_one_root": {k: {"roots": v["roots"], "asked": v["expected"]} for k, v in locks.items()
                                           if v["expected"] < 1.0 and v["roots"]},
@@ -525,7 +605,8 @@ def d1_density():
         for D in DENSITIES:
             d, p = _layer(D, zname)
             s, locks, _r = cook_all()
-            rows["= %g" % D] = dict(_grade(_core(p), [(D, 1.0, ALL)]), display_s=r3(s), locks_recooked=len(locks))
+            rows["= %g" % D] = dict(_grade(_core(p), [(D, 1.0, ALL)], patch=_patch(p)), display_s=r3(s),
+                                    locks_recooked=len(locks))
             ga.mask_remove(node, d)
             cook_all()
         C.add("d1_a_layer_of_D_painted_white_gives_D_" + zname, _all(rows), rows,
@@ -550,7 +631,7 @@ def d2_black_and_erase():
         d, p = _layer(300.0, zname)
         cook_all()
         core = _core(p)
-        white = _grade(core, [(300.0, 1.0, ALL)], evenness=False)
+        white = _grade(core, [(300.0, 1.0, ALL)], evenness=False, patch=_patch(p))
         K.paint_disc(p, c, 1.3, value=0.0)                                       # black over the white
         cook_all()
         mask_black = float(ga.mask_values(node, d)[0].max())
@@ -569,10 +650,11 @@ def d2_black_and_erase():
         top_d, top_p = _layer(300.0, zname)
         cook_all()
         inner = np.intersect1d(_core(top_p), _core(low_p))
-        on_top = _grade(inner, [(120.0, 1.0, ALL), (300.0, 1.0, ALL)], evenness=False)
+        patch = _patch(top_p, low_p)
+        on_top = _grade(inner, [(120.0, 1.0, ALL), (300.0, 1.0, ALL)], evenness=False, patch=patch)
         K.paint_disc(top_p, c, 1.3, value=0.0)
         cook_all()
-        below = _grade(inner, [(120.0, 1.0, ALL), (300.0, 0.0, ALL)], evenness=False)
+        below = _grade(inner, [(120.0, 1.0, ALL), (300.0, 0.0, ALL)], evenness=False, patch=patch)
         clear_layers()
         rows[zname] = {"white_300": {k: white[k] for k in ("ratio", "limit", "pass", "locks_outside_their_limit")},
                        "black_over_the_white": black, "erased": erased,
@@ -842,7 +924,7 @@ def b1_blend_modes():
             pts = np.unique(np.concatenate([K.S["prim_points"][p] for p in core]))
             want = _formula(below, value, mode, opacity)
             err = float(np.abs(mask[pts] - want).max())
-            row = _grade(core, [(300.0, want, ALL)])
+            row = _grade(core, [(300.0, want, ALL)], patch=_patch(a, b))
             row.update({"below": below, "value": value, "opacity": opacity, "formula_m": r3(want), "mask_error": err,
                         "pass": row["pass"] and err <= 1e-6})
             rows["%s %s over %s%s" % (mode, value, below, " at opacity %s" % opacity if opacity < 1 else "")] = row
@@ -865,7 +947,8 @@ def b3_multiply_bounds():
             b = ga.mask_add(node, "bound", parent=d, mode="multiply")
             K.paint_disc(b, Z[zname], 1.3, value=v)
             cook_all()
-            row = _grade(np.intersect1d(_core(a), _core(b)), [(300.0, v, ALL)])
+            row = _grade(np.intersect1d(_core(a), _core(b)), [(300.0, v, ALL)],
+                         patch=_patch(a, b))
             if v == 0.0:
                 row["roots_at_the_same_places"] = _same_roots(roots_ref)
                 row["every_point_equal_bytes"] = rest_points()[0] == ref[0]
@@ -1241,6 +1324,13 @@ def r5_fullcook():
           "v0.1's")
 
 
+def _moved(z, zv, unit):
+    """How far the points of one run stand from another's (same strands): numbers for a row."""
+    d = np.sqrt((((z["P"].astype(np.float64) - zv["P"]) * unit).reshape(-1, 3) ** 2).sum(1))
+    return {"coordinates_different": int((z["P"] != zv["P"]).sum()), "point_moved_max_cm": float("%.3g" % d.max()),
+            "points_moved": int((d > 0).sum())}
+
+
 def r6_old_scene_and_new_node():
     """B4 (the user's decision): a scene saved before "Fit lookup per lock" opens with it off and gives v0.1's
     groom byte for byte; with it on (a new node's default) the roots and the strand count of every lock are
@@ -1268,13 +1358,46 @@ def r6_old_scene_and_new_node():
     row = {"stored_schema": jo.get("stored_schema"), "lookup_as_opened": jo.get("lookup_as_opened"), "note_on_the_node": jo.get("note"),
            "strands": jo.get("strands"), "v01_strands": jv.get("strands"), "coordinates": int(len(zv["P"])),
            "points_byte_identical_to_v01": bool(zo["P"].tobytes() == zv["P"].tobytes()),
-           "lock_ids_identical": bool(np.array_equal(zo["lock"], zv["lock"])), "errors": jo.get("errors")}
-    ok = (row["lookup_as_opened"] == 0 and row["points_byte_identical_to_v01"] and row["lock_ids_identical"]
-          and not row["errors"] and (row["stored_schema"] or 1) < 5)
+           "lock_ids_identical": bool(np.array_equal(zo["lock"], zv["lock"])),
+           "same_strands_per_lock": bool(np.array_equal(zo["counts"], zv["counts"])), "errors": jo.get("errors")}
+    row.update(_moved(zo, zv, unit) if row["same_strands_per_lock"] else {})
+    ok = (row["lookup_as_opened"] == 0 and row["lock_ids_identical"] and row["same_strands_per_lock"]
+          and row["point_moved_max_cm"] <= OLD_SCENE_CM and not row["errors"] and (row["stored_schema"] or 1) < 5)
     C.add("r6_an_old_scene_opens_with_the_lookup_off", ok, row,
           "the Helen scene with a groom made and saved by the v0.1 suite (saved_by_v01.hiplc), opened with this HDA: \"Fit lookup per lock\" reads off (set on the node "
-          "by OnLoaded, once), and the rest groom is v0.1's byte for byte (every coordinate, every lock id)",
+          "by OnLoaded, once), and the rest groom is v0.1's within v0.1's own run-to-run difference: every lock's "
+          "strand count equal, no point farther than 0.002 cm from v0.1's (v0.1 against itself: 0.00164 cm at most)",
           evidence="asopened_opened.json / .npz, asopened_v01.json / .npz")
+    # N1 (t66): the Helen scene AS v0.1 SAVED IT. Its regions carry no rule number, so OnLoaded marks them out
+    # of date and writes groom_data again in today's schema: the toggle must be decided before that
+    got = {}
+    for tag, suite in (("helen_opened", SUITE), ("helen_v01", V01)):
+        outf = OUT + "/asopened_%s.json" % tag
+        hython([HERE + "/accept_v02a_sub.py", "asopened", suite, SCENE, outf, HERE], "asopened_%s.log" % tag)
+        if not os.path.isfile(outf) or not os.path.isfile(OUT + "/asopened_%s.npz" % tag):
+            C.add("r6c_helen_as_v01_saved_it_opens_with_the_lookup_off", False, tag, note="see asopened_%s.log" % tag)
+            break
+        with open(outf, encoding="utf-8") as fh:
+            got[tag] = (json.load(fh), np.load(OUT + "/asopened_%s.npz" % tag))
+    else:
+        (jh, zh), (jw, zw) = got["helen_opened"], got["helen_v01"]
+        same = bool(np.array_equal(zh["lock"], zw["lock"]) and np.array_equal(zh["counts"], zw["counts"]))
+        row3 = {"lookup_as_opened": jh.get("lookup_as_opened"), "lookup_cooked": jh.get("lookup_cooked"),
+                "note_on_the_node": jh.get("note"), "stored_schema_after_loading": jh.get("stored_schema"),
+                "strands": jh.get("strands"), "v01_strands": jw.get("strands"), "same_strands_per_lock": same,
+                "errors": jh.get("errors")}
+        C.add("r6c_helen_as_v01_saved_it_opens_with_the_lookup_off",
+              row3["lookup_as_opened"] == 0 and row3["lookup_cooked"] == 0 and bool(row3["note_on_the_node"]) and same
+              and not row3["errors"], row3,
+              "the Helen scene as v0.1 saved it (regions without a rule number: OnLoaded writes the data again), opened "
+              "with this HDA: \"Fit lookup per lock\" reads off and cooks off, the node carries the note, and every "
+              "lock's strand count is v0.1's", evidence="asopened_helen_opened.json / .npz, asopened_helen_v01.json / .npz")
+        row4 = {"coordinates": int(len(zw["P"])), "same_strands_per_lock": same, "bound_cm": OLD_SCENE_HELEN_CM}
+        row4.update(_moved(zh, zw, jw.get("unit_cm", 1.0)) if same else {})
+        C.add("r6d_helen_as_v01_saved_it_is_v01s_groom", same and row4["point_moved_max_cm"] <= OLD_SCENE_HELEN_CM, row4,
+              "the same scene, the rest groom against v0.1 opening it: every lock's strand count equal and no point "
+              "farther than 0.0098 cm from v0.1's, the most v0.1 differs from itself on this scene (t66: 206,007 "
+              "coordinates)")
     # the toggle on: what a new node gives
     same_locks = bool(np.array_equal(zn["lock"], zv["lock"]) and np.array_equal(zn["counts"], zv["counts"]))
     row2 = {"lookup_cooked": jn.get("lookup_cooked"), "strands": jn.get("strands"), "same_strands_per_lock": same_locks}
@@ -1285,14 +1408,15 @@ def r6_old_scene_and_new_node():
         d = np.sqrt(((a - b) ** 2).sum(1))
         starts = np.concatenate(([0], np.cumsum(zv["counts"])[:-1]))
         row2.update({"root_moved_max_cm": float("%.3g" % d[starts].max()), "point_moved_max_cm": round(float(d.max()), 4),
+                     "point_moved_median_of_the_moved_cm": float("%.3g" % np.median(d[d > 0])) if (d > 0).any() else 0.0,
                      "points_moved_share": round(float((d > 0).mean()), 4),
                      "points_moved_over_0.1_cm_share": round(float((d > 0.1).mean()), 5),
-                     "coordinates_different": int((zn["P"] != zv["P"]).sum()), "bound_cm": LOOKUP_BOUND_CM})
-        ok2 = row2["lookup_cooked"] == 1 and d[starts].max() <= SAME_ROOT_CM and d.max() <= LOOKUP_BOUND_CM
+                     "coordinates_different": int((zn["P"] != zv["P"]).sum())})
+        ok2 = row2["lookup_cooked"] == 1 and d[starts].max() <= SAME_ROOT_CM
     C.add("r6b_the_lookup_on_keeps_roots_and_counts", ok2, row2,
           "the same scene with \"Fit lookup per lock\" on (a new node's default): every lock's strand count is v0.1's, "
-          "every root within 1e-5 cm of v0.1's, and no strand point farther than 0.5 cm from v0.1's (measured: 4.10 "
-          "mm in t64, 4.69 mm on this scene; the bound is this script's statement of that, not a limit of the plan)", evidence="asopened_on.json / .npz")
+          "and every root within 1e-5 cm of v0.1's. How far the strand points move is printed, not "
+          "graded (the user, 2026-11-15): 0.469 cm at most on this scene, 0.958 cm on Helen as saved (t66)", evidence="asopened_on.json / .npz")
 
 
 # ---------------------------------------------------------------------------

@@ -163,3 +163,8 @@ ROOT_DENSITY_CELL_CM = 0.5     # roots and skin are counted in boxes of 3 cells 
 PAINT_STATE = "mono_grooming_mask_paint"   # the Python viewer state (apps/houdini/grooming_paint_state.py)
 UNDO_CACHE_PARM = "undo_cache_gb"   # how much hair the per-lock cache may hold (GB): what undo finds without a recook
 UNDO_CACHE_GB = 2.0
+# the display's deformed states (Shot deform on): one a stroke, each the WHOLE deformed groom, held apart from the
+# limit above with a limit of their own (the user, 2026-11-15, t66 B6). The default and what it holds on Helen:
+# tools/fx/grooming/CLAUDE.md, "t67"
+UNDO_DEFORM_PARM = "undo_deform_gb"
+UNDO_DEFORM_GB = 4.0

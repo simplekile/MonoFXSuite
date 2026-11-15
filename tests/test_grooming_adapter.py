@@ -379,14 +379,34 @@ def test_anim_mismatch_text():
 
 
 def test_a_scene_from_before_the_fit_lookup_keeps_it_off():
-    """Only a stored groom_data of schema 1 to 4 is such a scene; a new node (no data) keeps the default."""
+    """Whether the saved scene file holds the parm decides (the parm came in the middle of the schema 4 test
+    builds, t66 N2); the schema only when there is no file to read. A new node (no data) keeps the default."""
     import json
-    assert ga.scene_before_lookup(json.dumps({"schema": 1, "locks": []}))
-    assert ga.scene_before_lookup(json.dumps({"locks": []}))               # v0.1 wrote schema 1; none = 1
-    assert ga.scene_before_lookup(json.dumps({"schema": 4}))
-    assert not ga.scene_before_lookup(json.dumps({"schema": ga.LOOKUP_SINCE_SCHEMA}))
-    assert not ga.scene_before_lookup(json.dumps({"schema": 6}))
-    assert not ga.scene_before_lookup("") and not ga.scene_before_lookup(None) and not ga.scene_before_lookup("{broken")
+    v01, s4, s6 = (json.dumps({"schema": n, "locks": []}) for n in (1, 4, 6))
+    assert ga.scene_before_lookup(v01, held=False) and ga.scene_before_lookup(s4, held=False)
+    assert not ga.scene_before_lookup(s6, held=False)    # a new node made in an old scene, given its data
+    assert not ga.scene_before_lookup(v01, held=True)    # saved again by a build with the parm: the artist's
+    assert not ga.scene_before_lookup(s4, held=True) and not ga.scene_before_lookup(s6, held=True)
+    assert ga.scene_before_lookup(v01) and ga.scene_before_lookup(json.dumps({"locks": []}))   # no file: schema
+    assert ga.scene_before_lookup(json.dumps({"schema": 3})) and not ga.scene_before_lookup(s4)
+    assert not ga.scene_before_lookup(s6)
+    for held in (None, False, True):
+        assert not ga.scene_before_lookup("", held) and not ga.scene_before_lookup(None, held)
+    assert not ga.scene_before_lookup("{broken")
+
+
+def test_hip_holds_reads_the_parm_name_from_the_file(tmp_path):
+    f = tmp_path / "a.hip"
+    f.write_bytes(b"x" * ((1 << 20) - 5) + b"lookup_per_piece" + b"y" * 100)      # across a block edge
+    assert ga.hip_holds(str(f), "lookup_per_piece") is True
+    assert ga.hip_holds(str(f), "another_parm") is False
+    assert ga.hip_holds(str(tmp_path / "none.hip"), "lookup_per_piece") is None and ga.hip_holds("", "x") is None
+
+
+def test_on_loaded_decides_the_lookup_before_the_data_is_written_again():
+    import inspect
+    src = inspect.getsource(ga.on_loaded)
+    assert src.index("keep_old_lookup(node)") < src.index("mark_old_regions(node)")
     assert callable(ga.keep_old_lookup) and "off" in ga.LOOKUP_KEPT_TEXT
 
 
@@ -404,7 +424,8 @@ def test_no_output_captures_in_the_loop():
 
 
 def test_deformed_states_never_push_the_hair_out():
-    """`keep_bytes`: one slot's states inside a share of the limit, the oldest going first, the last kept."""
+    """`keep_bytes`: one slot's states inside a limit of their own, the oldest going first, the last kept; the
+    deformed states are held apart from the hair's limit (neither pushes the other out)."""
     c = ga.LockCache(sizer=len, limit=10_000)
     slot = ga.DEFORMED_MODE + "hair"
     for k in "abcd":
@@ -413,17 +434,21 @@ def test_deformed_states_never_push_the_hair_out():
     assert c.keep_bytes(1, ga.MERGED_LOCK, slot, 250) == 2
     assert [c.has(1, ga.MERGED_LOCK, slot, k) for k in "abcd"] == [False, False, True, True]
     assert c.keep_bytes(1, ga.MERGED_LOCK, slot, 0) == 1 and c.has(1, ga.MERGED_LOCK, slot, "d")    # the last stays
-    assert c.has(1, 5, "hair", "h") and c.usage(1)["bytes"] == 150
+    use = c.usage(1)
+    assert c.has(1, 5, "hair", "h") and use["bytes"] == 50 and use["deformed_bytes"] == 100 and use["deformed_states"] == 1
     assert c.keep_bytes(1, ga.MERGED_LOCK, "nothing", 0) == 0
-    # full: a deformed state goes before any hair state, however lately it was used
-    c = ga.LockCache(sizer=len, limit=450)
+    # apart: deformed states are not in the hair's count, and the hair filling its limit drops none of them
+    c = ga.LockCache(sizer=len, limit=250)
     c.put(1, 5, "hair", "h0", "y" * 100)
     c.put(1, 5, "hair", "h1", "y" * 100)
     c.put_derived(1, ga.MERGED_LOCK, slot, "d0", "x" * 100)
     c.put_derived(1, ga.MERGED_LOCK, slot, "d1", "x" * 100)
+    assert c.usage(1)["bytes"] == 200 and c.apart_bytes(1) == 200     # (has() would count as a use)
     c.begin(1)
-    c.put(1, 5, "hair", "h2", "y" * 100)             # over the limit
-    assert not c.has(1, ga.MERGED_LOCK, slot, "d0") and c.has(1, 5, "hair", "h0") and c.has(1, 5, "hair", "h1")
+    c.put(1, 5, "hair", "h2", "y" * 100)             # the hair over its limit: its oldest state goes
+    assert not c.has(1, 5, "hair", "h0") and c.has(1, 5, "hair", "h2")
+    assert c.has(1, ga.MERGED_LOCK, slot, "d0") and c.has(1, ga.MERGED_LOCK, slot, "d1")
+    assert c.usage(1)["bytes"] <= 250 and config.UNDO_DEFORM_PARM in ga._KEY_SKIP_PARMS
     assert ga.GROOM_CAPTURE_MODE != ga.cache_mode(False, 1.0, 1) and callable(ga.cook_groom_captured)
     assert callable(ga.cook_capture_keys) and callable(ga.cook_capture_load) and callable(ga.cook_capture_store)
 

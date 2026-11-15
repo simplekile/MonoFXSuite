@@ -85,9 +85,16 @@ def _end_paint(why: str, said: str = "another node is selected") -> None:
 
 
 def esc() -> None:
-    """Esc: leave Paint and keep what was painted, the stroke the mouse still holds too."""
+    """Esc: leave Paint and keep what was painted, the stroke the mouse still holds too. Paint is off FIRST:
+    storing the stroke cooks the node, and a cook runs Qt's event loop (Houdini's interrupt check), so with
+    Paint still on during it the brush stayed on for as long as the cook took (a stroke over 4,000 points:
+    Paint still on 0.3 s after Esc, t66 B8(b)); the cook then ran with Paint already over."""
+    t0 = time.perf_counter()
     state = LIVE.get("state")
-    if state is not None and state.down:
+    pending = state is not None and state.down
+    gm.PAINT["node"], gm.PAINT["layer"] = None, None      # off now: no dab from here on (_mouse), paint_layer None
+    STATS["esc_off_s"] = time.perf_counter() - t0
+    if pending:
         try:
             state._end_stroke()
         except Exception:
@@ -124,6 +131,10 @@ def _esc_filter():
                 if kind not in (QtCore.QEvent.KeyPress, QtCore.QEvent.ShortcutOverride) or \
                         event.key() != QtCore.Qt.Key_Escape:
                     return False
+                STATS["esc_seen"] = STATS.get("esc_seen", []) + [(
+                    "override" if kind == QtCore.QEvent.ShortcutOverride else "press", type(obj).__name__,
+                    type(QtWidgets.QApplication.focusWidget()).__name__, gm.PAINT["node"] is not None,
+                    LIVE.get("state") is not None, bool(getattr(LIVE.get("state"), "down", False)))][-12:]
                 if gm.PAINT["node"] is None or LIVE.get("state") is None:
                     took = LIVE.get("esc_took", 0.0)
                     if kind == QtCore.QEvent.KeyPress and time.perf_counter() - took < ESC_PAIR_S:

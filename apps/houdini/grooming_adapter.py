@@ -71,7 +71,7 @@ PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playb
 
 # Parms whose value never reaches the per-lock hair cook (display, publish, deform, what the geometry
 # already carries): left out of the cache key, so changing them recooks no lock.
-_KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, config.MASK_PARM, config.UNDO_CACHE_PARM, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
+_KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, config.MASK_PARM, config.UNDO_CACHE_PARM, config.UNDO_DEFORM_PARM, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
                    PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_STRANDS,
                    PARM_FOCUS, PARM_DRAG_FACTOR, PARM_COOK_ALL, PARM_XRAY,
                    "shot_deform", "deform_active", "anim_wired",   # per lock: do_capture; deform_radius stays
@@ -269,29 +269,41 @@ class LockCache:
         return next(reversed(self._d[slot])) == key or self._meta[slot][key][2] == self._gen.get(slot[0], 0)
 
     TRIM_TO = 0.95      # once full, room is made down to this share of the limit: not a sort on every store
-    FIRST_TO_GO = ("deformed:",)    # slots whose states go before any hair: made again without growing a lock
+    # slots held APART from the limit: the display's deformed states have a limit of their own (the node's
+    # "Deformed undo, GB", `keep_bytes`), so they never push a hair state out and no hair state pushes them
+    APART = ("deformed:",)
+
+    def apart_bytes(self, node_id: int) -> int:
+        return sum(m[0] for slot, keys in self._meta.items()
+                   if slot[0] == node_id and slot[2].startswith(self.APART) for m in keys.values())
 
     def _trim(self, node_id: int) -> None:
         limit = self.limit(node_id)
-        if self._bytes.get(node_id, 0) <= limit:
+        used = self._bytes.get(node_id, 0) - self.apart_bytes(node_id)
+        if used <= limit:
             return
-        old = sorted((not slot[2].startswith(self.FIRST_TO_GO), m[1], slot, key)
-                     for slot, keys in self._meta.items() if slot[0] == node_id
+        old = sorted((m[1], slot, key)
+                     for slot, keys in self._meta.items() if slot[0] == node_id and not slot[2].startswith(self.APART)
                      for key, m in keys.items() if not self._in_use(slot, key))
-        old = [row[1:] for row in old]
         for _tick, slot, key in old:
-            if self._bytes.get(node_id, 0) <= limit * self.TRIM_TO:
+            if used <= limit * self.TRIM_TO:
                 break
+            used -= self._meta[slot][key][0]
             self._forget(slot, key)
             self._dropped[node_id] = self._dropped.get(node_id, 0) + 1
 
     def usage(self, node_id: int) -> dict:
-        """What the node's cache holds: `bytes` in all, of which `live_bytes` the state in use (never
-        dropped) and `undo_bytes` the older states an undo or redo can return to (`undo_states` of them);
-        `limit_bytes`; `dropped`: states dropped so far to stay inside the limit."""
-        live = undo = states = entries = 0
+        """What the node's cache holds against its limit: `bytes` in all, of which `live_bytes` the state in
+        use (never dropped) and `undo_bytes` the older states an undo or redo can return to (`undo_states` of
+        them); `limit_bytes`; `dropped`: states dropped so far to stay inside the limit. The slots held apart
+        (`APART`: the deformed display) are not in those: `deformed_bytes`, `deformed_states`."""
+        live = undo = states = entries = apart = apart_n = 0
         for slot, keys in self._meta.items():
             if slot[0] != node_id:
+                continue
+            if slot[2].startswith(self.APART):
+                apart += sum(m[0] for m in keys.values())
+                apart_n += len(keys)
                 continue
             for key, m in keys.items():
                 entries += 1
@@ -301,7 +313,8 @@ class LockCache:
                     undo += m[0]
                     states += 1
         return {"bytes": live + undo, "live_bytes": live, "undo_bytes": undo, "undo_states": states,
-                "entries": entries, "limit_bytes": self.limit(node_id), "dropped": self._dropped.get(node_id, 0)}
+                "entries": entries, "limit_bytes": self.limit(node_id), "dropped": self._dropped.get(node_id, 0),
+                "deformed_bytes": apart, "deformed_states": apart_n}
 
     # ---- housekeeping ----
     def keep_only(self, node_id: int, lock_id: int, mode: str, keys) -> None:
@@ -381,6 +394,7 @@ def undo_cache_usage(node) -> dict:
     use = cache.usage(node.sessionId())
     use["gb"] = use["bytes"] / 2 ** 30
     use["limit_gb"] = use["limit_bytes"] / 2 ** 30
+    use["deformed_limit_bytes"] = undo_deform_limit(node)
     # output 1's Point Deform captures (one a lock, only once the deformed output was read): not hair, not
     # in the limit's count
     use["capture_bytes"] = sum(_geo_bytes(g) for mode in ("hair", "hair_preview", "drag")
@@ -392,6 +406,14 @@ def undo_cache_limit(top) -> int:
     """The node's undo cache limit in bytes (its `undo_cache_gb`; a node built before the parm: the default)."""
     parm = top.parm(config.UNDO_CACHE_PARM)
     gb = float(parm.eval()) if parm is not None else config.UNDO_CACHE_GB
+    return int(max(gb, 0.0) * 2 ** 30)
+
+
+def undo_deform_limit(top) -> int:
+    """The limit of the display's deformed states in bytes (the node's `undo_deform_gb`, "Deformed undo, GB";
+    a node built before the parm: the default)."""
+    parm = top.parm(config.UNDO_DEFORM_PARM)
+    gb = float(parm.eval()) if parm is not None else config.UNDO_DEFORM_GB
     return int(max(gb, 0.0) * 2 ** 30)
 
 
@@ -1420,8 +1442,9 @@ def on_loaded(node) -> None:
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)
-        mark_old_regions(node)
+        # the toggle first: mark_old_regions may write the data again, in today's schema (t66 N1)
         kept = keep_old_lookup(node)
+        mark_old_regions(node)
     if kept:
         _status(f"{config.HDA_LABEL}: {LOOKUP_KEPT_TEXT}")
     # layers of an older test build's removed kinds are dropped on reading (model.migrate): said once, on
@@ -1433,35 +1456,66 @@ def on_loaded(node) -> None:
 
 
 LOOKUP_PARM = "lookup_per_piece"         # the node's "Fit lookup per lock"
-LOOKUP_SINCE_SCHEMA = 5                  # groom_data schema of the build that added it (round 3, t62)
+LOOKUP_SINCE_SCHEMA = 4                  # no build under schema 4 had the parm; every build from 5 on has it
 LOOKUP_NOTE = "monofx_fit_lookup"        # node user data: the choice for a scene from before the parm was made
 LOOKUP_KEPT_TEXT = ("this scene was saved before \"Fit lookup per lock\": it is off, so the groom is the one "
-                    "the scene was saved with, byte for byte. Turn it on on the node for faster strokes "
-                    "(strand points then move by up to ~4 mm)")
+                    "the scene was saved with. Turn it on on the node for faster strokes (strand points then "
+                    "move: by up to 1 cm on the Helen test scene)")
 
 
-def scene_before_lookup(stored: str | None) -> bool:
-    """Pure: the stored `groom_data` is of a scene saved before "Fit lookup per lock" existed (v0.1, schema 1,
-    and the test builds up to schema 4). A node with no data yet is a new node: not such a scene."""
+def hip_holds(path: str | None, name: str) -> bool | None:
+    """The saved scene file names the parm (a hip stores every parm of a node by name, as plain text, a
+    .hiplc / .hipnc too): True / False, None when there is no file to read (a scene never saved)."""
+    if not path or not os.path.isfile(path):
+        return None
+    word, tail = name.encode("ascii"), b""
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                block = fh.read(1 << 20)
+                if not block:
+                    return False
+                if word in tail + block:
+                    return True
+                tail = block[-len(word):]
+    except OSError:
+        return None
+
+
+def scene_before_lookup(stored: str | None, held: bool | None = None) -> bool:
+    """Pure: the node comes from a scene saved before "Fit lookup per lock" existed. Data of schema 5 or
+    more was written by a build with the parm: never (also a new node made in an old scene, once it has data).
+    Under that, `held`, whether the saved scene file holds the parm (`hip_holds`), is the fact itself and true
+    for every build: the parm came in the middle of the schema 4 test builds (245f480 has it, on; two schema 4
+    commits before it do not), so the schema alone cannot tell (t66 N2), and a v0.1 scene saved again by a
+    build with the parm keeps what it was saved with. Without a file to read (None) the schema decides: under
+    4 no build had it. A node with no data yet is a new node: not such a scene."""
     if not stored or not stored.strip():
         return False
     try:
-        return int(json.loads(stored).get("schema", 1)) < LOOKUP_SINCE_SCHEMA
+        schema = int(json.loads(stored).get("schema", 1))
     except (ValueError, TypeError, AttributeError):
         return False
+    if schema > LOOKUP_SINCE_SCHEMA:
+        return False
+    return (not held) if held is not None else schema < LOOKUP_SINCE_SCHEMA
 
 
 def keep_old_lookup(node) -> bool:
     """OnLoaded: a scene saved before "Fit lookup per lock" existed opens with it OFF, written on the node (the
     user's decision, 2026-11-15, t64 B4): such a scene holds no value for the parm, so it would take the
     default, on, and its groom would no longer be the one it was saved and published with (same roots and
-    strand counts, strand points up to 4.1 mm off). Off, the groom is v0.1's byte for byte. Done once a node
-    (user data `monofx_fit_lookup`, saved with the hip): after that the parm is the artist's, who may turn it
-    on. A new node keeps the default, on. True when the parm was set."""
+    strand counts, strand points moved: up to 0.47 cm on a fresh Helen groom, 0.96 cm on the Helen scene as
+    v0.1 saved it, t66). Off, the groom is v0.1's within v0.1's own run-to-run difference (a few strands by
+    0.002 cm in 4 of 10 runs). Must run before anything writes `groom_data` again (OnLoaded's
+    `mark_old_regions` rewrote a schema 1 scene as today's schema first: N1). Done once a node (user data
+    `monofx_fit_lookup`, saved with the hip): after that the parm is the artist's, who may turn it on. A new
+    node keeps the default, on. A node merged from another file is judged by the scene it is merged INTO
+    (the file Houdini names). True when the parm was set."""
     p = node.parm(LOOKUP_PARM)
     if p is None or node.userData(LOOKUP_NOTE) is not None:
         return False
-    if not scene_before_lookup(node.evalParm(config.DATA_PARM)):
+    if not scene_before_lookup(node.evalParm(config.DATA_PARM), hip_holds(hou.hipFile.path(), LOOKUP_PARM)):
         return False
     with hou.undos.disabler():
         p.set(0)
@@ -1958,16 +2012,14 @@ def cook_deform_keys(sop) -> None:
     geo.setGlobalAttribValue("deform_cached", int(hair_cache().has(sop.parent().sessionId(), MERGED_LOCK, DEFORMED_MODE + "hair", key)))
 
 
-DEFORMED_SHARE = 0.5     # of the node's undo cache limit: what the deformed display's states may hold together
-
-
 def cook_deform_store(sop) -> None:
     """Python SOP "deform_store": keep the display's deformed hair (input 0, without the capture) under
     `deform_keys`' key (input 1) and pass it on. States of another frame are dropped first (they can never be
-    read again but by going back to that frame), and the states together hold at most DEFORMED_SHARE of the
-    node's undo cache limit, the oldest going first: a state is the whole deformed groom (Helen ~135 MB by
-    `memoryusage`, a stroke's hair 26 MB), and the hair's own states must outlive it (a deformed state is
-    made again without growing a lock)."""
+    read again but by going back to that frame), and the states together hold at most the node's "Deformed
+    undo, GB" (`undo_deform_limit`; the user's decision on B6, 2026-11-15: memory, not a packed display), the
+    oldest going first; the state in use always stays. A state is the whole deformed groom, so it is large;
+    it is held apart from "Undo cache, GB" (`LockCache.APART`), so the hair's own states and the deformed ones
+    never push each other out, and neither limit is exceeded."""
     keys = sop.inputs()[1].geometry()
     key = keys.attribValue("deform_key")
     cache = hair_cache()
@@ -1979,7 +2031,7 @@ def cook_deform_store(sop) -> None:
         cache.drop(sid, MERGED_LOCK, slot)
         _DEFORM_FRAME[sid] = frame
     cache.put_derived(sid, MERGED_LOCK, slot, key, sop.geometry().freeze(read_only=True))
-    cache.keep_bytes(sid, MERGED_LOCK, slot, undo_cache_limit(top) * DEFORMED_SHARE)
+    cache.keep_bytes(sid, MERGED_LOCK, slot, undo_deform_limit(top))
 
 
 _DEFORM_FRAME: dict[int, float] = {}     # node session id -> the frame its deformed states are of
