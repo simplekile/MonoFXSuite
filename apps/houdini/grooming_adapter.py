@@ -1483,22 +1483,25 @@ def hip_holds(path: str | None, name: str) -> bool | None:
 
 
 def scene_before_lookup(stored: str | None, held: bool | None = None) -> bool:
-    """Pure: the node comes from a scene saved before "Fit lookup per lock" existed. Data of schema 5 or
-    more was written by a build with the parm: never (also a new node made in an old scene, once it has data).
-    Under that, `held`, whether the saved scene file holds the parm (`hip_holds`), is the fact itself and true
-    for every build: the parm came in the middle of the schema 4 test builds (245f480 has it, on; two schema 4
-    commits before it do not), so the schema alone cannot tell (t66 N2), and a v0.1 scene saved again by a
-    build with the parm keeps what it was saved with. Without a file to read (None) the schema decides: under
-    4 no build had it. A node with no data yet is a new node: not such a scene."""
+    """Pure: the node comes from a scene saved before "Fit lookup per lock" existed. `held`, whether the
+    saved scene file holds the parm (`hip_holds`), is the fact itself and decides whenever it is known,
+    whatever the data's schema: the parm came in the middle of the schema 4 test builds (245f480 has it, on;
+    two schema 4 commits before it do not), so the schema cannot tell (t66 N2), and the data may have been
+    written again in today's schema before this library took over (t67: a scene opened with a library of
+    another checkout that has no such parm; its OnLoaded `mark_old_regions` rewrote the data, then OnUpdated
+    read schema 6). A v0.1 scene saved again by a build with the parm keeps what it was saved with. Without a
+    file to read (None) the schema decides: under 4 no build had it, from 5 on every build had it. A node with
+    no data yet is a new node: not such a scene (a node made in this session carries the note from
+    `on_created` and is never judged)."""
     if not stored or not stored.strip():
         return False
     try:
         schema = int(json.loads(stored).get("schema", 1))
     except (ValueError, TypeError, AttributeError):
         return False
-    if schema > LOOKUP_SINCE_SCHEMA:
-        return False
-    return (not held) if held is not None else schema < LOOKUP_SINCE_SCHEMA
+    if held is not None:
+        return not held
+    return schema < LOOKUP_SINCE_SCHEMA
 
 
 def keep_old_lookup(node) -> bool:
@@ -1521,6 +1524,18 @@ def keep_old_lookup(node) -> bool:
         p.set(0)
         node.setUserData(LOOKUP_NOTE, "off: the scene was saved before the parm existed")
     return True
+
+
+def on_created(node) -> None:
+    """HDA OnCreated: a node made now keeps "Fit lookup per lock" at its default, on, whatever scene it is made
+    in (the note marks the choice made, so OnLoaded / OnUpdated never force it off), and the playbar
+    callback."""
+    try:
+        if node.parm(LOOKUP_PARM) is not None and node.userData(LOOKUP_NOTE) is None:
+            node.setUserData(LOOKUP_NOTE, "new node: the default")
+    except hou.Error:
+        pass
+    install_playbar_callback()
 
 
 def on_updated(node) -> None:

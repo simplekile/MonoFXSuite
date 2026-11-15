@@ -1881,8 +1881,9 @@ def build_network(sub) -> None:
     piece_cloud.parm("transfer_attributes").set("*")
     # the node's "Fit lookup per lock" (lookup_per_piece, on): off, the whole cloud as v0.1 looked it up.
     # The two find the same spot on the mesh within the lookup's own noise (a nearest-face search in a
-    # flattened space with folds): Helen, no layer, 45 % of the strand points move, half of them under
-    # 0.008 mm, 1 % over 1 mm, at most 4 mm; every root and strand count is the same
+    # flattened space with folds): Helen, no layer, 45-57 % of the strand points move, half of them under
+    # 0.01 mm, at most 4.7 mm on a fresh groom and 9.6 mm on Helen as v0.1 saved it (t66); every root and
+    # strand count is the same
     fit_cloud = _node(sub, "switch", "fit_cloud", [surface, piece_cloud])
     fit_cloud.parm("input").setExpression('ch("../lookup_per_piece")')
     fit_root = _wrangle(sub, "fit_root", VEX_FIT_ROOT, PRIM, [spread, begin, frame, fit_cloud])
@@ -2344,8 +2345,9 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     adv.addParmTemplate(hou.ToggleParmTemplate(
         "lookup_per_piece", "Fit lookup per lock", default_value=True,
         help="Each lock looks its strands up on its own mesh piece: a third less to cook per lock. Off: the "
-             "whole hair mesh at once, as v0.1 did (the same hair within a few hundredths of a millimetre for "
-             "most points, up to 4 mm for a few on folded mesh)."))
+             "whole hair mesh at once, as v0.1 did. On and off give the same roots and strand counts; strand "
+             "points move between them (on the Helen test scene about half of them, most by under 0.01 mm, "
+             "the farthest by 5 to 10 mm). A scene saved before this parm existed opens with it off."))
     # how much hair the per-lock cache may hold: the states an undo or redo returns to without a recook.
     # Saved with the hip; not in any lock's cache key (changing it regrows nothing)
     adv.addParmTemplate(hou.FloatParmTemplate(
@@ -2412,7 +2414,7 @@ ON_UPDATED = """from apps.houdini import grooming_adapter
 grooming_adapter.on_updated(kwargs["node"])
 """
 ON_CREATED = """from apps.houdini import grooming_adapter
-grooming_adapter.install_playbar_callback()
+grooming_adapter.on_created(kwargs["node"])
 """
 
 

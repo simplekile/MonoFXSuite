@@ -384,7 +384,7 @@ def test_a_scene_from_before_the_fit_lookup_keeps_it_off():
     import json
     v01, s4, s6 = (json.dumps({"schema": n, "locks": []}) for n in (1, 4, 6))
     assert ga.scene_before_lookup(v01, held=False) and ga.scene_before_lookup(s4, held=False)
-    assert not ga.scene_before_lookup(s6, held=False)    # a new node made in an old scene, given its data
+    assert ga.scene_before_lookup(s6, held=False)        # data written again before this library took over (t67)
     assert not ga.scene_before_lookup(v01, held=True)    # saved again by a build with the parm: the artist's
     assert not ga.scene_before_lookup(s4, held=True) and not ga.scene_before_lookup(s6, held=True)
     assert ga.scene_before_lookup(v01) and ga.scene_before_lookup(json.dumps({"locks": []}))   # no file: schema
@@ -401,6 +401,34 @@ def test_hip_holds_reads_the_parm_name_from_the_file(tmp_path):
     assert ga.hip_holds(str(f), "lookup_per_piece") is True
     assert ga.hip_holds(str(f), "another_parm") is False
     assert ga.hip_holds(str(tmp_path / "none.hip"), "lookup_per_piece") is None and ga.hip_holds("", "x") is None
+
+
+def test_a_node_made_now_keeps_the_lookup_default(monkeypatch):
+    """OnCreated marks the choice made, so a node made in an old scene is never forced off (t67: the file
+    decides over the schema, and the file of an old scene never holds the parm)."""
+    class Node:
+        def __init__(self, note=None):
+            self.data = {} if note is None else {ga.LOOKUP_NOTE: note}
+
+        def parm(self, name):
+            return object() if name == ga.LOOKUP_PARM else None
+
+        def userData(self, key):
+            return self.data.get(key)
+
+        def setUserData(self, key, value):
+            self.data[key] = value
+
+    monkeypatch.setattr(ga, "install_playbar_callback", lambda: None)
+    n = Node()
+    ga.on_created(n)
+    assert n.userData(ga.LOOKUP_NOTE) == "new node: the default"
+    kept = Node("off: the scene was saved before the parm existed")
+    ga.on_created(kept)
+    assert kept.userData(ga.LOOKUP_NOTE).startswith("off")
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert 'grooming_adapter.on_created(kwargs["node"])' in build
 
 
 def test_on_loaded_decides_the_lookup_before_the_data_is_written_again():
