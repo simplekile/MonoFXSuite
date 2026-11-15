@@ -2000,14 +2000,37 @@ def build_network(sub) -> None:
     pick = _node(sub, "switch", "anim_packed", [in_anim, polys])
     pick.parm("input").setExpression('detail("../anim_kind", "packed", 0)')
     anim_hair = _wrangle(sub, "ANIM_HAIR", VEX_ANIM_CHECK, DETAIL, [pick, in_hair])
-    # Hair strands come captured from the cache (lock_capture); only the mesh and guide parts are captured
-    # here (small, and only when some lock shows them). Then only the deform runs per frame and per edit.
+    # The mesh and guide parts are captured here (small, and only when some lock shows them) and deformed on
+    # their own.
     mesh_guide = _node(sub, "merge", "mesh_guide", [mesh_col, guide_col])
     capture = _node(sub, "pointdeform", "deform_capture", [mesh_guide, in_hair], mode="capture")
     capture.parm("radius").setExpression('ch("../deform_radius")')
-    to_deform = _node(sub, "merge", "to_deform", [capture, hair_col])
-    deform = _node(sub, "pointdeform", "deform", [to_deform, in_hair, anim_hair], mode="deform")
-    deform.parm("radius").setExpression('ch("../deform_radius")')
+    mg_deform = _node(sub, "pointdeform", "deform_mesh_guide", [capture, in_hair, anim_hair], mode="deform")
+    mg_deform.parm("radius").setExpression('ch("../deform_radius")')
+    # The hair: the locks' rest strands (the same cache entries as the display at rest), captured per lock
+    # outside the hair cache as output 1's are (_capture_loop), deformed, and the result kept by its state
+    # (deform_keys: the locks' keys and the animated mesh at this frame). A state seen before (an undo, a
+    # redo, the same frame again) is read back: no capture, no Point Deform. Captured inside the per-lock
+    # loop (v0.1) every state of a lock held 800 B a point: with Shot deform on every undo regrew its locks
+    # and the cache stayed at 7.5 GB (t64 B6).
+    _d_ckeys, d_captured = _capture_loop(sub, "disp_capture", keys, merged, in_hair)
+    hair_deform = _node(sub, "pointdeform", "deform", [d_captured, in_hair, anim_hair], mode="deform")
+    hair_deform.parm("radius").setExpression('ch("../deform_radius")')
+    no_capture = _node(sub, "attribdelete", "deform_no_capture", [hair_deform], ptdel="pCaptPts pCaptWeights")
+    d_keys = _node(sub, "python", "deform_keys", [keys, anim_hair])
+    d_keys.parm("python").set("from apps.houdini import grooming_adapter\n"
+                              "grooming_adapter.cook_deform_keys(hou.pwd())\n")
+    d_store = _node(sub, "python", "deform_store", [no_capture, d_keys])
+    d_store.parm("python").set("from apps.houdini import grooming_adapter\n"
+                               "grooming_adapter.cook_deform_store(hou.pwd())\n")
+    d_load = _node(sub, "python", "deform_load", [d_keys])
+    d_load.parm("python").set("from apps.houdini import grooming_adapter\n"
+                              "grooming_adapter.cook_deform_load(hou.pwd())\n")
+    deformed = _node(sub, "switch", "deformed", [d_store, d_load])
+    deformed.parm("input").setExpression('detail("../deform_keys", "deform_cached", 0)')
+    hair_col_d = _wrangle(sub, "hair_color_deformed", VEX_HAIR_COLOR + _vex_ghost(2, "i@lock_id", "prim"), PRIM,
+                          [deformed, spines, focus])
+    deform = _node(sub, "merge", "deformed_display", [mg_deform, hair_col_d])
     # two switches: an hscript if() evaluates both sides, so one expression read ANIM_HAIR (unpacking the
     # anim USD) on every frame even with Shot deform off
     deform_ok = _node(sub, "switch", "deform_ok", [disp_fast, deform])
@@ -2065,6 +2088,35 @@ def _copy_loop(sub, nodes, prefix: str, first_input) -> dict:
     return copies
 
 
+def _capture_loop(sub, prefix: str, keys, merged, in_hair):
+    """The Point Deform capture of every growing lock of `keys` (keyed spines), made per lock from its cached
+    strands and kept apart from the hair (grooming_adapter.cook_capture_*): a lock's capture (800 B a point)
+    exists only once a deformed output is read, one a lock. A loop over the locks whose capture for this
+    state of their hair is not in the cache: its strands from the cache -> Point Deform capture -> the cache.
+    `merged`: the node that makes sure every lock's hair is in the cache (hair_cache / groom_cache). Returns
+    (the keys node, the node with every lock's captured strands merged). Nodes are named `prefix`_..."""
+    ckeys = _node(sub, "python", prefix + "_keys", [keys, merged])
+    ckeys.parm("python").set("from apps.houdini import grooming_adapter\n"
+                             "grooming_adapter.cook_capture_keys(hou.pwd())\n")
+    c_cook = _node(sub, "blast", prefix + "_to_cook", [ckeys], group="@grows==0 @capt_cached==1", grouptype=4)
+    c_begin = _node(sub, "block_begin", prefix + "_begin", [c_cook], method=1, blockpath="../%s_end" % prefix)
+    c_load = _node(sub, "python", prefix + "_load", [c_begin])
+    c_load.parm("python").set("from apps.houdini import grooming_adapter\n"
+                              "grooming_adapter.cook_capture_load(hou.pwd())\n")
+    c_capt = _node(sub, "pointdeform", prefix + "_lock", [c_load, in_hair], mode="capture")
+    c_capt.parm("radius").setExpression('ch("../deform_radius")')
+    c_store = _node(sub, "python", prefix + "_store", [c_capt, c_begin])
+    c_store.parm("python").set("from apps.houdini import grooming_adapter\n"
+                               "grooming_adapter.cook_capture_store(hou.pwd())\n")
+    c_end = _node(sub, "block_end", prefix + "_end", [c_store], itermethod=1, method=1, useattrib=1,
+                  attrib="lock_id", blockpath="../%s_begin" % prefix, templatepath="../%s_begin" % prefix)
+    c_end.parm("class").set(0)
+    captured = _node(sub, "python", prefix + "_all", [c_end, ckeys])
+    captured.parm("python").set("from apps.houdini import grooming_adapter\n"
+                                "grooming_adapter.cook_groom_captured(hou.pwd())\n")
+    return ckeys, captured
+
+
 def _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean) -> None:
     """Output 1 "Groom": the groom itself, never what the view shows. Every lock that is not excluded
     (hidden, isolated out, out of focus too), full density, only the contract attributes, at rest or
@@ -2091,30 +2143,9 @@ def _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean) -> 
     rest = _node(sub, "null", "GROOM_REST", [strip])
     # publish writes the rest groom
     pub_clean.setInput(0, rest)
-    # the deform's capture, per lock, apart from the hair (grooming_adapter.cook_capture_*): the loop above
-    # never captures, so the rest groom and the display share each lock's strands, and a lock's capture
-    # (800 B a point) exists only once the deformed output is read. A second loop, over the locks whose
-    # capture for this state of their hair is not in the cache: its strands from the cache -> Point Deform
-    # capture -> the cache
-    ckeys = _node(sub, "python", "groom_capture_keys", [gkeys, merged])
-    ckeys.parm("python").set("from apps.houdini import grooming_adapter\n"
-                             "grooming_adapter.cook_capture_keys(hou.pwd())\n")
-    c_cook = _node(sub, "blast", "groom_capture_to_cook", [ckeys], group="@grows==0 @capt_cached==1", grouptype=4)
-    c_begin = _node(sub, "block_begin", "groom_capture_begin", [c_cook], method=1, blockpath="../groom_capture_end")
-    c_load = _node(sub, "python", "groom_capture_load", [c_begin])
-    c_load.parm("python").set("from apps.houdini import grooming_adapter\n"
-                              "grooming_adapter.cook_capture_load(hou.pwd())\n")
-    c_capt = _node(sub, "pointdeform", "groom_capture_lock", [c_load, in_hair], mode="capture")
-    c_capt.parm("radius").setExpression('ch("../deform_radius")')
-    c_store = _node(sub, "python", "groom_capture_store", [c_capt, c_begin])
-    c_store.parm("python").set("from apps.houdini import grooming_adapter\n"
-                               "grooming_adapter.cook_capture_store(hou.pwd())\n")
-    c_end = _node(sub, "block_end", "groom_capture_end", [c_store], itermethod=1, method=1, useattrib=1,
-                  attrib="lock_id", blockpath="../groom_capture_begin", templatepath="../groom_capture_begin")
-    c_end.parm("class").set(0)
-    captured = _node(sub, "python", "groom_capture_all", [c_end, ckeys])
-    captured.parm("python").set("from apps.houdini import grooming_adapter\n"
-                                "grooming_adapter.cook_groom_captured(hou.pwd())\n")
+    # the deform's capture, per lock, apart from the hair: the loop above never captures, so the rest groom
+    # and the display share each lock's strands
+    _ckeys, captured = _capture_loop(sub, "groom_capture", gkeys, merged, in_hair)
     deform = _node(sub, "pointdeform", "groom_deform", [captured, in_hair, anim_hair], mode="deform")
     deform.parm("radius").setExpression('ch("../deform_radius")')
     ok = _node(sub, "switch", "groom_deform_ok", [rest, deform])

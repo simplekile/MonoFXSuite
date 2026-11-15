@@ -378,14 +378,40 @@ def test_anim_mismatch_text():
     assert callable(ga.deform_problem)
 
 
-def test_only_the_display_captures_in_the_loop_and_only_while_deforming():
-    """Output 1's locks are the rest strands, shared with the display; the capture its deform needs is made
-    apart (cook_groom_captured). In the loop it held 800 B a point for every state of every lock."""
-    assert ga.capture_flag(groom=True, wired=True, deforming=False) == 0
-    assert ga.capture_flag(groom=True, wired=True, deforming=True) == 0
-    assert ga.capture_flag(groom=False, wired=True, deforming=False) == 0
-    assert ga.capture_flag(groom=False, wired=True, deforming=True) == 1
-    assert ga.capture_flag(groom=False, wired=False, deforming=True) == 0
+def test_no_output_captures_in_the_loop():
+    """Every output's locks are the rest strands, one cache entry a state; the capture a deform needs is made
+    apart (cook_groom_captured). In the loop it held 800 B a point for every state of every lock, and with
+    Shot deform on every undo regrew its locks (t64 B6)."""
+    for groom in (True, False):
+        for wired in (True, False):
+            for deforming in (True, False):
+                assert ga.capture_flag(groom=groom, wired=wired, deforming=deforming) == 0
+    # one capture a lock per kind of hair: the display in Hair shares output 1's, a preview has its own
+    assert ga.capture_slot("hair") == ga.GROOM_CAPTURE_MODE != ga.capture_slot("hair_preview")
+    assert callable(ga.cook_deform_keys) and callable(ga.cook_deform_store) and callable(ga.cook_deform_load)
+
+
+def test_deformed_states_never_push_the_hair_out():
+    """`keep_bytes`: one slot's states inside a share of the limit, the oldest going first, the last kept."""
+    c = ga.LockCache(sizer=len, limit=10_000)
+    slot = ga.DEFORMED_MODE + "hair"
+    for k in "abcd":
+        c.put_derived(1, ga.MERGED_LOCK, slot, k, "x" * 100)
+    c.put(1, 5, "hair", "h", "y" * 50)
+    assert c.keep_bytes(1, ga.MERGED_LOCK, slot, 250) == 2
+    assert [c.has(1, ga.MERGED_LOCK, slot, k) for k in "abcd"] == [False, False, True, True]
+    assert c.keep_bytes(1, ga.MERGED_LOCK, slot, 0) == 1 and c.has(1, ga.MERGED_LOCK, slot, "d")    # the last stays
+    assert c.has(1, 5, "hair", "h") and c.usage(1)["bytes"] == 150
+    assert c.keep_bytes(1, ga.MERGED_LOCK, "nothing", 0) == 0
+    # full: a deformed state goes before any hair state, however lately it was used
+    c = ga.LockCache(sizer=len, limit=450)
+    c.put(1, 5, "hair", "h0", "y" * 100)
+    c.put(1, 5, "hair", "h1", "y" * 100)
+    c.put_derived(1, ga.MERGED_LOCK, slot, "d0", "x" * 100)
+    c.put_derived(1, ga.MERGED_LOCK, slot, "d1", "x" * 100)
+    c.begin(1)
+    c.put(1, 5, "hair", "h2", "y" * 100)             # over the limit
+    assert not c.has(1, ga.MERGED_LOCK, slot, "d0") and c.has(1, 5, "hair", "h0") and c.has(1, 5, "hair", "h1")
     assert ga.GROOM_CAPTURE_MODE != ga.cache_mode(False, 1.0, 1) and callable(ga.cook_groom_captured)
     assert callable(ga.cook_capture_keys) and callable(ga.cook_capture_load) and callable(ga.cook_capture_store)
 

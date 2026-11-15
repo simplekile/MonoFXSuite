@@ -269,13 +269,16 @@ class LockCache:
         return next(reversed(self._d[slot])) == key or self._meta[slot][key][2] == self._gen.get(slot[0], 0)
 
     TRIM_TO = 0.95      # once full, room is made down to this share of the limit: not a sort on every store
+    FIRST_TO_GO = ("deformed:",)    # slots whose states go before any hair: made again without growing a lock
 
     def _trim(self, node_id: int) -> None:
         limit = self.limit(node_id)
         if self._bytes.get(node_id, 0) <= limit:
             return
-        old = sorted((m[1], slot, key) for slot, keys in self._meta.items() if slot[0] == node_id
+        old = sorted((not slot[2].startswith(self.FIRST_TO_GO), m[1], slot, key)
+                     for slot, keys in self._meta.items() if slot[0] == node_id
                      for key, m in keys.items() if not self._in_use(slot, key))
+        old = [row[1:] for row in old]
         for _tick, slot, key in old:
             if self._bytes.get(node_id, 0) <= limit * self.TRIM_TO:
                 break
@@ -312,6 +315,22 @@ class LockCache:
         slot = (node_id, lock_id, mode)
         for key in list(self._d.get(slot, {})):
             self._forget(slot, key)
+
+    def keep_bytes(self, node_id: int, lock_id: int, mode: str, max_bytes: float) -> int:
+        """Drop the states of one slot used longest ago until the slot holds at most `max_bytes`; the state
+        used last always stays. Returns how many went. For a slot whose states are large and made again
+        without growing hair (the deformed display): it must not push the hair's own states out."""
+        slot = (node_id, lock_id, mode)
+        meta = self._meta.get(slot, {})
+        total = sum(m[0] for m in meta.values())
+        gone = 0
+        for key in list(self._d.get(slot, {}))[:-1]:        # oldest first, never the last one used
+            if total <= max_bytes:
+                break
+            total -= meta[key][0]
+            self._forget(slot, key)
+            gone += 1
+        return gone
 
     def latest(self, node_id: int, lock_id: int, mode: str) -> Any:
         """The state of a slot used last (not counted as a use), None when the slot is empty."""
@@ -357,14 +376,15 @@ def undo_cache_usage(node) -> dict:
     """How much hair the node's cache holds against its limit (the node's "Undo cache, GB"), for the panel:
     `bytes`, `live_bytes` (what the node shows now: never dropped), `undo_bytes` / `undo_states` (older
     states an undo or redo returns to without a recook), `limit_bytes`, `dropped`, `gb` / `limit_gb`, and
-    `capture_bytes` (output 1's deform captures, held apart from the limit)."""
+    `capture_bytes` (the deforms' captures, one a lock, held apart from the limit)."""
     cache = hair_cache()
     use = cache.usage(node.sessionId())
     use["gb"] = use["bytes"] / 2 ** 30
     use["limit_gb"] = use["limit_bytes"] / 2 ** 30
     # output 1's Point Deform captures (one a lock, only once the deformed output was read): not hair, not
     # in the limit's count
-    use["capture_bytes"] = sum(_geo_bytes(g) for g in cache.values(node.sessionId(), GROOM_CAPTURE_MODE))
+    use["capture_bytes"] = sum(_geo_bytes(g) for mode in ("hair", "hair_preview", "drag")
+                               for g in cache.values(node.sessionId(), capture_slot(mode)))
     return use
 
 
@@ -1513,17 +1533,17 @@ def _key_parms(top) -> list[tuple[str, str]]:
 
 def capture_flag(groom: bool, wired: bool, deforming: bool) -> int:
     """Whether a lock's strands are cooked with the Point Deform capture inside the per-lock loop
-    (`do_capture`, in the key): the display's, only while Shot deform is on (capturing every lock whenever
-    the anim was wired held ~800 B a point: Helen 5.9 GB after a cook, 9.5 GB after an edit, review t48; so
-    the display's first Deform on regrows its locks once).
+    (`do_capture`, in the key): never (0), for either output.
 
-    Output 1 (Groom, groom=True) never captures in the loop (round 3, t62): its locks are the rest strands,
-    the same cache entries as the display's full hair, and the capture its deform needs is made per lock
-    from them by `cook_groom_captured`, kept apart (CAPTURE_MODE) and only when the deformed output is read.
-    Captured in the loop, every state of every lock held 800 B a point (Helen: 3.3 GB live, 400 MB a stroke
-    over 6 locks), which no undo cache limit could hold, and reading the rest groom or publishing regrew
-    all 61 locks to capture them."""
-    return int(wired and deforming and not groom)
+    Output 1 stopped in round 3 (t62) and the display with Shot deform on in t65: a lock's hair is the rest
+    strands whatever deforms it, one cache entry shared by the display at rest, the display deformed, output 1
+    and publish, and the capture a deform needs is made per lock from cached strands (`cook_groom_captured`),
+    kept apart (`capture_slot`), one a lock, only once a deformed output is read. Captured in the loop, every
+    state of every lock held 800 B a point (Helen: 3.3 GB live, 400 MB a stroke over 6 locks): no undo cache
+    limit could hold that, so with Shot deform on every undo regrew its locks, the cache stayed at 7.5 GB
+    after the deform was switched off (the captured strands were "what the node shows" in their own slot),
+    and switching Shot deform on regrew the whole groom once (t64 B6)."""
+    return 0
 
 
 CAPTURE_MODE = "+capture"
@@ -1614,6 +1634,12 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
             cache.drop_node(nid)
     sid = top.sessionId()
     cache.begin(sid)                    # what this cook touches is in use: never dropped to make room
+    if not groom and not deforming:
+        # the display at rest reads neither its deformed hair nor the merge that fed the deform: left in
+        # the cache they were "what the node shows" (the last state of their slot is never dropped), 270 MB
+        # of Helen's limit gone for good once Shot deform had been on
+        cache.drop(sid, MERGED_LOCK, DEFORMED_MODE + "hair")
+        cache.drop(sid, MERGED_LOCK, MERGED_MODE + "hair_cache")
     cache.set_limit(sid, undo_cache_limit(top))
     has_disp = geo.findPrimAttrib("disp") is not None
     preview_mode = config.DISPLAY_MODES.index("hair_preview")
@@ -1847,7 +1873,80 @@ def _display_copy(g):
     return out
 
 
-GROOM_CAPTURE_MODE = "groom:capture"     # LockCache slot of a lock's captured strands for output 1's deform
+GROOM_CAPTURE_MODE = "groom:capture"     # LockCache slot of a lock's captured strands (full hair) for a deform
+DEFORMED_MODE = "deformed:"              # LockCache slot (MERGED_LOCK) of the display's deformed hair, a state
+
+
+def capture_slot(hair_mode: str) -> str:
+    """The LockCache slot of a lock's captured strands by the slot of the hair they were made from: the full
+    hair's (output 1, and the display in Hair) is GROOM_CAPTURE_MODE, a preview's or a drag's its own, so the
+    display in Hair preview and output 1 do not take turns in the one capture a lock keeps."""
+    return GROOM_CAPTURE_MODE if hair_mode == "hair" else GROOM_CAPTURE_MODE + ":" + hair_mode
+
+
+def _deform_key(sop, keyed, anim) -> str:
+    """Key of the display's deformed hair: the locks that grow with the state of their hair, and what deforms
+    them (the animated mesh's points at this frame, the capture radius)."""
+    grows = keyed.findPrimAttrib("grows") is not None
+    locks = [(p.intAttribValue(config.ATTR_LOCK_ID), p.stringAttribValue("cache_mode"), p.stringAttribValue("cache_key"))
+             for p in keyed.iterPrims() if not grows or p.intAttribValue("grows")]
+    top = sop.parent()
+    radius = top.evalParm("deform_radius") if top.parm("deform_radius") is not None else 0.0
+    return lock_key([anim.pointFloatAttribValuesAsString("P"), radius, locks])
+
+
+def cook_deform_keys(sop) -> None:
+    """Python SOP "deform_keys" (display, Shot deform on): the detail `deform_key` (`_deform_key`) and
+    `deform_cached`: the deformed hair of exactly this state is in the cache, so the switch after it reads it
+    there and neither the capture loop nor the Point Deform cooks. An undo with Shot deform on then costs what
+    it costs at rest. Input 0 the keyed spines (`lock_keys`), input 1 ANIM_HAIR."""
+    keyed, anim = (i.geometry() for i in sop.inputs()[:2])
+    key = _deform_key(sop, keyed, anim)
+    geo = sop.geometry()
+    geo.clear()
+    geo.addAttrib(hou.attribType.Global, "deform_key", "")
+    geo.setGlobalAttribValue("deform_key", key)
+    geo.addAttrib(hou.attribType.Global, "deform_cached", 0)
+    geo.setGlobalAttribValue("deform_cached", int(hair_cache().has(sop.parent().sessionId(), MERGED_LOCK, DEFORMED_MODE + "hair", key)))
+
+
+DEFORMED_SHARE = 0.5     # of the node's undo cache limit: what the deformed display's states may hold together
+
+
+def cook_deform_store(sop) -> None:
+    """Python SOP "deform_store": keep the display's deformed hair (input 0, without the capture) under
+    `deform_keys`' key (input 1) and pass it on. States of another frame are dropped first (they can never be
+    read again but by going back to that frame), and the states together hold at most DEFORMED_SHARE of the
+    node's undo cache limit, the oldest going first: a state is the whole deformed groom (Helen ~135 MB by
+    `memoryusage`, a stroke's hair 26 MB), and the hair's own states must outlive it (a deformed state is
+    made again without growing a lock)."""
+    keys = sop.inputs()[1].geometry()
+    key = keys.attribValue("deform_key")
+    cache = hair_cache()
+    top = sop.parent()
+    sid = top.sessionId()
+    slot = DEFORMED_MODE + "hair"
+    frame = hou.frame()
+    if _DEFORM_FRAME.get(sid) != frame:
+        cache.drop(sid, MERGED_LOCK, slot)
+        _DEFORM_FRAME[sid] = frame
+    cache.put_derived(sid, MERGED_LOCK, slot, key, sop.geometry().freeze(read_only=True))
+    cache.keep_bytes(sid, MERGED_LOCK, slot, undo_cache_limit(top) * DEFORMED_SHARE)
+
+
+_DEFORM_FRAME: dict[int, float] = {}     # node session id -> the frame its deformed states are of
+
+
+def cook_deform_load(sop) -> None:
+    """Python SOP "deform_load": the display's deformed hair of this state from the cache (`deform_keys`,
+    input 0, saw it there)."""
+    geo = sop.geometry()
+    key = geo.attribValue("deform_key") if geo.findGlobalAttrib("deform_key") is not None else ""
+    geo.clear()
+    got = hair_cache().get(sop.parent().sessionId(), MERGED_LOCK, DEFORMED_MODE + "hair", key)
+    if got is None:
+        raise hou.NodeError("the deformed hair is not in the cache")
+    geo.merge(got)
 
 
 def cook_capture_keys(sop) -> None:
@@ -1860,7 +1959,8 @@ def cook_capture_keys(sop) -> None:
     sid = sop.parent().sessionId()
     geo.addAttrib(hou.attribType.Prim, "capt_cached", 0)
     geo.setPrimIntAttribValues("capt_cached", [
-        int(cache.has(sid, p.intAttribValue(config.ATTR_LOCK_ID), GROOM_CAPTURE_MODE, p.stringAttribValue("cache_key")))
+        int(cache.has(sid, p.intAttribValue(config.ATTR_LOCK_ID), capture_slot(p.stringAttribValue("cache_mode")),
+                      p.stringAttribValue("cache_key")))
         for p in geo.iterPrims()])
 
 
@@ -1900,8 +2000,9 @@ def cook_capture_store(sop) -> None:
         # larger than any sensible limit (Helen 3.3 GB) and would push every hair state out of it, while a
         # capture is made again from cached strands in a moment. `undo_cache_usage` reports them apart
         cache = hair_cache()
-        cache.put_derived(sid, lid, GROOM_CAPTURE_MODE, key, geo.freeze(read_only=True), size=0)
-        cache.keep_only(sid, lid, GROOM_CAPTURE_MODE, (key,))
+        slot = capture_slot(p.stringAttribValue("cache_mode"))
+        cache.put_derived(sid, lid, slot, key, geo.freeze(read_only=True), size=0)
+        cache.keep_only(sid, lid, slot, (key,))
     geo.clear()
 
 
@@ -1924,7 +2025,8 @@ def cook_groom_captured(sop) -> None:
     for p in keyed.iterPrims():
         if grows and p.intAttribValue("grows") == 0:
             continue
-        got = cache.get(sid, p.intAttribValue(config.ATTR_LOCK_ID), GROOM_CAPTURE_MODE, p.stringAttribValue("cache_key"))
+        got = cache.get(sid, p.intAttribValue(config.ATTR_LOCK_ID), capture_slot(p.stringAttribValue("cache_mode")),
+                        p.stringAttribValue("cache_key"))
         if got is None:
             missing += 1
         else:

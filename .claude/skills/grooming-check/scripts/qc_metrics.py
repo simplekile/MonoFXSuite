@@ -137,7 +137,8 @@ LIMITS = {
     "lock_kink_p95_worst_deg": {"abs": 50.0, "ref_x": None, "why": "the worst lock's corners"},
     # roots and density (ours only: the reference has no lock ids)
     "density_off_worst": {"abs": 0.15, "ref_x": None,
-                          "why": "a lock's strand count off what density x its area asks (|actual/expected - 1|)"},
+                          "why": "a lock's strand count off what density x its area asks (|actual/expected - 1|; "
+                                 "a lock under density layers: x 0.15 / max(0.15, 2 / sqrt(expected)))"},
     "root_clumped": {"abs": 0.05, "ref_x": None, "v006": 0.32,
                      "stricter": "the user chose roots at the set density (2026-11-12): v006's hand-placed guides bunch "
                                  "its roots; v0.1's gathered roots (0.75) were the bald scalp between locks",
@@ -269,10 +270,51 @@ def mesh_point_area(mesh_geo):
     return w
 
 
-def width_ratios(hair_geo, mesh_geo, spine_geo):
+def layer_strand_weights(node, hair_geo, unit_cm):
+    """Per strand of the groom, what it counts for in the start-share check under density layers, or None
+    without layers: 1 for a lock no layer covers; for a lock under layers 0 for a layer's own root (the
+    second scatter) and 1 / keep for an automatic root, keep being the layers' keep where it stands (at least
+    START_KEEP_MIN). A root stays with the chance keep, so the weighted strands stand for the lock's
+    automatic groom: the check then says what it always said (did the TOOL leave the lock's start bare?), and a
+    start the artist thinned or a lock painted denser along its length is not called a thin start (t64 B7:
+    hair_base_20's whorl under a grey layer read 0.4185 against 0.576 without the layer).
+    Also returns the ids of the locks under layers."""
+    try:
+        from apps.houdini import grooming_masks as gm
+    except ImportError:
+        return None, set()
+    regions = node.node("SCALP_REGIONS").geometry()
+    if not hasattr(gm, "keep_at") or regions.findGlobalAttrib(gm.ATTR_SET_OF) is None:
+        return None, set()
+    set_of = regions.intListAttribValue(gm.ATTR_SET_OF)
+    lock = np.array(hair_geo.primIntAttribValues("lock_id"))
+    w = np.ones(len(lock))
+    counts = np.array([p.numVertices() for p in hair_geo.prims()])
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    roots = np.frombuffer(hair_geo.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3)[starts]
+    sid = np.array(hair_geo.primIntAttribValues("id")) if hair_geo.findPrimAttrib("id") is not None else np.zeros(len(lock), int)
+    layered = set()
+    for lid in np.unique(lock):
+        k = set_of[lid] if 0 <= lid < len(set_of) else -1
+        if k < 0:
+            continue
+        layered.add(int(lid))
+        sel = np.nonzero(lock == lid)[0]
+        keep = gm.keep_at(regions, k, roots[sel]).astype(float)
+        w[sel] = np.where(sid[sel] >= MASK_ROOT_ID, 0.0, 1.0 / np.maximum(keep, START_KEEP_MIN))
+    return w, layered
+
+
+MASK_ROOT_ID = 10000000      # a layer's own root is numbered from here (build_hda VEX_MASK_TAG)
+START_KEEP_MIN = 0.05        # an automatic root standing where the layers keep less than this weighs 1 / this
+
+
+def width_ratios(hair_geo, mesh_geo, spine_geo, strand_weight=None):
     """Per lock: the hair's spread over the mesh's along its 2nd principal axis (its width). Strands
     fill a lock while mesh points sit on its surface, so a good lock is ~0.85-1.0; a lock whose hair
-    collapsed or twisted inside its mesh (Helen's crown caps) is far below."""
+    collapsed or twisted inside its mesh (Helen's crown caps) is far below.
+    `strand_weight` (per strand, `layer_strand_weights`): what each strand counts for in the start share only;
+    a lock none of whose strands counts (every automatic root painted away) has no start share."""
     mp = np.array(mesh_geo.pointFloatAttribValues("P")).reshape(-1, 3)
     mpc = np.array(mesh_geo.pointIntAttribValues("piece"))
     mwt = mesh_point_area(mesh_geo)
@@ -289,6 +331,7 @@ def width_ratios(hair_geo, mesh_geo, spine_geo):
     wgt[1:] += 0.5 * seg
     wgt[starts[1:] - 1] -= 0.5 * seg[starts[1:] - 1]   # no segment from one strand's tip to the next root
     wgt[starts[1:]] -= 0.5 * seg[starts[1:] - 1]
+    sw = None if strand_weight is None else np.repeat(np.asarray(strand_weight, float), counts)
 
     def spread(x, w=None):
         w = np.ones(len(x)) if w is None else np.maximum(w, 0)
@@ -316,7 +359,9 @@ def width_ratios(hair_geo, mesh_geo, spine_geo):
                 mshare = np.bincount(mb, weights=mw, minlength=10) / max(mw.sum(), 1e-12)
                 scale = np.where(hmass > 0, mshare / np.maximum(hmass, 1e-12), 0.0)
                 out[lid] = float(spread(h, hw * scale[hb])[1] / max(spread(m, mw)[1], 1e-9))
-                start[lid] = float(hmass[:3].sum() / max(hmass.sum(), 1e-12) / max(mshare[:3].sum(), 1e-12))
+                smass = hmass if sw is None else np.bincount(hb, weights=hw * sw[sel], minlength=10)
+                if smass.sum() > 0:
+                    start[lid] = float(smass[:3].sum() / max(smass.sum(), 1e-12) / max(mshare[:3].sum(), 1e-12))
             else:
                 out[lid] = raw[lid]
     # the check is the hair's own mass (raw); the mass-matched one is printed beside it only
@@ -386,6 +431,12 @@ def densest_spot(roots_cm, radius=1.0, sample=1500):
         if n[j] > best_n:
             best, best_n = cand[i + j], int(n[j])
     return best, best_n, best_n / (np.pi * radius * radius)
+
+
+def density_limit(expected: float) -> float:
+    """|strands / expected - 1| allowed for a lock under density layers asked `expected` strands:
+    max(0.15, 2 / sqrt(N)), the acceptance's limit."""
+    return max(LIMITS["density_off_worst"]["abs"], 2.0 / np.sqrt(max(float(expected), 1e-9)))
 
 
 def layer_cover_of(node):
@@ -754,7 +805,13 @@ def main():
     report["ours"]["coverage"] = cov_all
     piece_of = {int(p.attribValue("lock_id")): int(p.attribValue("piece")) for p in sg.prims()}
     locks = per_lock(ours, lock_names)
-    wr = width_ratios(hair.geometry(), node.node("pieces").geometry(), sg)
+    unit0 = float(node.evalParm("unit_cm")) if node.parm("unit_cm") else 100.0
+    strand_w, layered_locks = layer_strand_weights(node, hair.geometry(), unit0)
+    wr = width_ratios(hair.geometry(), node.node("pieces").geometry(), sg, strand_w)
+    report["start_share_under_layers"] = {
+        "locks_under_layers": len(layered_locks),
+        "no_automatic_strand_left": sorted(lock_names.get(i, str(i)) for i in layered_locks
+                                           if i not in width_ratios.start_share)}
     for r in locks:
         r["width_ratio"] = wr.get(r["lock_id"], 1.0)
         r["width_ratio_matched"] = width_ratios.matched.get(r["lock_id"], 1.0)
@@ -820,10 +877,20 @@ def main():
     # too few AND too many, for every lock. Under density layers (v0.2a) a lock's expected count is what
     # the network grows (`lock_infos`: its automatic count x the share of its roots the layers keep where
     # they end up + the layers' own roots), so a painted lock is held to the same limit both ways
-    s["density_off_worst"] = max((abs(r["density_ratio"] - 1) for r in have), default=0.0)
-    s["density_off_painted_worst"] = max((abs(r["density_ratio"] - 1) for r in have if r.get("layered")), default=0.0)
+    # A lock no layer covers grows a forced count: held to 0.15 as it is. Under layers the count is a draw
+    # (each automatic root stays or goes by its threshold, the layers' roots are a scatter on a few prims), so
+    # a painted lock asked N strands is held to the acceptance's own limit max(0.15, 2 / sqrt(N)), its miss
+    # written on the 0.15 scale (t64 B7: hair_bang_04, 21 strands where 17 are asked, read 0.294; its limit
+    # is 0.485). Over ~178 strands asked the limit is 0.15 for every lock.
+    for r in have:
+        lim = density_limit(r["expected"]) if r.get("layered") else LIMITS["density_off_worst"]["abs"]
+        r["density_limit"] = round(lim, 4)
+        r["density_off"] = abs(r["density_ratio"] - 1) * LIMITS["density_off_worst"]["abs"] / lim
+    s["density_off_worst"] = max((r["density_off"] for r in have), default=0.0)
+    s["density_off_painted_worst"] = max((r["density_off"] for r in have if r.get("layered")), default=0.0)
     report["painted_locks"] = [{"name": r["name"], "strands": r["strands"], "expected": r["expected"],
-                                "ratio": round(r["density_ratio"], 3), "auto": r.get("auto_strands"),
+                                "ratio": round(r["density_ratio"], 3), "limit": r["density_limit"],
+                                "auto": r.get("auto_strands"),
                                 "layers": r.get("layer_strands")} for r in have if r.get("layered")]
     s["root_clumped"] = float(np.mean([r["clumped"] for r in have])) if have else 0.0
     s["root_spacing_low"] = float(np.median([r["spacing_ratio"] for r in have])) if have else 1.0
