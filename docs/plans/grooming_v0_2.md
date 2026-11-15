@@ -396,7 +396,10 @@ strand counts per lock equal. The speed limit with the toggle off: below.
   with its strand points moved. "Saved before the toggle" is read from the saved file itself: a hip holds each
   parm of a node as a record line of its own (`lookup_per_piece\t[ ...`), and `hip_holds` matches that record,
   not the word (t68: a sticky note holding the name opened an old scene with the toggle on; a node name, a
-  comment, an expression or an embedded definition holding it does not count either). The artist setting the
+  comment, an expression or an embedded definition holding it does not count either). Known and contrived,
+  not handled (t69): the record text itself after a REAL newline inside a sticky note, a node comment, node user
+  data or a string parm, or a spare parm of that name on another node of the old scene, still reads as "holds the
+  parm", and that scene opens with the toggle on. The artist setting the
   toggle by hand rewrites the note ("on: set by hand" / "off: set by hand", the toggle's callback). **A node
   copied out of an old scene and pasted into another is a new node** (decided by the manager, round 3): it
   keeps the toggle as it comes, on, with no note, as any node made now. The parm came in the middle of the schema 4 test builds (245f480 has it, on), so
@@ -511,7 +514,11 @@ Traced in t63 (the two partial-coverage cases round 3 left open, and its one loc
   cases miss the limit on one prim. The limit max(0.15, 2 / sqrt(N)) is not changed; it applies to all locks
   together and to each lock on its own skin inside the painted area (the prims covered in full by the paint (36-44 % of the painted area on the three test places, t68); the rim is not graded), not to a lock
   on one polygon: the acceptance (`d1`, `d2`, `b1`, `b3` on the top of the head) grades each lock over the
-  patch and lists a lock whose skin there is one polygon with its numbers, unpassed and unfailed. A scatter
+  patch and lists a lock whose skin there is one polygon with its numbers, unpassed and unfailed. The same
+  for evenness (the manager, 2026-11-16, round 4, after t69 3b): the evenness checks skip the locks the density
+  grading lists in `locks_on_one_polygon` and list them in the row (`not_judged_one_polygon`), neither passed
+  nor failed: `hair_base_21` holds 35 roots there, so one root is 0.029 of its clumped share against a rise
+  limit of 0.05, and the tie-break moving three border roots took it from 0.026 to 0.057. A scatter
   with a fixed count per prim (each prim floor or ceil of what it is asked, the total kept: our own scatter
   and relax in place of hairgen's for the layers' roots) is deferred.
 
@@ -635,6 +642,23 @@ predates this model.
   start edge). The fix, not built: ONE thinning order for all of a lock's automatic roots by where each lands
   (about half a day, plus a day of re-checks; which roots a partial mask keeps changes once for every painted
   groom). Dropping the near-coincident pairs at the source would change the automatic groom itself: no.
+- **Checks failing by decision** (the limits stay, the checks stay failing, listed in every report):
+  `d3_partial_coverage_roots_even`, its 4 crown_whorl rows (= 40 and = 0 at mask 0.5, = 120 at opacity 0.5 and
+  0.75), and `b1_blend_modes_roots_even_crown_whorl`, its 3 rows (add 0.25 over 0.5, max 0.5 over 0.75, multiply
+  0.5 over 1.0 at opacity 0.5): the crown evenness above, decided by the user 2026-11-15; and
+  `d4_soft_edge_follows_the_mask`, top_of_head = 0, ring 0.3-0.6 cm (17.7 % over against 15 %), a known open
+  item decided by the manager 2026-11-16 (round 4), below.
+- **Known open: the soft edge keeps too many roots in its inner part (d4, round 4).** One soft white dab of
+  radius 1.5 cm on a layer of 0; every rest root's keep against the mask AT THE ROOT (a radial fit of the
+  mask's point values, residual under 0.002), no prim assignment (the t69 checker's method, t67 `thin_r4/`).
+  Kept / expected in the ring 0.3-0.6 cm: lock start (hair_base_12) 1392 / 1225.6 = **1.136** (5.5 sd of the
+  binomial); crown 1888 / 1580.4 = **1.195** (9.0 sd); top of the head 132 / 108.8 = **1.214** (2.6 sd); the top
+  moved by 0.705 cm 282 / 235.8 = **1.196** (3.5 sd). The ring 1.2-1.5 cm keeps too few at all four (0.958 to
+  0.976, 7 to 13 sd), the 0.9-1.2 ring about right (0.971-0.998). So it is a bias of the thinning against the
+  mask's falloff, not one draw: the inner, mostly white part keeps 14-21 % more than 1 - mask, the outer edge
+  2-4 % fewer. The d4 prim reading passes at the lock start and the crown (their rings are dense, so the extra
+  roots are inside 15 %) and fails only on the top of the head. Not fixed in v0.2a; the cause (how the keep
+  share follows the mask between the points a prim holds) is not traced.
 - On Helen: the crown painted down to v006's density (~5,100 / cm2) and the thin skin under floating mesh painted
   up, both in the GUI by scripted strokes, with the QC numbers before and after in the report (the user's own
   try with a mouse or pen is the User look gate); grooming-check is two-sided on a painted scene.
@@ -654,7 +678,7 @@ user, 2026-11-15): a group or lock row gathers its layers, and a shared region i
 **How the acceptance counts (t65, after the t64 check).** A root belongs to the skin prim nearest it ON THE
 SURFACE (the exact distance to the prim's triangles, `accept_lib.Skin.assign`), not to the nearest prim centre,
 and every root counts: none is left out for standing off the skin (by the surface no root of Helen's groom is
-over 0.002 cm off it; the "floating" roots of round 3 came from the nearest-centre count). A lock asked under
+over 0.0025 cm off it, t69: 0.0023 cm; the "floating" roots of round 3 came from the nearest-centre count). A lock asked under
 one root (N < 1) is graded by count (t67, after the t66 check): at most floor(N + 2 sqrt(N)) roots, the upper
 side of the limit (`ceil` until round 3 passed three rows by one root); a lock over it fails and is listed as
 the B1 kind (few polygons, `locks_outside_b1_kind`); its roots are also in the count of all locks together.
@@ -664,8 +688,12 @@ on one polygon there listed, not graded (B1 above). Lock borders (t68, corrected
 their own lock's skin (110 strays at three places, 2.4e-8 to 1.7e-5 cm from it); the HDA cuts a lock's region
 by whole prims (`lock_owners`, `region_cut`), and on an edge shared with a prim of another lock the nearest-prim
 count broke the tie to the neighbour, so such a lock read N = 0 with 1-2 roots and failed `d1` / `d2` / `b3`.
-Now a root within 1e-4 cm of a prim its own lock owns is given to it, and `z_roots_on_their_own_locks_skin`
-checks that no root assigned lies farther than 1e-4 cm from its own lock's skin. Strands followed by id are where they were within 1e-5 cm
+Now a root within 1e-4 cm of a prim its own lock owns is given to it. Two checks, apart (round 4, after t69 3a:
+round 3's one check put 1e-4 cm on both and failed 31 % of the roots): ownership, `z_roots_stand_on_their_own_locks_skin`,
+the distance to the root's own lock's skin minus the distance to the nearest skin of any lock <= 2e-5 cm (t69:
+1.04e-5 cm at most on 20,000 roots: the nearest skin is their own lock's); and the surface gap, `z_roots_on_the_skin`,
+the nearest skin <= 0.0025 cm (t69: 0.0023 cm at most; the scalp quads are not planar, up to 0.0038 cm off
+their plane, and the roots lie on no triangulation of them to better than 0.0022 cm). Strands followed by id are where they were within 1e-5 cm
 (measured: under 4e-7 cm).
 
 **Evenness, the measure (the t64 checker's, `even_local.py`; `accept_lib.lock_even_local`).** For each lock

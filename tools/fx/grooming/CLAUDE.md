@@ -721,7 +721,8 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     holds 35.1 where 33.66 are asked (sd 5.15, the t66 check; the shipped seed draws 45, the highest of the
     40); the seed is the lock's id, so the draw is the same at every D. The user's decision (2026-11-15): no
     new scatter in v0.2a; the acceptance grades each lock over the prims covered in full by the paint (36-44 % of the painted area on the three test places, t68); the rim is not graded, and lists a lock on
-    one polygon without passing or failing it. `hairgen_layers.geometry()` has `skinprim`: count per skin prim without any
+    one polygon without passing or failing it, for evenness too (round 4: `not_judged_one_polygon`; at 35
+    roots one root is 0.029 of a rise limit of 0.05). `hairgen_layers.geometry()` has `skinprim`: count per skin prim without any
     assignment (isolate the lock, read `mask_skin` and `hairgen_layers`).
   - "Fit lookup per lock" (B4, decided by the user): a new node has it on; a scene saved before it existed gets
     it written OFF by OnLoaded, once (`keep_old_lookup`, user data `monofx_fit_lookup`), so a v0.1 scene
@@ -732,7 +733,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     - "Before the parm" is decided by the saved hip itself: it holds each parm of a node as a record line,
       `lookup_per_piece\t[ ...`, in plain text, a .hiplc too, and `hip_holds` matches the RECORD, not the word
       (t68: a sticky note holding the name opened an old scene with the toggle on; a hip naming the word does
-      not hold the parm). The parm came in the middle of the schema 4 test builds (245f480 has it, on;
+      not hold the parm). Known and contrived, not handled (t69): the record text after a real newline inside a
+      note / comment / user data / string parm, or a spare parm of that name on another node, still fools it
+      (the old scene opens with the toggle on). The parm came in the middle of the schema 4 test builds (245f480 has it, on;
       two schema 4 commits before it do not), so no schema number tells (N2). The file decides whenever it
       can be read, whatever the schema (t67: a scene opened while another checkout's library, without the
       parm, was installed had its data rewritten as schema 6 by that load's `mark_old_regions`, and OnUpdated
@@ -758,8 +761,16 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     lock's skin (within 1.7e-5 cm); the HDA cuts a lock's region by whole prims (`lock_owners`, `region_cut`),
     and a root on an edge shared with another lock's prim went to the neighbour (`Skin.assign`, nearest prim),
     so a lock read N = 0 with 1-2 roots and failed `d1` / `d2` / `b3`. Round 3: a prim the root's own lock owns
-    within 1e-4 cm wins (`Skin.TIE_CM`), and `z_roots_on_their_own_locks_skin` checks every root assigned lies
-    within 1e-4 cm of its own lock's skin.
+    within 1e-4 cm wins (`Skin.TIE_CM`). Round 4 (t69 3a): ownership and the surface gap are two checks, never
+    one number: `z_roots_stand_on_their_own_locks_skin`, own lock's skin minus the nearest skin of any lock
+    <= 2e-5 cm (`OWN_EXTRA_CM`; measured 1.04e-5), and `z_roots_on_the_skin`, nearest skin <= 0.0025 cm
+    (`GAP_CM`; measured 0.0023: the scalp quads are not planar, up to 0.0038 cm, so the roots stand up to
+    that far off any triangulation of them).
+  - Known open (round 4, t67 `thin_r4/`, the checker's attribution-free method): under one soft dab on a layer
+    of 0 the thinning keeps 14-21 % more roots than 1 - mask in the ring 0.3-0.6 cm and 2-4 % fewer in
+    1.2-1.5 cm, at all four places tried (lock start, crown, top of the head, the top moved 0.7 cm): a bias, not
+    a draw. `d4` top_of_head fails on it (17.7 %, limit 15 %); the limit stays. Checks failing by decision:
+    d3 (4 crown rows), b1 crown (3 rows), d4 top_of_head ring 0.3-0.6 (the plan lists them with dates).
   - Evenness by the local measure misses +0.05 at the crown whorl under partial coverage for a few small fringe
     locks (hair_bang_04 / 16 / 19, hair_base_09: +0.054 to +0.119). Traced in t67 (`evenness/` there): the roots
     that read as bunched are PAIRS OF TWO KINDS of automatic root of the same lock that already stood that close
