@@ -1469,6 +1469,14 @@ def keep_old_lookup(node) -> bool:
     return True
 
 
+def on_updated(node) -> None:
+    """HDA OnUpdated (the node's definition was replaced: a scene opened with another copy of the library
+    before this one took over, so this HDA's OnLoaded never ran for it): the same choice for a scene from
+    before "Fit lookup per lock" (`keep_old_lookup`)."""
+    if keep_old_lookup(node):
+        _status(f"{config.HDA_LABEL}: {LOOKUP_KEPT_TEXT}")
+
+
 OLD_REGIONS_WHY = "Regions were split by an older rule: Update regions"
 
 

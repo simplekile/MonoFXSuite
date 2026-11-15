@@ -2389,6 +2389,11 @@ def _parm_templates() -> hou.ParmTemplateGroup:
 ON_LOADED = """from apps.houdini import grooming_adapter
 grooming_adapter.on_loaded(kwargs["node"])
 """
+# the node's definition changed under it (a scene that named another library, then this one took over): what
+# OnLoaded does for a scene from before "Fit lookup per lock" is done here too, OnLoaded having run for the other
+ON_UPDATED = """from apps.houdini import grooming_adapter
+grooming_adapter.on_updated(kwargs["node"])
+"""
 ON_CREATED = """from apps.houdini import grooming_adapter
 grooming_adapter.install_playbar_callback()
 """
@@ -2425,6 +2430,8 @@ def build(out_path: str = DEFAULT_OUT) -> str:
     definition.setComment("MONO Grooming v0.1, built by tools/fx/grooming/build_hda.py")
     definition.addSection("OnLoaded", ON_LOADED)
     definition.setExtraFileOption("OnLoaded/IsPython", True)
+    definition.addSection("OnUpdated", ON_UPDATED)
+    definition.setExtraFileOption("OnUpdated/IsPython", True)
     definition.addSection("OnCreated", ON_CREATED)
     definition.setExtraFileOption("OnCreated/IsPython", True)
     definition.save(out_path, hda, create_backup=False)

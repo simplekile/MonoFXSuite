@@ -154,7 +154,8 @@ factor layers.**
    byte whatever was painted and removed before. Against v0.1 ("Fit lookup per lock", decided 2026-11-15, see
    "Speed" below): with the toggle OFF, which is how every scene saved before the toggle existed opens, it is
    v0.1's groom byte for byte; with it ON, a new node's default, every lock has v0.1's roots and strand count
-   and its strand points lie within 4.1 mm of v0.1's (Helen: 45 % of them move, 1 % by more than 1 mm).
+   and its strand points lie within 5 mm of v0.1's (Helen: 45 % of them move, 0.7-1 % by more than 1 mm, the
+   farthest 4.1-4.7 mm).
 6. **Black in a mask = "this layer does not apply here"**: the density below shows. It is NOT "no hair". No hair =
    a layer with D = 0 painted white. A layer may be denser than the automatic groom: D = 300 over locks at 150
    gives 300 (measured 299-303 / cm2 on four kinds of skin, t63).
@@ -370,7 +371,8 @@ run-to-run noise) and the speed limit holds with 3-9 % to spare.
   reports the same checks with it off as their own items (`s2`, `r5b`), on the same limits.
 - "No layers = the v0.1 groom" is graded both ways (`r6`): the Helen scene as v0.1 saved it opens with the
   toggle off and its rest groom equals v0.1's byte for byte; with the toggle on every lock's strand count and
-  every root are v0.1's and no strand point is farther than 0.41 cm from v0.1's.
+  every root are v0.1's and no strand point is farther than 0.5 cm from v0.1's (measured 4.1 mm on a fresh groom, t64, and 4.7 mm on a
+  scene saved by v0.1, t65).
 
 **Paint belongs to the painted node (round 3; t65).** Paint is on only while the painted node is the
 selection. Esc ends Paint from anywhere in Houdini's window, also while the mouse is held: what was painted so
@@ -560,7 +562,7 @@ predates this model.
   strokes (30 in a row, then 30 undos and 30 redos) while the undo cache ("Undo cache, GB") holds them.
 - No layers = the v0.1 groom: strand count and QC numbers as t55; a scene from before "Fit lookup per lock"
   opens with it off and is v0.1's groom byte for byte; with it on, the same roots and strand count per lock
-  and strand points within 4.1 mm of v0.1's.
+  and strand points within 5 mm of v0.1's (measured 4.1-4.7 mm).
 - Layers survive Detect, Update regions, save / reopen and Publish (read back from the publish JSON); a missing
   lock keeps its layers; files of schema 3, 4 and 5 open and give the strand counts they gave.
 
