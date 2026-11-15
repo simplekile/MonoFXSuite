@@ -2337,6 +2337,8 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                               min=0.0, max=1.0))
     adv.addParmTemplate(hou.ToggleParmTemplate(
         "lookup_per_piece", "Fit lookup per lock", default_value=True,
+        script_callback='from apps.houdini import grooming_adapter; grooming_adapter.on_lookup_changed(kwargs["node"])',
+        script_callback_language=hou.scriptLanguage.Python,
         help="Each lock looks its strands up on its own mesh piece: a third less to cook per lock. Off: the "
              "whole hair mesh at once, as v0.1 did. On and off give the same roots and strand counts; strand "
              "points move between them (on the Helen test scene about half of them, most by under 0.01 mm, "

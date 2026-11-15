@@ -1464,20 +1464,23 @@ LOOKUP_KEPT_TEXT = ("this scene was saved before \"Fit lookup per lock\": it is 
 
 
 def hip_holds(path: str | None, name: str) -> bool | None:
-    """The saved scene file names the parm (a hip stores every parm of a node by name, as plain text, a
-    .hiplc / .hipnc too): True / False, None when there is no file to read (a scene never saved)."""
+    """The saved scene file holds a value of the parm: True / False, None when there is no file to read (a
+    scene never saved). A hip stores each parm of a node as a record line of its own, `<name>\t[ ...`, in
+    plain text, a .hiplc / .hipnc too. The record, not the word: the name in a sticky note, a comment, a node
+    name or an expression does not count (t68: a sticky note holding the name opened an old scene with the
+    lookup on), and neither does an embedded definition's `name "<name>"`."""
     if not path or not os.path.isfile(path):
         return None
-    word, tail = name.encode("ascii"), b""
+    record, tail = b"\n" + name.encode("ascii") + b"\t[", b"\n"   # the file's first line counts as after a \n
     try:
         with open(path, "rb") as fh:
             while True:
                 block = fh.read(1 << 20)
                 if not block:
                     return False
-                if word in tail + block:
+                if record in tail + block:
                     return True
-                tail = block[-len(word):]
+                tail = block[-(len(record) - 1):]
     except OSError:
         return None
 
@@ -1510,7 +1513,7 @@ def keep_old_lookup(node) -> bool:
     default, on, and its groom would no longer be the one it was saved and published with (same roots and
     strand counts, strand points moved: up to 0.47 cm on a fresh Helen groom, 0.96 cm on the Helen scene as
     v0.1 saved it, t66). Off, the groom is v0.1's within v0.1's own run-to-run difference (a few strands by
-    0.002 cm in 4 of 10 runs). Must run before anything writes `groom_data` again (OnLoaded's
+    0.0024 cm over 10 runs, t68). Must run before anything writes `groom_data` again (OnLoaded's
     `mark_old_regions` rewrote a schema 1 scene as today's schema first: N1). Done once a node (user data
     `monofx_fit_lookup`, saved with the hip): after that the parm is the artist's, who may turn it on. A new
     node keeps the default, on. A node merged from another file is judged by the scene it is merged INTO
@@ -1524,6 +1527,19 @@ def keep_old_lookup(node) -> bool:
         p.set(0)
         node.setUserData(LOOKUP_NOTE, "off: the scene was saved before the parm existed")
     return True
+
+
+LOOKUP_NOTE_BY_HAND = {1: "on: set by hand", 0: "off: set by hand"}
+
+
+def on_lookup_changed(node) -> None:
+    """The toggle's callback: the artist set "Fit lookup per lock" by hand, so the note says so (it said "off:
+    the scene was saved before the parm existed" after the artist had turned it on, t68). Any note means the
+    choice is made: OnLoaded / OnUpdated never judge the node again."""
+    p = node.parm(LOOKUP_PARM)
+    if p is not None:
+        with hou.undos.disabler():
+            node.setUserData(LOOKUP_NOTE, LOOKUP_NOTE_BY_HAND[1 if p.eval() else 0])
 
 
 def on_created(node) -> None:

@@ -395,12 +395,71 @@ def test_a_scene_from_before_the_fit_lookup_keeps_it_off():
     assert not ga.scene_before_lookup("{broken")
 
 
-def test_hip_holds_reads_the_parm_name_from_the_file(tmp_path):
+def test_hip_holds_reads_the_parm_record_from_the_file(tmp_path):
     f = tmp_path / "a.hip"
-    f.write_bytes(b"x" * ((1 << 20) - 5) + b"lookup_per_piece" + b"y" * 100)      # across a block edge
+    rec = b"\nlookup_per_piece\t[ 0\tlocks=0 ]\t(\t\"on\"\t)\n"     # a parm record as Houdini writes it
+    f.write_bytes(b"x" * ((1 << 20) - 5) + rec + b"y" * 100)                       # across a block edge
     assert ga.hip_holds(str(f), "lookup_per_piece") is True
     assert ga.hip_holds(str(f), "another_parm") is False
+    f.write_bytes(rec[1:] + b"y")                                                  # the file's first line
+    assert ga.hip_holds(str(f), "lookup_per_piece") is True
     assert ga.hip_holds(str(tmp_path / "none.hip"), "lookup_per_piece") is None and ga.hip_holds("", "x") is None
+
+
+def test_hip_holds_is_not_fooled_by_the_word(tmp_path):
+    """t68: a sticky note whose text holds the parm name opened an old scene with the lookup ON. Neither a note,
+    a node name, a comment, an expression on another parm nor an embedded definition is the parm's record."""
+    f = tmp_path / "old.hiplc"
+    f.write_bytes(
+        b"HouLC1033600b8f06af9c356054e29a88obj/Helen_grooming/note.postitdef text \"TODO check lookup_per_piece later\"\n"
+        b"comment \"lookup_per_piece off\"\n"
+        b"lookup_per_piece.init\ntype = null\n"
+        b"other\t[ 0\tlocks=0 ]\t(\t[ \"ch(\\\"../lookup_per_piece\\\")\" ]\t)\n"
+        b"            name    \"lookup_per_piece\"\n")
+    assert ga.hip_holds(str(f), "lookup_per_piece") is False
+    assert ga.scene_before_lookup('{"schema": 1, "locks": []}', ga.hip_holds(str(f), "lookup_per_piece"))
+
+
+def test_the_note_follows_the_toggle_set_by_hand(monkeypatch):
+    class Parm:
+        def __init__(self, v):
+            self.v = v
+
+        def eval(self):
+            return self.v
+
+    class Node:
+        def __init__(self):
+            self.p, self.data = Parm(0), {ga.LOOKUP_NOTE: "off: the scene was saved before the parm existed"}
+
+        def parm(self, name):
+            return self.p if name == ga.LOOKUP_PARM else None
+
+        def userData(self, key):
+            return self.data.get(key)
+
+        def setUserData(self, key, value):
+            self.data[key] = value
+
+    class Dis:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import types
+    monkeypatch.setattr(ga, "hou", types.SimpleNamespace(undos=types.SimpleNamespace(disabler=lambda: Dis())))
+    n = Node()
+    n.p.v = 1
+    ga.on_lookup_changed(n)
+    assert n.userData(ga.LOOKUP_NOTE) == "on: set by hand"
+    n.p.v = 0
+    ga.on_lookup_changed(n)
+    assert n.userData(ga.LOOKUP_NOTE) == "off: set by hand"
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert 'grooming_adapter.on_lookup_changed(kwargs["node"])' in build
 
 
 def test_a_node_made_now_keeps_the_lookup_default(monkeypatch):

@@ -17,9 +17,12 @@ its own skin there; limits are the plan's, never tuned to a result.
 
 How roots are counted (t65, after the t64 check): a root belongs to the skin prim nearest it ON THE SURFACE
 (`accept_lib.Skin.assign`, the exact distance to the triangles), and every root counts, however far off the skin
-(by the surface none of Helen's is over 0.002 cm off it). A lock asked under one root in a core (N < 1) may hold
-at most ceil(N + 2 sqrt(N)) roots there (the limit's upper side; t66: any count passed before), and its roots
-are in the count of all locks together. Strands are followed by id within 1e-5 cm (measured: under 4e-7 cm).
+(by the surface none of Helen's is over 0.002 cm off it); a root within 1e-4 cm of a prim its own lock owns is
+given to that prim (t68: on an edge shared with a neighbour's prim the tie broke to the neighbour), and every
+root assigned is checked to lie within 1e-4 cm of its own lock's skin (`z_roots_on_their_own_locks_skin`). A
+lock asked under one root in a core (N < 1) may hold at most floor(N + 2 sqrt(N)) roots there (the limit's
+upper side; t66: any count passed before); a lock over it is listed as the B1 kind (few polygons: the
+scatter's one draw a lock id), still failing, and its roots are in the count of all locks together. Strands are followed by id within 1e-5 cm (measured: under 4e-7 cm).
 Evenness is the local measure (`accept_lib.lock_even_local`): each root against the spacing asked where it stands.
 
 Definition this script makes on its own (named DEFINITION where it is used, for the checker to judge):
@@ -61,10 +64,11 @@ QC = SUITE + "/.claude/skills/grooming-check/scripts/qc_metrics.py"
 DENSITIES = (0.0, 40.0, 120.0, 300.0)   # strands / cm2; every Helen lock's own Density is 150
 EVEN_RISE = 0.05        # a lock's roots in a painted patch: its local clumped share, over its no-layer value there
 # "Fit lookup per lock" off on an old scene: v0.1's groom within v0.1's own run-to-run difference (the user,
-# 2026-11-15). v0.1 against itself, t66: a groom v0.1 made and saved, 4 of 10 runs differ, at most 0.00164 cm;
-# Helen as v0.1 saved it, at most 0.0098 cm
-OLD_SCENE_CM = 0.002
-OLD_SCENE_HELEN_CM = 0.0098
+# 2026-11-15), strand counts per lock equal. v0.1 against itself, t68 (10 runs each, 45 pairs): a groom v0.1 made
+# and saved, at most 0.0024 cm (5 of 10 runs identical); Helen as v0.1 saved it, at most 0.0123 cm (no two runs
+# identical). The tolerances, set by the manager from those runs:
+OLD_SCENE_CM = 0.003
+OLD_SCENE_HELEN_CM = 0.015
 SAME_ROOT_CM = 1e-5     # a strand followed by id is where it was: its root within this (measured: under 4e-7 cm)
 EVEN_SPACING = 0.45     # where every root is the layers': spacing ratio, grooming-check's root_spacing_low limit
 UNDO_S = 0.1
@@ -200,7 +204,7 @@ def s2_stroke_speed_lookup_off():
            "smallest_margin_s": margin(first),
            "margins_s": [round(r["limit_s"] - r["display_s"], 3) for r in first]},
           "the same limit, REPORTED, not graded: known, decided 2026-11-15 (the user): with the toggle off the "
-          "thinning order is made lazily, at a lock's first stroke, which may go over the limit by 0.05-0.09 s, "
+          "thinning order is made lazily, at a lock's first stroke, which may go over the limit by up to 0.10 s, "
           "once per lock")
 
 
@@ -484,7 +488,8 @@ def _want(core, stack):
 
 
 def _patch(*paint_layers):
-    """The whole painted patch: every prim of the fine scalp that all the given paint layers cover in full, to
+    """The painted patch as graded: the prims covered in full by the paint (36-44 % of the painted area on the
+    three test places, t68; the rim is not graded): every prim of the fine scalp that all the given paint layers cover in full, to
     the edge of the paint (no margin; `_core` keeps 0.35 cm off the edge). Partly painted prims at the rim are
     left out: estimated root by root (t67) they read 1.77 x on the crown whorl's rim at D 0, a measuring
     error or a real one that this check cannot tell apart."""
@@ -510,13 +515,15 @@ def _lock_rows(prims, stack):
         if w <= 1e-9 and skin > 0:
             ok = got == 0                                   # the lock has skin here and is asked no root: none at all
         elif w < 1.0:
-            lim = float(math.ceil(w + 2.0 * math.sqrt(w)))   # under one root asked: a count, not a ratio
+            lim = float(math.floor(w + 2.0 * math.sqrt(w)))  # under one root asked: a count, the limit's upper side
             ok = got <= lim
         else:
             ok = abs(got / w - 1) <= lim
         rows[K.names[k]] = {"skin_cm2": r3(skin), "polygons": sum(1 for p in prims if k in K.own[p]),
                             "automatic": b.get(k, 0), "expected": r3(w), "roots": got,
                             "ratio": r3(got / w) if w >= 1.0 else None, "limit": r3(lim), "pass": bool(ok)}
+        if not ok and w < 1.0:
+            rows[K.names[k]]["miss_kind"] = "B1 kind: few polygons, under one root asked (still failing)"
         if not ok:
             bad.append(K.names[k])
     return rows, bad, want, b
@@ -525,7 +532,7 @@ def _lock_rows(prims, stack):
 def _grade(core, stack, evenness=True, patch=None):
     """Roots on `core` against the rule (`_want`), for all locks together and for each lock on its own skin
     there; limit |measured / expected - 1| <= max(0.15, 2 / sqrt(N)).
-    `patch` (the whole painted patch, `_patch`): each lock is graded on its own skin THERE instead (the user,
+    `patch` (the prims covered in full by the paint, `_patch`; the rim is not graded): each lock is graded on its own skin THERE instead (the user,
     2026-11-15, B1: the limit is for all locks together and for each lock on its own skin inside the painted
     area, not for a lock on one polygon). A lock whose skin there is ONE polygon is not passed or failed on it:
     its numbers are listed (`locks_on_one_polygon`, with what the limit would say there), and its roots are in
@@ -535,8 +542,9 @@ def _grade(core, stack, evenness=True, patch=None):
     The lock's numbers on `core` stay in the row as information (`locks_on_the_core`).
     A root is counted to the skin prim nearest it on the surface, and every root counts (no root is left out
     for standing off the skin). A lock asked under one root there (N < 1: its skin only touches the core)
-    may hold at most ceil(N + 2 sqrt(N)) roots (the upper side of the limit; none is also right), and its
-    roots are in the count of all locks together.
+    may hold at most floor(N + 2 sqrt(N)) roots (the upper side of the limit; none is also right); over it the
+    lock fails and is listed as the B1 kind (`locks_outside_b1_kind`), and its roots are in the count of all
+    locks together.
     Where no root at all is asked (a layer of 0 painted white), every lock must hold none."""
     area = float(K.area[core].sum())
     want, b, kept = _want(core, stack)
@@ -556,7 +564,8 @@ def _grade(core, stack, evenness=True, patch=None):
                 one_poly[name] = dict(v, inside_the_limit_on_that_polygon=v["pass"])
                 v.update({"pass": True, "graded": False})
         bad = [k for k in bad if k not in one_poly]
-        graded_on = "the whole painted patch (%d prims, %.3f cm2, no margin)" % (len(patch), float(K.area[patch].sum()))
+        graded_on = "the prims covered in full by the paint (%d prims, %.3f cm2; the rim is not graded)" % (
+            len(patch), float(K.area[patch].sum()))
     else:
         locks, bad = core_rows, core_bad
         graded_on = "the core"
@@ -566,6 +575,7 @@ def _grade(core, stack, evenness=True, patch=None):
     row = {"core_cm2": r3(area), "automatic_per_cm2": r3(sum(b.values()) / area), "expected_per_cm2": r3(target / area),
            "measured_per_cm2": r3(got / area), "ratio": r3(got / target) if target > 0 else None, "limit": r3(lim),
            "locks_on_core": len(core_rows), "locks_outside_their_limit": bad, "locks": locks,
+           "locks_outside_b1_kind": [k for k in bad if locks.get(k, {}).get("miss_kind")],
            "each_lock_graded_on": graded_on,
            "locks_on_the_core": core_rows if patch is not None else None,
            "locks_on_one_polygon": one_poly,
@@ -1381,7 +1391,8 @@ def r6_old_scene_and_new_node():
     C.add("r6_an_old_scene_opens_with_the_lookup_off", ok, row,
           "the Helen scene with a groom made and saved by the v0.1 suite (saved_by_v01.hiplc), opened with this HDA: \"Fit lookup per lock\" reads off (set on the node "
           "by OnLoaded, once), and the rest groom is v0.1's within v0.1's own run-to-run difference: every lock's "
-          "strand count equal, no point farther than 0.002 cm from v0.1's (v0.1 against itself: 0.00164 cm at most)",
+          "strand count equal, no point farther than 0.003 cm from v0.1's (v0.1 against itself, t68 10 runs: "
+          "0.0024 cm at most)",
           evidence="asopened_opened.json / .npz, asopened_v01.json / .npz")
     # N1 (t66): the Helen scene AS v0.1 SAVED IT. Its regions carry no rule number, so OnLoaded marks them out
     # of date and writes groom_data again in today's schema: the toggle must be decided before that
@@ -1411,8 +1422,7 @@ def r6_old_scene_and_new_node():
         row4.update(_moved(zh, zw, jw.get("unit_cm", 1.0)) if same else {})
         C.add("r6d_helen_as_v01_saved_it_is_v01s_groom", same and row4["point_moved_max_cm"] <= OLD_SCENE_HELEN_CM, row4,
               "the same scene, the rest groom against v0.1 opening it: every lock's strand count equal and no point "
-              "farther than 0.0098 cm from v0.1's, the most v0.1 differs from itself on this scene (t66: 206,007 "
-              "coordinates)")
+              "farther than 0.015 cm from v0.1's (v0.1 against itself on this scene, t68 10 runs: 0.0123 cm at most)")
     # the toggle on: what a new node gives
     same_locks = bool(np.array_equal(zn["lock"], zv["lock"]) and np.array_equal(zn["counts"], zv["counts"]))
     row2 = {"lookup_cooked": jn.get("lookup_cooked"), "strands": jn.get("strands"), "same_strands_per_lock": same_locks}
@@ -1895,6 +1905,10 @@ if wanted("r6"):
         r6_old_scene_and_new_node()
     except Exception:
         C.add("r6_raised", False, traceback.format_exc()[-2500:], note="the check raised")
+C.add("z_roots_on_their_own_locks_skin", K.own_checked > 0 and K.own_over == 0,
+      {"roots_checked": K.own_checked, "farther_than_1e-4_cm": K.own_over, "farthest_cm": K.own_worst},
+      "every root the density checks assigned lies within 1e-4 cm of a prim its own lock owns (the HDA cuts a "
+      "lock's region by whole prims, `lock_owners`)")
 errors = lib.node_errors(node)
 C.add("z_no_error_on_the_node", not errors, errors, "no node of the HDA holds an error at the end")
 C.meta["warnings"] = lib.node_warnings(node)

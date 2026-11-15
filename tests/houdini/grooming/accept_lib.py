@@ -380,6 +380,16 @@ class Skin:
         self.P = S["P_cm"]
         self.names = self.G.lock_names()
         self.nown = np.array([len(o) for o in self.own])
+        # which lock owns which prim (`lock_owners`, whole prims: the HDA cuts a lock's region by them)
+        ids = sorted({int(x) for o in self.own for x in o})
+        self.owner_row = {k: i for i, k in enumerate(ids)}
+        self.owns = np.zeros((len(ids) + 1, self.n), bool)       # last row: a lock that owns nothing here
+        for p, o in enumerate(self.own):
+            for x in o:
+                self.owns[self.owner_row[int(x)], p] = True
+        # every root assigned with its lock: how far it lies from its OWN lock's skin (t68, the check the
+        # tie-break below could hide)
+        self.own_checked, self.own_over, self.own_worst = 0, 0, 0.0
 
         # triangles of the skin (a fan a prim), for the distance from a root to the surface
         order = np.argsort(self.vp, kind="stable")
@@ -401,11 +411,17 @@ class Skin:
     def snap(self, c):
         return self.cen[((self.cen - np.asarray(c)) ** 2).sum(1).argmin()]
 
-    def assign(self, roots_cm, k: int = 16):
+    TIE_CM = 1e-4     # two prims this close to a root are a tie: the root lies on their shared edge
+
+    def assign(self, roots_cm, k: int = 16, lid=None):
         """(the skin prim nearest each root ON THE SURFACE, its distance to it in cm): the exact distance from
         the root to each of the nearest triangles (`closest_on_tri`), as the t64 checker counts. The nearest
         prim CENTRE gave a root on a large prim's edge to either prim and read roots of a curved prim as
-        floating 0.3 cm off the skin (by the surface no root of Helen's groom is over 0.002 cm off it)."""
+        floating 0.3 cm off the skin (by the surface no root of Helen's groom is over 0.002 cm off it).
+        With `lid` (each root's lock id): when a prim the root's own lock owns is within `TIE_CM` of the nearest,
+        the root is given to it (t68: roots on an edge a lock's prim shares with a neighbour's went to the
+        neighbour, and a lock read N = 0 with 1-2 roots), and each root's distance to its own lock's skin is
+        counted (`own_checked` / `own_over` / `own_worst`)."""
         n = len(roots_cm)
         prim = np.full(n, -1)
         dist = np.full(n, np.inf)
@@ -425,8 +441,21 @@ class Skin:
             q = closest_on_tri(r[:, None, :], A[cand], B[cand], C[cand])
             d = np.sqrt(((q - r[:, None, :]) ** 2).sum(-1))
             j = d.argmin(1)
-            dist[i:i + 256] = d[np.arange(len(j)), j]
-            prim[i:i + 256] = self.tri_prim[hood[cand[np.arange(len(j)), j]]]
+            rows = np.arange(len(j))
+            cp = self.tri_prim[hood[cand]]                  # the prim of each candidate triangle
+            if lid is not None:
+                own_row = np.array([self.owner_row.get(int(x), len(self.owns) - 1) for x in lid[i:i + 256]])
+                mine = self.owns[own_row[:, None], cp]
+                d_own = np.where(mine, d, np.inf)
+                jo = d_own.argmin(1)
+                od = d_own[rows, jo]
+                tie = od <= d[rows, j] + self.TIE_CM
+                j = np.where(tie, jo, j)
+                self.own_checked += len(od)
+                self.own_over += int((od > self.TIE_CM).sum())
+                self.own_worst = max(self.own_worst, float(od.max()) if len(od) else 0.0)
+            dist[i:i + 256] = d[rows, j]
+            prim[i:i + 256] = cp[rows, j]
         return prim, dist
 
     def prim_minmax(self, f):
@@ -452,7 +481,7 @@ class Skin:
             return np.zeros(0, int), np.zeros(0)
         lo, hi = self.cen[prims].min(0) - 1.0, self.cen[prims].max(0) + 1.0
         sel = np.nonzero((r >= lo).all(1) & (r <= hi).all(1))[0]
-        prim, dist = self.assign(r[sel])
+        prim, dist = self.assign(r[sel], lid=_lid[sel])
         inside = np.zeros(self.n, bool)
         inside[prims] = True
         got = (prim >= 0) & inside[np.maximum(prim, 0)]

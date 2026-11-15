@@ -660,9 +660,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     worst 0.1314 -> 0.1327, tip width off 0.4412 -> 0.44 ...; t62 `qc/nolayer_piece`). The node's toggle
     "Fit lookup per lock" (`lookup_per_piece`, on by default, in every lock's key) switches back to the whole
     cloud (`fit_cloud`): then the groom is v0.1's within v0.1's own run-to-run difference. v0.1 is NOT
-    byte-identical from run to run (t66, 10 runs on a groom v0.1 made and saved: 6 identical, 1 off by one
-    coordinate, 2 by 2-3 strands at 0.0016 cm, 1 by 1,695 strands at 1.7e-5 cm; on Helen as v0.1 saved it, up
-    to 0.0098 cm), and this build with the toggle off falls in the same groups. The default (on for a new node,
+    byte-identical from run to run (t68, 10 runs each: on a groom v0.1 made and saved up to 0.0024 cm, 5 of 10
+    identical; on Helen as v0.1 saved it up to 0.0123 cm, no two runs identical), and this build with the toggle
+    off lies within that spread; the acceptance's tolerances are 0.003 / 0.015 cm, counts per lock equal. The default (on for a new node,
     off for an old scene) is the user's decision: "B4" below and the plan.
   - The lock's automatic roots (hairgen's scatter + `root_pick`, 8-16 % of a lock's cook; `root_pick` is a
     single-threaded detail wrangle) are kept per lock under its key without layers (`auto_key`,
@@ -720,7 +720,7 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - The per-lock "= D" miss (B1) is one fixed draw of hairgen's scatter, not a bias: over 40 seeds the prim
     holds 35.1 where 33.66 are asked (sd 5.15, the t66 check; the shipped seed draws 45, the highest of the
     40); the seed is the lock's id, so the draw is the same at every D. The user's decision (2026-11-15): no
-    new scatter in v0.2a; the acceptance grades each lock over the whole painted patch and lists a lock on
+    new scatter in v0.2a; the acceptance grades each lock over the prims covered in full by the paint (36-44 % of the painted area on the three test places, t68); the rim is not graded, and lists a lock on
     one polygon without passing or failing it. `hairgen_layers.geometry()` has `skinprim`: count per skin prim without any
     assignment (isolate the lock, read `mask_skin` and `hairgen_layers`).
   - "Fit lookup per lock" (B4, decided by the user): a new node has it on; a scene saved before it existed gets
@@ -729,28 +729,37 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     - It must run BEFORE anything writes `groom_data` again. `mark_old_regions` rewrote the data of a scene
       whose regions carry no rule number (Helen as v0.1 saved it, `helen_v01.hiplc`) in today's schema
       first, so the toggle stayed on (N1: points moved up to 0.958 cm, silently).
-    - "Before the parm" is decided by the saved hip itself: it names every parm it holds, in plain text, a
-      .hiplc too (`hip_holds`). The parm came in the middle of the schema 4 test builds (245f480 has it, on;
+    - "Before the parm" is decided by the saved hip itself: it holds each parm of a node as a record line,
+      `lookup_per_piece\t[ ...`, in plain text, a .hiplc too, and `hip_holds` matches the RECORD, not the word
+      (t68: a sticky note holding the name opened an old scene with the toggle on; a hip naming the word does
+      not hold the parm). The parm came in the middle of the schema 4 test builds (245f480 has it, on;
       two schema 4 commits before it do not), so no schema number tells (N2). The file decides whenever it
       can be read, whatever the schema (t67: a scene opened while another checkout's library, without the
       parm, was installed had its data rewritten as schema 6 by that load's `mark_old_regions`, and OnUpdated
       then kept the toggle on). A node made now is marked by OnCreated (`on_created`) and never judged.
-      Without a file to read, schema under 4 decides.
+      Without a file to read, schema under 4 decides. The toggle set by hand rewrites the note
+      (`on_lookup_changed`, the parm's callback). A node copied out of an old scene and pasted into another
+      is a new node (the manager's rule, round 3): toggle on, no note.
     - hython on this machine may bind a scene to ANOTHER worktree's `mono_grooming.hdalc` at load (the
       installed package) before a test's `installFile(force_use_assets=True)` switches to its own: the rule
-      then runs from OnUpdated. A test that reads the toggle must read it after the switch.
+      then runs from OnUpdated. A test that reads the toggle must read it after the switch. A hip lists the
+      library paths installed when it was saved and Houdini installs them at load: bound first to a stale
+      checkout's library without the layer parms (`mask_layers` ...), the node LOSES its painted masks at load,
+      whatever this suite does after (t68 section 5). Test on copies whose saved library list names no stale
+      checkout.
     Test scripts that open the Helen scene "as saved" run with it off; `accept_lib.fresh` reverts every parm
     to its default, so the acceptance's fresh groom has it on (checks `s2`, `r5b`, `r6`, `r6c` cover off).
   - The thinning order is lazy with the toggle on AND off (the user, 2026-11-15). With it off the whole-cloud
     lookup leaves a first stroke no margin, so the first stroke on a lock never painted may go over the stroke
-    limit by 0.05-0.09 s, once per lock: a known, stated cost; `s2` reports first strokes apart
+    limit by up to 0.10 s, once per lock (t68: 0.100 / 0.098 s at worst): a known, stated cost; `s2` reports first strokes apart
     (`Checks.add(passed=None)`: KNOWN, neither pass nor fail). Do not make it eager again: tried in t67
     (`thin_order_eager`), 2.48 s of the cold cook, the display's cold cook of Helen as v0.1 saved it 1.16 x.
-  - Acceptance counting gap (t67, `stray_roots.py`): a lock's skin in the acceptance is `Skin.own` (whole
-    prims), the HDA's is the scalp split along region borders, so near a border a lock's layer roots sit on a
-    prim the table gives to other locks (44 of 963 at D 300 on hair_base_12's start). Graded per lock with
-    N < 1 by count (ceil(N + 2 sqrt(N))), such a lock reads N = 0 with 1-2 roots and fails `d1` / `d2` / `b3`
-    there although all locks together pass. Fixing it means counting by the HDA's split skin.
+  - Lock borders in the acceptance (t67 `stray_roots.py`, cause corrected by t68): the roots lie on their OWN
+    lock's skin (within 1.7e-5 cm); the HDA cuts a lock's region by whole prims (`lock_owners`, `region_cut`),
+    and a root on an edge shared with another lock's prim went to the neighbour (`Skin.assign`, nearest prim),
+    so a lock read N = 0 with 1-2 roots and failed `d1` / `d2` / `b3`. Round 3: a prim the root's own lock owns
+    within 1e-4 cm wins (`Skin.TIE_CM`), and `z_roots_on_their_own_locks_skin` checks every root assigned lies
+    within 1e-4 cm of its own lock's skin.
   - Evenness by the local measure misses +0.05 at the crown whorl under partial coverage for a few small fringe
     locks (hair_bang_04 / 16 / 19, hair_base_09: +0.054 to +0.119). Traced in t67 (`evenness/` there): the roots
     that read as bunched are PAIRS OF TWO KINDS of automatic root of the same lock that already stood that close
@@ -763,10 +772,10 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     decides (the plan has the cost). hair_bang_05's +0.105 at the fringe start (t66) is one other pair: a
     layer root 0.065 cm from a kept automatic root where the measure calls under 0.068 cm close.
   - The acceptance counts a root to the prim nearest it on the surface (`Skin.assign`), follows strands within
-    1e-5 cm, holds a lock asked under one root to at most ceil(N + 2 sqrt(N)) roots (t67; before: any count),
+    1e-5 cm, holds a lock asked under one root to at most floor(N + 2 sqrt(N)) roots (round 3; ceil before;
+    a lock over it is listed as the B1 kind, `locks_outside_b1_kind`, still failing),
     and judges evenness by `lock_even_local` (each root against the spacing asked where it stands; the plan
-    has the definition). Per lock it grades over the whole painted patch (`_patch`: every prim the paint
-    covers in full, no margin) in d1 / d2 / b1 / b3, and lists a lock whose skin there is one polygon
+    has the definition). Per lock it grades over the painted patch (`_patch`: prims covered in full by the paint (36-44 % of the painted area on the three test places, t68); the rim is not graded) in d1 / d2 / b1 / b3, and lists a lock whose skin there is one polygon
     (`locks_on_one_polygon`) without passing or failing it. A grade that also took the partly painted rim
     (each automatic root's own mask value, `Skin.sample`, tried in t67) read the crown whorl's rim 1.77 x at
     D 0: not used, as it cannot tell a measuring error from a tool's. New checks: `u6` (Shot deform on: every
