@@ -572,7 +572,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     operators (`r = r * 2 + k % 2; k /= 2`). Cold cook 6.8 -> ~10 s.
   - A few v0.1 start roots float off the skin (hair_base_20: 1 of 7,172 strands starts 0.24 cm up); the mask
     judges a root where it lands on its lock's region, so such a strand can stay over skin painted black
-    when that landing is the patch's rim. The acceptance lists roots over 0.1 cm off the skin, apart.
+    when that landing is the patch's rim. (By the distance to the SURFACE no root of the groom is over
+    0.002 cm off the skin: the "0.24 cm up" was the distance to the nearest prim CENTRE on a large prim. The
+    acceptance counts every root since t65.)
   - Measured (t62 `accept.json`, Helen, discs of 1.3 cm, 8 kinds of skin, all locks together and each lock on
     its own skin): see `report.md` there. Shared points (the lock's share averaged at a point) gave 1.08-1.10
     on the top of the head: hence `mask_split` (Facet, unique points).
@@ -655,8 +657,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     digit, 8 move by 5e-5 to 1 % (kink p95 32.9566 -> 32.9534, uncovered 0.0699 -> 0.0701, lock uncovered
     worst 0.1314 -> 0.1327, tip width off 0.4412 -> 0.44 ...; t62 `qc/nolayer_piece`). The node's toggle
     "Fit lookup per lock" (`lookup_per_piece`, on by default, in every lock's key) switches back to the whole
-    cloud (`fit_cloud`): then the groom is v0.1's within its run-to-run noise (192-20,437 of 12.5 M
-    coordinates differ, at most 0.02 mm, as two cooks of v0.1 differ). Which default ships is the
+    cloud (`fit_cloud`): then the groom is v0.1's byte for byte (the t64 check: all 12,554,097 coordinates
+    equal; v0.1 is byte-identical from run to run, and so is this build. The "192-20,437 coordinates differ"
+    written here before was wrong). Which default ships is the
     manager's / user's call; the speed limit holds with margins of 3-9 % when it is off (one run in four
     missed it on this machine) and 0.27 s or more when on.
   - The lock's automatic roots (hairgen's scatter + `root_pick`, 8-16 % of a lock's cook; `root_pick` is a
@@ -672,6 +675,53 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     Before (same build, whole-cloud lookup, no root cache): 0.56-0.73 / 1.03-1.52 / 2.06-2.21 / 2.81-4.70 s.
   - Timings on this machine swing 10-15 % from run to run even when idle: grade speed on the worst of
     several runs, never on one.
+- t65, the t64 check's bugs (sandbox `tests/t65_density_fix/`, `report.md`; the plan has the decisions):
+  - Older files (B2): the 0..1 layers of schema 2 / 3 / 5 become `legacy` density layers ("Older build N",
+    `MaskLayer.legacy`): their mask layers blend by that build's rule (`logic.legacy_mask` -> (keep, add); the
+    layer gives keep x keep' and add x keep' + D x add' over what is below, `MaskData.parts_of` / `weights`).
+    A plain density layer is the same thing with (1 - mask, mask). Do not turn them into plain layers again:
+    that lost every thinning (a mask starting black makes Multiply and Min do nothing) and black = no hair.
+    Compare an older file against the suite that wrote it (t64 `old_suites/`): t62's `layers.hiplc` gives
+    114,377 strands with both, lock for lock. The t64 report's "116,844" was a run that did not read the
+    file's paint; rerun with the same script and suite it gives 114,377.
+  - Black over white (B3): the points the t64 check found left white lie OUTSIDE every black dab (0.36-0.39 cm
+    from the nearest dab centre, radius 0.3): an offset disc of the same size does not cover the first one;
+    the brush's reach is not at fault. What was wrong: `logic.mask_dab` moved a painted value by the weight
+    alone, so a soft stroke painted again in black with the same brush left (1 - w) x w of the white along its
+    rim. It now moves by weight / coverage (at most 1). A soft black stroke over a HARD white disc of the same
+    size still leaves the rim (the soft part never reaches full weight): that is what soft means.
+  - `thin_order` is lazy (B5): made on the layer path only (`auto_thin` switch, `thin_store`), the result
+    replacing the lock's "auto:" cache entry (`auto_cached` 2 = kept with `thin_u`). VEX outside a detail
+    wrangle runs array code ~30 x slower (a "run over numbers" wrangle with one chunk a number took 6 s for a
+    lock a detail wrangle orders in 0.18 s): no chunked parallel version.
+  - Shot deform on (B6): no output captures in the per-lock loop any more (`capture_flag` 0; the loop's
+    `lock_capture` / `captured` nodes stay, unused). The display's deform: `disp_capture_*` (`_capture_loop`,
+    slot `capture_slot(mode)`: the full hair shares output 1's captures) -> `deform` -> `deform_no_capture` ->
+    `deform_store`, or `deform_load` when `deform_keys` finds the state (`DEFORMED_MODE`, a whole deformed
+    groom, ~251 MB on Helen; `LockCache.keep_bytes` holds them to half the limit, `FIRST_TO_GO` drops them
+    before any hair; states of another frame are dropped; with the deform off `lock_keys` drops them and the
+    display's merge). The mesh and guide parts are deformed apart (`deform_mesh_guide`), the hair is coloured
+    after the deform (`hair_color_deformed`). Toggling Shot deform no longer regrows the groom.
+  - grooming-check under layers (B7): a painted lock's count is held to max(0.15, 2 / sqrt(expected)), written
+    on the 0.15 scale (`density_limit`; an unpainted lock: 0.15 as before, so the no-layer numbers do not
+    move); the start share weighs each automatic strand by 1 / keep where it is rooted and leaves the layers'
+    own strands out (`layer_strand_weights`), so it still asks whether the TOOL left a start bare. A start
+    the artist painted bare (D 0 white over it) reads 0: there is no automatic strand left to weigh.
+  - Paint (B8): `_others_selected` looks at every network (the node's own ancestors apart), `_not_ours` also
+    ends Paint when no node is selected, `_came_back` turns Paint off when the viewer cannot take the brush,
+    and `_EscFilter` takes Esc as ShortcutOverride too (where Houdini has Esc as a shortcut the KeyPress never
+    comes; a GUI test must POST the key, `app.postEvent`, to see it: a sent event skips the shortcuts).
+  - The per-lock "= D" miss (B1) is one fixed draw of hairgen's scatter, not a bias: over 40 seeds the prim
+    holds 33.6 where 33.7 are asked (sd 4.6), with or without relax; the seed is the lock's id, so the draw is
+    the same at every D. `hairgen_layers.geometry()` has `skinprim`: count per skin prim without any
+    assignment (isolate the lock, read `mask_skin` and `hairgen_layers`).
+  - The acceptance counts a root to the prim nearest it on the surface (`Skin.assign`), follows strands within
+    1e-5 cm, does not grade a lock asked under one root alone, and judges evenness by `lock_even_local` (each
+    root against the spacing asked where it stands; the plan has the definition). New checks: `u6` (Shot
+    deform on), GUI `s4b` (Esc posted, another network, nothing selected).
+  - A patch script for a CRLF file must turn its own LF into CRLF before matching (qc_metrics.py is CRLF in
+    the repo), and `\n` / `\r` typed in a shell heredoc arrive as real characters: write the script with the
+    editor.
 - Do not write `\n` inside a Python heredoc passed through the shell tool: it arrives as a real newline
   (two build_hda.py edits broke that way). Use a patch file, or the editor.
 - grooming-check under density layers (round 3, t62 `qc/`; `qc_metrics.py`):
@@ -727,10 +777,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - "Clumped share" (`accept_lib.lock_even`) compares each root's nearest neighbour with ONE spacing for the lock
     on the patch. Under partial coverage a lock keeps part of a start grid several times denser than the rest
     of it while its mean density changes, so the same grid reads as more or less "clumped": `hair_base_21` on ordinary skin read +0.14 because `mask_apart` took the lock's set Density (150) for the automatic density there, where under floating mesh 26 / cm2 are left; it now counts the 8 nearest kept automatic roots (rise 0.0; do not go back to the set density).
-  - A dab reaches skin joined to the point under the cursor and facing its way, so two strokes over the same skin
-    with different dab centres do not reach exactly the same points at seams and folds: black painted over white
-    with other dabs left a few white points (r1's first version, the groom not byte-equal). The eraser and a
-    black stroke with the same dabs leave none.
+  - Black painted over white with other dabs left a few white points (r1's first version, the groom not
+    byte-equal). Traced in t65: those points lie outside every black dab (the two discs do not cover the same
+    skin), not at seams; the eraser, a black stroke with the same dabs, or a wider one leave none.
   - VEX: `setdetailattrib(0, "x", prim(...))` is ambiguous (the build cooks, the lock's loop fails at cook time):
     read into a typed variable first. The same family as "type every prim() read".
   - Patch scripts with triple quotes inside a shell heredoc break the shell tool's quoting: write the script
