@@ -637,6 +637,176 @@ def s4_selection():
     later(600, reselect)
 
 
+def post_esc(target):
+    """Esc as a real key press arrives: posted to the event queue (a sent event skips Houdini's shortcuts)."""
+    for kind in (QtCore.QEvent.KeyPress, QtCore.QEvent.KeyRelease):
+        app.postEvent(target, QtGui.QKeyEvent(kind, QtCore.Qt.Key_Escape, QtCore.Qt.NoModifier, ""))
+
+
+def network_editor_widget():
+    ne = hou.ui.paneTabOfType(hou.paneTabType.NetworkEditor)
+    mw = hou.qt.mainWindow()
+    if ne is None:
+        return mw
+    return mw.childAt(mw.mapFromGlobal(ne.qtScreenGeometry().center())) or mw
+
+
+@step
+def s4b_paint_is_the_selected_nodes():
+    """The t64 check's Paint cases (B8): Esc POSTED while the button is held, to the network editor and to the
+    widget with the keyboard; a node of ANOTHER network selected, then the grooming node again; no node
+    selected."""
+    node = S["node"]
+    lid = S["lid"]
+    sm = state_mod()
+
+    def held(name, target_fn, done):
+        out = {}
+        ga().mask_clear(node, lid)
+        node.cook()
+        node.setCurrent(True, clear_all_selected=True)
+        ga().paint_enter(node, lid)
+        pts = line(-140, 10, 140, n=30)
+
+        def press():
+            out["undo_before"] = len(hou.undos.undoLabels())
+            out["errors_before"] = len(sm.STATS["errors"])
+            _send(QtCore.QEvent.MouseMove, pts[0], QtCore.Qt.NoButton)
+            later(100, lambda: (_send(QtCore.QEvent.MouseButtonPress, pts[0], QtCore.Qt.LeftButton), later(30, lambda: move(1))))
+
+        def move(i):
+            if i == 12:
+                st = sm.running()
+                out["down_at_esc"] = bool(st is not None and st.down)
+                tgt = target_fn()
+                out["esc_target"] = type(tgt).__name__
+                post_esc(tgt)
+                return later(300, lambda: after(i))
+            _send(QtCore.QEvent.MouseMove, pts[i], QtCore.Qt.LeftButton)
+            later(20, lambda: move(i + 1))
+
+        def after(i):
+            out["right_after_esc"] = {"paint_layer": ga().paint_layer(node), "points_painted": painted(node, lid)}
+            out["mask_at_esc"] = mask_of(node, lid)
+            more(i)
+
+        def more(i):
+            if i >= len(pts):
+                _send(QtCore.QEvent.MouseButtonRelease, pts[-1], QtCore.Qt.NoButton)
+                return later(900, check)
+            _send(QtCore.QEvent.MouseMove, pts[i], QtCore.Qt.LeftButton)
+            later(20, lambda: more(i + 1))
+
+        def check():
+            a = mask_of(node, lid)
+            row = {"button_down_when_esc_came": out.get("down_at_esc"), "esc_posted_to": out.get("esc_target"),
+                   "right_after_esc": out["right_after_esc"],
+                   "kept_what_was_painted": bool(out["mask_at_esc"] is not None and int((out["mask_at_esc"] > 0).sum()) > 5),
+                   "the_drag_after_esc_painted_nothing": same_mask(a, out["mask_at_esc"]),
+                   "undo_steps_added": len(hou.undos.undoLabels()) - out["undo_before"],
+                   "after_release": {"state": viewer().currentState(), "paint_layer": ga().paint_layer(node)},
+                   "errors": sm.STATS["errors"][out["errors_before"]:]}
+            ok = (row["button_down_when_esc_came"] and row["right_after_esc"]["paint_layer"] is None
+                  and row["kept_what_was_painted"] and row["the_drag_after_esc_painted_nothing"]
+                  and row["undo_steps_added"] == 1 and row["after_release"]["state"] != sm.STATE
+                  and row["after_release"]["paint_layer"] is None and not row["errors"])
+            C.add(name, ok, row,
+                  "Esc posted to Houdini's event queue while the left button is down: Paint is off at once (not at the "
+                  "release), what was painted is stored (one undo step), the rest of the drag paints nothing")
+            later(500, done)
+
+        later(600, press)
+
+    def select_then_drag(name, select, limit, done, reselect=False):
+        out = {}
+        ga().mask_clear(node, lid)
+        node.cook()
+        node.setCurrent(True, clear_all_selected=True)
+        ga().paint_enter(node, lid)
+
+        def first():
+            drag(line(-120, -40, 120, n=20), sel)
+
+        def sel():
+            out["painted_by_a_first_stroke"] = painted(node, lid)
+            out["mask_before"] = mask_of(node, lid)
+            out["errors_before"] = len(sm.STATS["errors"])
+            select()
+            later(1500, dr)
+
+        def dr():
+            out["after_the_selection"] = {"state": viewer().currentState(), "paint_layer": ga().paint_layer(node),
+                                          "selected": [n.path() for n in hou.selectedNodes()]}
+            pts = line(-120, 30, 120, n=20)
+            _send(QtCore.QEvent.MouseMove, pts[0], QtCore.Qt.NoButton)
+
+            def press():
+                _send(QtCore.QEvent.MouseButtonPress, pts[0], QtCore.Qt.LeftButton)
+                later(30, lambda: move(1))
+
+            def move(i):
+                if i >= len(pts):
+                    _send(QtCore.QEvent.MouseButtonRelease, pts[-1], QtCore.Qt.NoButton)
+                    return later(1200, chk)
+                _send(QtCore.QEvent.MouseMove, pts[i], QtCore.Qt.LeftButton)
+                later(20, lambda: move(i + 1))
+            later(150, press)
+
+        def chk():
+            out["the_drag_painted_nothing"] = same_mask(mask_of(node, lid), out["mask_before"])
+            out["after_the_drag"] = {"state": viewer().currentState(), "paint_layer": ga().paint_layer(node)}
+            if not reselect:
+                return fin()
+            node.setCurrent(True, clear_all_selected=True)
+            later(1500, back)
+
+        def back():
+            out["the_grooming_node_selected_again"] = {"state": viewer().currentState(),
+                                                       "paint_layer": ga().paint_layer(node)}
+            fin()
+
+        def fin():
+            out["errors"] = sm.STATS["errors"][out.pop("errors_before"):]
+            out.pop("mask_before")
+            again = out.get("the_grooming_node_selected_again")
+            ok = (out["painted_by_a_first_stroke"] > 10 and out["the_drag_painted_nothing"]
+                  and out["after_the_drag"]["paint_layer"] is None and out["after_the_drag"]["state"] != sm.STATE
+                  and not out["errors"]
+                  and (again is None or (again["paint_layer"] is None and again["state"] != sm.STATE)))
+            C.add(name, ok, out, limit)
+            later(500, done)
+
+        later(700, first)
+
+    def other_network():
+        g = hou.node("/obj").createNode("geo", "accept_other_geo")
+        S["other_geo"] = g
+        g.setCurrent(True, clear_all_selected=True)
+
+    def cleanup():
+        if S.get("other_geo") is not None:
+            S.pop("other_geo").destroy()
+        node.setCurrent(True, clear_all_selected=True)
+        later(800, S["next"])
+
+    def c_none():
+        select_then_drag("gui_no_node_selected_ends_paint", lambda: hou.clearAllSelected(),
+                         "no node selected while painting: the next drag paints nothing and Paint is off (paint_layer "
+                         "None, the brush is not the tool), no error", cleanup)
+
+    def c_other():
+        select_then_drag("gui_a_node_of_another_network_selected_ends_paint", other_network,
+                         "a node of another network (/obj) selected while painting: the drag paints nothing, Paint is "
+                         "off (paint_layer None), and selecting the grooming node again raises nothing and leaves Paint "
+                         "off (it said 1 with no brush, and _came_back raised)", c_none, reselect=True)
+
+    def c_focus():
+        held("gui_esc_posted_to_the_keyboard_widget_with_the_mouse_held",
+             lambda: app.focusWidget() or hou.qt.mainWindow(), c_other)
+
+    held("gui_esc_posted_to_the_network_editor_with_the_mouse_held", network_editor_widget, c_focus)
+
+
 def _paint_disc(name, centre, normal, half_cm, spacing_cm, value, radius_cm, done, frame_cm=4.0, points=14, density=150.0):
     """A density layer of `density` whose paint layer is painted `value` over a disc by rows of strokes in the
     viewport; done(paint layer id, shots)."""

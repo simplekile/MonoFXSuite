@@ -15,10 +15,15 @@ of the head, a lock's start, the most stacked skin, skin under floating mesh, fr
 by the ear), with the roots of ALL locks counted in the core of a painted disc and each lock held to the rule on
 its own skin there; limits are the plan's, never tuned to a result.
 
-Definitions this script makes on its own (each named DEFINITION where it is used, for the checker to judge):
-  1. a lock asked under one root in a core (N < 1; also a lock with no skin in it) may hold at most 2 there (`_grade`);
-  2. where a lock is asked no root, a strand rooted over 0.1 cm off the skin is listed, not counted (`_grade`);
-  3. "= D" owned by all locks: every lock on that skin gives D together; by a group: the group's locks there
+How roots are counted (t65, after the t64 check): a root belongs to the skin prim nearest it ON THE SURFACE
+(`accept_lib.Skin.assign`, the exact distance to the triangles), and every root counts, however far off the skin
+(by the surface none of Helen's is over 0.002 cm off it). A lock asked under one root in a core (N < 1) is not
+graded alone: the limit max(0.15, 2 / sqrt(N)) says nothing of a count that small; its roots are in the count of
+all locks together, and it is listed. Strands are followed by id within 1e-5 cm (measured: under 4e-7 cm).
+Evenness is the local measure (`accept_lib.lock_even_local`): each root against the spacing asked where it stands.
+
+Definition this script makes on its own (named DEFINITION where it is used, for the checker to judge):
+  1. "= D" owned by all locks: every lock on that skin gives D together; by a group: the group's locks there
      together; by one lock: that lock alone on the skin it owns (`_sharing`, measured by o2)."""
 from __future__ import annotations
 
@@ -53,8 +58,8 @@ from tools.fx.grooming import config, model  # noqa: E402
 HYTHON = os.path.join(hou.expandString("$HFS"), "bin", "hython.exe" if os.name == "nt" else "hython").replace("\\", "/")
 QC = SUITE + "/.claude/skills/grooming-check/scripts/qc_metrics.py"
 DENSITIES = (0.0, 40.0, 120.0, 300.0)   # strands / cm2; every Helen lock's own Density is 150
-EVEN_RISE = 0.05        # a lock's roots in a painted patch: clumped share on its own skin, over its no-layer value
-OFF_SKIN_CM = 0.1       # a root farther than this from every scalp prim centre is not on the skin (prims: ~0.02 cm)
+EVEN_RISE = 0.05        # a lock's roots in a painted patch: its local clumped share, over its no-layer value there
+SAME_ROOT_CM = 1e-5     # a strand followed by id is where it was: its root within this (measured: under 4e-7 cm)
 EVEN_SPACING = 0.45     # where every root is the layers': spacing ratio, grooming-check's root_spacing_low limit
 UNDO_S = 0.1
 
@@ -288,6 +293,43 @@ def u4_deformed_output():
           note="undo + display seconds are graded in u1; here a capture of the stroke's locks follows each")
 
 
+def u6_shot_deform_on():
+    """Shot deform ON for the display (the t64 check's B6): strokes, undos and redos at a frame of the anim.
+    The hair is the rest strands whatever deforms them, so no undo may grow a lock, and the cache must hold what
+    it holds at rest once the deform is off again. An undo is as fast as at rest while the deformed state it
+    returns to is in the cache; a state is the whole deformed groom, so the limit holds only a few of them."""
+    use0 = ga.undo_cache_usage(node)
+    frame = hou.frame()
+    node.parm("shot_deform").set(1)
+    hou.setFrame(12)
+    try:
+        t = time.perf_counter()
+        cook_all()
+        first = time.perf_counter() - t
+        r = _chain("ordinary_hair_back_06", 6)
+        on = ga.undo_cache_usage(node)
+    finally:
+        node.parm("shot_deform").set(0)
+        hou.setFrame(frame)
+    cook_all()
+    off = ga.undo_cache_usage(node)
+    fast = sum(1 for s in r["undo_s"] if s < UNDO_S)
+    r.update({"first_cook_with_the_deform_on_s": r3(first), "undos_under_0.1_s": fast,
+              "live_mb_before": round(use0["live_bytes"] / 1e6, 1), "live_mb_with_the_deform_on": round(on["live_bytes"] / 1e6, 1),
+              "live_mb_after_the_deform_is_off": round(off["live_bytes"] / 1e6, 1),
+              "capture_mb": round(off["capture_bytes"] / 1e6, 1)})
+    ok = (r["every_state_right"] and sum(r["undo_locks_grown"]) == 0 and sum(r["redo_locks_grown"]) == 0
+          and r["peak_mb"] <= r["limit_mb"] and r["undo_s"][0] < UNDO_S
+          and off["live_bytes"] <= use0["live_bytes"] * 1.1 + 1e6)
+    C.add("u6_shot_deform_on_undo_grows_no_lock", ok, r,
+          "Shot deform on, frame 12, 6 strokes, 6 undos, 6 redos: 0 locks grown by any undo or redo, every state the "
+          "stroke's, cache memory <= the node's limit, the newest undo < 0.1 s, and with the deform off again the "
+          "cache's live set is what it was before (+10 %)",
+          note="undos under 0.1 s are those whose deformed state the cache still held (a state is the whole deformed "
+               "groom, ~250 MB on Helen; they share half the limit and go before any hair); the others deform again, "
+               "1.2-1.5 s, growing nothing. The captures (one a lock, 800 B a point) are outside the limit's count")
+
+
 def u5_usage():
     use = ga.undo_cache_usage(node)
     keys = {"bytes", "live_bytes", "undo_bytes", "undo_states", "limit_bytes", "dropped", "gb", "limit_gb", "capture_bytes"}
@@ -370,26 +412,20 @@ def _want(core, stack):
 def _grade(core, stack, evenness=True):
     """Roots on `core` against the rule (`_want`), for all locks together and for each lock on its own skin
     there; limit |measured / expected - 1| <= max(0.15, 2 / sqrt(N)).
-    DEFINITION 1 (round 3's, kept): that limit has no meaning for a lock asked under one root there (N < 1: a
-    lock whose skin only touches the core, or a lock with no skin in the core at all: a root is counted to the
-    prim whose centre is nearest, so a root of the prim beside the core can be counted to it); such a lock may
-    hold at most 2 roots, and is listed.
-    DEFINITION 2 (round 3's, kept): where a lock is asked no root at all (a layer of 0 painted white), a strand
-    whose root floats over OFF_SKIN_CM off the skin is listed, not counted: v0.1 leaves a few start roots there
-    (hair_base_20: 1 of 7,172, 0.24 cm up), and the tool judges a root where it lands on its lock's skin."""
+    A root is counted to the skin prim nearest it on the surface, and every root counts (no root is left out
+    for standing off the skin). A lock asked under one root there (N < 1: its skin only touches the core) is
+    not graded alone, as the t64 checker does not: the limit says nothing of a count under one (it allows
+    floor(N + 2 sqrt(N)) roots, 0 to 2); its roots are in the count of all locks together, and it is listed.
+    Where no root at all is asked (a layer of 0 painted white), every lock must hold none."""
     area = float(K.area[core].sum())
     want, b, kept = _want(core, stack)
     _b, rb, lb = K.roots_in(core, ROOTS0)
-    a, ra, la = K.roots_in(core, G.roots())
-    floating = {}
-    if len(ra) and any(w <= 1e-9 for w in want.values()):
-        up = np.sqrt(((ra[:, None, :] - K.cen[None, :, :]) ** 2).sum(-1).min(1))
-        for k in np.unique(la[up > OFF_SKIN_CM]):
-            if want.get(int(k), 0.0) > 1e-9:
-                continue
-            n = int(((la == k) & (up > OFF_SKIN_CM)).sum())
-            floating[K.names[int(k)]] = {"roots": n, "off_the_skin_cm": round(float(up[la == k].max()), 3)}
-            a[int(k)] -= n
+    roots_now = G.roots()
+    keep_now, off_skin = K.roots_index(core, roots_now)
+    ra, la = roots_now[0][keep_now], roots_now[1][keep_now]
+    ida = G.root_ids()[keep_now]
+    ids_, cnt_ = np.unique(la, return_counts=True)
+    a = {int(i): int(c) for i, c in zip(ids_, cnt_)}
     locks, bad = {}, []
     for k in sorted(set(want) | set(a)):
         w = want.get(k, 0.0)
@@ -399,7 +435,7 @@ def _grade(core, stack, evenness=True):
         if w <= 1e-9 and skin > 0:
             ok = got == 0                                   # the lock has skin here and is asked no root: none at all
         elif w < 1.0:
-            ok = got <= 2                                   # DEFINITION 1 (also a lock with no skin in the core)
+            ok = True                                       # under one root asked: graded with all locks together
         else:
             ok = abs(got / w - 1) <= lim
         ok = bool(ok)
@@ -413,21 +449,24 @@ def _grade(core, stack, evenness=True):
     row = {"core_cm2": r3(area), "automatic_per_cm2": r3(sum(b.values()) / area), "expected_per_cm2": r3(target / area),
            "measured_per_cm2": r3(got / area), "ratio": r3(got / target) if target > 0 else None, "limit": r3(lim),
            "locks_on_core": len(locks), "locks_outside_their_limit": bad, "locks": locks,
-           "roots_floating_off_the_skin_not_counted": floating,
-           "locks_asked_under_one_root": {k: v["roots"] for k, v in locks.items() if v["expected"] < 1.0 and v["roots"]},
+           "farthest_root_off_the_skin_cm": round(float(off_skin.max()), 4) if len(off_skin) else 0.0,
+           "locks_asked_under_one_root": {k: {"roots": v["roots"], "asked": v["expected"]} for k, v in locks.items()
+                                          if v["expected"] < 1.0 and v["roots"]},
            "worst_lock": max(locks.items(), key=lambda kv: abs((kv[1]["ratio"] or 1) - 1) / max(kv[1]["limit"], 1e-9))
            if locks else None,
            "pass": (got == 0 if target <= 0 else abs(got / target - 1) <= lim) and not bad}
     if evenness and got:
-        ev0 = lib.lock_even(rb, lb, K, core)
+        # EVENNESS (the plan's definition, the t64 checker's local measure): each lock's roots against the
+        # spacing asked where each root stands, over the same lock's roots before any layer
+        loc = lib.lock_even_local(rb, lb, ra, la, ida, K.names)
+        rises = {k: v["rise"] for k, v in loc.items()}
         ev1 = lib.lock_even(ra, la, K, core)
-        rises = {k: round(v.get("clumped", 0.0) - ev0.get(k, {}).get("clumped", 0.0), 3) for k, v in ev1.items()}
         layers_only = all(v <= 0 for v in kept.values())
         low = [k for k, v in ev1.items() if layers_only and v.get("spacing_ratio", 1.0) < EVEN_SPACING]
-        row["even"] = {"clumped_now_worst": max([v.get("clumped", 0.0) for v in ev1.values()] + [0.0]),
+        row["even"] = {"clumped_now_worst": max([v["clumped"] for v in loc.values()] + [0.0]),
                        "clumped_rise_worst": max(list(rises.values()) + [0.0]),
                        "spacing_ratio_lowest": min([v.get("spacing_ratio", 1.0) for v in ev1.values()] + [9.0]),
-                       "locks_judged": len(ev1), "rise_per_lock": {k: v for k, v in rises.items() if v > 0},
+                       "locks_judged": len(loc), "rise_per_lock": {k: v for k, v in rises.items() if v > 0},
                        "all_locks_together_clumped": r3(lib.spacing_stats(ra, area).get("clumped")),
                        "pass": all(v <= EVEN_RISE for v in rises.values()) and not low}
     return row
@@ -448,8 +487,10 @@ def _even(rows):
 
 
 LIMIT = "|measured / expected - 1| <= max(0.15, 2 / sqrt(N)) for all locks together AND for each lock on its own skin there"
-EVEN_LIMIT = ("each lock with >= 30 roots in the core: clumped share <= its no-layer value there + %s; where every root "
-              "is a layer's, spacing ratio >= %s" % (EVEN_RISE, EVEN_SPACING))
+EVEN_LIMIT = ("each lock with >= 30 roots in the core: local clumped share (a root nearer its nearest neighbour than 0.3 x "
+              "the spacing asked where it stands: the lock's roots before the layers within 0.1 cm x the share kept + its "
+              "layers' roots within 0.3 cm) <= the same lock's no-layer value there + %s; where every root is a layer's, "
+              "spacing ratio >= %s" % (EVEN_RISE, EVEN_SPACING))
 
 
 def d1_density():
@@ -562,16 +603,16 @@ def d2_tiny():
         rows[zname] = {"locks": len(locks), "automatic_strands_before": total, "kept": kept, "gone": gone,
                        "share_gone": r3(gone / max(total, 1)), "the_layers_new_strands": new,
                        "automatic_strands_not_there_before": strangers,
-                       "a_kept_root_moved_cm": {"max": round(float(rm.max()), 4), "p99": round(float(np.percentile(rm, 99)), 4)},
+                       "a_kept_root_moved_cm": {"max": float("%.3g" % rm.max()), "p99": float("%.3g" % np.percentile(rm, 99))},
                        "a_kept_tip_moved_cm": {"max": round(float(tm.max()), 3), "p99": round(float(np.percentile(tm, 99)), 3),
                                                "median": round(float(np.median(tm)), 4)}}
         ga.mask_remove(node, d)
         cook_all()
     ok = all(r["locks"] > 0 and r["share_gone"] <= TINY + 0.02 and r["automatic_strands_not_there_before"] == 0
-             and r["a_kept_root_moved_cm"]["max"] <= 0.05 for r in rows.values())
+             and r["a_kept_root_moved_cm"]["max"] <= SAME_ROOT_CM for r in rows.values())
     C.add("d2_a_tiny_mask_moves_no_root", ok, rows,
           "a layer of 150 painted white at opacity 0.028 (ordinary skin, stacked skin, the whorl), strands followed by "
-          "id: no automatic strand appears, at most 0.028 + 0.02 of them are gone, and every kept root is within 0.05 "
+          "id: no automatic strand appears, at most 0.028 + 0.02 of them are gone, and every kept root is within 1e-5 "
           "cm of where it was (round 2: every root of the locks re-placed, up to 2 cm)",
           note="tips are reported: a kept strand's place across its lock is its rank among the lock's strands, "
                "so it shifts a little when a neighbour goes")
@@ -820,9 +861,8 @@ def b3_multiply_bounds():
             lo, hi = K.prim_minmax(mask.astype(float))
             ring = np.nonzero((dist > 1.05) & (dist < 1.35) & (hi <= 0.0) & (K.nown > 0))[0]
             # every automatic strand rooted in that ring is still there, its root where it was. Followed by strand
-            # id, within 0.05 cm (the tiny-mask check's limit): the locks are under the layer elsewhere, so they
-            # recook, and a recooked lock's kept roots differ in the last bit (measured: under 0.00001 cm). A root
-            # is given to the prim whose centre is nearest, so the layer's own roots beside the ring are not counted
+            # id, within SAME_ROOT_CM (1e-5 cm): the locks are under the layer elsewhere, so they recook, and a
+            # recooked lock's kept roots differ in the last bit (measured: under 4e-7 cm)
             b0, rb0, lb0 = K.roots_in(ring, ROOTS0)
             now = G.strands_by_id()
             gone = moved = 0
@@ -841,10 +881,10 @@ def b3_multiply_bounds():
                     else:
                         step = float(np.sqrt(((r1[m] - x) ** 2).sum()))
                         far = max(far, step)
-                        moved += int(step > 0.05)
+                        moved += int(step > SAME_ROOT_CM)
             row["outside_the_region_but_under_the_white"] = {
                 "prims": int(len(ring)), "automatic_roots": sum(b0.values()), "of_them_gone": gone,
-                "of_them_moved_over_0.05_cm": moved, "largest_move_cm": round(far, 6)}
+                "of_them_moved_over_1e-5_cm": moved, "largest_move_cm": float("%.3g" % far)}
             row["pass"] = (row["pass"] and gone == 0 and moved == 0 and len(ring) > 0 and len(inside) > 0
                            and sum(b0.values()) > 0)
             rows["a white region of 0.6 cm in a black Multiply layer over white"] = row
@@ -853,7 +893,7 @@ def b3_multiply_bounds():
               "over a mask painted white on a layer of 300, a Multiply paint layer at 0 / 0.5 / 1: the automatic groom "
               "byte for byte / automatic x 0.5 + 150 x skin / 300; on three kinds of skin also a Multiply layer filled "
               "black with a white region: 300 inside, every automatic strand outside it still there with its root within "
-              "0.05 cm (by strand id); " + LIMIT)
+              "1e-5 cm (by strand id); " + LIMIT)
         C.add("b3_roots_even_" + zname, _even(rows), {k: v.get("even") for k, v in rows.items()}, EVEN_LIMIT)
 
 
@@ -1478,9 +1518,11 @@ def p4_migration():
     said = ga.mask_dropped(node)
     rows3 = [(m.kind, m.name, m.parent is not None) for m in data.masks]
     dens3 = {m.name: m.density for m in data.density_layers()}
-    paint = _grade(core_keep, [(150.0, 0.5, ALL)], evenness=False)     # painted 0.5: half way to the owner's Density
+    # as the older build read them (logic.legacy_mask): painted 0.5 in Replace = 0.5 x the owner's Density, no
+    # automatic root left; a factor fill x 0.5 thins the automatic groom to half (it did nothing at 65e782c: B2)
+    paint = _grade(core_keep, [(75.0, 1.0, ALL)], evenness=False)
     forty = _grade(core_y, [(40.0, 1.0, ALL)], evenness=False)         # "= 40" under its mask: as it was
-    auto_x = K.roots_in(core_x, G.roots())[0] == K.roots_in(core_x, ROOTS0)[0]     # Multiply over nothing: automatic
+    half_x = _grade(core_x, [(0.0, 0.5, ALL)], evenness=False)         # x 0.5: automatic x 0.5
     auto_z = K.roots_in(core_z, G.roots())[0] == K.roots_in(core_z, ROOTS0)[0]     # dropped: automatic
     re3 = _reopen("schema3")
     ga.mask_set(node, keep, opacity=0.9)                      # the next edit writes the JSON at the current schema
@@ -1488,19 +1530,21 @@ def p4_migration():
     row = {"rows": rows3, "densities": dens3, "said": said, "cook_error": err, "errors": lib.node_errors(node),
            "paint_layer_0.5": {k: paint[k] for k in ("ratio", "limit", "pass", "locks_outside_their_limit")},
            "strands_per_cm2_fill_40_under_its_mask": {k: forty[k] for k in ("ratio", "limit", "pass", "locks_outside_their_limit")},
-           "multiply_factor_fill_over_nothing_is_the_automatic_roots": auto_x,
+           "multiply_factor_fill_0.5_thins_the_automatic_groom_to_half":
+               {k: half_x[k] for k in ("ratio", "limit", "pass", "locks_outside_their_limit")},
            "the_dropped_layer_changes_nothing": auto_z, "reopen": re3,
            "after_the_next_edit": {"schema": stored.get("schema"), "said": ga.mask_dropped(node)}}
-    want_rows = [("base", "Automatic", False), ("density", "Density 1", False), ("paint", "Old paint", True),
+    want_rows = [("base", "Automatic", False), ("density", "Older build 1", False), ("paint", "Old paint", True),
                  ("paint", "Old x0.5", True), ("density", "Old = 40", False), ("paint", "Mask", True)]
-    ok3 = (err is None and not row["errors"] and rows3 == want_rows and dens3 == {"Density 1": 150.0, "Old = 40": 40.0}
-           and "Old x2" in said and "dropped" in said and "density below" in said and paint["pass"] and forty["pass"]
-           and auto_x and auto_z and _reopen_ok(re3, 3) and stored.get("schema") == model.SCHEMA
+    ok3 = (err is None and not row["errors"] and rows3 == want_rows and dens3 == {"Older build 1": 150.0, "Old = 40": 40.0}
+           and "Old x2" in said and "dropped" in said and "black = no hair" in said and paint["pass"] and forty["pass"]
+           and half_x["pass"] and auto_z and _reopen_ok(re3, 3) and stored.get("schema") == model.SCHEMA
            and row["after_the_next_edit"]["said"] == "")
     clear_layers()
     C.add("p4_schema_3_dev_file_opens", ok3, row,
-          "a schema 3 groom_data: its paint layer and its factor fill 0..1 become the mask of one density layer of the "
-          "owner's Density (painted 0.5 gives automatic x 0.5 + 75 x skin); a fill layer in strands / cm2 (Replace) "
+          "a schema 3 groom_data: its paint layer and its factor fill 0..1 become the mask of one \"Older build\" "
+          "density layer of the owner's Density that blends as that build did (painted 0.5 in Replace gives 75 x skin, "
+          "a factor fill x 0.5 the automatic roots x 0.5); a fill layer in strands / cm2 (Replace) "
           "becomes a density layer of that number under its mask (40 there); a factor of 2 is dropped and named "
           "(mask_dropped; OnLoaded's status line in a new process, no traceback) and changes nothing; the next edit "
           "stores schema %d" % model.SCHEMA)
@@ -1536,30 +1580,48 @@ def p4_migration():
     # ---- schema 5: one 0..1 mask x the lock's own Density
     _d, w = _layer(150.0, "ordinary_hair_back_06")
     _d, k = _layer(150.0, "top_of_head", value=0.0)
+    _d, h = _layer(150.0, "most_stacked", value=0.5, radius=1.0)
     cook_all()
-    core_w, core_k = _core(w), _core(k)
+    core_w, core_k, core_h = _core(w), _core(k), _core(h)
     err5 = _as_old(5, [{"id": w, "name": "White", "kind": "paint", "mode": "normal"},
                        {"id": k, "name": "Black", "kind": "paint", "mode": "normal"},
-                       {"id": k + 60, "name": "Bang half", "kind": "fill", "mode": "normal", "value": 0.5, "opacity": 0.0,
+                       {"id": h, "name": "Half", "kind": "paint", "mode": "multiply"},
+                       {"id": h + 59, "name": "Min 0.8", "kind": "fill", "mode": "min", "value": 0.8, "scope": "locks",
+                        "locks": [G.lock_id("hair_bang_08")]},
+                       {"id": h + 60, "name": "Bang half", "kind": "fill", "mode": "normal", "value": 0.5, "opacity": 0.0,
                         "scope": "group", "group": GROUP_OF[G.lock_id("hair_bang_08")]}])
     data = ga.read_data(node)
     said5 = ga.mask_dropped(node)
     rows5 = [(m.kind, m.name, m.scope) for m in data.masks]
     white = _grade(core_w, [(150.0, 1.0, ALL)], evenness=False)
-    black_auto = K.roots_in(core_k, G.roots())[0] == K.roots_in(core_k, ROOTS0)[0]
+    black = _grade(core_k, [(0.0, 1.0, ALL)], evenness=False)           # black is still no hair
+    half = _grade(core_h, [(0.0, 0.5, ALL)], evenness=False)            # Multiply 0.5: the automatic roots x 0.5
+    # a Min fill of 0.8 on one lock: 0.8 of its automatic strands, the whole lock (grooming-check's count)
+    b8 = G.lock_id("hair_bang_08")
+    n8, n8_0 = int((G.roots()[1] == b8).sum()), int((ROOTS0[1] == b8).sum())
+    min_ok = abs(n8 / max(n8_0 * 0.8, 1e-9) - 1) <= lib.density_limit(n8_0 * 0.8, 1.0)
     re5 = _reopen("schema5")
     row5 = {"rows": rows5, "said": said5, "cook_error": err5, "errors": lib.node_errors(node),
             "white_is_the_owners_density": {k_: white[k_] for k_ in ("ratio", "limit", "pass", "locks_outside_their_limit")},
-            "black_now_shows_the_automatic_roots_below": black_auto, "reopen": re5}
-    ok5 = (err5 is None and not row5["errors"] and white["pass"] and black_auto and _reopen_ok(re5, 5)
-           and rows5 == [("base", "Automatic", "all"), ("density", "Density 1", "all"), ("paint", "White", "all"),
-                         ("paint", "Black", "all"), ("density", "Density 2", "group"), ("fill", "Bang half", "all")]
-           and "density below" in said5)
+            "black_is_still_no_hair": {k_: black[k_] for k_ in ("measured_per_cm2", "pass")},
+            "multiply_0.5_thins_the_automatic_groom_to_half":
+                {k_: half[k_] for k_ in ("ratio", "limit", "pass", "locks_outside_their_limit")},
+            "min_fill_0.8_on_one_lock": {"strands": n8, "automatic": n8_0, "ratio_to_0.8": r3(n8 / max(n8_0 * 0.8, 1e-9)),
+                                        "limit": r3(lib.density_limit(n8_0 * 0.8, 1.0)), "pass": bool(min_ok)},
+            "reopen": re5}
+    ok5 = (err5 is None and not row5["errors"] and white["pass"] and black["pass"] and half["pass"] and min_ok
+           and _reopen_ok(re5, 5)
+           and rows5 == [("base", "Automatic", "all"), ("density", "Older build 1", "all"), ("paint", "White", "all"),
+                         ("paint", "Black", "all"), ("paint", "Half", "all"),
+                         ("density", "Older build 2", "locks"), ("fill", "Min 0.8", "all"),
+                         ("density", "Older build 3", "group"), ("fill", "Bang half", "all")]
+           and "black = no hair" in said5)
     clear_layers()
     C.add("p4_schema_5_dev_file_opens", ok5, row5,
           "a schema 5 groom_data (the 0..1 mask x the lock's own Density): the layers of one owner become the mask of "
-          "one density layer of that owner's Density; white still gives 150; black, which meant no hair, now shows the "
-          "automatic roots below, and the message says so")
+          "one \"Older build\" density layer of that owner's Density, which blends as that build did: white still "
+          "gives 150, black is still no hair, a Multiply layer of 0.5 leaves half the automatic roots, a Min fill of "
+          "0.8 on one lock 0.8 of its strands (at 65e782c the last three did nothing); the message says so")
     with open(OUT + "/schema99.txt", "w", encoding="utf-8") as fh:
         try:
             model.GroomData.from_json(json.dumps({"schema": 99}))
@@ -1569,7 +1631,7 @@ def p4_migration():
 
 
 STEPS = [("s1", s1_stroke_speed), ("u1", u1_undo_chain), ("u2", u2_undo_chain_whorl), ("u3", u3_low_limit),
-         ("u4", u4_deformed_output), ("u5", u5_usage), ("d1", d1_density), ("d2", d2_black_and_erase), ("d2t", d2_tiny),
+         ("u4", u4_deformed_output), ("u5", u5_usage), ("u6", u6_shot_deform_on), ("d1", d1_density), ("d2", d2_black_and_erase), ("d2t", d2_tiny),
          ("d3", d3_partial), ("d4", d4_soft_edge), ("o1", o1_owner_order), ("o2", o2_what_d_means_for_one_lock),
          ("b1", b1_blend_modes), ("b3", b3_multiply_bounds), ("m1", m1_compose), ("m2", m2_fill),
          ("r1", r1_states), ("r2", r2_counts), ("r3", r3_qc), ("q1", q1_painted_qc),

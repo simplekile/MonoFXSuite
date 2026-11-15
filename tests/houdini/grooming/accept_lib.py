@@ -127,6 +127,11 @@ class Groom:
         r = np.frombuffer(geo.primFloatAttribValuesAsString("r"), np.float32).reshape(-1, 3) * self.unit
         return r.astype(np.float64), np.frombuffer(geo.primIntAttribValuesAsString("lock_id"), np.int32)
 
+    def root_ids(self):
+        """The strand `id` of each root, in the order of `roots()`: its number in the lock's automatic scatter;
+        a layer's own root is numbered from LAYER_ROOT_ID."""
+        return np.frombuffer(self._roots.geometry().primIntAttribValuesAsString("id"), np.int32)
+
     def strands_by_id(self) -> dict:
         """Per lock id: {strand id: (root cm, tip cm)} of the rest groom. A strand's `id` is its number in the
         lock's automatic scatter (the same from cook to cook); the layers' own strands are numbered from
@@ -372,8 +377,53 @@ class Skin:
         self.names = self.G.lock_names()
         self.nown = np.array([len(o) for o in self.own])
 
+        # triangles of the skin (a fan a prim), for the distance from a root to the surface
+        order = np.argsort(self.vp, kind="stable")
+        pts = self.vpt[order]
+        counts = np.bincount(self.vp, minlength=self.n)
+        first = np.concatenate(([0], np.cumsum(counts)[:-1]))
+        tri, tri_prim = [], []
+        for k in range(1, int(counts.max()) - 1 if self.n else 0):
+            has = np.nonzero(counts > k + 1)[0]
+            tri.append(np.stack([pts[first[has]], pts[first[has] + k], pts[first[has] + k + 1]], 1))
+            tri_prim.append(has)
+        self.tri = np.concatenate(tri) if tri else np.zeros((0, 3), int)
+        self.tri_prim = np.concatenate(tri_prim) if tri_prim else np.zeros(0, int)
+        A, B, C = (self.P[self.tri[:, i]] for i in range(3))
+        self.tcen = (A + B + C) / 3.0
+        self.trad = np.sqrt(np.maximum(((A - self.tcen) ** 2).sum(1), np.maximum(((B - self.tcen) ** 2).sum(1),
+                                                                               ((C - self.tcen) ** 2).sum(1))))
+
     def snap(self, c):
         return self.cen[((self.cen - np.asarray(c)) ** 2).sum(1).argmin()]
+
+    def assign(self, roots_cm, k: int = 16):
+        """(the skin prim nearest each root ON THE SURFACE, its distance to it in cm): the exact distance from
+        the root to each of the nearest triangles (`closest_on_tri`), as the t64 checker counts. The nearest
+        prim CENTRE gave a root on a large prim's edge to either prim and read roots of a curved prim as
+        floating 0.3 cm off the skin (by the surface no root of Helen's groom is over 0.002 cm off it)."""
+        n = len(roots_cm)
+        prim = np.full(n, -1)
+        dist = np.full(n, np.inf)
+        if not n or not len(self.tri):
+            return prim, dist
+        lo, hi = roots_cm.min(0) - 1.5, roots_cm.max(0) + 1.5
+        hood = np.nonzero((self.tcen >= lo).all(1) & (self.tcen <= hi).all(1))[0]
+        if not len(hood):
+            return prim, dist
+        tc, tr = self.tcen[hood], self.trad[hood]
+        A, B, C = (self.P[self.tri[hood, i]] for i in range(3))
+        kk = min(k, len(hood))
+        for i in range(0, n, 256):
+            r = roots_cm[i:i + 256]
+            lb = np.sqrt(((r[:, None] - tc[None]) ** 2).sum(-1)) - tr[None]
+            cand = np.argpartition(lb, kk - 1, axis=1)[:, :kk]
+            q = closest_on_tri(r[:, None, :], A[cand], B[cand], C[cand])
+            d = np.sqrt(((q - r[:, None, :]) ** 2).sum(-1))
+            j = d.argmin(1)
+            dist[i:i + 256] = d[np.arange(len(j)), j]
+            prim[i:i + 256] = self.tri_prim[hood[cand[np.arange(len(j)), j]]]
+        return prim, dist
 
     def prim_minmax(self, f):
         lo = np.full(self.n, np.inf)
@@ -389,22 +439,26 @@ class Skin:
         inside = np.isclose(lo, value, atol=atol) & np.isclose(hi, value, atol=atol)
         return self.G.inner_prims(inside, margin)
 
-    def roots_in(self, prims, roots):
-        """({lock id: roots}, positions, lock ids) of the roots whose nearest prim centre (within 0.4 cm) is
-        one of `prims`, all locks."""
-        r, lid = roots
-        if not len(prims):
-            return {}, np.zeros((0, 3)), np.zeros(0, int)
-        lo, hi = self.cen[prims].min(0) - 0.6, self.cen[prims].max(0) + 0.6
+    def roots_index(self, prims, roots):
+        """(which roots have one of `prims` as the skin prim nearest them on the surface, all locks: their
+        numbers in `roots`; each one's distance to the skin in cm). Every such root counts, however far off the
+        skin."""
+        r, _lid = roots
+        if not len(prims) or not len(r):
+            return np.zeros(0, int), np.zeros(0)
+        lo, hi = self.cen[prims].min(0) - 1.0, self.cen[prims].max(0) + 1.0
         sel = np.nonzero((r >= lo).all(1) & (r <= hi).all(1))[0]
-        hood = np.nonzero((self.cen >= lo - 0.6).all(1) & (self.cen <= hi + 0.6).all(1))[0]
-        flag = np.isin(hood, prims)
-        got = np.zeros(len(sel), bool)
-        for i in range(0, len(sel), 400):
-            d = ((r[sel[i:i + 400], None] - self.cen[None, hood]) ** 2).sum(-1)
-            j = d.argmin(1)
-            got[i:i + 400] = flag[j] & (d[np.arange(len(j)), j] <= 0.16)
-        keep = sel[got]
+        prim, dist = self.assign(r[sel])
+        inside = np.zeros(self.n, bool)
+        inside[prims] = True
+        got = (prim >= 0) & inside[np.maximum(prim, 0)]
+        return sel[got], dist[got]
+
+    def roots_in(self, prims, roots):
+        """({lock id: roots}, positions, lock ids) of the roots whose nearest skin prim on the surface is one
+        of `prims` (`assign`), all locks."""
+        r, lid = roots
+        keep, _dist = self.roots_index(prims, roots)
         ids, cnt = np.unique(lid[keep], return_counts=True)
         return {int(a): int(b) for a, b in zip(ids, cnt)}, r[keep], lid[keep]
 
@@ -505,6 +559,89 @@ def density_limit(D: float, area_cm2: float) -> float:
     round 2 checker's: 15 %, or two standard deviations of a count of N)."""
     n = max(D * area_cm2, 1e-9)
     return float(max(0.15, 2.0 / np.sqrt(n)))
+
+
+LAYER_ROOT_ID = 10000000     # a layer's own root is numbered from here (build_hda VEX_MASK_TAG)
+EVEN_BASE_CM = 0.1           # the automatic roots are counted within this of a root (its local density)
+EVEN_LAYER_CM = 0.3          # ... the layers' own roots within this
+EVEN_CLOSE = 0.3             # a root nearer its nearest neighbour than this share of the local spacing is clumped
+
+
+def closest_on_tri(p, a, b, c):
+    """The point of triangle (a, b, c) nearest p (Ericson, Real-Time Collision Detection 5.1.5), on arrays."""
+    ab, ac, ap = b - a, c - a, p - a
+    d1, d2 = (ab * ap).sum(-1), (ac * ap).sum(-1)
+    bp = p - b
+    d3, d4 = (ab * bp).sum(-1), (ac * bp).sum(-1)
+    cp = p - c
+    d5, d6 = (ab * cp).sum(-1), (ac * cp).sum(-1)
+    va = d3 * d6 - d5 * d4
+    vb = d5 * d2 - d1 * d6
+    vc = d1 * d4 - d3 * d2
+    denom = va + vb + vc
+    denom = np.where(np.abs(denom) < 1e-30, 1e-30, denom)
+    out = a + ab * (vb / denom)[..., None] + ac * (vc / denom)[..., None]       # inside the face
+    with np.errstate(divide="ignore", invalid="ignore"):
+        t = np.nan_to_num((d4 - d3) / ((d4 - d3) + (d5 - d6)))
+        out = np.where(((va <= 0) & ((d4 - d3) >= 0) & ((d5 - d6) >= 0))[..., None], b + (c - b) * t[..., None], out)
+        t = np.nan_to_num(d2 / (d2 - d6))
+        out = np.where(((vb <= 0) & (d2 >= 0) & (d6 <= 0))[..., None], a + ac * t[..., None], out)
+        t = np.nan_to_num(d1 / (d1 - d3))
+        out = np.where(((vc <= 0) & (d1 >= 0) & (d3 <= 0))[..., None], a + ab * t[..., None], out)
+    out = np.where(((d6 >= 0) & (d5 <= d6))[..., None], c, out)
+    out = np.where(((d3 >= 0) & (d4 <= d3))[..., None], b, out)
+    out = np.where(((d1 <= 0) & (d2 <= 0))[..., None], a, out)
+    return out
+
+
+def _count_within(ref: np.ndarray, x: np.ndarray, radius: float) -> np.ndarray:
+    """Per point of `x`: how many points of `ref` lie within `radius`."""
+    out = np.zeros(len(x))
+    if not len(ref):
+        return out
+    for i in range(0, len(x), 1000):
+        out[i:i + 1000] = (((x[i:i + 1000, None, :] - ref[None, :, :]) ** 2).sum(-1) < radius * radius).sum(1)
+    return out
+
+
+def clumped_local(roots_cm: np.ndarray, density: np.ndarray):
+    """The share of roots nearer their nearest neighbour than EVEN_CLOSE x the spacing asked where they stand
+    (1 / sqrt(`density`), roots / cm2 per root); None for under 5 roots."""
+    if len(roots_cm) < 5:
+        return None
+    return float(np.mean(nn_dist(roots_cm) < EVEN_CLOSE / np.sqrt(np.maximum(density, 1e-9))))
+
+
+def lock_even_local(before_cm, before_lock, now_cm, now_lock, now_id, names: dict, least: int = 30) -> dict:
+    """EVENNESS, the measure (the t64 checker's `even_local.py`; the plan's "Evenness"): per lock with at
+    least `least` roots in the patch now, the clumped share of its roots against the spacing asked LOCALLY, and
+    the same for its roots before any layer.
+    The density asked at a root = the lock's roots before the layers within EVEN_BASE_CM of it, per cm2, x the
+    share of them kept (its automatic roots now / before) + its layers' own roots within EVEN_LAYER_CM, per cm2.
+    A root is clumped when its nearest neighbour (of the same lock) is nearer than EVEN_CLOSE x 1 / sqrt(that).
+    Why local: a lock's automatic roots are several times denser at its start and at a whorl than on the rest
+    of its skin, so one spacing for the lock on the patch called the same start grid clumped or not as the
+    lock's mean density moved; a patch area (the lock's prims whole, or shared by their owners) read rises of
+    0.06-0.38 where the roots stand evenly, or was blind on stacked skin (t64)."""
+    out = {}
+    disc = np.pi * EVEN_BASE_CM ** 2
+    disc_l = np.pi * EVEN_LAYER_CM ** 2
+    for k in np.unique(now_lock):
+        sel = now_lock == k
+        if sel.sum() < least:
+            continue
+        x, ids = now_cm[sel], now_id[sel]
+        base = before_cm[before_lock == k]
+        auto, lay = x[ids < LAYER_ROOT_ID], x[ids >= LAYER_ROOT_ID]
+        keep = len(auto) / len(base) if len(base) else 0.0
+        dens = _count_within(base, x, EVEN_BASE_CM) / disc * keep + _count_within(lay, x, EVEN_LAYER_CM) / disc_l
+        was = clumped_local(base, _count_within(base, base, EVEN_BASE_CM) / disc)
+        now = clumped_local(x, dens)
+        out[names.get(int(k), str(k))] = {"roots": int(sel.sum()), "roots_before": int(len(base)), "keep": round(keep, 3),
+                                         "layer_roots": int(len(lay)), "clumped": round(now, 3),
+                                         "clumped_before": round(was, 3) if was is not None else None,
+                                         "rise": round(now - (was or 0.0), 3)}
+    return out
 
 
 def lock_even(roots_cm, lock_ids, skin: "Skin", prims, least: int = 30) -> dict:
