@@ -38,16 +38,21 @@ passed it and the manager saw the evidence.
 
 | Work | Model | Effort | Why |
 |---|---|---|---|
-| Manager (plan, briefs, diff review, gate decisions) | Fable 5.2 | high | The decisions every other session builds on |
-| Spike; build of the hard core (viewport state, HDA network, root and density logic, storage and cache keys) | Fable 5.2 | high | Design under open questions; a wrong choice costs the whole part |
-| Build of a task the spike already settled (panel from the picked mockup, adapter functions, unit tests, the acceptance script) | Opus 5.5 | high | Careful work with a clear target |
-| Checker | Opus 5.5 | high | A different model from the hard-core executor, so it does not share its blind spots; strong enough to try to break each item |
+| Manager (plan, briefs, diff review, gate decisions) | Opus 5.5 (the user picks it in the app); Fable 5.2 only while a design question is open | high | The decisions every other session builds on |
+| Spike; design with no known answer (a new scatter, the cause of a miss nobody has traced) | Fable 5.2 | high | Design under open questions; a wrong choice costs the whole part |
+| Build of a task the spike already settled (panel from the picked mockup, adapter functions, unit tests, the acceptance script); a fix round from a checker's list (bug, cause and script given) | Opus 5.5 | high | Careful work with a clear target |
+| Checker of new work (no scripts yet; has to try to break each item) | Opus 5.5 when the executor ran on Fable 5.2, Sonnet 5.5 when it ran on Opus 5.5 | high | A different model from the executor, so it does not share its blind spots |
+| Re-check of a fix round (the earlier checker's scripts run again unchanged, numbers compared, docs against numbers) | Sonnet 5.5 | high | The scripts and limits exist; the work is running and comparing |
 | Mechanical runs (rebuild the HDA, run the acceptance script and QC again, flipbooks, changelog and release steps, moving notes) | Sonnet 5.5 | medium | Follows written steps; nothing to design |
 | Read-only look-ups (find a function, list sessions, read a log) | Haiku 5.5, as a subagent | low | Cheap and fast; the result comes back in the same turn |
 
+Changed 2026-11-15 on the user's decision (cost): Fable 5.2 was the executor of every core round and
+the manager; most of that work was fixing from a checker's list and running scripts again.
+
 A session never gets a model above the manager's (the app ignores it). When a cheaper model fails a
-task twice, the manager restarts the task one row up, not a third try. The checker of a task built on
-Opus 5.5 runs on Fable 5.2 for the same reason as above: never the executor's own model.
+task twice, the manager restarts the task one row up, not a third try. The checker is never on the
+executor's own model. The manager reports to the user when a session's final report is in, not at
+each "still running" note.
 
 ### Gates of one part (a, b, c)
 
