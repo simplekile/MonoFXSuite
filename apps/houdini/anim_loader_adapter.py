@@ -21,7 +21,8 @@ from tools.fx.anim_loader.logic import LoaderState, Output, Resolved
 __all__ = [
     "read_state", "write_state", "refresh", "create_loader", "cb_parm_changed", "cb_refresh",
     "cb_open_manager", "cb_apply_timeline", "apply_timeline", "menu_versions", "menu_anim_versions",
-    "menu_anim_files", "menu_assets", "on_created",
+    "menu_anim_files", "menu_assets", "on_created", "find_loaders", "load_shot", "update", "set_asset",
+    "upgrade", "LoadResult",
 ]
 
 _F_RE = re.compile(r"\$F(\d*)")
@@ -264,3 +265,129 @@ def menu_assets(node) -> list[str]:
 
 def _is_loader(node: Any) -> bool:
     return node.type().name() in (config.HDA_TYPE, *config.LEGACY_TYPES)
+
+
+# --- commands of the manager window (each one undo step) ------------------------------------------
+
+from dataclasses import dataclass, field  # noqa: E402
+
+
+@dataclass
+class LoadResult:
+    created: list[str] = field(default_factory=list)
+    kept: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+def find_loaders(root=None) -> list:
+    """Every Mono Anim Loader (2.2 and 2.1) under /stage, in subnets too."""
+    root = root or hou.node("/stage")
+    return [n for n in root.allSubChildren() if _is_loader(n)]
+
+
+def _key(node) -> tuple[str, str]:
+    try:
+        data = json.loads(node.userData(config.USER_DATA) or "{}")
+    except ValueError:
+        data = {}
+    return data.get("shot", ""), data.get("anim_file", "")
+
+
+def _shot_merge(parent, shot: str):
+    for n in parent.children():
+        if n.userData(config.MERGE_USER_DATA) == shot:
+            return n
+    from apps.houdini.solaris_adapter import _place_new
+
+    merge = parent.createNode("merge", _unique_name(parent, f"{shot}_merge"))
+    merge.setUserData(config.MERGE_USER_DATA, shot)
+    _place_new(merge)
+    return merge
+
+
+def load_shot(parent, root: str, shot: str, anim_version: str) -> LoadResult:
+    """A loader for every output of an anim version that has none yet (found by user data, not by name)."""
+    from apps.houdini.solaris_adapter import manual_update, undo_group
+
+    result = LoadResult()
+    have = {_key(n): n for n in find_loaders()}  # any version: Update moves versions, never a second loader
+    outputs = logic.read_outputs(logic.anim_publish_dir(Path(root), shot) / anim_version)
+    if not outputs:
+        result.notes.append(f"No anim outputs in {shot} {anim_version}.")
+        return result
+    with undo_group(f"Load shot {shot} {anim_version}"), manual_update():
+        merge = None
+        for out in outputs:
+            existing = have.get((shot, out.file))
+            if existing is not None:
+                result.kept.append(existing.name())
+                continue
+            node = create_loader(parent, root, shot, anim_version, out)
+            merge = merge or _shot_merge(parent, shot)
+            merge.setNextInput(node)
+            result.created.append(node.name())
+    return result
+
+
+def update(nodes: list, parts: tuple[str, ...] = ("anim", "lookdev", "groom", "cloth")) -> list[str]:
+    """Moves the named parts of each 2.2 loader to their newest version; one undo step. Lines say what moved."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    lines = []
+    with undo_group("Update anim loaders"):
+        for node in nodes:
+            if node.type().name() != config.HDA_TYPE:
+                continue
+            old = read_state(node)
+            new = logic.with_latest(old, parts)
+            moved = [f"anim {old.anim_version} -> {new.anim_version}"] if new.anim_version != old.anim_version else []
+            moved += [f"{p} {old.versions[p] or '-'} -> {new.versions[p]}" for p in logic.PARTS
+                      if new.versions[p] != old.versions[p]]
+            if moved:
+                write_state(node, new)
+                refresh(node)
+                lines.append(f"{node.name()}: " + ", ".join(moved))
+    return lines
+
+
+def set_asset(node, asset: str) -> None:
+    """The artist names the asset of an "asset?" row; its parts start at their newest version."""
+    from dataclasses import replace
+
+    from apps.houdini.solaris_adapter import undo_group
+
+    with undo_group(f"Set asset {asset}"):
+        state = replace(read_state(node), asset=asset or None)
+        write_state(node, logic.with_latest(state, logic.PARTS))
+        refresh(node)
+
+
+def upgrade(nodes: list) -> list:
+    """2.1 loaders -> 2.2, keeping parms of the same name; the anim file becomes a name, the instance is read."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    done = []
+    with undo_group("Upgrade anim loaders to 2.2"):
+        for node in nodes:
+            if node.type().name() not in config.LEGACY_TYPES:
+                continue
+            anim = _s(node, config.P_ANIM_FILE) or _s(node, config.P_ANIM_PATH)
+            new = node.changeNodeType(config.HDA_TYPE, keep_parms=True, keep_network_contents=False)
+            anim_path = Path(anim)
+            state = read_state(new)
+            version = state.anim_version or anim_path.parent.name
+            root = state.project_root
+            out = next((o for o in logic.read_outputs(logic.anim_publish_dir(Path(root), state.shot) / version)
+                        if o.file == anim_path.name), Output(anim_path.name, "cam" if
+                                                             anim_path.name.lower().startswith("cam_") else "geo"))
+            inst = logic.resolve_instance(out, set(logic.list_asset_dirs(Path(root))))
+            from dataclasses import replace
+
+            state = replace(state, anim_version=version, anim_file=out.file, asset=inst.asset,
+                            instance_name=inst.name, kind=inst.kind)
+            empty = tuple(p for p in logic.PARTS if not state.versions.get(p))
+            write_state(new, logic.with_latest(state, empty) if empty else state)
+            new.setUserData(config.USER_DATA, json.dumps({"shot": state.shot, "anim_file": out.file}))
+            refresh(new)
+            done.append(new)
+    return done
