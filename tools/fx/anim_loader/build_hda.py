@@ -59,16 +59,9 @@ root = stage.GetPrimAtPath("/" + inst) if inst else None
 look_vp = hda.evalParm("mx_lookdev_viewport")
 groom_vp = hda.evalParm("mx_groom_viewport")
 if root:
-    # The anim publish decides the geometry: a mesh it authors no scheme on gets none, whatever lookdev says
-    # (Helen's lookdev V009 carries catmullClark from a Houdini edit layer). Read the anim file itself: after the
-    # graft every mesh has a value, since Graft Stages flattens and writes the fallback catmullClark.
-    anim_path = hda.evalParm("mx_selected_anim_usd_path")
-    src = Usd.Stage.Open(anim_path, Usd.Stage.LoadNone) if anim_path else None
-    for prim in (src.Traverse() if src else []):
-        if prim.IsA(UsdGeom.Mesh) and not UsdGeom.Mesh(prim).GetSubdivisionSchemeAttr().HasAuthoredValue():
-            dst = stage.GetPrimAtPath("/" + inst + prim.GetPath().pathString)
-            if dst:
-                UsdGeom.Mesh(dst).GetSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
+    # Subdivision per mesh: shot rule > lookdev > anim > none (adapter.author_subd, logic.subd_plan)
+    from apps.houdini import anim_loader_adapter
+    anim_loader_adapter.author_subd(hda, stage)
     for prim in Usd.PrimRange(root):
         if not look_vp:
             rel = prim.GetRelationship("material:binding")
@@ -235,6 +228,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
         T.StringParmTemplate("mx_anim_publish_parent", "Anim Publish Folder (2.1)", 1),
         T.StringParmTemplate("mx_groom_asset", "Groom Asset (2.1)", 1),
         T.StringParmTemplate("mx_cloth_asset", "Cloth Asset (2.1)", 1),
+        T.StringParmTemplate(config.P_SUBD_RULES, "Subdivision Rules", 1),
         *[T.StringParmTemplate(n, n, 1) for n in config.P_LAYERS],
         *[T.StringParmTemplate(k, k, 1) for task in config.P_FX.values() for k in
           (task["mode"], task["template"], task["roots"])],

@@ -465,3 +465,63 @@ class HoudiniBackend:
         hip = Path(hou.hipFile.path())
         root = logic.find_project_root(hip)
         return (root.as_posix() if root else "", logic.detect_shot(hip) or "")
+
+
+# --- subdivision ------------------------------------------------------------------------------------
+
+_SUBD_CACHE: dict[tuple[str, float], tuple[list[str], dict[str, str], dict[str, int]]] = {}
+DICING_PRIMVAR = "karma:object:dicingquality"
+
+
+def subd_opinions(path: str) -> tuple[list[str], dict[str, str], dict[str, int]]:
+    """(mesh paths, authored subdivisionScheme per prim, face count per mesh) of one publish file and its
+    sublayers, read from the file itself (cached by modification time)."""
+    import os
+
+    from pxr import Usd, UsdGeom
+
+    if not path or not os.path.isfile(path):
+        return [], {}, {}
+    key = (path, os.path.getmtime(path))
+    if key not in _SUBD_CACHE:
+        stage = Usd.Stage.Open(path, Usd.Stage.LoadNone)
+        meshes, schemes, faces = [], {}, {}
+        for prim in stage.TraverseAll():  # lookdev holds overs, which Traverse() skips
+            attr = prim.GetAttribute("subdivisionScheme")
+            if attr and attr.HasAuthoredValue():
+                schemes[prim.GetPath().pathString] = str(attr.Get())
+            if prim.IsA(UsdGeom.Mesh):
+                meshes.append(prim.GetPath().pathString)
+                counts = UsdGeom.Mesh(prim).GetFaceVertexCountsAttr().Get()
+                faces[prim.GetPath().pathString] = len(counts) if counts is not None else 0
+        _SUBD_CACHE.clear() if len(_SUBD_CACHE) > 64 else None
+        _SUBD_CACHE[key] = (meshes, schemes, faces)
+    return _SUBD_CACHE[key]
+
+
+def node_subd_plan(node) -> tuple[dict, dict[str, int]]:
+    """The subdivision plan of a loader (logic.subd_plan) and the anim meshes' face counts."""
+    anim = _s(node, config.P_ANIM_PATH)
+    meshes, anim_ops, faces = subd_opinions(anim)
+    look = _s(node, config.P_PATH["lookdev"]) if node.evalParm(config.P_ENABLE["lookdev"]) else ""
+    _, look_ops, _ = subd_opinions(look)
+    rules = logic.parse_subd_rules(_s(node, config.P_SUBD_RULES))
+    return logic.subd_plan(meshes, look_ops, anim_ops, rules), faces
+
+
+def author_subd(node, stage) -> None:
+    """Called by the HDA's Python LOP after the graft: the scheme and dicing of every anim mesh of the instance."""
+    from pxr import Sdf, UsdGeom
+
+    inst = _s(node, config.P_INSTANCE)
+    if not inst:
+        return
+    plan, _ = node_subd_plan(node)
+    for mesh, choice in plan.items():
+        prim = stage.GetPrimAtPath("/" + inst + mesh)
+        if not prim:
+            continue
+        UsdGeom.Mesh(prim).GetSubdivisionSchemeAttr().Set(choice.scheme)
+        if choice.dicing is not None:
+            UsdGeom.PrimvarsAPI(prim).CreatePrimvar(DICING_PRIMVAR, Sdf.ValueTypeNames.Float,
+                                                    UsdGeom.Tokens.constant).Set(choice.dicing)

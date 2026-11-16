@@ -286,3 +286,51 @@ def test_missing_only_when_the_version_on_the_node_is_gone(tmp_path):
     st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
     shutil.rmtree(root / ROBOT / "05_lookdev/publish/v002")
     assert status(st)["lookdev"] == (STATUS_MISSING, None)  # v002 named on the node, gone from disk
+
+
+# --- subdivision: shot rule > lookdev > anim > none (the user's decision, 2026-11-17) ---------------
+
+from tools.fx.anim_loader.logic import SUBD_CATMULL, SUBD_NONE, SubdChoice, parse_subd_rules, subd_plan, subd_polygons  # noqa: E402
+
+MESHES = ["/Geo/Base_grp/Body_grp/Geo_Body", "/Geo/Base_grp/Head_grp/Geo_Head",
+          "/Geo/Outfit_grp/Costume_grp/Geo_Dress", "/Geo/Groom_grp/HairDriver_grp/Geo_HairBase"]
+
+
+def test_subd_nobody_says_none():
+    plan = subd_plan(MESHES, lookdev={}, anim={}, rules=[])
+    assert all(c == SubdChoice(SUBD_NONE, "default", None) for c in plan.values())
+
+
+def test_subd_lookdev_beats_anim():
+    plan = subd_plan(MESHES, lookdev={MESHES[0]: "catmullClark"}, anim={MESHES[0]: "none", MESHES[1]: "catmullClark"},
+                     rules=[])
+    assert plan[MESHES[0]] == SubdChoice(SUBD_CATMULL, "lookdev", None)
+    assert plan[MESHES[1]] == SubdChoice(SUBD_CATMULL, "publish", None)
+    assert plan[MESHES[2]].source == "default"
+
+
+def test_subd_shot_rules_later_wins_and_publish_keeps():
+    rules = [{"pattern": "Geo/**", "scheme": "none"},
+             {"pattern": "Geo/Base_grp/**", "scheme": "catmullClark", "dicing": 0.5},
+             {"pattern": "Geo/Base_grp/Head_grp/Geo_Head", "scheme": "publish"}]
+    plan = subd_plan(MESHES, lookdev={MESHES[1]: "none"}, anim={}, rules=rules)
+    assert plan[MESHES[0]] == SubdChoice(SUBD_CATMULL, "shot", 0.5)
+    assert plan[MESHES[1]] == SubdChoice(SUBD_NONE, "lookdev", 0.5)  # "publish": scheme from below, dicing stays
+    assert plan[MESHES[2]] == SubdChoice(SUBD_NONE, "shot", None)
+
+
+def test_subd_single_star_stays_in_one_level():
+    plan = subd_plan(MESHES, lookdev={}, anim={}, rules=[{"pattern": "Geo/*", "scheme": "catmullClark"}])
+    assert plan[MESHES[0]].source == "default"
+
+
+def test_parse_subd_rules_drops_bad_entries():
+    good = '[{"pattern": "Geo/**", "scheme": "catmullClark", "dicing": 2}]'
+    assert parse_subd_rules(good) == [{"pattern": "Geo/**", "scheme": "catmullClark", "dicing": 2.0}]
+    assert parse_subd_rules("") == [] and parse_subd_rules("not json") == []
+    assert parse_subd_rules('[{"pattern": "Geo/**", "scheme": "loopy"}, {"scheme": "none"}]') == []
+
+
+def test_subd_polygons_counts_catmull_only():
+    plan = subd_plan(MESHES[:2], lookdev={MESHES[0]: "catmullClark"}, anim={}, rules=[])
+    assert subd_polygons({MESHES[0]: 1000, MESHES[1]: 5000}, plan, level=2) == 16000
