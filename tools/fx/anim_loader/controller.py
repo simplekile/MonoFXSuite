@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from tools.fx.anim_loader.logic import STATUS_ASSET, STATUS_MISSING, STATUS_NEWER, LoaderState
+from tools.fx.anim_loader.logic import KEEP, STATUS_ASSET, STATUS_MISSING, STATUS_NEWER, LoaderState
 
 ALL_PARTS = ("anim", "lookdev", "groom", "cloth")
 Status = dict[str, tuple[str, str | None]]
@@ -243,11 +243,17 @@ class Controller:
         """{"plan": {mesh: SubdChoice}, "faces": {mesh: n}} of a loader, as the last scan read it."""
         return self._subd.get(path)
 
-    def set_subd(self, path: str, patterns: list[str], scheme: str, dicing: float | None) -> None:
+    def set_subd(self, path: str, patterns: list[str], scheme: str | None, dicing: Any = KEEP) -> None:
+        """``scheme`` None keeps each pattern's scheme; ``dicing`` left out keeps its dicing, None clears it."""
         self.backend.set_subd(path, patterns, scheme, dicing)
-        word = {"none": "Off", "catmullClark": "Catmull-Clark", "publish": "Publish"}.get(scheme, scheme)
-        extra = f", dicing {dicing:g}" if dicing is not None else ""
-        self.message = f"{path.rsplit('/', 1)[-1]}: {word}{extra} on {len(patterns)} item{'s' if len(patterns) != 1 else ''} (shot override)."
+        n = len(patterns)
+        what = _plural(n, "item")
+        parts = []
+        if scheme is not None:
+            parts.append({"none": "Off", "catmullClark": "Catmull-Clark", "publish": "Publish"}.get(scheme, scheme))
+        if dicing is not KEEP:
+            parts.append(f"dicing {dicing:g}" if dicing is not None else "dicing cleared")
+        self.message = f"{path.rsplit('/', 1)[-1]}: {', '.join(parts)} on {what} (shot override)."
 
     def clear_subd(self, path: str, patterns: list[str] | None) -> None:
         self.backend.clear_subd(path, patterns)

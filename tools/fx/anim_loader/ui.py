@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QSizePolicy,
     QStackedWidget,
+    QStyle,
     QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
@@ -53,6 +54,7 @@ from tools.fx.auto_material.ui import (
     STATUS_COLORS,
     STYLE_COMBO,
     STYLE_GHOST,
+    STYLE_LINK,
     STYLE_MENU,
     STYLE_PILL,
     STYLE_PRIMARY,
@@ -253,10 +255,20 @@ class _ListDelegate(QStyledItemDelegate):
         p.setFont(_font(pt.px(FS_META)))
         p.setPen(QColor(TEXT_LABEL))
         sub = "camera" if row.kind == "cam" else ("Anim Loader 2.1" if row.legacy else f"/{row.instance}")
+        sub_rect = QRect(name_x, mid + pt.px(1), name_w, pt.px(20))
+        top_left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop
         if row.subd:
-            sub += f"  ·  {subd_chip(row)}"
-        p.drawText(QRect(name_x, mid + pt.px(1), name_w, pt.px(20)), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
-                   p.fontMetrics().elidedText(sub, Qt.TextElideMode.ElideMiddle, name_w))
+            fm = p.fontMetrics()
+            tail = f"  ·  {subd_chip(row)}"
+            head_w = min(fm.horizontalAdvance(sub), max(0, name_w - fm.horizontalAdvance(tail)))
+            p.drawText(QRect(name_x, sub_rect.top(), head_w, sub_rect.height()), top_left,
+                       fm.elidedText(sub, Qt.TextElideMode.ElideMiddle, head_w))
+            if row.subd[1] > logic.HEAVY_SUBD_POLYGONS:
+                p.setPen(QColor(STATUS_COLORS[AM_WARN]))
+            p.drawText(QRect(name_x + head_w, sub_rect.top(), name_w - head_w, sub_rect.height()), top_left,
+                       fm.elidedText(tail, Qt.TextElideMode.ElideRight, name_w - head_w))
+        else:
+            p.drawText(sub_rect, top_left, p.fontMetrics().elidedText(sub, Qt.TextElideMode.ElideMiddle, name_w))
         if narrow:  # chips under the name, two by two, across the whole row
             cols_x = rect.left() + pad
             y = rect.top() + pt.px(68)
@@ -294,8 +306,16 @@ class _GridDelegate(QStyledItemDelegate):
         self.pt = painter
         self.view = view
 
-    def card(self) -> QSize:
-        return QSize(self.pt.px(200), self.pt.px(248))
+    CARD_MIN_PX = 200
+
+    def card(self, row: Row | None = None) -> QSize:
+        """Cards share the row's width (as many as fit at 200 px); a camera card has one part line, not four."""
+        # Qt's icon layout keeps room for the vertical scroll bar before it wraps
+        bar = self.view.style().pixelMetric(QStyle.PixelMetric.PM_ScrollBarExtent)
+        avail = max(self.pt.px(self.CARD_MIN_PX), self.view.viewport().width() - bar - 2)
+        n = max(1, avail // self.pt.px(self.CARD_MIN_PX))
+        short = row is not None and (row.kind == "cam" or row.legacy)
+        return QSize(avail // n, self.pt.px(188 if short else 248))
 
     def paint(self, p: QPainter, option, index) -> None:
         pt = self.pt
@@ -328,7 +348,7 @@ class _GridDelegate(QStyledItemDelegate):
         p.setPen(QColor(color))
         p.drawText(QRect(x, y, w, pt.px(18)), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
         if row.subd:
-            p.setPen(QColor(STATUS_COLORS[AM_WARN] if row.subd[1] > 5_000_000 else TEXT_LABEL))
+            p.setPen(QColor(STATUS_COLORS[AM_WARN] if row.subd[1] > logic.HEAVY_SUBD_POLYGONS else TEXT_LABEL))
             p.drawText(QRect(x, y, w, pt.px(18)), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
                        subd_chip(row).split(" · ")[0])
         y += pt.px(24)
@@ -354,7 +374,7 @@ class _GridDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index) -> QSize:
         if index.data(ROLE_HEADER):
             return QSize(max(self.pt.px(200), self.view.viewport().width() - self.pt.px(24)), self.pt.px(34))
-        return self.card()
+        return self.card(index.data(ROLE_ROW))
 
 
 class AnimLoaderManager(QWidget):
@@ -482,6 +502,9 @@ class AnimLoaderManager(QWidget):
 
         self.split = QSplitter(Qt.Orientation.Horizontal)
         self.split.setChildrenCollapsible(False)
+        self.split.setHandleWidth(self.px(4))
+        self.split.setStyleSheet(f"QSplitter::handle {{ background: {LINE}; }}"
+                                 f"QSplitter::handle:hover {{ background: {TEXT_META}; }}")
         self.split.addWidget(self.stack)
         self.subd_panel = SubdPanel(self)
         self.subd_panel.setMinimumWidth(1)  # set by resizeEvent: 360 beside the list, free when stacked
@@ -499,11 +522,6 @@ class AnimLoaderManager(QWidget):
         bar, b = self._bar()
         bar.setObjectName("actions")
         b.addStretch(1)
-        self.hulls_button = self._button("Draw Hulls Only", STYLE_GHOST)
-        self.hulls_button.setToolTip("Lighter viewport to work in for a heavy shot; it does not lower memory")
-        self.hulls_button.clicked.connect(self._hulls)
-        self.hulls_button.hide()
-        b.addWidget(self.hulls_button)
         self.undo_button = self._button("Undo", STYLE_GHOST)
         self.undo_button.setToolTip("Houdini's undo of the last change")
         self.undo_button.clicked.connect(self._undo)
@@ -511,7 +529,7 @@ class AnimLoaderManager(QWidget):
         self.upgrade_button.setToolTip("Change Anim Loader 2.1 nodes to 2.2, keeping their settings")
         self.upgrade_button.clicked.connect(self._run(self.ctl.upgrade_all))
         self.primary = self._button("", STYLE_PRIMARY)
-        self.primary.setToolTip("Move what is behind to the newest version (one undo step)")
+        self.primary.setToolTip("The one thing worth doing now")
         self.primary.clicked.connect(self._run(self.ctl.primary))
         for w in (self.undo_button, self.upgrade_button, self.primary):
             b.addWidget(w)
@@ -620,20 +638,22 @@ class AnimLoaderManager(QWidget):
         return "\n".join(lines)
 
     def _update_bar(self) -> None:
+        # One primary, the most important thing to do (update > upgrade 2.1 > Draw Hulls Only); the headline says
+        # the same. Nothing to do: no primary button at all.
         self.headline.setText(self.ctl.headline())
-        self.primary.setText(self.ctl.primary_label())
-        self.primary.setEnabled(bool(self.ctl.behind_paths(self.ctl.selection or None)))
+        action = self.ctl.primary_action()
+        self.primary.setVisible(action is not None)
+        if action is not None:
+            self.primary.setText(action[1])
+            self.primary.setToolTip({
+                "update": "Move what is behind to the newest version (one undo step)",
+                "upgrade": "Change Anim Loader 2.1 nodes to 2.2, keeping their settings (one undo step)",
+                "hulls": "Draw Hulls Only in every viewport: lighter to work in; memory stays the same",
+            }[action[0]])
         n_old = len(self.ctl.legacy_paths())
         self.upgrade_button.setText(self.ctl.upgrade_label())
-        self.upgrade_button.setVisible(n_old > 0)
-        heavy = None
-        if getattr(self.backend, "heavy_message", None):
-            try:
-                heavy = self.backend.heavy_message()
-            except Exception:
-                heavy = None
-        self.hulls_button.setVisible(bool(heavy))
-        self.result.setText(self.ctl.message or (heavy + " · Draw Hulls Only makes the viewport lighter" if heavy else ""))
+        self.upgrade_button.setVisible(n_old > 0 and (action is None or action[0] != "upgrade"))
+        self.result.setText(self.ctl.message)  # results only; the heavy-shot line lives in the Subdivision column
 
     def _selection_changed(self, view: QListWidget) -> None:
         self.ctl.selection = [i.data(ROLE_ROW).node_path for i in view.selectedItems() if i.data(ROLE_ROW)]
@@ -680,8 +700,10 @@ class AnimLoaderManager(QWidget):
 
     def _hulls(self) -> None:
         n = self.backend.set_hulls_only()
-        self.ctl.message = f"Draw Hulls Only on in {n} viewport{'s' if n != 1 else ''} (lighter to work in; memory stays)."
+        self.ctl.message = (f"Draw Hulls Only on in {n} viewport{'s' if n != 1 else ''}: lighter to work in; "
+                            "memory stays the same.")
         self._update_bar()
+        self._show_subd()
 
     def _undo(self) -> None:
         undo = getattr(self.backend, "undo", None)
@@ -894,11 +916,12 @@ def _faces_word(n: int) -> str:
 
 
 class SubdPanel(QWidget):
-    """The selected loader's meshes by group: faces, where the scheme comes from, scheme, dicing; set on a
-    selection (one undo step), clear overrides, apply to every instance of the asset."""
+    """The selected loader's meshes by group: faces, where the scheme comes from (only where it differs from the
+    group), the scheme as a menu on each row (on a selected row it sets the whole selection), dicing (only when
+    some mesh has it). Each change is one undo step; Clear overrides and Apply to all instances share a row."""
 
     def __init__(self, owner, parent=None) -> None:
-        from PySide6.QtWidgets import QAbstractItemView, QLineEdit, QTreeWidget
+        from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QLineEdit, QTreeWidget
 
         super().__init__(parent)
         self.owner = owner
@@ -911,49 +934,51 @@ class SubdPanel(QWidget):
         lay.addWidget(self.title)
         self.load = owner._label("", FS_SMALL, color=TEXT_LABEL)
         self.load.setWordWrap(True)
-        lay.addWidget(self.load)
+        self.hulls_link = QPushButton("Draw Hulls Only")
+        self.hulls_link.setStyleSheet(owner.css(STYLE_LINK))
+        self.hulls_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.hulls_link.setToolTip("Every viewport draws hulls: lighter to work in; memory stays the same")
+        self.hulls_link.clicked.connect(owner._hulls)
+        self.hulls_link.hide()
+        warn_row = QHBoxLayout()
+        warn_row.addWidget(self.load, 1)
+        warn_row.addWidget(self.hulls_link, 0, Qt.AlignmentFlag.AlignTop)
+        lay.addLayout(warn_row)
         self.tree = QTreeWidget()
         self.tree.setColumnCount(5)
         self.tree.setHeaderLabels(["Mesh", "Faces", "From", "Scheme", "Dice"])
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setRootIsDecorated(True)
-        self.tree.setStyleSheet(
+        self.tree.setStyleSheet(owner.css(
             f"QTreeWidget {{ background: {BG_APP}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};"
-            f" border-radius: 8px; font-size: {owner.px(FS_SMALL)}px; outline: none; }}"
-            f"QTreeWidget::item {{ padding: {owner.px(3)}px 0; }}"
+            f" border-radius: 8px; font-size: {FS_SMALL}px; outline: none; }}"
+            f"QTreeWidget::item {{ height: 26px; }}"
             f"QTreeWidget::item:selected {{ background: {SELECTED}; color: {TEXT_PRIMARY}; }}"
             f"QHeaderView::section {{ background: {BG_APP}; color: {TEXT_LABEL}; border: none;"
-            f" border-bottom: 1px solid {LINE}; padding: 4px; font-size: {owner.px(FS_SMALL)}px; }}")
+            f" border-bottom: 1px solid {LINE}; padding: 4px; font-size: {FS_SMALL}px; }}"))
         self.tree.itemSelectionChanged.connect(self._sel_changed)
-        from PySide6.QtWidgets import QHeaderView
-
         head = self.tree.header()
         head.setStretchLastSection(False)
-        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # the mesh name gets the room
         for col in range(1, 5):
             head.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         lay.addWidget(self.tree, 1)
         row = QHBoxLayout()
         self.sel_label = owner._label("Nothing selected", FS_SMALL, color=TEXT_LABEL)
-        self.sel_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        row.addWidget(self.sel_label)
-        self.scheme = QComboBox()
-        self.scheme.addItems(list(SCHEME_WORD.values()))
-        self.scheme.setStyleSheet(owner.css(COMBO_CSS))
-        self.scheme.setToolTip("Publish: lookdev, else the anim publish, else none")
-        self.scheme.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self.scheme.setMinimumContentsLength(7)
-        row.addWidget(self.scheme)
-        row.addWidget(owner._label("Dice", FS_SMALL, color=TEXT_LABEL))
+        row.addWidget(self.sel_label, 1)
+        row.addWidget(owner._label("Dicing", FS_SMALL, color=TEXT_LABEL))
         self.dicing = QLineEdit()
         self.dicing.setPlaceholderText("-")
-        self.dicing.setToolTip("Karma dicing quality (render only); empty keeps it")
-        self.dicing.setFixedWidth(owner.px(48))
-        self.dicing.setStyleSheet(f"QLineEdit {{ background: {BG_RAISED}; color: {TEXT_PRIMARY};"
-                                  f" border: 1px solid #2c2c33; border-radius: 8px; padding: 4px 6px; }}")
+        self.dicing.setToolTip("Karma dicing quality of the selection (render only); empty clears it")
+        self.dicing.setFixedWidth(owner.px(56))
+        self.dicing.setStyleSheet(owner.css(f"QLineEdit {{ background: {BG_RAISED}; color: {TEXT_PRIMARY};"
+                                            f" border: 1px solid #2c2c33; border-radius: 8px; padding: 4px 6px;"
+                                            f" font-size: {FS_META}px; }}"))
+        self.dicing.returnPressed.connect(self._set_dicing)
         row.addWidget(self.dicing)
         self.set_button = owner._button("Set", STYLE_GHOST)
-        self.set_button.clicked.connect(self._set)
+        self.set_button.setToolTip("Set the dicing of the selected rows; their scheme stays")
+        self.set_button.clicked.connect(self._set_dicing)
         row.addWidget(self.set_button)
         lay.addLayout(row)
         row2 = QHBoxLayout()
@@ -963,12 +988,9 @@ class SubdPanel(QWidget):
         self.asset_button = owner._button("Apply to all instances", STYLE_GHOST)
         self.asset_button.clicked.connect(self._to_asset)
         row2.addWidget(self.clear_button)
+        row2.addWidget(self.asset_button)
         row2.addStretch(1)
         lay.addLayout(row2)
-        row3 = QHBoxLayout()  # its own row: the asset name makes it long
-        row3.addWidget(self.asset_button)
-        row3.addStretch(1)
-        lay.addLayout(row3)
         self._sel_changed()
 
     def show_row(self, row) -> None:
@@ -977,9 +999,10 @@ class SubdPanel(QWidget):
         from tools.fx.anim_loader.logic import HEAVY_SUBD_POLYGONS, mesh_groups, subd_polygons
 
         self.tree.clear()
+        self.hulls_link.hide()
         detail = self.owner.ctl.subd_detail(row.node_path) if row else None
         self.path = row.node_path if row and detail and detail["plan"] else ""
-        for w in (self.scheme, self.dicing, self.clear_button, self.asset_button):
+        for w in (self.dicing, self.clear_button, self.asset_button):
             w.setEnabled(bool(self.path))
         self._sel_changed()
         if row is None:
@@ -998,25 +1021,52 @@ class SubdPanel(QWidget):
                           + (" · over 5 M: the viewport may be slow" if warn else ""))
         self.load.setStyleSheet(f"color: {STATUS_COLORS[AM_WARN] if warn else TEXT_LABEL}; font-size: "
                                 f"{self.owner.px(FS_SMALL)}px; background: transparent;")
+        self.hulls_link.setVisible(warn and self.owner.ctl.heavy_polygons() > 0
+                                   and hasattr(self.owner.backend, "set_hulls_only"))
         self.asset_button.setToolTip(f"Copy these overrides to every {row.asset} loader in the scene" if row.asset
                                      else "Copy these overrides to every loader of this asset")
+        any_dicing = any(c.dicing for c in plan.values())
         for key, meshes in mesh_groups(list(plan)).items():
-            g = QTreeWidgetItem([key.rsplit("/", 1)[-1], _faces_word(sum(faces.get(m, 0) for m in meshes)),
-                                 self._common([plan[m].source for m in meshes]),
-                                 self._common([SCHEME_WORD.get(plan[m].scheme, plan[m].scheme) for m in meshes]),
-                                 self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "-" for m in meshes])])
+            g_from = self._common([plan[m].source for m in meshes])
+            g = QTreeWidgetItem([key.rsplit("/", 1)[-1], _faces_word(sum(faces.get(m, 0) for m in meshes)), g_from, "",
+                                 self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "" for m in meshes])])
             g.setData(0, ROLE_PATTERN, key + "/**")
+            g.setToolTip(0, key)
+            self.tree.addTopLevelItem(g)
+            self._scheme_menu(g, self._common([SCHEME_WORD.get(plan[m].scheme, plan[m].scheme) for m in meshes]))
             for m in meshes:
                 c = plan[m]
-                item = QTreeWidgetItem([m.rsplit("/", 1)[-1], _faces_word(faces.get(m, 0)), c.source,
-                                        SCHEME_WORD.get(c.scheme, c.scheme), f"{c.dicing:g}" if c.dicing else "-"])
+                item = QTreeWidgetItem([m.rsplit("/", 1)[-1], _faces_word(faces.get(m, 0)),
+                                        "" if c.source == g_from else c.source, "",
+                                        f"{c.dicing:g}" if c.dicing else ""])
                 item.setData(0, ROLE_PATTERN, m.strip("/"))
                 item.setToolTip(0, m)
                 if c.source == "shot":
                     item.setForeground(2, QColor(ACCENT))
                 g.addChild(item)
-            self.tree.addTopLevelItem(g)
+                self._scheme_menu(item, SCHEME_WORD.get(c.scheme, c.scheme))
+        self.tree.setColumnHidden(4, not any_dicing)
         self.tree.expandAll()
+
+    def _scheme_menu(self, item, current: str) -> None:
+        box = QComboBox()
+        if current == "mixed":
+            box.addItem("Mixed")
+        box.addItems(list(SCHEME_WORD.values()))
+        box.setCurrentText("Mixed" if current == "mixed" else current)
+        box.setStyleSheet(self.owner.css(COMBO_CSS.replace("padding: 6px 10px", "padding: 1px 6px")))
+        box.setFixedHeight(self.owner.px(24))
+        box.setToolTip("Publish: lookdev, else the anim publish, else none. On a selected row: the whole selection.")
+        box.currentTextChanged.connect(lambda text, it=item: self._scheme_changed(it, text))
+        self.tree.setItemWidget(item, 3, box)
+
+    def _scheme_changed(self, item, text: str) -> None:
+        if text not in WORD_SCHEME or not self.path:
+            return
+        selected = self.tree.selectedItems()
+        pats = self._patterns() if item in selected and len(selected) > 1 else [item.data(0, ROLE_PATTERN)]
+        path = self.path
+        self.owner._run(lambda: self.owner.ctl.set_subd(path, pats, WORD_SCHEME[text]))()
 
     @staticmethod
     def _common(values: list[str]) -> str:
@@ -1027,10 +1077,10 @@ class SubdPanel(QWidget):
 
     def _sel_changed(self) -> None:
         n = len(self.tree.selectedItems())
-        self.sel_label.setText(f"{n} selected:" if n else "Nothing selected")
+        self.sel_label.setText(f"{n} selected" if n else "Nothing selected")
         self.set_button.setEnabled(bool(n and self.path))
 
-    def _set(self) -> None:
+    def _set_dicing(self) -> None:
         pats = self._patterns()
         if not pats or not self.path:
             return
@@ -1038,10 +1088,11 @@ class SubdPanel(QWidget):
         try:
             dicing = float(text) if text else None
         except ValueError:
-            dicing = None
-        scheme = WORD_SCHEME.get(self.scheme.currentText(), "publish")
+            self.owner.ctl.message = f"Dicing must be a number, not {text!r}."
+            self.owner._update_bar()
+            return
         path = self.path
-        self.owner._run(lambda: self.owner.ctl.set_subd(path, pats, scheme, dicing))()
+        self.owner._run(lambda: self.owner.ctl.set_subd(path, pats, None, dicing))()
 
     def _clear(self) -> None:
         if self.path:

@@ -97,7 +97,7 @@ def test_empty_scene(make):
     w = mk(b)
     assert w.stack.currentWidget() is w.empty
     assert w.headline.text() == "No anim loaders in the scene"
-    assert not w.primary.isEnabled() and w.upgrade_button.isHidden()
+    assert w.primary.isHidden() and w.upgrade_button.isHidden()  # nothing to do: no primary button
 
 
 def test_paints_at_both_scales(make):
@@ -136,15 +136,43 @@ def test_subd_detail_shows_groups_and_meshes(make):
     assert "~6.6 M" in w.subd_panel.load.text()
 
 
-def test_subd_set_on_selection_calls_backend(make):
+def test_subd_scheme_inline_applies_to_the_selection(make):
+    from tools.fx.anim_loader.logic import KEEP
+
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/b")
     tree = w.subd_panel.tree
-    tree.topLevelItem(0).setSelected(True)
-    w.subd_panel.scheme.setCurrentText("Off")
+    base, outfit = tree.topLevelItem(0), tree.topLevelItem(1)
+    tree.itemWidget(base, 3).setCurrentText("Off")              # one row, not selected: that row only
+    call = w.backend.calls[-1]
+    assert call[:5] == ("set_subd", "/stage/b", ("Geo/Base_grp/**",), "none", KEEP)
+    base, outfit = tree.topLevelItem(0), tree.topLevelItem(1)    # the rescan rebuilt the tree
+    base.setSelected(True)
+    outfit.setSelected(True)
+    tree.itemWidget(outfit, 3).setCurrentText("Off")            # a selected row: the whole selection
+    assert set(w.backend.calls[-1][2]) == {"Geo/Base_grp/**", "Geo/Outfit_grp/**"}
+    assert w.backend.calls[-1][3] == "none"
+
+
+def test_subd_dicing_keeps_the_scheme(make):
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/b")
+    w.subd_panel.tree.topLevelItem(0).setSelected(True)
+    assert "1 selected" in w.subd_panel.sel_label.text()
     w.subd_panel.dicing.setText("0.5")
     w.subd_panel.set_button.click()
-    assert w.backend.calls[-1] == ("set_subd", "/stage/b", ("Geo/Base_grp/**",), "none", 0.5)
+    assert w.backend.calls[-1][2:] == (("Geo/Base_grp/**",), None, 0.5)
+
+
+def test_subd_columns_say_only_what_differs(make):
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/b")
+    tree = w.subd_panel.tree
+    outfit = tree.topLevelItem(1)
+    assert outfit.text(2) == "lookdev" and outfit.child(0).text(2) == ""   # same as its group: left blank
+    base = tree.topLevelItem(0)
+    assert base.text(2) == "mixed" and {base.child(i).text(2) for i in range(2)} == {"lookdev", "shot"}
+    assert not tree.isColumnHidden(4)                                     # Geo_Dress has dicing 0.5
 
 
 def test_subd_chip_in_rows(make):
@@ -178,3 +206,37 @@ def test_scale_css():
 
     assert scale_css("a { padding: 9px 14px; font-size: 15px; border: 1px solid; }", 1.5) == \
         "a { padding: 14px 21px; font-size: 22px; border: 1px solid; }"
+
+
+def test_primary_button_follows_the_one_action(make):
+    from tools.fx.anim_loader.logic import STATUS_OK
+
+    w, ui = _subd_window(make)
+    assert w.primary.text() == "Update 2 behind" and not w.primary.isHidden()
+    assert not w.upgrade_button.isHidden()                       # upgrade stays a secondary button here
+    b = w.backend
+    b.status["/stage/a"]["lookdev"] = (STATUS_OK, None)
+    b.status["/stage/c"]["anim"] = (STATUS_OK, None)
+    w.refresh(); w.wait()
+    assert w.primary.text() == "Upgrade 1 old" and w.upgrade_button.isHidden()   # not twice
+    b.infos = [i for i in b.infos if not i.legacy]
+    b.hulls_on = lambda: True                                    # Helen is heavy, but hulls are already on
+    w.refresh(); w.wait()
+    assert w.primary.isHidden()                                  # nothing worth doing: no primary button
+    assert w.headline.text() == "1 needs an asset"
+
+
+def test_heavy_warning_lives_in_the_subdivision_column_only(make):
+    w, ui = _subd_window(make)
+    b = w.backend
+    calls = []
+    b.hulls_on = lambda: False
+    b.set_hulls_only = lambda: calls.append(1) or 1
+    b.heavy_message = lambda: "Heavy shot: ~6.6 M subdivision polygons (char_Helen)"
+    w.refresh(); w.wait()
+    assert "Heavy" not in w.result.text()                        # the result line is for results
+    assert not hasattr(w, "hulls_button") or w.hulls_button.isHidden()
+    _select(w, ui, "/stage/b")
+    assert not w.subd_panel.hulls_link.isHidden()
+    w.subd_panel.hulls_link.click()
+    assert calls == [1] and "memory" in w.result.text()

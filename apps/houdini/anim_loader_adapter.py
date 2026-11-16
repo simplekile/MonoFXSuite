@@ -514,6 +514,10 @@ class HoudiniBackend:
         return set_hulls_only(True)
 
     @staticmethod
+    def hulls_on():
+        return hulls_on()
+
+    @staticmethod
     def assets(root: str) -> list[str]:
         return sorted(logic.list_asset_dirs(Path(root))) if root else []
 
@@ -614,6 +618,9 @@ def set_hulls_only(enable: bool = True) -> int:
 
 
 def hulls_on() -> bool:
+    """True when every Scene Viewer viewport draws hulls only; False without a UI (hython has no hou.ui)."""
+    if not hou.isUIAvailable():
+        return False
     for pane in hou.ui.paneTabs():
         if pane.type() == hou.paneTabType.SceneViewer:
             return all(vp.settings().hullsOnly() for vp in pane.viewports())

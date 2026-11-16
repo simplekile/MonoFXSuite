@@ -508,16 +508,25 @@ def heavy_shot_message(loads: list[tuple[str, int]], threshold: int = HEAVY_SUBD
     return f"Heavy shot: ~{total / 1e6:.1f} M subdivision polygons ({', '.join(names)})"
 
 
-def set_subd_rules(rules: list[dict], patterns: list[str], scheme: str, dicing: float | None = None) -> list[dict]:
-    """Rules with one rule per pattern set to ``scheme`` / ``dicing`` (put last, so it wins). ``publish`` without
-    dicing removes the override."""
+KEEP = object()  # set_subd_rules: leave this field as the pattern's rule has it
+
+
+def set_subd_rules(rules: list[dict], patterns: list[str], scheme: str | None,
+                   dicing: float | None | object = KEEP) -> list[dict]:
+    """Rules with one rule per pattern, put last so it wins. ``scheme`` None keeps the pattern's scheme (publish
+    when it had none); ``dicing`` KEEP keeps its dicing, None clears it. A rule left with publish and no dicing
+    says nothing, so it is dropped."""
+    old = {r["pattern"]: r for r in rules}
     keep = [r for r in rules if r["pattern"] not in patterns]
-    if scheme == SUBD_PUBLISH and dicing is None:
-        return keep
     for p in patterns:
-        rule = {"pattern": p, "scheme": scheme}
-        if dicing is not None:
-            rule["dicing"] = float(dicing)
+        before = old.get(p, {})
+        sch = scheme if scheme is not None else before.get("scheme", SUBD_PUBLISH)
+        dic = before.get("dicing") if dicing is KEEP else dicing
+        if sch == SUBD_PUBLISH and dic is None:
+            continue
+        rule = {"pattern": p, "scheme": sch}
+        if dic is not None:
+            rule["dicing"] = float(dic)
         keep.append(rule)
     return keep
 

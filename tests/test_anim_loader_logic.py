@@ -359,3 +359,17 @@ def test_set_subd_rules_replaces_same_pattern_and_appends():
     assert mesh_groups(["/Geo/Base_grp/Body_grp/Geo_Body", "/Geo/Base_grp/Head_grp/Geo_Head", "/Geo/Groom_grp/x",
                         "/Other"]) == {"Geo/Base_grp": ["/Geo/Base_grp/Body_grp/Geo_Body", "/Geo/Base_grp/Head_grp/Geo_Head"],
                                        "Geo/Groom_grp": ["/Geo/Groom_grp/x"], "Other": ["/Other"]}
+
+
+def test_set_subd_rules_keeps_the_other_field():
+    from tools.fx.anim_loader.logic import KEEP, set_subd_rules
+
+    r = set_subd_rules([], ["Geo/Base_grp/**"], "none", dicing=0.5)
+    r = set_subd_rules(r, ["Geo/Base_grp/**"], "catmullClark")            # scheme only: dicing stays
+    assert r == [{"pattern": "Geo/Base_grp/**", "scheme": "catmullClark", "dicing": 0.5}]
+    r = set_subd_rules(r, ["Geo/Base_grp/**"], None, dicing=2.0)           # dicing only: scheme stays
+    assert r == [{"pattern": "Geo/Base_grp/**", "scheme": "catmullClark", "dicing": 2.0}]
+    r = set_subd_rules(r, ["Geo/Base_grp/**"], None, dicing=None)          # dicing cleared
+    assert r == [{"pattern": "Geo/Base_grp/**", "scheme": "catmullClark"}]
+    assert set_subd_rules([], ["Geo/x"], None, dicing=1.0) == [{"pattern": "Geo/x", "scheme": "publish", "dicing": 1.0}]
+    assert KEEP is not None

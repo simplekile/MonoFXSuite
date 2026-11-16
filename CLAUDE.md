@@ -236,13 +236,17 @@
   fallback as a value. Dicing is `primvars:karma:object:dicingquality` (render only).
 - Manager › Subdivision column (the user's pick of three mockups, 2026-11-17: beside List / Grid, under them when
   narrower than 760 px): the selected loader's anim meshes by group (`logic.mesh_groups`, first two path levels),
-  faces, where the scheme comes from (shot / lookdev / publish / default), scheme, dicing. A selection is set once
-  (`logic.set_subd_rules`: one rule per pattern, put last; Publish with no dicing drops the override), Clear
-  overrides, Apply to all instances of the asset; each is one undo step. The plan is read by `HoudiniBackend.subd`
+  faces, where the scheme comes from (shot / lookdev / publish / default; on a mesh only when it differs from its
+  group), scheme, dicing (column only when some mesh has dicing). The scheme is a menu on each row: on a selected
+  row it sets the whole selection, else that row. Dicing has its own field + Set, which keeps each scheme
+  (`logic.set_subd_rules`: scheme None / dicing `KEEP` keep that field; one rule per pattern, put last; Publish
+  with no dicing drops the override). Clear overrides and Apply to all instances share a row; each change is one
+  undo step. The plan is read by `HoudiniBackend.subd`
   on the scan's worker thread; rows carry "subd N · ~X M".
 - Heavy shot (over `logic.HEAVY_SUBD_POLYGONS`, faces x 16): a non-modal prompt after Load shot and on scene
   load (HDA OnLoaded, one check per burst, UI only) offers Draw Hulls Only for every viewport; "Don't ask again"
-  is a viewer pref; the manager keeps the line and a button. Draw Hulls Only makes the viewport lighter to work
+  is a viewer pref. In the manager the warning lives in one place only, the Subdivision column (line + Draw Hulls
+  Only link), never in the result line. Draw Hulls Only makes the viewport lighter to work
   in but does NOT lower memory (Helen catmullClark 12.8 GB -> 19.5 GB when turned on; 13 GB on from the start).
 - Lookdev and groom have "Show in Viewport" (on by default). Off: bindings move to `material:binding:full` (Karma
   only) and groom curves get purpose `render`.
@@ -250,6 +254,10 @@
   user's pick), Monos asset thumbnails (`thumbnail.user.png`, else `.meta/thumb_lookdev.user.png`, else the
   newest `.meta/thumb_*.user.png`), Load shot finds existing loaders by user data `monofx_anim_loader`
   (shot + anim file, any version: never a second `/char_X`), Update / Load shot / Upgrade are one undo step each.
+  One primary button, the most important thing to do (`controller.primary_action`: update > upgrade 2.1 > Draw
+  Hulls Only for a heavy shot), hidden when there is nothing; the headline says the same; Upgrade shows apart only
+  when it is not the primary. Styles go through `scale_css` (every px scaled by the UI scale). Grid cards share the
+  row's width (as many as fit at 200 px, Qt keeps room for the scroll bar); a camera card is shorter.
   Shelf tool "Anim Loaders". Checks: `tests/test_anim_loader_*.py`, hython `tests/houdini/anim_loader/accept_*.py`
   on the fake project from `tools/fx/anim_loader/dev/make_fake_shot.py`.
 

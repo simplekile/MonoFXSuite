@@ -7,6 +7,7 @@
 - **Mono Anim Loader** manager: a **Subdivision** column beside the list shows the selected character's meshes by group, where each scheme comes from and its dicing; set Publish / Off / Catmull-Clark and dicing on a selection, clear overrides, or apply them to every instance of the asset. Rows show "subd N · ~X M".
 - **Mono Anim Loader**: a heavy shot (lots of subdivision) shows a small non-modal prompt offering **Draw Hulls Only** for the viewport (lighter to work in; it does not lower memory), with Don't ask again.
 - **Mono Anim Loader**: Lookdev and Groom get **Show in Viewport** (on). Off loads them for render only (Karma).
+- **Mono Anim Loader** manager polish: one primary button, the thing worth doing now (Update, else Upgrade 2.1 nodes, else Draw Hulls Only for a heavy shot), hidden when there is nothing to do. The heavy-shot warning lives only in the Subdivision column, with Draw Hulls Only beside it. The scheme is a menu on each Subdivision row (on a selected row it sets the whole selection); dicing has its own field and keeps the scheme. From shows only where a mesh differs from its group, Dice only when there is dicing. Grid cards fill the width, camera cards are shorter, the splitter handle shows, and every size follows Houdini's UI scale.
 - **Mono Anim Loader**: the camera's **Clipping Range** works again (its parms were named `clippingRangex/y`; the camera read `clippingRange1/2`, as in 2.1), and defaults to 0.001 - 1e6.
 
 ### Blender
