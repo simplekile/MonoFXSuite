@@ -122,3 +122,11 @@ def test_set_asset():
     c.set_asset("/stage/d", "char_Robot")
     assert c.backend.calls[-1] == ("set_asset", "/stage/d", "char_Robot")
     assert "char_Robot" in c.message
+
+
+def test_primary_label_when_nothing_is_behind():
+    c = Controller(FakeBackend())
+    c.backend.status["/stage/a"]["lookdev"] = OK
+    c.backend.status["/stage/c"]["anim"] = OK
+    c.refresh()
+    assert c.primary_label() == "Nothing to update"

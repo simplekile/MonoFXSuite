@@ -171,6 +171,7 @@ from dataclasses import replace  # noqa: E402
 from tools.fx.anim_loader.logic import (  # noqa: E402
     STATUS_ASSET,
     STATUS_MISSING,
+    STATUS_NONE,
     STATUS_NEWER,
     STATUS_OFF,
     STATUS_OK,
@@ -204,7 +205,7 @@ def test_initial_picks_latest_once(tmp_path):
     assert resolve(st).lookdev == r.lookdev
     s = status(st)
     assert s["lookdev"] == (STATUS_NEWER, "v003") and s["anim"] == (STATUS_OK, None)
-    assert s["groom"] == (STATUS_OK, None) and s["cloth"][0] == STATUS_MISSING
+    assert s["groom"] == (STATUS_OK, None) and s["cloth"][0] == STATUS_NONE  # never published: not an error
 
 
 def test_newer_anim_version(tmp_path):
@@ -276,3 +277,12 @@ def test_asset_thumbnail_like_monos(tmp_path):
     assert asset_thumbnail(a) == a / ".meta/thumb_lookdev.user.png"  # lookdev before other departments
     (a / "thumbnail.user.png").write_bytes(b"x")
     assert asset_thumbnail(a) == a / "thumbnail.user.png"  # the picture Monos shows
+
+
+def test_missing_only_when_the_version_on_the_node_is_gone(tmp_path):
+    import shutil
+
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    shutil.rmtree(root / ROBOT / "05_lookdev/publish/v002")
+    assert status(st)["lookdev"] == (STATUS_MISSING, None)  # v002 named on the node, gone from disk

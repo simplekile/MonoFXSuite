@@ -236,6 +236,7 @@ def fx_match(root: Path, shot: str, task: str, version: str, inst: Instance, geo
 # --- loader state ----------------------------------------------------------------------------
 
 STATUS_OK, STATUS_NEWER, STATUS_MISSING, STATUS_OFF, STATUS_ASSET = "ok", "newer", "missing", "off", "asset?"
+STATUS_NONE = "none"  # nothing of this part was ever published for the instance (not an error)
 PARTS = ("lookdev", "groom", "cloth")
 FX_TASKS = ("groom", "cloth")
 
@@ -356,7 +357,8 @@ def status(state: LoaderState) -> dict[str, tuple[str, str | None]]:
             found = _found_versions(root, state, part, geo_count)
             later = _newer(state.versions.get(part, ""), found)
             if not getattr(r, part):
-                out[part] = (STATUS_MISSING, later)
+                named = state.versions.get(part, "")
+                out[part] = (STATUS_MISSING, later) if (named or found) else (STATUS_NONE, None)
             else:
                 out[part] = (STATUS_NEWER, later) if later else (STATUS_OK, None)
     return out

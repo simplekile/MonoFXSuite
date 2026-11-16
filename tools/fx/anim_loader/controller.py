@@ -137,8 +137,10 @@ class Controller:
 
     def primary_label(self) -> str:
         if self.selection:
-            return f"Update {len(self.behind_paths(self.selection))} selected"
-        return f"Update {len(self.behind_paths())} behind"
+            n = len(self.behind_paths(self.selection))
+            return f"Update {n} selected" if n else "Nothing selected to update"
+        n = len(self.behind_paths())
+        return f"Update {n} behind" if n else "Nothing to update"
 
     def upgrade_label(self) -> str:
         return f"Upgrade {len(self.legacy_paths())} old"
