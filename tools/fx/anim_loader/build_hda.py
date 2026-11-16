@@ -48,6 +48,9 @@ for task in ("groom", "cloth"):
 # viewport took 27 GB and hung). Houdini GL reads preview / all-purpose bindings and default / proxy purpose; Karma
 # reads full bindings and render purpose. So, unless "Show in viewport" is on: every material binding of the
 # instance moves to material:binding:full (all-purpose left empty), and groom curves get purpose render.
+# Meshes that author no subdivisionScheme get "none": Blender's anim publish writes none, USD then reads
+# catmullClark, and Houdini GL subdivided whole shots (sh025: >45 GB, crash in GR_OSDSubdSurfaceVK). An authored
+# scheme stays.
 PURPOSE_CODE = '''hda = hou.pwd().parent()
 stage = hou.pwd().editableStage()
 from pxr import Usd, UsdGeom, UsdShade
@@ -55,7 +58,17 @@ inst = hda.evalParm("mx_instance_name")
 root = stage.GetPrimAtPath("/" + inst) if inst else None
 look_vp = hda.evalParm("mx_lookdev_viewport")
 groom_vp = hda.evalParm("mx_groom_viewport")
-if root and (not look_vp or not groom_vp):
+if root:
+    # The anim publish decides the geometry: a mesh it authors no scheme on gets none, whatever lookdev says
+    # (Helen's lookdev V009 carries catmullClark from a Houdini edit layer). Read the anim file itself: after the
+    # graft every mesh has a value, since Graft Stages flattens and writes the fallback catmullClark.
+    anim_path = hda.evalParm("mx_selected_anim_usd_path")
+    src = Usd.Stage.Open(anim_path, Usd.Stage.LoadNone) if anim_path else None
+    for prim in (src.Traverse() if src else []):
+        if prim.IsA(UsdGeom.Mesh) and not UsdGeom.Mesh(prim).GetSubdivisionSchemeAttr().HasAuthoredValue():
+            dst = stage.GetPrimAtPath("/" + inst + prim.GetPath().pathString)
+            if dst:
+                UsdGeom.Mesh(dst).GetSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
     for prim in Usd.PrimRange(root):
         if not look_vp:
             rel = prim.GetRelationship("material:binding")
@@ -187,8 +200,8 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                             menu=f'hou.phm().menu_versions(hou.pwd(), "{part}")'))
         f.addParmTemplate(s(config.P_PATH[part], "File", callback=False))
         if part in ("lookdev", "groom"):
-            vp = T.ToggleParmTemplate(f"mx_{part}_viewport", "Show in Viewport", default_value=False)
-            vp.setHelp("Off: loaded for render only (Karma), so the viewport stays light.")
+            vp = T.ToggleParmTemplate(f"mx_{part}_viewport", "Show in Viewport", default_value=True)
+            vp.setHelp("Off: loaded for render only (Karma), for a lighter viewport.")
             f.addParmTemplate(vp)
         g.append(f)
 

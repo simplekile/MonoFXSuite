@@ -81,8 +81,7 @@ def main() -> None:
     check("instances move differently", a is not None and b is not None and np.abs(a - b).max() > 1e-3)
     mats = {}
     for n in ("char_Robot", "char_Robot_inst02", "char_Robot_2"):
-        m, _ = UsdShade.MaterialBindingAPI(st.GetPrimAtPath(f"/{n}{BODY}")).ComputeBoundMaterial(
-            UsdShade.Tokens.full)  # render binding (the viewport has none unless asked)
+        m, _ = UsdShade.MaterialBindingAPI(st.GetPrimAtPath(f"/{n}{BODY}")).ComputeBoundMaterial()
         mats[n] = m.GetPath().pathString if m else None
     check("lookdev bound per instance", mats == {
         "char_Robot": "/char_Robot/materials/char_Robot_mtl",
@@ -118,24 +117,33 @@ def main() -> None:
     cams = [p.GetPath().pathString for p in st.Traverse() if p.IsA(UsdGeom.Camera)]
     check("camera kept at its own path", cams == ["/root/sh900_cam_root/cam_sh900"], cams)
 
-    # Heavy parts render only (the viewport reads preview / all-purpose bindings and default / proxy purpose)
+    # Lookdev and groom show in the viewport by default; "Show in Viewport" off makes them render only
     body = st.GetPrimAtPath(f"/char_Robot{BODY}")
-    full, _ = UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial(UsdShade.Tokens.full)
-    preview, _ = UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial(UsdShade.Tokens.preview)
-    check("lookdev bound for render (full)", bool(full) and full.GetPath().pathString == "/char_Robot/materials/char_Robot_mtl")
-    check("lookdev not bound in the viewport (preview)", not preview, preview.GetPath().pathString if preview else None)
-    hair_prim = st.GetPrimAtPath(f"/char_Robot_inst02{HAIR}")
-    check("groom is render purpose", UsdGeom.Imageable(hair_prim).ComputePurpose() == UsdGeom.Tokens.render)
-    inst.parm("mx_lookdev_viewport").set(1)
-    inst.parm("mx_groom_viewport").set(1)
-    st = last.stage()
-    pv, _ = UsdShade.MaterialBindingAPI(st.GetPrimAtPath(f"/char_Robot_inst02{BODY}")).ComputeBoundMaterial(
-        UsdShade.Tokens.preview)
-    check("lookdev in viewport when asked", bool(pv))
-    check("groom default purpose when asked", UsdGeom.Imageable(st.GetPrimAtPath(f"/char_Robot_inst02{HAIR}"))
+    pv, _ = UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial(UsdShade.Tokens.preview)
+    check("lookdev in the viewport by default", bool(pv))
+    check("groom in the viewport by default", UsdGeom.Imageable(st.GetPrimAtPath(f"/char_Robot_inst02{HAIR}"))
           .ComputePurpose() == UsdGeom.Tokens.default_)
+    body_mesh = UsdGeom.Mesh(body)
+    check("mesh without a scheme gets none (no viewport subdivision)",
+          body_mesh.GetSubdivisionSchemeAttr().Get() == UsdGeom.Tokens.none)
+    lookdev_says = ROOT / "01_assets/_characters/char_Robot/05_lookdev/publish/v002/char_Robot_lookdev_publish.usd"
+    look_stage = Usd.Stage.Open(str(lookdev_says))
+    check("the fake lookdev authors catmullClark on the body (like Helen V009)",
+          look_stage.GetPrimAtPath(BODY).GetAttribute("subdivisionScheme").Get() == "catmullClark")
+    drv = UsdGeom.Mesh(st.GetPrimAtPath("/char_Robot/Geo/Groom_grp/HairDriver_grp/Geo_HairBase"))
+    check("a catmullClark the anim authors stays", drv.GetSubdivisionSchemeAttr().Get() == UsdGeom.Tokens.catmullClark)
     inst.parm("mx_lookdev_viewport").set(0)
     inst.parm("mx_groom_viewport").set(0)
+    st = last.stage()
+    ib = st.GetPrimAtPath(f"/char_Robot_inst02{BODY}")
+    full, _ = UsdShade.MaterialBindingAPI(ib).ComputeBoundMaterial(UsdShade.Tokens.full)
+    pv, _ = UsdShade.MaterialBindingAPI(ib).ComputeBoundMaterial(UsdShade.Tokens.preview)
+    check("render-only lookdev: bound for render (full)", bool(full))
+    check("render-only lookdev: not bound in the viewport (preview)", not pv)
+    check("render-only groom: purpose render", UsdGeom.Imageable(st.GetPrimAtPath(f"/char_Robot_inst02{HAIR}"))
+          .ComputePurpose() == UsdGeom.Tokens.render)
+    inst.parm("mx_lookdev_viewport").set(1)
+    inst.parm("mx_groom_viewport").set(1)
     st = last.stage()
 
     robot = nodes["char_Robot"]

@@ -220,6 +220,14 @@
   frame's samples beat a clip, and a same-layer anim beats a cloth clip. That gives motion blur; a cache without
   time samples falls back to Sublayer `$F` (no blur, said on the node).
 - A locked LOP HDA makes its inner nodes on first cook: `node.children()` is empty before.
+- Meshes the anim file authors no `subdivisionScheme` on get `none` (Python LOP `render_only`, after the graft).
+  Blender's anim publish wrote none, USD's fallback is `catmullClark`, and Houdini GL subdivided whole shots:
+  sh025 v005 went past 45 GB and crashed in `GR_OSDSubdSurfaceVK` (Helen alone 12.5 GB with a plain Sublayer,
+  2.5 GB with `none`; the shot 3.2 GB). The anim file decides, not lookdev: Helen's lookdev V009 carries
+  `catmullClark` from a Houdini edit layer. Read the anim file itself, not the grafted stage: Graft Stages
+  flattens and writes the fallback as a value. Textures were not the cause (same 2.5 GB with viewport materials).
+- Lookdev and groom have "Show in Viewport" (on by default). Off: bindings move to `material:binding:full` (Karma
+  only) and groom curves get purpose `render`.
 - Manager window (`ui.py` view, `controller.py` no Qt, `HoudiniBackend` in the adapter): List and Grid (the
   user's pick), Monos asset thumbnails (`thumbnail.user.png`, else `.meta/thumb_lookdev.user.png`, else the
   newest `.meta/thumb_*.user.png`), Load shot finds existing loaders by user data `monofx_anim_loader`
