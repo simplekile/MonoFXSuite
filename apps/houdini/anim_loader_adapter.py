@@ -391,3 +391,69 @@ def upgrade(nodes: list) -> list:
             refresh(new)
             done.append(new)
     return done
+
+
+# --- the manager window's backend --------------------------------------------------------------------
+
+class HoudiniBackend:
+    """What ``tools.fx.anim_loader.controller.Controller`` needs, on the scene. ``scan`` reads only the disk."""
+
+    def __init__(self, parent_path: str = "/stage") -> None:
+        self.parent_path = parent_path
+
+    def loaders(self):
+        from tools.fx.anim_loader.controller import LoaderInfo
+
+        out = []
+        for n in find_loaders():
+            legacy = n.type().name() != config.HDA_TYPE
+            out.append(LoaderInfo(n.path(), None if legacy else read_state(n), legacy, n.name()))
+        return out
+
+    @staticmethod
+    def scan(infos):
+        return {i.path: logic.status(i.state) for i in infos if i.state is not None}
+
+    @staticmethod
+    def thumbnail(state) -> str:
+        if not state.asset or not state.project_root:
+            return ""
+        asset_dir = logic.list_asset_dirs(Path(state.project_root)).get(state.asset)
+        p = logic.asset_thumbnail(asset_dir) if asset_dir else None
+        return p.as_posix() if p else ""
+
+    @staticmethod
+    def update(paths, parts):
+        return update([hou.node(p) for p in paths if hou.node(p)], tuple(parts))
+
+    def load_shot(self, root, shot, version):
+        r = load_shot(hou.node(self.parent_path), root, shot, version)
+        return r.created, r.kept
+
+    @staticmethod
+    def upgrade(paths):
+        return len(upgrade([hou.node(p) for p in paths if hou.node(p)]))
+
+    @staticmethod
+    def set_asset(path, asset):
+        set_asset(hou.node(path), asset)
+
+    @staticmethod
+    def select(path):
+        node = hou.node(path)
+        if node is not None:
+            node.setSelected(True, clear_all_selected=True)
+
+    @staticmethod
+    def undo():
+        hou.undos.performUndo()
+
+    @staticmethod
+    def assets(root: str) -> list[str]:
+        return sorted(logic.list_asset_dirs(Path(root))) if root else []
+
+    @staticmethod
+    def project_and_shot() -> tuple[str, str]:
+        hip = Path(hou.hipFile.path())
+        root = logic.find_project_root(hip)
+        return (root.as_posix() if root else "", logic.detect_shot(hip) or "")
