@@ -255,3 +255,24 @@ def test_list_part_versions(tmp_path):
     st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
     assert list_part_versions(st, "lookdev") == ["v001", "v002"]
     assert list_part_versions(st, "groom") == ["v001"] and list_part_versions(st, "cloth") == []
+
+
+def test_asset_thumbnail_like_monos(tmp_path):
+    import os
+    import time
+
+    from tools.fx.anim_loader.logic import asset_thumbnail
+
+    a = tmp_path / "char_Helen"
+    (a / ".meta").mkdir(parents=True)
+    assert asset_thumbnail(a) is None
+    (a / ".meta/thumb_uv.user.png").write_bytes(b"x")
+    time.sleep(0.01)
+    (a / ".meta/thumb_rig.user.png").write_bytes(b"x")
+    os.utime(a / ".meta/thumb_uv.user.png", (1, 1))
+    assert asset_thumbnail(a) == a / ".meta/thumb_rig.user.png"  # newest department picture
+    (a / ".meta/thumb_lookdev.user.png").write_bytes(b"x")
+    os.utime(a / ".meta/thumb_lookdev.user.png", (1, 1))
+    assert asset_thumbnail(a) == a / ".meta/thumb_lookdev.user.png"  # lookdev before other departments
+    (a / "thumbnail.user.png").write_bytes(b"x")
+    assert asset_thumbnail(a) == a / "thumbnail.user.png"  # the picture Monos shows

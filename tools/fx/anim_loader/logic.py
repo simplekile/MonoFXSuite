@@ -393,3 +393,20 @@ def with_latest(state: LoaderState, parts: tuple[str, ...]) -> LoaderState:
 def list_part_versions(state: LoaderState, part: str) -> list[str]:
     """Versions of a part (lookdev / groom / cloth) on disk, oldest first, whether or not they hold this instance."""
     return _part_versions(Path(state.project_root), state, part)
+
+
+def asset_thumbnail(asset_dir: Path) -> Path | None:
+    """The asset's picture as Monos shows it: ``thumbnail.user.png``, else ``.meta/thumb_lookdev.user.png``,
+    else the newest ``.meta/thumb_<department>.user.png``."""
+    main = asset_dir / "thumbnail.user.png"
+    if main.is_file():
+        return main
+    meta = asset_dir / ".meta"
+    lookdev = meta / "thumb_lookdev.user.png"
+    if lookdev.is_file():
+        return lookdev
+    try:
+        others = [f for f in meta.glob("thumb_*.user.png") if f.is_file()]
+    except OSError:
+        return None
+    return max(others, key=lambda f: f.stat().st_mtime) if others else None

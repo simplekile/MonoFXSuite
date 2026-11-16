@@ -149,6 +149,13 @@ Mở từ nút "Manager" trên mọi loader và từ shelf. Một cửa sổ, kh
 - Đọc đĩa trên worker thread, ghi scene trên main thread (như Auto Material); kết quả và lỗi ở dòng dưới
   cửa sổ.
 - Bố cục và màu đi qua skill `dcc-panel-design`: 2-3 mockup để người dùng chọn trước khi code.
+- **Bố cục đã chọn (người dùng, 2026-11-17, mockup https://claude.ai/artifact/GEiaL6PUnMXhXukHH2isM1):**
+  hai chế độ xem, nút chuyển trên thanh trên: **List** (phương án A: mỗi instance một dòng, cột Anim /
+  Lookdev / Groom / Cloth, nhóm theo shot) và **Grid** (phương án C: mỗi instance một thẻ). Cả hai có
+  **thumbnail của asset như Monos**: `<asset>/thumbnail.user.png` (ảnh Monos đặt), không có thì
+  `.meta/thumb_lookdev.user.png`, rồi ảnh bộ phận `.meta/thumb_<dept>.user.png` mới nhất; camera và dòng
+  "asset?" có icon thay ảnh. Chế độ xem là của người xem (`%APPDATA%/MonoFXSuite/anim_loader_prefs.json`),
+  không lưu vào scene.
 
 ### 5.6 Node 2.1
 
