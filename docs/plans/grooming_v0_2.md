@@ -672,6 +672,37 @@ predates this model.
 - Layers survive Detect, Update regions, save / reopen and Publish (read back from the publish JSON); a missing
   lock keeps its layers; files of schema 3, 4 and 5 open and give the strand counts they gave.
 
+**v0.2a core closed 2026-11-16 by the user's decision.** Last acceptance (round 4, `df3c7ce`): 79 of 84 pass,
+1 known (`s2_first_strokes_with_the_lookup_off_known`, decided 2026-11-15), and these fail by decision. The
+limits stay and the checks stay failing:
+- `d3_partial_coverage_roots_even`: 4 crown_whorl rows (the crown evenness, decided by the user 2026-11-15).
+- `b1_blend_modes_roots_even_crown_whorl`: 3 rows (the same, 2026-11-15).
+- `d4_soft_edge_follows_the_mask`: top_of_head, ring 0.3-0.6 cm 330.5 against 280.8 (17.7 % over, limit 15 %).
+  This is the soft-edge bias (decided 2026-11-16). Kept / expected by root in the ring 0.3-0.6 cm:
+  - lock start 1.136 (+5.5 sd);
+  - crown 1.195 (+9.0 sd);
+  - top of the head 1.214 (+2.6 sd);
+  - top moved 0.705 cm 1.196 (+3.5 sd);
+  - the 1.2-1.5 cm ring keeps too few at all four places (0.958-0.976).
+
+  Not traced, not fixed.
+
+`s1_stroke_speed_8_places_x3` failed in round 4 (first stroke at hair_base_12 1.684 s, limit 1.3 s). It was re-timed
+2026-11-16 with the limits unchanged, `--only s1` three times in a row (t67 `accept_r5b_s1_1..3`, `queue_r5b.log`).
+Before the runs, no other hython, no `gui.lock`, and no Blender, Resolve or Houdini were running. CPU load was
+17-30 % of 32 threads, mostly the Claude app (~1 core), and one other session's pytest (under 1 core) was still
+running during runs 2 and 3.
+
+| Run | Pass | First stroke at hair_base_12 | Smallest margin |
+|---|---|---|---|
+| 1 | yes | 0.974 s | +0.256 s (hair_base_05, 0.444 / 0.7 s) |
+| 2 | yes | 0.977 s | +0.222 s (hair_base_05, 0.478 / 0.7 s) |
+| 3 | yes | 0.926 s | +0.250 s (hair_base_05, 0.450 / 0.7 s) |
+
+So s1 passes on a quiet machine, and round 4's fail was the machine. An earlier set of three, run the same way
+but with its process samples lost (`accept_r5_s1_1..3`), also passed: first stroke 0.981 / 1.218 / 1.112 s,
+smallest margin +0.080 / +0.082 / +0.188 s.
+
 **Not in v0.2a (moved to a later part).** Folders of density layers with a shared mask (confirmed by the
 user, 2026-11-15): a group or lock row gathers its layers, and a shared region is a Multiply top layer.
 
