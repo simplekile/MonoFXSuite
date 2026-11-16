@@ -585,8 +585,12 @@ class LayersMixin:
         if deformed:
             held, limit, n = use.get("deformed_bytes", 0), use.get("deformed_limit_bytes", 0), use.get("deformed_states", 0)
             if not n:
-                return f"Holds 0 of {_gb(limit)} GB: no deformed state held (Shot deform off, or not read yet)"
-            return f"Holds {_gb(held)} of {_gb(limit)} GB: {n} deformed state{'s' if n != 1 else ''} of the whole groom"
+                text = f"Holds 0 of {_gb(limit)} GB: no deformed state held (Shot deform off, or not read yet)"
+            else:
+                text = (f"Holds {_gb(held)} of {_gb(limit)} GB: {n} deformed state{'s' if n != 1 else ''} of the"
+                        " whole groom")
+            # plan B6: the limit is applied when a state is stored, never on its own
+            return text + ". A lowered limit frees nothing until the next deformed state is stored"
         text = (f"Holds {_gb(use.get('bytes', 0))} of {_gb(use.get('limit_bytes', 0))} GB: shown now "
                 f"{_gb(use.get('live_bytes', 0))} GB, {use.get('undo_states', 0)} earlier states "
                 f"{_gb(use.get('undo_bytes', 0))} GB")

@@ -868,5 +868,8 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     built (`ui_layers.expand_layers`). An item's BackgroundRole is painted over by the window's sheet
     (`QTreeWidget::item { background }`), so layer rows are told apart by indentation and icons, not a tint.
   - "painting" in the status column is TEXT_PRIMARY: ACCENT on SELECTED is 3.95:1 (contrast_check).
-  - Node values from the panel go through `grooming_adapter.node_settings` / `set_node_setting` (a parm set from
-    Python runs no callback: the lookup toggle calls `on_lookup_changed` itself).
+  - Node values from the panel go through `grooming_adapter.node_settings` / `set_node_setting` (added outside the
+    panel with the manager's yes, t70): only the three keys of `NODE_SETTING_PARMS` (else KeyError), one undo step
+    each; a parm set from Python runs no callback, so the lookup toggle calls `on_lookup_changed(recorded=True)`,
+    which writes the "on/off: set by hand" note INSIDE the step (the callback itself keeps undo off), and one undo
+    puts back value and note.

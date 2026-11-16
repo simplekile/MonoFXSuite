@@ -1532,14 +1532,21 @@ def keep_old_lookup(node) -> bool:
 LOOKUP_NOTE_BY_HAND = {1: "on: set by hand", 0: "off: set by hand"}
 
 
-def on_lookup_changed(node) -> None:
+def on_lookup_changed(node, recorded: bool = False) -> None:
     """The toggle's callback: the artist set "Fit lookup per lock" by hand, so the note says so (it said "off:
     the scene was saved before the parm existed" after the artist had turned it on, t68). Any note means the
-    choice is made: OnLoaded / OnUpdated never judge the node again."""
+    choice is made: OnLoaded / OnUpdated never judge the node again. `recorded`: the note goes into the undo step
+    being made (the panel's `set_node_setting`), so one undo puts back the value AND the note; the parm's own
+    callback writes it with undo off, as before."""
     p = node.parm(LOOKUP_PARM)
-    if p is not None:
-        with hou.undos.disabler():
-            node.setUserData(LOOKUP_NOTE, LOOKUP_NOTE_BY_HAND[1 if p.eval() else 0])
+    if p is None:
+        return
+    note = LOOKUP_NOTE_BY_HAND[1 if p.eval() else 0]
+    if recorded:
+        node.setUserData(LOOKUP_NOTE, note)
+        return
+    with hou.undos.disabler():
+        node.setUserData(LOOKUP_NOTE, note)
 
 
 LOOKUP_KEPT_NOTE = "off: the scene was saved before the parm existed"   # what keep_old_lookup writes
@@ -1565,10 +1572,13 @@ def node_settings(node) -> dict:
 
 
 def set_node_setting(node, key: str, value) -> None:
-    """Set one of `node_settings` from the panel: one undo step named "MONO Grooming: <label>". The lookup
-    toggle also records that the artist chose it (`on_lookup_changed`, what its own callback does: a parm set
-    from Python runs no callback). Neither parm is in a lock's cache key: setting them regrows nothing except
-    the lookup, which is in every lock's key."""
+    """Set one of `node_settings` from the panel: one undo step named "MONO Grooming: <label>". Only the three
+    keys of NODE_SETTING_PARMS (anything else: KeyError). The lookup toggle also records that the artist chose it
+    (`on_lookup_changed(recorded=True)`: "on/off: set by hand", in the same undo step; a parm set from Python runs
+    no callback). The undo limits are not in a lock's cache key (setting them regrows nothing); the lookup is in
+    every lock's key. A lowered "Deformed undo, GB" frees nothing until the next deformed state is stored."""
+    if key not in NODE_SETTING_PARMS:
+        raise KeyError(f"not a node setting the panel sets: {key!r}")
     name = NODE_SETTING_PARMS[key]
     p = node.parm(name)
     if p is None:
@@ -1576,7 +1586,7 @@ def set_node_setting(node, key: str, value) -> None:
     with hou.undos.group(f"{UNDO_PREFIX}{NODE_SETTING_LABELS[key]}"):
         if key == "lookup":
             p.set(1 if value else 0)
-            on_lookup_changed(node)
+            on_lookup_changed(node, recorded=True)
         else:
             p.set(max(float(value), 0.01))
 
