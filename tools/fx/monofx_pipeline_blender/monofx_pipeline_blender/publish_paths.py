@@ -133,24 +133,34 @@ def default_usd_basename_from_scene(scene_path: Path) -> str:
 
 
 def sanitize_collection_slug(collection_name: str) -> str:
-    """Normalize a collection name for USD filenames (lowercase, spaces → underscores)."""
-    s = (collection_name or "").strip().lower()
-    s = re.sub(r"\s+", "_", s)
-    s = re.sub(r"_+", "_", s)
-    return s.strip("_") or "collection"
+    """Collection name for a USD filename: words joined, each starting with a capital.
 
-
-def collection_publish_usd_basename(scene_path: Path, collection_name: str) -> str:
+    ``Geo_Helen`` -> ``GeoHelen``, ``house _2`` -> ``House2``. Capitals already inside a
+    word are kept (``HelenWhale`` stays ``HelenWhale``).
     """
-    Per-collection publish basename: ``env_House_uv_house1_publish`` from scene + collection.
+    words = [w for w in re.split(r"[^0-9A-Za-z]+", (collection_name or "").strip()) if w]
+    slug = "".join(w[0].upper() + w[1:] for w in words)
+    return slug or "Collection"
+
+
+def collection_publish_usd_basename(
+    scene_path: Path,
+    collection_name: str,
+    *,
+    only_collection: bool = False,
+) -> str:
+    """
+    Publish basename for one collection of a multi-collection publish.
+
+    The collection name goes **after** ``publish``, joined with a capital per word:
+    ``env_House_uv_publish_House1``.
+    When the publish has a single collection (``only_collection``) there is nothing to tell
+    apart, so the plain ``env_House_uv_publish`` is used (same as a normal single-file publish).
     """
     base = default_usd_basename_from_scene(scene_path)
-    slug = sanitize_collection_slug(collection_name)
-    suffix = "_publish"
-    if base.casefold().endswith(suffix):
-        prefix = base[: -len(suffix)]
-        return f"{prefix}_{slug}{suffix}"
-    return f"{base}_{slug}{suffix}"
+    if only_collection:
+        return base
+    return f"{base}_{sanitize_collection_slug(collection_name)}"
 
 
 def list_version_numbers(publish_root: Path) -> list[int]:
@@ -206,6 +216,20 @@ def version_number_from_blend_stem(stem: str) -> Optional[int]:
         return int(m.group(1))
     except ValueError:
         return None
+
+
+def publish_version_from_scene_file(scene_path: Optional[Path]) -> Optional[int]:
+    """
+    Publish version that mirrors the open work file (``sh002_anim_v003.blend`` → ``3``).
+
+    ``None`` when there is no scene, no ``_vNNN`` suffix, or the suffix is ``v000``.
+    """
+    if scene_path is None:
+        return None
+    version = version_number_from_blend_stem(Path(scene_path).stem)
+    if version is None or version < 1:
+        return None
+    return min(version, 999)
 
 
 def description_from_blend_stem(stem: str) -> str:

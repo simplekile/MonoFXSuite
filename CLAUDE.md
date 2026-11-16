@@ -112,6 +112,10 @@
 - Painter writes `<UDIM>` for a texture set on several tiles and the first tile (`.1001`) for a set on
   one; both become `.<UDIM>`. Its `colorSpace` metadata is always `raw`, so the colour space comes
   from the name's last token (ACEScg, Raw, sRGB, Linear), like the folder scan.
+- Fix colorspace (action bar, a Material Library selected in `/stage`): fills an empty `filecolorspace`
+  on every `mtlximage` from the file name's last token (`logic.colorspace_from_filename`,
+  `solaris_adapter.fix_empty_texture_colorspaces`), for materials Houdini converted from a USD, which
+  leaves it empty. A value already there is never changed; one undo step.
 - UDIM paths use `<UDIM>` (MaterialX / USD), for the folder scan too. Houdini writes a parm's
   `%(UDIM)d` verbatim into the stage, which other USD readers do not resolve. Materials built before
   with `%(UDIM)d` move to `<UDIM>` on the next Create / Update, even with no version change
@@ -146,6 +150,22 @@
   and read on every drop: on/off, LOP layer mode (ask / reference / sublayer), Auto Material for
   textures in LOP, base-colour materials for other images, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
   drop handler and tests read prefs without Qt.
+
+## Blender add-on USD publish (`tools/fx/monofx_pipeline_blender/`)
+
+- Model publish keeps materials inside the asset: after `wm.usd_export` (Blender 5.2 always writes
+  `/_materials` at the stage root and has no option for it), `usd_material_scope.py` moves the scope to
+  `/<defaultPrim>/material` and rewrites every binding and connection (`prepend rel` too). A failure there
+  never fails the export. Its tests need pxr: run them with hython (pytest skips them).
+- Publish file names (`publish_paths.collection_publish_usd_basename`): one collection -> the plain
+  `<asset>_<task>_publish.usd`; several -> the collection name after `publish`, words joined with a
+  capital each (`char_Helen_uv_publish_GeoHelen.usd`).
+- Version mode File (default for new scenes): the publish version is the open work file's `_vNNN`.
+- Anim USD caches points only, never normals: the asset declares `catmullClark`; per-frame normals cost
+  ~5x the file size (Helen 313 MB -> 1.53 GB). Static meshes and transforms keep only first/last samples
+  (`PointSampleFilter`); a layer with one top-level prim sets it as `defaultPrim`.
+- `draw()` never writes scene properties (Blender 5.2 raises "Writing to ID classes in this context is not
+  allowed"): `_summarize_publish_plan(..., sync=False)` from draw, sync only in `invoke`.
 
 ## MONO Grooming (Houdini, `tools/fx/grooming/` + `apps/houdini/grooming_adapter.py`)
 

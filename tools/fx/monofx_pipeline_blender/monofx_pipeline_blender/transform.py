@@ -256,6 +256,21 @@ def apply_transforms_for_publish(
     return (applied, failed)
 
 
+def _move_materials_under_default_prim(output_filepath: str) -> None:
+    """Blender writes materials to /_materials, outside the asset root; put them under the default prim.
+
+    A failure here never fails the export: the file is still a valid USD, just with the old layout.
+    """
+    try:
+        from .usd_material_scope import move_materials_under_default_prim
+
+        new_scope = move_materials_under_default_prim(output_filepath)
+        if new_scope:
+            print(f"[MonoFX Pipeline] materials moved to {new_scope}")
+    except Exception as exc:
+        print(f"[MonoFX Pipeline] could not move materials under the default prim: {exc}")
+
+
 def usd_export(
     *,
     output_filepath: str,
@@ -337,6 +352,8 @@ def usd_export(
             ):
                 export_kwargs.pop(key, None)
             bpy.ops.wm.usd_export(**export_kwargs)
+        if export_materials:
+            _move_materials_under_default_prim(output_filepath)
     finally:
         try:
             _deselect_all_objects(view_layer)

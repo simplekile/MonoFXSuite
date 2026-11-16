@@ -77,6 +77,21 @@ def current_addon_version() -> tuple[int, int, int]:
     return tuple(pkg.bl_info.get("version", (0, 0, 0)))
 
 
+def version_label() -> str:
+    """Short installed version for panel headers, e.g. ``v0.9.134``."""
+    try:
+        return f"v{format_version(current_addon_version())}"
+    except Exception:
+        return ""
+
+
+def draw_version_header(layout) -> None:
+    """Show the installed add-on version in a panel header."""
+    text = version_label()
+    if text:
+        layout.label(text=text)
+
+
 def addon_package_dir() -> Path:
     """Installed ``monofx_pipeline_blender`` package folder."""
     return Path(__file__).resolve().parent

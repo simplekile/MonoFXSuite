@@ -153,7 +153,7 @@ from . import addon_updater
 bl_info = {
     "name": "MonoFX Pipeline Blender",
     "author": "MonoFXSuite",
-    "version": (0, 9, 132),
+    "version": (0, 9, 143),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > MonoFX",
     "description": (
@@ -330,8 +330,11 @@ def sync_asset_name_from_scene(props) -> None:
 
 
 def sync_auto_publish_output(props) -> None:
-    """Keep NEXT mode aligned with the latest publish folder scan."""
-    if str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT") != "NEXT":
+    """Keep NEXT / FILE modes aligned with publish folders and the open work file."""
+    if str(getattr(props, "geo_usd_version_mode", "FILE") or "FILE") not in (
+        "NEXT",
+        "FILE",
+    ):
         return
     sync_geo_publish_output(props)
 
@@ -834,11 +837,12 @@ class MonoFXProperties(bpy.types.PropertyGroup):
     geo_usd_version_mode: EnumProperty(
         name="Version Mode",
         items=[
+            ("FILE", "File", "Publish version = version suffix of the open .blend"),
             ("MANUAL", "Manual", "Pick an existing publish version folder"),
             ("CURRENT", "Current", "Latest existing publish version folder"),
             ("NEXT", "Next", "Next publish folder after the latest existing one"),
         ],
-        default="NEXT",
+        default="FILE",
         update=_mono_fx_on_geo_usd_version_mode,
     )
     geo_usd_manual_version: IntProperty(
@@ -1530,11 +1534,12 @@ class MonoFXProperties(bpy.types.PropertyGroup):
     anim_usd_version_mode: EnumProperty(
         name="Version Mode",
         items=[
+            ("FILE", "File", "Publish version = version suffix of the open .blend"),
             ("MANUAL", "Manual", "Pick an existing publish version folder"),
             ("CURRENT", "Current", "Latest existing publish version folder"),
             ("NEXT", "Next", "Next publish folder after the latest existing one"),
         ],
-        default="NEXT",
+        default="FILE",
         update=anim_usd_cache_ui._on_anim_usd_version_mode,
     )
     anim_usd_manual_version: IntProperty(
@@ -1702,11 +1707,12 @@ def _plan_collections_publish_jobs(
         return False, [], "Scene is not saved. Save the .blend file first."
 
     jobs: list[_CollectionPublishJob] = []
-    for col in collections:
-        objs = objects_in_collection_for_export(col)
-        if not objs:
-            continue
-        base = publish_paths.collection_publish_usd_basename(scene_path, col.name)
+    exportable = [(col, objects_in_collection_for_export(col)) for col in collections]
+    exportable = [(col, objs) for col, objs in exportable if objs]
+    for col, objs in exportable:
+        base = publish_paths.collection_publish_usd_basename(
+            scene_path, col.name, only_collection=len(exportable) == 1
+        )
         jobs.append(
             _CollectionPublishJob(
                 output_path=str(out_dir / f"{base}.usd"),
@@ -1855,7 +1861,9 @@ def _plan_publish_jobs_from_list(
         )
         if not ok_objs:
             return False, None, None, None, err_objs
-        base = publish_paths.collection_publish_usd_basename(scene_path, item.object_name)
+        base = publish_paths.collection_publish_usd_basename(
+            scene_path, item.object_name, only_collection=len(enabled_items) == 1
+        )
         jobs.append(
             _CollectionPublishJob(
                 output_path=str(out_dir / f"{base}.usd"),
@@ -2961,8 +2969,13 @@ def _format_publish_plan_lines(
     return lines
 
 
-def _summarize_publish_plan(context: Context, props) -> tuple[bool, list[str], str]:
-    sync_geo_publish_output(props)
+def _summarize_publish_plan(
+    context: Context, props, *, sync: bool = True
+) -> tuple[bool, list[str], str]:
+    # ``sync`` writes scene properties, which Blender forbids while drawing: draw() passes False
+    # (invoke() has already synced just before the dialog opens).
+    if sync:
+        sync_geo_publish_output(props)
     ok_list, jobs, objs, out_path, err_list = _plan_publish_jobs_from_list(context, props)
     if ok_list:
         if jobs is not None:
@@ -2992,7 +3005,7 @@ def _summarize_publish_plan(context: Context, props) -> tuple[bool, list[str], s
 
 def _draw_publish_confirm_dialog(layout: bpy.types.UILayout, context: Context) -> None:
     props = _pipeline_props(context)
-    ok, lines, err = _summarize_publish_plan(context, props)
+    ok, lines, err = _summarize_publish_plan(context, props, sync=False)
     col = layout.column(align=True)
     if not ok:
         col.label(text=err or "Nothing to publish.", icon="ERROR")
@@ -3550,6 +3563,9 @@ class MONOFX_PT_model(Panel):
     bl_order = 0
     bl_description = "Geo preparation, USD bake, and Geo USD publish"
 
+    def draw_header(self, context: Context) -> None:
+        addon_updater.draw_version_header(self.layout)
+
     def draw(self, context: Context) -> None:
         prefs = preferences.get_addon_prefs(context)
         if prefs is None:
@@ -3573,6 +3589,9 @@ class MONOFX_PT_anim(Panel):
     bl_category = "MonoFX"
     bl_order = 1
     bl_description = "Animation tools, rig linking, and USD publish"
+
+    def draw_header(self, context: Context) -> None:
+        addon_updater.draw_version_header(self.layout)
 
     def draw(self, context: Context) -> None:
         prefs = preferences.get_addon_prefs(context)

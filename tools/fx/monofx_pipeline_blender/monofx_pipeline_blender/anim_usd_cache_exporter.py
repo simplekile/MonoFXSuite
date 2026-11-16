@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 import bpy
+import numpy as np
 from mathutils import Vector
 
 from . import config
@@ -21,9 +22,15 @@ from .anim_usd_cache_camera_writer import (
     export_camera_anim_usd_cache,
 )
 from .anim_usd_cache_mesh_writer import UsdAnimCacheMeshWriter
+from .anim_usd_cache_points import PointSampleFilter, degenerate_points_reason
 from .anim_usd_cache_xform_writer import (
+    MatrixXformOpCache,
     author_hierarchy_bind_xforms,
+    evaluated_world_matrices_for_hierarchy,
+    matrix_to_gf,
     resolve_orientation_matrix,
+    usd_xform_from_evaluated_worlds,
+    write_prim_animated_xform,
 )
 from .anim_usd_cache_paths import (
     dedupe_sibling_segment,
@@ -35,6 +42,7 @@ from .anim_usd_cache_paths import (
     namespace_prefix_from_name,
     sanitize_prim_segment,
     segments_to_prim_path,
+    single_top_level_prim_name,
     strip_blender_namespace,
 )
 from .anim_usd_cache_visibility import (
@@ -129,10 +137,15 @@ class _HierarchyNode:
     prim_path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class _MeshTopology:
-    face_vertex_counts: tuple[int, ...]
-    face_vertex_indices: tuple[int, ...]
+    face_vertex_counts: np.ndarray
+    face_vertex_indices: np.ndarray
+
+    def same_as(self, other: "_MeshTopology") -> bool:
+        return np.array_equal(
+            self.face_vertex_counts, other.face_vertex_counts
+        ) and np.array_equal(self.face_vertex_indices, other.face_vertex_indices)
 
 
 def _setup_logging() -> None:
@@ -1050,33 +1063,29 @@ def _release_evaluated_mesh(obj: bpy.types.Object, needs_clear: bool) -> None:
 
 
 def _extract_topology(mesh: bpy.types.Mesh) -> _MeshTopology:
-    face_vertex_counts: list[int] = []
-    face_vertex_indices: list[int] = []
-    for poly in mesh.polygons:
-        face_vertex_counts.append(len(poly.vertices))
-        face_vertex_indices.extend(int(i) for i in poly.vertices)
-    return _MeshTopology(
-        face_vertex_counts=tuple(face_vertex_counts),
-        face_vertex_indices=tuple(face_vertex_indices),
-    )
+    counts = np.empty(len(mesh.polygons), dtype=np.int32)
+    mesh.polygons.foreach_get("loop_total", counts)
+    indices = np.empty(len(mesh.loops), dtype=np.int32)
+    mesh.loops.foreach_get("vertex_index", indices)
+    return _MeshTopology(face_vertex_counts=counts, face_vertex_indices=indices)
 
 
 def _extract_local_mesh_points(
     mesh: bpy.types.Mesh,
     *,
     unit_scale: float,
-) -> list[Gf.Vec3f]:
+) -> np.ndarray:
     """
-    Evaluated mesh points in object-local space (no axis reorientation).
+    Evaluated mesh points as an ``(N, 3)`` float32 array in object-local space
+    (no axis reorientation).
 
     Lookdev publish applies Z-up → Y-up on Xform ops; points stay object-local.
     """
-    points: list[Gf.Vec3f] = []
-    for vert in mesh.vertices:
-        local = vert.co
-        if unit_scale != 1.0:
-            local = local * unit_scale
-        points.append(vector_to_gf(local))
+    flat = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", flat)
+    points = flat.reshape(-1, 3)
+    if unit_scale != 1.0:
+        points = points * np.float32(unit_scale)
     return points
 
 
@@ -1224,6 +1233,10 @@ class UsdAnimCacheExportSession:
         self._hierarchy: dict[str, _HierarchyNode] = {}
         self._mesh_prims: dict[str, UsdGeom.Mesh] = {}
         self._reference_topology: dict[str, _MeshTopology] = {}
+        self._point_filters: dict[str, PointSampleFilter] = {}
+        self._degenerate_warned: set[str] = set()
+        self._xform_filters: dict[str, PointSampleFilter] = {}
+        self._xform_op_cache = MatrixXformOpCache()
         self._depsgraph = None
         self._orient_matrix = None
         self._xform_prims: dict[str, UsdGeom.Xform] = {}
@@ -1242,6 +1255,56 @@ class UsdAnimCacheExportSession:
             pass
         self._depsgraph.update()
         self._frame_depsgraph_ready = True
+        self._write_frame_xforms(self._current_frame)
+
+    def _write_frame_xforms(self, frame: int) -> None:
+        """
+        Author each hierarchy prim's transform for *frame*.
+
+        Rigs that animate only object transforms (no point deformation) rely on this;
+        unchanged transforms collapse to a first/last sample via ``PointSampleFilter``.
+        """
+        if self._writer is None or self._depsgraph is None:
+            return
+        names = set(self._hierarchy.keys())
+        worlds = evaluated_world_matrices_for_hierarchy(
+            self._hierarchy, depsgraph=self._depsgraph
+        )
+        for obj_name, node in self._hierarchy.items():
+            if obj_name not in worlds:
+                continue
+            prim = (
+                self._mesh_prims.get(obj_name).GetPrim()
+                if getattr(node, "is_mesh", False) and obj_name in self._mesh_prims
+                else (
+                    self._xform_prims[obj_name].GetPrim()
+                    if obj_name in self._xform_prims
+                    else None
+                )
+            )
+            if prim is None:
+                continue
+            gf = matrix_to_gf(
+                usd_xform_from_evaluated_worlds(
+                    obj_name,
+                    node,
+                    names,
+                    worlds,
+                    orient_matrix=self._orient_matrix,
+                    unit_scale=self._unit_scale,
+                )
+            )
+            arr = np.array(
+                [[gf[r][c] for c in range(4)] for r in range(4)], dtype=np.float64
+            )
+            xform_filter = self._xform_filters.setdefault(obj_name, PointSampleFilter())
+            for sample_frame, sample in xform_filter.push(float(frame), arr):
+                write_prim_animated_xform(
+                    prim,
+                    Gf.Matrix4d(sample.tolist()),
+                    sample_frame,
+                    op_cache=self._xform_op_cache,
+                )
 
     def _advance_frame(self) -> None:
         self._frames_written += 1
@@ -1282,7 +1345,7 @@ class UsdAnimCacheExportSession:
                     topo.face_vertex_counts,
                     topo.face_vertex_indices,
                 )
-            elif topo != self._reference_topology[mesh_obj.name]:
+            elif not topo.same_as(self._reference_topology[mesh_obj.name]):
                 msg = (
                     f"Frame {frame}: topology changed on "
                     f"{strip_blender_namespace(mesh_obj.name)}"
@@ -1297,14 +1360,55 @@ class UsdAnimCacheExportSession:
                 mesh_data,
                 unit_scale=self._unit_scale,
             )
-            self._writer.write_frame(
-                self._mesh_prims[mesh_obj.name],
-                points,
-                float(frame),
+            reason = degenerate_points_reason(points)
+            if reason and mesh_obj.name not in self._degenerate_warned:
+                self._degenerate_warned.add(mesh_obj.name)
+                names = ", ".join(m.name for m in mesh_obj.modifiers if m.show_viewport) or "none"
+                msg = (
+                    f"Frame {frame}: {strip_blender_namespace(mesh_obj.name)}: {reason}. "
+                    f"Check its modifiers (active: {names})."
+                )
+                self.result.warnings.append(msg)
+                logger.warning(msg)
+            # Static meshes only keep first/last (and every change) samples.
+            point_filter = self._point_filters.setdefault(
+                mesh_obj.name, PointSampleFilter()
             )
+            for sample_frame, sample_points in point_filter.push(float(frame), points):
+                self._writer.write_frame(
+                    self._mesh_prims[mesh_obj.name],
+                    sample_points,
+                    sample_frame,
+                )
         finally:
             _release_evaluated_mesh(eval_obj, needs_clear)
         return None
+
+    def _flush_point_samples(self) -> None:
+        """Write each mesh's last held frame so the time range is fully covered."""
+        if self._writer is None:
+            return
+        for name, point_filter in self._point_filters.items():
+            prim = self._mesh_prims.get(name)
+            if prim is None:
+                continue
+            for sample_frame, sample_points in point_filter.flush():
+                self._writer.write_frame(prim, sample_points, sample_frame)
+        for name, xform_filter in self._xform_filters.items():
+            prim = (
+                self._mesh_prims[name].GetPrim()
+                if name in self._mesh_prims
+                else (self._xform_prims[name].GetPrim() if name in self._xform_prims else None)
+            )
+            if prim is None:
+                continue
+            for sample_frame, sample in xform_filter.flush():
+                write_prim_animated_xform(
+                    prim,
+                    Gf.Matrix4d(sample.tolist()),
+                    sample_frame,
+                    op_cache=self._xform_op_cache,
+                )
 
     @property
     def elapsed_seconds(self) -> float:
@@ -1422,7 +1526,12 @@ class UsdAnimCacheExportSession:
             else None
         )
         self._prev_frame = int(self._scene.frame_current)
-        self._orient_matrix = resolve_orientation_matrix(self.context)
+        # resolve_orientation_matrix returns the transposed axis conversion (the form
+        # ``wm.usd_export`` applies to a column-vector matrix). matrix_to_gf now does the
+        # row-vector transpose itself, so hand it the plain axis conversion; this keeps
+        # identity-transform rigs identical while rooted/translated rigs get the right
+        # translation and rotation.
+        self._orient_matrix = resolve_orientation_matrix(self.context).transposed()
         self._unit_scale = meters_scale_from_scene(self._scene)
         self._hierarchy = _collect_hierarchy_nodes(
             self._mesh_objects,
@@ -1472,6 +1581,23 @@ class UsdAnimCacheExportSession:
                             self._stage, node.prim_path
                         )
 
+                # Solaris Reference/Sublayer need a defaultPrim to attach the layer.
+                default_name = single_top_level_prim_name(
+                    node.prim_path for node in self._hierarchy.values()
+                )
+                default_prim = (
+                    self._stage.GetPrimAtPath(f"/{default_name}")
+                    if default_name
+                    else None
+                )
+                if default_prim is not None and default_prim.IsValid():
+                    self._stage.SetDefaultPrim(default_prim)
+                else:
+                    logger.warning(
+                        "No single top-level prim; defaultPrim not set on %s",
+                        out_path,
+                    )
+
                 author_hierarchy_bind_xforms(
                     context=self.context,
                     hierarchy=self._hierarchy,
@@ -1480,6 +1606,7 @@ class UsdAnimCacheExportSession:
                     frame=self.frame_start,
                     orient_matrix=self._orient_matrix,
                     unit_scale=self._unit_scale,
+                    op_cache=self._xform_op_cache,
                 )
             else:
                 self._stage = None
@@ -1596,6 +1723,7 @@ class UsdAnimCacheExportSession:
 
         try:
             if self._stage is not None:
+                self._flush_point_samples()
                 self._stage.GetRootLayer().Save()
             if self._camera_obj is not None and self.export_camera:
                 cam_err = self._export_camera_via_blender_usd()

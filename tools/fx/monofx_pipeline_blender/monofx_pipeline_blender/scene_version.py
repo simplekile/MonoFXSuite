@@ -450,6 +450,11 @@ class MONOFX_PT_scene(Panel):
     bl_order = -10
     bl_description = "Scene file versioning"
 
+    def draw_header(self, context: Context) -> None:
+        from . import addon_updater
+
+        addon_updater.draw_version_header(self.layout)
+
     def draw(self, context: Context) -> None:
         layout = self.layout
         props = _pipeline_props(context)

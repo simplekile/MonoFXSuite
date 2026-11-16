@@ -185,3 +185,28 @@ def test_existing_anim_export_paths(tmp_path: Path):
     missing_file = tmp_path / "cam_sh001.usd"
     found = _paths.existing_output_paths([existing_file, missing_file])
     assert found == [existing_file]
+
+
+def test_single_top_level_prim_name_single_root():
+    assert _paths.single_top_level_prim_name(
+        ["/Geo", "/Geo/Base_grp", "/Geo/Base_grp/Body_grp/Geo_Body"]
+    ) == "Geo"
+
+
+def test_single_top_level_prim_name_namespaced_root():
+    assert _paths.single_top_level_prim_name(
+        ["/tachirig/Geo/Body", "/tachirig/Geo"]
+    ) == "tachirig"
+
+
+def test_single_top_level_prim_name_multiple_roots_is_ambiguous():
+    # Multi-instance export has several top-level prims; USD allows one defaultPrim.
+    assert _paths.single_top_level_prim_name(
+        ["/tachirig/Geo/Body", "/tachirig2/Geo/Body"]
+    ) == ""
+
+
+def test_single_top_level_prim_name_empty_or_root_only():
+    assert _paths.single_top_level_prim_name([]) == ""
+    assert _paths.single_top_level_prim_name(["/"]) == ""
+    assert _paths.single_top_level_prim_name(["", "  "]) == ""

@@ -176,6 +176,23 @@ def prim_path_from_object_chain(
     )
 
 
+def single_top_level_prim_name(prim_paths: Iterable[str]) -> str:
+    """
+    Name of the one top-level prim shared by all ``prim_paths`` (``/Geo/...`` → ``Geo``).
+
+    Returns ``""`` when there is no top-level prim or more than one (multi-instance
+    export), because a USD layer can declare only a single ``defaultPrim``.
+    """
+    names: set[str] = set()
+    for path in prim_paths:
+        parts = [p for p in (path or "").strip().split("/") if p]
+        if parts:
+            names.add(parts[0])
+    if len(names) == 1:
+        return next(iter(names))
+    return ""
+
+
 def existing_output_paths(paths: Iterable[str | Path]) -> list[Path]:
     """Subset of ``paths`` that already exist on disk."""
     found: list[Path] = []
@@ -205,5 +222,6 @@ __all__ = [
     "sanitize_namespace_segment",
     "sanitize_prim_segment",
     "segments_to_prim_path",
+    "single_top_level_prim_name",
     "strip_blender_namespace",
 ]
