@@ -5,6 +5,7 @@
 ### Houdini
 - **Mono Anim Loader**: meshes the anim publish leaves without a subdivision scheme now load as `none`. USD reads a missing scheme as Catmull-Clark, so the viewport subdivided whole shots (sh025: over 45 GB, then a crash; now 3.2 GB). A scheme the anim file sets is kept; lookdev cannot turn subdivision on.
 - **Mono Anim Loader**: Lookdev and Groom get **Show in Viewport** (on). Off loads them for render only (Karma).
+- **Mono Anim Loader**: the camera's **Clipping Range** works again (its parms were named `clippingRangex/y`; the camera read `clippingRange1/2`, as in 2.1).
 
 ### Blender
 - **Anim USD**: a second rig of the same asset is named `geo_<asset>_inst02.usd` (then `_inst03`...), not `_2`, which clashed with assets whose names end in a number (`char_Robot_2`, `prop_CoralSet_001`). `publish_meta.json` now gives each geo output its `asset` and `instance` when the name is an asset folder of the project. Read by Mono Anim Loader 2.2.

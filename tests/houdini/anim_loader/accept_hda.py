@@ -114,6 +114,14 @@ def main() -> None:
                                                pts(Usd.Stage.Open(str(cfile)), DRESS, 12), atol=1e-5))
     check("hair driver hidden", UsdGeom.Imageable(st.GetPrimAtPath(
         "/char_Robot/Geo/Groom_grp/HairDriver_grp")).ComputeVisibility(Usd.TimeCode(12)) == UsdGeom.Tokens.invisible)
+    cam_node = nodes["sh900"]
+    cam_node.parm("clippingRange1").set(0.5)  # 2.1's parm names (clippingRange1/2), kept by Upgrade
+    cam_node.parm("clippingRange2").set(500.0)
+    cam_prim = next(p for p in last.stage().Traverse() if p.IsA(UsdGeom.Camera))
+    clip = UsdGeom.Camera(cam_prim).GetClippingRangeAttr().Get(Usd.TimeCode(12))
+    check("camera clipping range reaches the camera", clip is not None and abs(clip[0] - 0.5) < 1e-4
+          and abs(clip[1] - 500.0) < 1e-2, str(clip))
+    st = last.stage()
     cams = [p.GetPath().pathString for p in st.Traverse() if p.IsA(UsdGeom.Camera)]
     check("camera kept at its own path", cams == ["/root/sh900_cam_root/cam_sh900"], cams)
 
