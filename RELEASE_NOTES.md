@@ -1,8 +1,6 @@
-## [0.1.27] - 2026-11-17
-
-### Installer
-- The installer also installs the Blender add-on: a task (on by default) copies it into every Blender 5.0 or newer on the PC and turns it on, so the ZIP no longer has to be installed by hand. Close Blender first; a Blender it cannot turn the add-on on in is named at the end.
-- Monos (Settings › Add-ons › Studio tools) shows the installed MonoFX version: the installer writes it to `%LOCALAPPDATA%\Monos\tools\MonoFXSuite\VERSION`, and uninstalling removes it.
+## [0.1.28] - 2026-11-17
 
 ### Blender
-- The add-on registers in background Blender (`blender -b`): it imports `bpy.utils.previews` itself.
+- **Model publish**: materials stay where Blender writes them (`/_materials`, beside the asset root), as before v0.1.26: the move into `/<root>/material` is taken out.
+- **Model publish**: the asset root is marked `kind = component` (USD asset structure). A kind already there, or a component / group / assembly below the root, is left alone.
+- **USD fps**: every publish (model, UV, camera) carries the scene fps. A static export used to keep 24, and a Houdini Sublayer copied that over the hip's fps (30 fps scenes rendered at 24). Anim USD also writes `framesPerSecond`.
