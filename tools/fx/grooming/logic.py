@@ -33,6 +33,13 @@ class LockInfo:
     strands: int          # strands generated at full count
     region_area_cm2: float
     floating_cm2: float = 0.0   # skin under floating mesh, its roots moved to the lock's start (falloff-weighted)
+    # v0.2a density layers. `strands` is what the lock is expected to grow under them (whorl roots apart):
+    # auto_strands x keep_share + layer_strands
+    auto_strands: int = 0       # its count without layers (density x max(skin, cross-section))
+    layer_strands: int = 0      # roots the layers scatter on its skin (the network's exact count)
+    keep_share: float = 1.0     # expected share of its automatic roots that stay
+    mask_share: float = 1.0     # strands / auto_strands
+    layered: bool = False       # a layer covers some of its skin
 
 
 @dataclass
@@ -566,3 +573,223 @@ def lock_name(group_prefix: str, taken: Sequence[str]) -> str:
     while f"{prefix}_{n:0{config.LOCK_NAME_DIGITS}d}" in taken:
         n += 1
     return f"{prefix}_{n:0{config.LOCK_NAME_DIGITS}d}"
+
+
+# ---------------------------------------------------------------------------
+# v0.2a density layers (docs/plans/grooming_v0_2.md; the model: config.MASK_MODES). Every function takes plain
+# floats or numpy arrays (one number per scalp point), so the HDA's mask_read, the brush and the tests share
+# one rule.
+#
+# A density layer over what lies below:   density = below + (D - below) x e,   e = its mask x its opacity.
+# The bottom is the automatic groom, which is not a number but the automatic ROOTS (gathered at lock starts
+# and whorls, thin under floating mesh), so the stack is carried as two numbers per skin point:
+#     keep  the share of the automatic roots still there: the product of (1 - e) over the layers
+#     add   the density the layers themselves ask, strands / cm2: add x (1 - e) + D x e, layer by layer
+# and the density is   automatic x keep + add   (`layer_density`): the same rule, written apart.
+# ---------------------------------------------------------------------------
+
+def _np():
+    import numpy as np
+    return np
+
+
+def mask_blend(below, value, mode: str):
+    """What a layer of `value` makes of the mask value `below` at full coverage and opacity (config.MASK_MODES):
+    Normal value, Multiply below x value, Add, Subtract, Min, Max."""
+    np = _np()
+    if mode == "normal":
+        return value + below * 0
+    if mode == "multiply":
+        return below * value
+    if mode == "add":
+        return below + value
+    if mode == "subtract":
+        return below - value
+    if mode == "min":
+        return np.minimum(below, value)
+    if mode == "max":
+        return np.maximum(below, value)
+    raise ValueError(f"mask blend mode {mode!r}")
+
+
+def mask_stack(rows, start=0.0):
+    """The mask of one density layer, 0..1: its paint and fill layers blended bottom to top, starting from black
+    (a density layer with nothing painted applies nowhere). `rows`, bottom first: (layer, value, coverage);
+    `layer` has on, mode, opacity; `value` and `coverage` are numbers or arrays per scalp point. One layer:
+        m = below + (blend(below, value) - below) x coverage x opacity, clamped to 0..1
+    Layers that are off are skipped. `start`: 0.0, or an array of zeros (the shape of the result)."""
+    np = _np()
+    m = np.asarray(start, dtype=np.float64) * 1.0
+    for layer, value, coverage in rows:
+        if not layer.on:
+            continue
+        m = np.clip(m + (mask_blend(m, value, layer.mode) - m) * (coverage * layer.opacity), 0.0, 1.0)
+    return m
+
+
+def legacy_mask(rows, start=1.0):
+    """(keep, add) of a 0..1 mask as the test build before density layers read it (`groom_data` schema 5, and
+    the 0..1 layers of schemas 2 / 3): the stack's value t = keep + add starts at 1, the automatic groom (keep 1,
+    add 0), and a layer changes it to t + (blend(t, value) - t) x coverage x opacity, moving the two parts as
+    its mode means:
+      Normal    overrides what is below, automatic groom included: both x (1 - e), add + value x e
+      Multiply  scales what is below: both x (1 - e + e x value)
+      Add       add + value x e          Subtract  add - value x e (under 0 it eats into keep)
+      Min       where t is over value both are scaled down to it
+      Max       where t is under value the difference goes to add
+    The density was automatic x keep + the lock's Density x add: white = the lock's Density, black = no hair,
+    Multiply and Min thin the automatic groom. `rows`, bottom first: (layer, value, coverage) as `mask_stack`.
+    A density layer marked `legacy` carries such a stack: over (keep, add) below it gives keep x keep',
+    add x keep' + D x add' (`MaskData.weights`), D the owner's Density when the file was read."""
+    np = _np()
+    keep = np.asarray(start, dtype=np.float64) * 1.0
+    add = keep * 0.0
+    for layer, value, coverage in rows:
+        if not layer.on:
+            continue
+        e = coverage * layer.opacity
+        t = keep + add
+        mode = layer.mode
+        if mode == "normal":
+            keep, add = keep * (1.0 - e), add * (1.0 - e) + value * e
+        elif mode == "multiply":
+            f = 1.0 - e + e * value
+            keep, add = keep * f, add * f
+        elif mode == "add":
+            add = add + value * e
+        elif mode == "subtract":
+            add = add - value * e
+        elif mode == "min":
+            f = np.where(t > value, 1.0 + (value / np.maximum(t, 1e-12) - 1.0) * e, 1.0)
+            keep, add = keep * f, add * f
+        elif mode == "max":
+            add = add + np.maximum(value - t, 0.0) * e
+        else:
+            raise ValueError(f"mask blend mode {mode!r}")
+        add = np.clip(add, -keep, 1.0 - keep)
+    keep = np.clip(keep + np.minimum(add, 0.0), 0.0, 1.0)
+    return keep, np.clip(add, 0.0, 1.0)
+
+
+def density_over(keep, add, density, effect):
+    """One density layer of `density` (strands / cm2) over (keep, add) with effect = its mask x its opacity:
+    below + (D - below) x effect, on both parts. Returns (keep, add)."""
+    return keep * (1.0 - effect), add * (1.0 - effect) + density * effect
+
+
+def density_compose(rows, start=1.0):
+    """(keep, add) through density layers, bottom first: `rows` of (density, effect), numbers or arrays per
+    scalp point. Over the automatic groom (keep 1, add 0). `start`: 1.0, or an array of ones."""
+    np = _np()
+    keep = np.asarray(start, dtype=np.float64) * 1.0
+    add = keep * 0.0
+    for density, effect in rows:
+        keep, add = density_over(keep, add, density, effect)
+    return keep, add
+
+
+def layer_density(automatic, keep, add):
+    """The density where layers cover the skin: automatic x keep + the layers' own density."""
+    return automatic * keep + add
+
+
+_OWNER_RANK = {"all": 0, "group": 1, "locks": 2}
+
+
+def density_order(masks: Sequence["object"], lock_id: int, group_id: str) -> list:
+    """The density layers that are on and owned by a row the lock is under, in the order they apply, bottom
+    first: the layers of all locks, then of the lock's group, then of the lock (the more specific wins); inside
+    one owner in the list's order (the upper layer wins)."""
+    reach = [m for m in masks if getattr(m, "kind", "") == "density" and m.on and m.applies(lock_id, group_id)]
+    return sorted(reach, key=lambda m: _OWNER_RANK.get(m.scope, 0))      # stable: the list's order inside a rank
+
+
+def mask_scope_sets(masks: Sequence["object"], locks: Sequence[tuple]
+                    ) -> tuple[list[tuple[int, ...]], dict[int, int]]:
+    """Which density layers reach which lock. `masks`: the layer list, bottom first; `locks`: (lock id, group
+    id). Returns the distinct sets, each the ids of the density layers that are on and reach the lock in the
+    order they apply (`density_order`), and per lock id the index of its set, -1 when no layer reaches it (its
+    density is the automatic one). Locks with the same set share one (keep, add) on the scalp."""
+    sets: list[tuple[int, ...]] = []
+    of: dict[int, int] = {}
+    for lock in locks:
+        lock_id, group_id = lock[0], lock[1]
+        ids = tuple(m.id for m in density_order(masks, lock_id, group_id))
+        if not ids:
+            of[lock_id] = -1
+            continue
+        if ids not in sets:
+            sets.append(ids)
+        of[lock_id] = sets.index(ids)
+    return sets, of
+
+
+def owners_sharing(layer, prim_owners: Sequence[int], group_of: dict) -> int:
+    """How many of a skin prim's owners (lock ids) a density layer's D is shared by: the owners the layer is
+    owned for. "= D" owned by all locks means all the locks on that skin give D together; owned by a group,
+    the group's locks there together; owned by a lock, that lock alone. At least 1."""
+    return max(1, sum(1 for lock_id in prim_owners if layer.applies(lock_id, group_of.get(lock_id, ""))))
+
+
+def brush_weights(dist, radius: float, soft: float = config.BRUSH_SOFT):
+    """Weight of a dab at distance `dist` from its centre: 1 inside (1 - soft) x radius, easing to 0 at the
+    radius (smoothstep). `soft` 0 is a hard edge."""
+    inner = radius * (1.0 - min(1.0, max(0.0, soft)))
+    span = max(radius - inner, 1e-9)
+    try:
+        w = min(1.0, max(0.0, (radius - dist) / span))
+    except (TypeError, ValueError):
+        import numpy as np
+        w = np.clip((radius - dist) / span, 0.0, 1.0)
+    return w * w * (3.0 - 2.0 * w)
+
+
+COVER_GONE = 1e-6      # an erased coverage under this is no coverage
+
+
+def mask_dab(value, coverage, weight, paint: float, erase: bool = False):
+    """One dab on a paint layer's (value, coverage) with the brush `weight` there (numbers or arrays); returns
+    the new (value, coverage). Paint: skin not painted before takes the brush value outright (its coverage,
+    the weight, is what fades the edge), painted skin moves towards it by the weight against the coverage it
+    has (weight / coverage, at most 1); coverage only grows. So black and white both override what is below in
+    the mask, and a stroke painted again in another value with the same brush replaces it to its very edge:
+    moving by the weight alone, soft black over soft white left (1 - w) x w of the white along the rim (up
+    to a quarter of the layer's density, a ring). Erase removes the layer's own paint: coverage
+    x (1 - weight), the value stays (it means nothing where the layer has no coverage); it never paints black.
+    What is left under COVER_GONE is none: a brush weight of 0.99999994 left 1e-21 after three dabs, and the
+    skin still counted as painted."""
+    np = _np()
+    value, coverage = np.asarray(value, dtype=np.float64), np.asarray(coverage, dtype=np.float64)
+    weight = np.asarray(weight, dtype=np.float64)
+    if erase:
+        left = coverage * (1.0 - weight)
+        return value, np.where(left < COVER_GONE, 0.0, left)
+    v = np.where(coverage <= 0, paint,
+                 value + (paint - value) * np.minimum(1.0, weight / np.maximum(coverage, 1e-12)))
+    return np.where(weight > 0, v, value), np.maximum(coverage, weight)
+
+
+# density (strands / cm2) -> colour. Stops are shares of a reference density (the groom's default): the
+# ramp is fine round the set density and still tells 30 x from 50 x (Helen's crown: 5,100 against 7,000 / cm2)
+DENSITY_STOPS = (0.0, 0.5, 1.0, 2.0, 8.0, 48.0)
+DENSITY_RAMP = ((0.02, 0.02, 0.10), (0.10, 0.25, 0.75), (0.15, 0.70, 0.45), (0.85, 0.75, 0.15),
+                (1.00, 0.55, 0.35), (1.00, 1.00, 1.00))      # each stop brighter than the one before
+LAYER_UNPAINTED = (0.12, 0.12, 0.13)   # "layer" view: skin the layer does not cover
+
+
+def density_color(density: float, reference: float) -> tuple[float, float, float]:
+    """Colour of the scalp in the "density" view: `density` over `reference` (the groom's default density)
+    along DENSITY_STOPS / DENSITY_RAMP: near black at 0, green at the reference, yellow at twice it, white
+    from 48 times it."""
+    t = min(max(density / max(reference, 1e-9), 0.0), DENSITY_STOPS[-1])
+    i = max(k for k in range(len(DENSITY_STOPS) - 1) if DENSITY_STOPS[k] <= t)
+    f = (t - DENSITY_STOPS[i]) / (DENSITY_STOPS[i + 1] - DENSITY_STOPS[i])
+    return tuple(x + (y - x) * f for x, y in zip(DENSITY_RAMP[i], DENSITY_RAMP[i + 1]))   # type: ignore[return-value]
+
+
+def layer_color(value: float, coverage: float = 1.0) -> tuple[float, float, float]:
+    """Colour of the scalp in the "layer" view (one layer alone): its value as a grey (white 1, black 0) where
+    it has coverage, fading into LAYER_UNPAINTED where it has none."""
+    k = min(max(coverage, 0.0), 1.0)
+    v = min(max(value, 0.0), 1.0)
+    return tuple(u + (v - u) * k for u in LAYER_UNPAINTED)   # type: ignore[return-value]

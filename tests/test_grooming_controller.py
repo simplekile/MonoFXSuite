@@ -310,6 +310,24 @@ def test_confirm_and_reassign_orphan(env) -> None:
     assert ctl.ORPHANS_ROW not in [r["kind"] for r in view.tree]
 
 
+def test_reassigning_an_orphan_carries_the_density_layers_it_owned(env) -> None:
+    # v0.2a: a layer owned by a lock follows it. The lock went missing (a hair mesh version dropped it) and
+    # came back as a new lock: giving the missing lock's settings to it moves the layer's ownership too
+    adapter, view, c = env
+    data = adapter.read_data(None)
+    mine = data.add_mask("Bare patch", kind="density", density=0.0, scope="locks", locks=[9])
+    both = data.add_mask("Two locks", kind="density", density=80.0, scope="locks", locks=[9, 3])
+    everyone = data.add_mask("All", kind="density", density=40.0)
+    adapter.write_data(None, data, "layers")
+    assert c.reassign_orphan(9, 4)
+    data = adapter.read_data(None)
+    assert data.mask(mine.id).locks == [4] and data.mask(both.id).locks == [3, 4]
+    assert data.mask(everyone.id).locks == [] and data.mask(everyone.id).scope == "all"
+    assert data.mask(mine.id).applies(4, data.lock(4).group) and not data.mask(mine.id).applies(9, "")
+    assert data.lock(4).overrides == {"frizz": 0.3} and data.orphans == []
+    assert "with its 2 density layers" in view.messages[-1][0]
+
+
 def test_detect_report_is_shown(env) -> None:
     adapter, view, c = env
     adapter.report = DetectReport(

@@ -195,20 +195,85 @@ def test_lock_key_changes_with_any_part():
     assert k != ga.lock_key(["a", 1.0000001, b"\x00\x01"]) and k != ga.lock_key(["a", 1.0, b"\x00\x02"])
 
 
-def test_lock_cache_keeps_last_two_keys_per_lock_and_mode():
-    c = ga.LockCache()
-    c.put(7, 1, "3", "k1", "g1")
-    c.put(7, 1, "3", "k2", "g2")
-    c.put(7, 2, "3", "k1", "other lock")
-    c.put(7, 1, "2", "k1", "preview")
-    assert c.has(7, 1, "3", "k1") and c.get(7, 1, "3", "k2") == "g2"
-    assert c.get(7, 1, "3", "k1") == "g1"          # undo back to k1: found, now most recent
-    c.put(7, 1, "3", "k3", "g3")                   # drops the least recently used: k2
-    assert not c.has(7, 1, "3", "k2") and c.has(7, 1, "3", "k1") and c.has(7, 1, "3", "k3")
-    assert c.get(7, 2, "3", "k1") == "other lock" and c.get(7, 1, "2", "k1") == "preview"
-    assert c.get(7, 9, "3", "k1") is None
+def test_lock_cache_keeps_every_state_while_memory_lasts():
+    c = ga.LockCache(limit=1000)
+    for i in range(30):                              # 30 strokes on one lock, 10 bytes a state
+        c.put(7, 1, "hair", f"k{i}", f"g{i}", size=10)
+    assert all(c.has(7, 1, "hair", f"k{i}") for i in range(30))      # a count of states is no limit any more
+    assert c.get(7, 1, "hair", "k3") == "g3" and c.get(7, 9, "hair", "k1") is None
+    use = c.usage(7)
+    assert use["bytes"] == 300 and use["limit_bytes"] == 1000 and use["dropped"] == 0
+    assert use["live_bytes"] > 0 and use["undo_bytes"] == use["bytes"] - use["live_bytes"]
     c.drop_node(7)
-    assert len(c) == 0 and c.nodes() == set()
+    assert len(c) == 0 and c.nodes() == set() and c.usage(7)["bytes"] == 0
+
+
+def test_lock_cache_drops_the_states_used_longest_ago_when_full():
+    c = ga.LockCache(limit=100)
+    c.begin(7)
+    for i in range(10):
+        c.put(7, 1, "hair", f"k{i}", i, size=10)
+    c.begin(7)
+    assert c.usage(7)["bytes"] == 100
+    assert c.get(7, 1, "hair", "k0") == 0            # an undo all the way back: k0 is now the state in use
+    c.begin(7)
+    c.put(7, 1, "hair", "k10", 10, size=30)          # 30 bytes more: the ones used longest ago go, down to
+    # TRIM_TO of the limit (95), so the next stores find room without another pass
+    assert [i for i in range(11) if c.has(7, 1, "hair", f"k{i}")] == [0, 5, 6, 7, 8, 9, 10]
+    assert c.usage(7)["bytes"] == 90 and c.usage(7)["dropped"] == 4
+    # another node has its own limit and is not touched
+    c.put(8, 1, "hair", "x", "other", size=5000)
+    assert c.has(8, 1, "hair", "x") and c.usage(7)["bytes"] == 90
+    c.begin(7)                                       # (asking above counted as using: a new cook)
+    c.set_limit(7, 40)                               # the artist lowers the limit: trimmed at once
+    assert c.usage(7)["bytes"] <= 40 and c.limit(7) == 40
+
+
+def test_lock_cache_never_drops_the_state_in_use():
+    c = ga.LockCache(limit=25)
+    c.begin(7)
+    c.put(7, 1, "hair", "a", "lock 1", size=20)
+    c.put(7, 2, "hair", "a", "lock 2", size=20)       # over the limit, but both are what the node shows
+    c.put(7, 3, "hair", "a", "lock 3", size=20)
+    assert all(c.has(7, k, "hair", "a") for k in (1, 2, 3)) and c.usage(7)["bytes"] == 60
+    c.begin(7)                                        # the next cook: lock_keys asks for what it will read
+    assert c.has(7, 1, "hair", "a")
+    c.put(7, 1, "hair", "b", "lock 1 edited", size=20)
+    # "a" of lock 1 was asked for in this cook and may still be read: kept until the next one
+    assert c.has(7, 1, "hair", "a") and c.get(7, 1, "hair", "b") == "lock 1 edited"
+    c.begin(7)
+    c.put(7, 2, "hair", "b", "lock 2 edited", size=20)
+    assert not c.has(7, 1, "hair", "a")               # an older state: the first to go
+    assert c.get(7, 1, "hair", "b") == "lock 1 edited" and c.get(7, 3, "hair", "a") == "lock 3"
+    # a limit of 0 keeps what the node shows and nothing else: undo is then a recook, still right
+    z = ga.LockCache(limit=0)
+    z.put(7, 1, "hair", "a", "x", size=20)
+    z.begin(7)
+    z.put(7, 1, "hair", "b", "y", size=20)
+    z.begin(7)
+    z.put(7, 1, "hair", "c", "z", size=20)
+    assert z.get(7, 1, "hair", "c") == "z" and not z.has(7, 1, "hair", "a") and z.usage(7)["bytes"] <= 40
+
+
+def test_lock_cache_sizes_values_with_its_sizer_and_keeps_only_named_copies():
+    c = ga.LockCache(sizer=len, limit=10 ** 6)
+    c.put(7, 1, "hair", "k", "12345")
+    c.put(7, 1, "hair", "k", "123")                  # the same key again replaces it
+    assert c.usage(7)["bytes"] == 3
+    c.put(7, 1, "hair#cd", "k|red", "copy one")
+    c.put(7, 1, "hair#cd", "k|red|ghost", "copy two")
+    c.put(7, 1, "hair#cd", "old|red", "an earlier state's copy")
+    c.keep_only(7, 1, "hair#cd", ("k|red", "k|red|ghost"))
+    assert not c.has(7, 1, "hair#cd", "old|red") and c.has(7, 1, "hair#cd", "k|red|ghost")
+    assert c.usage(7)["bytes"] == 3 + len("copy one") + len("copy two")
+    c.put_derived(7, 1, "hair#cd", "k|blue", "a copy is stored like anything else")
+    assert c.get(7, 1, "hair#cd", "k|blue") and c.usage(7)["entries"] == 4
+    assert sorted(c.values(7, "hair#cd")) == ["a copy is stored like anything else", "copy one", "copy two"]
+    assert c.values(7, "nothing") == [] and c.values(8, "hair#cd") == []
+    assert c.latest(7, 1, "hair#cd") == "a copy is stored like anything else" and c.latest(7, 5, "hair") is None
+    assert ga._geo_bytes("not a geometry") == 0
+    assert ga.LockCache().limit(1) == int(config.UNDO_CACHE_GB * 2 ** 30) and config.UNDO_CACHE_GB == 2.0
+    assert config.UNDO_CACHE_PARM in ga._KEY_SKIP_PARMS      # changing the limit regrows nothing
 
 
 def test_lock_cache_drop_forgets_one_slot_only():
@@ -248,13 +313,22 @@ def test_publish_record_fields():
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1234, "/obj/g/n", "22.0")
     assert rec["asset"] == "char_Helen" and rec["version"] == "v007"
     assert rec["locks"] == 1 and rec["strands"] == 1234 and rec["department"] == "grooming"
+    assert rec["masks"] == {} and rec["schema"] == 6
+    rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1, "/obj/g/n", masks={"file": "m.bgeo"})
+    assert rec["masks"] == {"file": "m.bgeo"}
 
 
 def test_adapter_api_is_complete():
     for name in ("find_nodes", "create_node", "read_data", "write_data", "lock_infos", "detect",
                  "split_regions", "set_display", "selected_lock_ids", "select_locks", "publish",
-                 "set_isolate", "isolate_ids", "set_root_flip", "set_excluded"):
+                 "set_isolate", "isolate_ids", "set_root_flip", "set_excluded",
+                 # v0.2a density masks
+                 "mask_add", "mask_remove", "mask_move", "mask_set", "mask_fill", "mask_clear", "mask_values",
+                 "mask_cover", "mask_dropped", "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush",
+                 "paint_enter", "paint_exit", "paint_layer", "import_masks", "masks_from_publish",
+                 "cook_mask_read"):
         assert callable(getattr(ga, name))
+        assert name in ga.__all__ or name == "cook_mask_read"
     assert logic.LockInfo is ga.LockInfo
 
 
@@ -304,10 +378,445 @@ def test_anim_mismatch_text():
     assert callable(ga.deform_problem)
 
 
-def test_groom_output_captures_whenever_an_anim_is_wired_the_display_only_while_deforming():
-    """Output 1 deforms whenever a matching anim is wired (a File Cache on it caches the shot whatever
-    the view toggle); the display captures only with Shot deform on (memory, review t48)."""
-    assert ga.capture_flag(groom=True, wired=True, deforming=False) == 1
-    assert ga.capture_flag(groom=False, wired=True, deforming=False) == 0
-    assert ga.capture_flag(groom=False, wired=True, deforming=True) == 1
-    assert ga.capture_flag(groom=True, wired=False, deforming=False) == 0
+def test_a_scene_from_before_the_fit_lookup_keeps_it_off():
+    """Whether the saved scene file holds the parm decides (the parm came in the middle of the schema 4 test
+    builds, t66 N2); the schema only when there is no file to read. A new node (no data) keeps the default."""
+    import json
+    v01, s4, s6 = (json.dumps({"schema": n, "locks": []}) for n in (1, 4, 6))
+    assert ga.scene_before_lookup(v01, held=False) and ga.scene_before_lookup(s4, held=False)
+    assert ga.scene_before_lookup(s6, held=False)        # data written again before this library took over (t67)
+    assert not ga.scene_before_lookup(v01, held=True)    # saved again by a build with the parm: the artist's
+    assert not ga.scene_before_lookup(s4, held=True) and not ga.scene_before_lookup(s6, held=True)
+    assert ga.scene_before_lookup(v01) and ga.scene_before_lookup(json.dumps({"locks": []}))   # no file: schema
+    assert ga.scene_before_lookup(json.dumps({"schema": 3})) and not ga.scene_before_lookup(s4)
+    assert not ga.scene_before_lookup(s6)
+    for held in (None, False, True):
+        assert not ga.scene_before_lookup("", held) and not ga.scene_before_lookup(None, held)
+    assert not ga.scene_before_lookup("{broken")
+
+
+def test_hip_holds_reads_the_parm_record_from_the_file(tmp_path):
+    f = tmp_path / "a.hip"
+    rec = b"\nlookup_per_piece\t[ 0\tlocks=0 ]\t(\t\"on\"\t)\n"     # a parm record as Houdini writes it
+    f.write_bytes(b"x" * ((1 << 20) - 5) + rec + b"y" * 100)                       # across a block edge
+    assert ga.hip_holds(str(f), "lookup_per_piece") is True
+    assert ga.hip_holds(str(f), "another_parm") is False
+    f.write_bytes(rec[1:] + b"y")                                                  # the file's first line
+    assert ga.hip_holds(str(f), "lookup_per_piece") is True
+    assert ga.hip_holds(str(tmp_path / "none.hip"), "lookup_per_piece") is None and ga.hip_holds("", "x") is None
+
+
+def test_hip_holds_is_not_fooled_by_the_word(tmp_path):
+    """t68: a sticky note whose text holds the parm name opened an old scene with the lookup ON. Neither a note,
+    a node name, a comment, an expression on another parm nor an embedded definition is the parm's record."""
+    f = tmp_path / "old.hiplc"
+    f.write_bytes(
+        b"HouLC1033600b8f06af9c356054e29a88obj/Helen_grooming/note.postitdef text \"TODO check lookup_per_piece later\"\n"
+        b"comment \"lookup_per_piece off\"\n"
+        b"lookup_per_piece.init\ntype = null\n"
+        b"other\t[ 0\tlocks=0 ]\t(\t[ \"ch(\\\"../lookup_per_piece\\\")\" ]\t)\n"
+        b"            name    \"lookup_per_piece\"\n")
+    assert ga.hip_holds(str(f), "lookup_per_piece") is False
+    assert ga.scene_before_lookup('{"schema": 1, "locks": []}', ga.hip_holds(str(f), "lookup_per_piece"))
+
+
+def test_the_note_follows_the_toggle_set_by_hand(monkeypatch):
+    class Parm:
+        def __init__(self, v):
+            self.v = v
+
+        def eval(self):
+            return self.v
+
+    class Node:
+        def __init__(self):
+            self.p, self.data = Parm(0), {ga.LOOKUP_NOTE: "off: the scene was saved before the parm existed"}
+
+        def parm(self, name):
+            return self.p if name == ga.LOOKUP_PARM else None
+
+        def userData(self, key):
+            return self.data.get(key)
+
+        def setUserData(self, key, value):
+            self.data[key] = value
+
+    class Dis:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    import types
+    monkeypatch.setattr(ga, "hou", types.SimpleNamespace(undos=types.SimpleNamespace(disabler=lambda: Dis())))
+    n = Node()
+    n.p.v = 1
+    ga.on_lookup_changed(n)
+    assert n.userData(ga.LOOKUP_NOTE) == "on: set by hand"
+    n.p.v = 0
+    ga.on_lookup_changed(n)
+    assert n.userData(ga.LOOKUP_NOTE) == "off: set by hand"
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert 'grooming_adapter.on_lookup_changed(kwargs["node"])' in build
+
+
+def test_a_node_made_now_keeps_the_lookup_default(monkeypatch):
+    """OnCreated marks the choice made, so a node made in an old scene is never forced off (t67: the file
+    decides over the schema, and the file of an old scene never holds the parm)."""
+    class Node:
+        def __init__(self, note=None):
+            self.data = {} if note is None else {ga.LOOKUP_NOTE: note}
+
+        def parm(self, name):
+            return object() if name == ga.LOOKUP_PARM else None
+
+        def userData(self, key):
+            return self.data.get(key)
+
+        def setUserData(self, key, value):
+            self.data[key] = value
+
+    monkeypatch.setattr(ga, "install_playbar_callback", lambda: None)
+    n = Node()
+    ga.on_created(n)
+    assert n.userData(ga.LOOKUP_NOTE) == "new node: the default"
+    kept = Node("off: the scene was saved before the parm existed")
+    ga.on_created(kept)
+    assert kept.userData(ga.LOOKUP_NOTE).startswith("off")
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert 'grooming_adapter.on_created(kwargs["node"])' in build
+
+
+def test_on_loaded_decides_the_lookup_before_the_data_is_written_again():
+    import inspect
+    src = inspect.getsource(ga.on_loaded)
+    assert src.index("keep_old_lookup(node)") < src.index("mark_old_regions(node)")
+    assert callable(ga.keep_old_lookup) and "off" in ga.LOOKUP_KEPT_TEXT
+
+
+def test_no_output_captures_in_the_loop():
+    """Every output's locks are the rest strands, one cache entry a state; the capture a deform needs is made
+    apart (cook_groom_captured). In the loop it held 800 B a point for every state of every lock, and with
+    Shot deform on every undo regrew its locks (t64 B6)."""
+    for groom in (True, False):
+        for wired in (True, False):
+            for deforming in (True, False):
+                assert ga.capture_flag(groom=groom, wired=wired, deforming=deforming) == 0
+    # one capture a lock per kind of hair: the display in Hair shares output 1's, a preview has its own
+    assert ga.capture_slot("hair") == ga.GROOM_CAPTURE_MODE != ga.capture_slot("hair_preview")
+    assert callable(ga.cook_deform_keys) and callable(ga.cook_deform_store) and callable(ga.cook_deform_load)
+
+
+def test_deformed_states_never_push_the_hair_out():
+    """`keep_bytes`: one slot's states inside a limit of their own, the oldest going first, the last kept; the
+    deformed states are held apart from the hair's limit (neither pushes the other out)."""
+    c = ga.LockCache(sizer=len, limit=10_000)
+    slot = ga.DEFORMED_MODE + "hair"
+    for k in "abcd":
+        c.put_derived(1, ga.MERGED_LOCK, slot, k, "x" * 100)
+    c.put(1, 5, "hair", "h", "y" * 50)
+    assert c.keep_bytes(1, ga.MERGED_LOCK, slot, 250) == 2
+    assert [c.has(1, ga.MERGED_LOCK, slot, k) for k in "abcd"] == [False, False, True, True]
+    assert c.keep_bytes(1, ga.MERGED_LOCK, slot, 0) == 1 and c.has(1, ga.MERGED_LOCK, slot, "d")    # the last stays
+    use = c.usage(1)
+    assert c.has(1, 5, "hair", "h") and use["bytes"] == 50 and use["deformed_bytes"] == 100 and use["deformed_states"] == 1
+    assert c.keep_bytes(1, ga.MERGED_LOCK, "nothing", 0) == 0
+    # apart: deformed states are not in the hair's count, and the hair filling its limit drops none of them
+    c = ga.LockCache(sizer=len, limit=250)
+    c.put(1, 5, "hair", "h0", "y" * 100)
+    c.put(1, 5, "hair", "h1", "y" * 100)
+    c.put_derived(1, ga.MERGED_LOCK, slot, "d0", "x" * 100)
+    c.put_derived(1, ga.MERGED_LOCK, slot, "d1", "x" * 100)
+    assert c.usage(1)["bytes"] == 200 and c.apart_bytes(1) == 200     # (has() would count as a use)
+    c.begin(1)
+    c.put(1, 5, "hair", "h2", "y" * 100)             # the hair over its limit: its oldest state goes
+    assert not c.has(1, 5, "hair", "h0") and c.has(1, 5, "hair", "h2")
+    assert c.has(1, ga.MERGED_LOCK, slot, "d0") and c.has(1, ga.MERGED_LOCK, slot, "d1")
+    assert c.usage(1)["bytes"] <= 250 and config.UNDO_DEFORM_PARM in ga._KEY_SKIP_PARMS
+    assert ga.GROOM_CAPTURE_MODE != ga.cache_mode(False, 1.0, 1) and callable(ga.cook_groom_captured)
+    assert callable(ga.cook_capture_keys) and callable(ga.cook_capture_load) and callable(ga.cook_capture_store)
+
+
+def test_captured_strands_have_a_cache_slot_of_their_own():
+    assert ga.cache_mode(drag=False, factor=1.0, capture=0) == "hair"
+    assert ga.cache_mode(drag=False, factor=1.0, capture=1) == "hair" + ga.CAPTURE_MODE
+    assert ga.cache_mode(drag=False, factor=0.1, capture=0) == "hair_preview"
+    assert ga.cache_mode(drag=True, factor=1.0, capture=1) == "drag" + ga.CAPTURE_MODE
+    c = ga.LockCache()
+    plain, captured = ga.cache_mode(False, 1.0, 0), ga.cache_mode(False, 1.0, 1)
+    c.put(1, 7, plain, "before", "hair before")
+    c.put(1, 7, captured, "before", "captured before")
+    c.put(1, 7, plain, "after", "hair after")
+    c.put(1, 7, captured, "after", "captured after")
+    assert c.has(1, 7, plain, "before") and c.has(1, 7, captured, "before")   # the undo finds both
+
+
+# ---- v0.2a density masks (apps/houdini/grooming_masks.py, the parts without hou) ----
+
+def _grid_brush(n=9, step=0.01):
+    """A flat n x n grid of scalp points facing +y, each joined to its 4 neighbours."""
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    P = np.array([(x * step, 0.0, z * step) for z in range(n) for x in range(n)], np.float32)
+    N = np.tile(np.array([0.0, 1.0, 0.0], np.float32), (n * n, 1))
+    nb = []
+    for z in range(n):
+        for x in range(n):
+            nb.append([zz * n + xx for xx, zz in ((x - 1, z), (x + 1, z), (x, z - 1), (x, z + 1))
+                       if 0 <= xx < n and 0 <= zz < n])
+    return gm, np, P, N, nb
+
+
+def test_mask_digest_is_empty_for_skin_at_one_and_changes_with_any_value():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    ones = np.ones(50, np.float32)
+    assert gm.values_digest(ones) == "" and gm.values_digest(np.zeros(0, np.float32)) == ""
+    a = ones.copy(); a[7] = 0.5
+    b = ones.copy(); b[8] = 0.5          # the same sum, another place: the 9 region sums could not tell
+    assert gm.values_digest(a) and gm.values_digest(a) != gm.values_digest(b)
+    assert gm.values_digest(a) == gm.values_digest(a.copy())
+
+
+def test_points_by_lock_gives_shared_points_to_each_owner():
+    from apps.houdini import grooming_masks as gm
+    got = gm.points_by_lock([(3,), (3, 5), (), (5,)])
+    assert sorted(got) == [3, 5] and list(got[3]) == [0, 1] and list(got[5]) == [1, 3]
+
+
+def test_neighbours_are_the_points_sharing_a_prim_in_any_vertex_order():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    # two quads sharing the edge 1-2 and a triangle on point 5, vertices listed out of order
+    vertex_prim = [1, 0, 0, 1, 0, 1, 0, 1, 2, 2, 2]
+    vertex_point = [1, 0, 1, 2, 2, 4, 3, 5, 5, 6, 7]
+    table = gm.shared_prim_neighbours(vertex_prim, vertex_point, 9)
+    nb = [sorted(int(i) for i in row if i >= 0) for row in table]
+    assert nb[0] == [1, 2, 3] and nb[1] == [0, 2, 3, 4, 5] and nb[5] == [1, 2, 4, 6, 7]
+    assert nb[6] == [5, 7] and nb[8] == []                      # a point in no prim has no neighbour
+    assert gm.shared_prim_neighbours([], [], 3).shape == (3, 1)
+
+
+def test_brush_reaches_only_joined_skin_facing_the_same_way():
+    gm, np, P, N, nb = _grid_brush()
+    brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
+    idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
+    assert 40 in idx and len(idx) == 21 and float(dist.max()) < 0.025     # a disc on the open grid
+    # the same points, but the right half faces away (skin behind an ear): the dab stays on its side
+    N2 = N.copy(); N2[P[:, 0] > 0.045] = (0.0, -1.0, 0.0)
+    idx2, _ = gm.ScalpBrush(P, N2, gm.neighbour_table(nb)).reach((0.04, 0.0, 0.04), 0.025)
+    assert len(idx2) < 21 and float(P[idx2][:, 0].max()) < 0.045
+    # a wall of removed neighbours (two sheets lying close): skin beyond it is inside the radius, not reached
+    cut = [[j for j in row if (P[i, 0] > 0.045) == (P[j, 0] > 0.045)] for i, row in enumerate(nb)]
+    idx3, _ = gm.ScalpBrush(P, N, gm.neighbour_table(cut)).reach((0.03, 0.0, 0.04), 0.025)
+    assert float(P[idx3][:, 0].max()) < 0.045 and len(idx3) > 5
+    assert len(brush.reach((5.0, 0.0, 5.0), 0.025)[0]) == 0             # off the scalp: nothing
+
+
+def _layers(*density):
+    """A GroomData with one density layer per number, each with one paint layer: (data, [(density, paint)])."""
+    from tools.fx.grooming.model import GroomData
+    data = GroomData()
+    rows = []
+    for d in density:
+        layer = data.add_mask(kind="density", density=d)
+        rows.append((layer, data.add_mask(parent=layer.id)))
+    return data, rows
+
+
+def test_mask_data_dab_and_cover():
+    gm, np, P, N, nb = _grid_brush()
+    data, [(layer, paint)] = _layers(300.0)
+    md = gm.MaskData(P)
+    brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
+    idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
+    md.dab(paint.id, idx, logic.brush_weights(dist, 0.025, 0.5), 1.0)     # white, soft edge
+    assert md.painted(paint.id) == int((logic.brush_weights(dist, 0.025, 0.5) > 0).sum())
+    keep, add = md.compose(data, [layer])
+    assert keep[40] == 0.0 and add[40] == pytest.approx(300.0)            # painted white: D, over the lock's 150 too
+    assert keep[0] == 1.0 and add[0] == 0.0 and keep.dtype == np.float32  # not painted: the automatic groom
+    edge = int(idx[np.argmax(dist)])
+    assert 0.0 < keep[edge] < 1.0 and add[edge] == pytest.approx(300.0 * (1.0 - keep[edge]), rel=1e-5)
+    layer.opacity = 0.5
+    keep, add = md.compose(data, [layer])
+    assert keep[40] == pytest.approx(0.5) and add[40] == pytest.approx(150.0)
+    layer.opacity = 1.0
+    assert md.mask_of(data, layer.id)[40] == 1.0 and md.mask_of(data, layer.id)[0] == 0.0
+    never = gm.MaskData(P).compose(data, [layer])
+    assert never[0].min() == 1.0 and never[1].max() == 0.0               # a paint layer never painted is transparent
+    md.dab(paint.id, idx, np.ones(len(idx), np.float32), 9.0)             # a mask value is kept inside 0..1
+    assert float(md.v[paint.id].max()) == 1.0
+    md.dab(paint.id, idx, np.ones(len(idx), np.float32), 0.0)             # black over the white: the density below
+    keep, add = md.compose(data, [layer])
+    assert keep[40] == 1.0 and add[40] == 0.0 and md.painted(paint.id) == len(idx)
+    md.dab(paint.id, idx, np.ones(len(idx), np.float32), erase=True)      # erase: the layer's paint is gone
+    assert md.painted(paint.id) == 0 and md.compose(data, [layer])[0].min() == 1.0
+
+
+def test_density_layers_stack_and_each_reads_its_own_mask():
+    gm, np, P, N, nb = _grid_brush()
+    data, [(low, low_paint), (high, high_paint)] = _layers(40.0, 300.0)
+    md = gm.MaskData(P)
+    brush = gm.ScalpBrush(P, N, gm.neighbour_table(nb))
+    idx, dist = brush.reach((0.04, 0.0, 0.04), 0.025)
+    w = logic.brush_weights(dist, 0.025, 0.0)                      # a hard brush
+    md.dab(low_paint.id, idx, w, 1.0)
+    md.dab(high_paint.id, idx, w, 0.5)                             # the upper layer at half
+    keep, add = md.compose(data, [low, high])
+    assert keep[40] == 0.0 and add[40] == pytest.approx(40.0 + (300.0 - 40.0) * 0.5)
+    keep_w, ws = md.weights(data, [low, high])
+    assert ws[0][40] == pytest.approx(0.5) and ws[1][40] == pytest.approx(0.5) and keep_w[40] == 0.0
+    # a fill layer: one value over all the skin, full coverage, nothing stored for it
+    fill = data.add_mask(kind="fill", parent=high.id, value=1.0)
+    assert fill.id not in md.a and md.coverage(fill).min() == 1.0 and md.value(fill)[0] == pytest.approx(1.0)
+    keep, add = md.compose(data, [low, high])
+    assert keep.max() == 0.0 and add == pytest.approx(np.full(len(P), 300.0))
+    # Multiply as the top layer of a mask bounds what is below it in that mask
+    fill.mode, fill.value = "multiply", 0.5
+    assert md.mask_of(data, high.id)[40] == pytest.approx(0.25) and md.mask_of(data, high.id)[0] == 0.0
+    # D = 0 painted white: no hair
+    data0, [(none, none_paint)] = _layers(0.0)
+    md0 = gm.MaskData(P)
+    md0.dab(none_paint.id, idx, w, 1.0)
+    keep, add = md0.compose(data0, [none])
+    assert keep[40] == 0.0 and add[40] == 0.0 and keep[0] == 1.0
+    # a layer carried over from an older file: coverage only, its row's one value under it
+    md2 = gm.MaskData(P)
+    md2.a[low_paint.id] = np.zeros(len(P), np.float32)
+    md2.a[low_paint.id][idx] = 1.0
+    low_paint.value = 0.5
+    assert md2.mask_of(data, low.id)[40] == pytest.approx(0.5)
+
+
+def test_a_layer_of_an_older_build_thins_and_keeps_black_as_no_hair():
+    """A `legacy` density layer (a schema 5 file's 0..1 mask): its mask layers blend by that build's rule."""
+    import json
+    from tools.fx.grooming.model import GroomData
+    gm, np, P, N, nb = _grid_brush()
+    five = json.dumps({"schema": 5, "defaults": {"density": 200.0}, "masks": [
+        {"id": 0, "name": "Paint", "kind": "paint"},
+        {"id": 1, "name": "Min", "kind": "fill", "mode": "min", "value": 0.9},
+        {"id": 2, "name": "Group", "kind": "fill", "mode": "multiply", "value": 0.5, "scope": "group", "group": "g"}]})
+    data = GroomData.from_json(five)
+    old, grp = data.density_layers()
+    assert old.legacy and grp.legacy and old.density == 200.0
+    md = gm.MaskData(P)
+    md.ensure(0)
+    md.a[0][:3] = 1.0
+    md.v[0][:3] = (1.0, 0.0, 0.5)                                  # white, black, grey
+    keep, add = md.compose(data, [old])
+    # white: 0.9 of the owner's Density (the Min fill over it); black: no hair; grey: 0.5 of it; unpainted
+    # skin: the automatic groom thinned to 0.9 by the Min fill (it did nothing before the fix)
+    assert list(keep[:4]) == pytest.approx([0.0, 0.0, 0.0, 0.9]) and list(add[:4]) == pytest.approx([180.0, 0.0, 100.0, 0.0])
+    assert list(md.mask_of(data, old.id)[:4]) == pytest.approx([1.0, 1.0, 1.0, 0.1])     # what it takes of the density below
+    keep, add = md.compose(data, [old, grp])                       # the group's stack over it: x 0.5 on both parts
+    assert list(keep[:4]) == pytest.approx([0.0, 0.0, 0.0, 0.45]) and list(add[:4]) == pytest.approx([90.0, 0.0, 50.0, 0.0])
+    old.opacity = 0.5                                              # the layer's own opacity: half way to what is below
+    keep, add = md.compose(data, [old])
+    assert list(keep[:4]) == pytest.approx([0.5, 0.5, 0.5, 0.95]) and list(add[:4]) == pytest.approx([90.0, 0.0, 50.0, 0.0])
+    # under a plain density layer nothing changed: a layer of 300 over the older build's
+    old.opacity = 1.0
+    top = data.add_mask(kind="density", density=300.0)
+    data.add_mask(kind="fill", parent=top.id, value=0.5)
+    keep, add = md.compose(data, [old, top])
+    assert keep[3] == pytest.approx(0.45) and add[0] == pytest.approx(180.0 * 0.5 + 150.0)
+
+
+def test_layers_for_view_shows_what_a_lock_of_the_painted_owner_gets():
+    from apps.houdini import grooming_masks as gm
+    from tools.fx.grooming.model import GroomData
+    data = GroomData()
+    everyone = data.add_mask(kind="density")
+    bang = data.add_mask(kind="density", scope="group", group="bang")
+    back = data.add_mask(kind="density", scope="group", group="back")
+    top = data.add_mask(kind="density")
+    paint = data.add_mask(parent=bang.id)
+    assert [m.id for m in gm.layers_for_view(data.masks, everyone.id)] == [everyone.id, top.id]
+    assert [m.id for m in gm.layers_for_view(data.masks, paint.id)] == [everyone.id, top.id, bang.id]
+    assert [m.id for m in gm.layers_for_view(data.masks, None)] == [everyone.id, top.id]
+    back.on = False
+    assert [m.id for m in gm.layers_for_view(data.masks, back.id)] == [everyone.id, top.id]
+
+
+def test_view_colours_density_and_one_layer_alone():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    value = np.array([1.0, 0.0, 1.0, 0.5], np.float32)
+    cover = np.array([0.0, 1.0, 1.0, 0.5], np.float32)
+    dens = np.array([0.0, 150.0, 7059.0, 40.0], np.float32)
+    d = gm.view_colours("density", density=dens, reference=150.0)
+    assert d.shape == (4, 3) and d.dtype == np.float32
+    for i in range(4):
+        assert d[i] == pytest.approx(logic.density_color(float(dens[i]), 150.0), abs=1e-5)
+    # the density view is the final density map and nothing over it: a layer does not change a colour
+    assert gm.view_colours("density", value, cover, density=dens, reference=150.0) == pytest.approx(d)
+    plain = gm.view_colours("roots", points=4)
+    assert plain.shape == (4, 3) and np.allclose(plain, plain[0])       # the dots carry the roots view
+    one = gm.view_colours("layer", value, cover)
+    for i in range(4):
+        assert one[i] == pytest.approx(logic.layer_color(float(value[i]), float(cover[i])), abs=1e-6)
+    assert one[2] == pytest.approx([1, 1, 1]) and one[1] == pytest.approx([0, 0, 0])
+    assert one[0] == pytest.approx(logic.LAYER_UNPAINTED)
+    with pytest.raises(ValueError):
+        ga.set_brush(view="wireframe")
+    assert config.MASK_VIEWS == ("density", "layer", "roots")
+
+
+def test_strand_roots_are_each_strands_first_point():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    pts = np.arange(4 * 3 * 3, dtype=np.float32).reshape(-1, 3)        # 4 strands of 3 points
+    roots = gm.strand_roots(pts.ravel(), 4)
+    assert roots.shape == (4, 3) and roots[1] == pytest.approx(pts[3]) and roots[3] == pytest.approx(pts[9])
+    assert gm.strand_roots(pts.ravel(), 5) is None and gm.strand_roots(pts.ravel(), 0) is None
+    assert ga.set_brush(view="roots")["view"] == "roots" and ga.set_brush(view="density")["view"] == "density"
+
+
+def test_root_density_counts_roots_over_the_skin_round_each_point():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    # a flat 21 x 21 patch of skin, points 1 mm apart, each owning 0.01 cm2; 400 roots / cm2 on its left half
+    xs = np.arange(21) * 0.001
+    P = np.array([(x, 0.0, z) for z in xs for x in xs])
+    area = np.full(len(P), 0.01)
+    rng = np.random.default_rng(1)
+    roots = np.column_stack([rng.uniform(0.0, 0.010, 400 * 2 // 2), np.zeros(400), rng.uniform(0.0, 0.020, 400)])
+    d = gm.root_density(P, area, roots, cell=0.002)
+    left = d[(P[:, 0] < 0.006) & (P[:, 2] > 0.004) & (P[:, 2] < 0.016)]
+    right = d[(P[:, 0] > 0.016)]
+    assert 150 < float(np.median(left)) < 260           # 400 roots on 2 cm2 of skin: 200 / cm2
+    assert float(right.max()) == 0.0                    # no root near: nothing
+    assert d.dtype == np.float32 and d.shape == (len(P),)
+    assert gm.root_density(P, area, np.zeros((0, 3)), 0.002).max() == 0.0
+    assert gm.root_density(np.zeros((0, 3)), [], roots, 0.002).shape == (0,)
+
+
+def test_brush_settings_are_clamped_and_kept_for_the_session():
+    from apps.houdini import grooming_masks as gm
+    before = gm.brush()
+    try:
+        got = ga.set_brush(radius_cm=2.5, value=7, soft=3, erase=True)
+        assert got["radius_cm"] == 2.5 and got["value"] == 1.0 and got["soft"] == 1.0 and "level" not in got
+        assert got["erase"] is True and ga.brush() == got and ga.set_brush(value=-1)["value"] == 0.0
+        assert ga.set_brush(radius_cm=0)["radius_cm"] == 0.05
+        assert ga.paint_layer(None) is None
+    finally:
+        gm.BRUSH.update(before)
+
+
+def test_kept_share_follows_roots_to_where_they_end_up():
+    np = pytest.importorskip("numpy")
+    from apps.houdini import grooming_masks as gm
+    n = np.array([100.0, 100.0, 100.0, 100.0])
+    none = np.zeros(4)
+    assert gm.kept_share(n, none, np.ones(4), 1.0) == pytest.approx(1.0)
+    assert gm.kept_share(n, none, np.array([1.0, 1.0, 0.0, 0.0]), 1.0) == pytest.approx(0.5)
+    # two prims under floating mesh send their roots to the lock's start: painting them changes nothing,
+    # painting the start removes them
+    far = np.array([0.0, 0.0, 1.0, 1.0])
+    assert gm.kept_share(n, far, np.array([1.0, 1.0, 0.0, 0.0]), 1.0) == pytest.approx(1.0)
+    assert gm.kept_share(n, far, np.ones(4), 0.0) == pytest.approx(0.5)
+    assert gm.kept_share(np.zeros(4), far, np.ones(4), 0.0) == 1.0          # a lock with no strands

@@ -17,6 +17,7 @@ import math
 import os
 import re
 import sys
+from dataclasses import replace
 from typing import Any, Iterable, Sequence
 
 try:
@@ -24,6 +25,13 @@ try:
 except ImportError:
     hou = None  # type: ignore[assignment]
 
+from apps.houdini import grooming_masks
+from apps.houdini.grooming_masks import (  # noqa: F401  (the adapter API's mask functions; the HDA's mask_read)
+    brush, cook_mask_read, import_masks, mask_add, mask_clear, mask_cover, mask_dropped, mask_fill, mask_invert,
+    mask_move, mask_problem,
+    mask_rebake, mask_remove, mask_set, mask_stroke, mask_values, masks_from_publish, paint_enter, paint_exit,
+    paint_layer, set_brush,
+)
 from tools.fx.grooming import config, logic, model
 from tools.fx.grooming.logic import DetectReport, LockInfo, MeshPiece, PublishResult
 
@@ -63,7 +71,7 @@ PARM_PLAYING = "playing"             # hidden: 1 while the timeline plays (playb
 
 # Parms whose value never reaches the per-lock hair cook (display, publish, deform, what the geometry
 # already carries): left out of the cache key, so changing them recooks no lock.
-_KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
+_KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, config.MASK_PARM, config.UNDO_CACHE_PARM, config.UNDO_DEFORM_PARM, PARM_DISPLAY, PARM_COLOR_BY, PARM_PREVIEW, "preview_max",
                    PARM_PUBLISH_PATH, PARM_PUBLISH_VERSION, PARM_ISOLATE, PARM_DRAG_PREVIEW, PARM_STRANDS,
                    PARM_FOCUS, PARM_DRAG_FACTOR, PARM_COOK_ALL, PARM_XRAY,
                    "shot_deform", "deform_active", "anim_wired",   # per lock: do_capture; deform_radius stays
@@ -71,12 +79,14 @@ _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, PARM_DISPLAY, PARM_COLOR_BY, 
                    "rest_frame", "detect", "split_regions", "publish"}
 # Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
 _KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_match", "cached", "cache_key",
-                     "cache_mode", "disp", "row_display"}   # a lock's display reaches its key as its factor
+                     "cache_mode", "disp", "row_display",   # a lock's display reaches its key as its factor
+                     "mask_set", "mask_add_n",              # its layers reach it as the digest of their cover
+                     "auto_key", "auto_cached"}
 _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 MERGED_LOCK = -1                     # LockCache slot of a whole merge (hair_cache / groom_cache), not a lock
 MERGED_MODE = "merged:"
-CACHE_NET_VERSION = "partial-1-root-spread-6"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "partial-1-root-spread-6-mask-23"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -173,54 +183,238 @@ class LockCache:
     """Hair of each lock, cooked once per input state (`lock_key`), per MONO Grooming node and display
     mode. Pure Python: the values are whatever the adapter stores (frozen hou.Geometry in Houdini).
 
-    Per (node, lock, mode) the last KEEP keys are kept, most recently used last: an undo of an edit goes
-    back to the previous key and finds it. Entries of the key in use are never dropped by a store of
-    another lock, so what `lock_keys` saw as cached is still there when `hair_cache` merges it."""
+    Limited by memory, not by a count of states (the user, 2026-11-13: a count of 2 made the second undo
+    of a row of strokes regrow its locks). Each entry has a size in bytes (`put(size=)`, else `sizer(value)`);
+    per node the cache holds at most its limit (`set_limit`, the node's "Undo cache, GB") and drops the
+    states used longest ago when a store goes over it. Never dropped, whatever the limit: the state in use,
+    which is the key used last in each (node, lock, mode) slot and everything touched since the node's
+    cook began (`begin`), so what `lock_keys` saw as cached is still there when `hair_cache` merges it.
+    An undo past what the cache holds finds nothing and the lock is cooked again: slower, never wrong."""
 
-    KEEP = 2
-
-    def __init__(self) -> None:
+    def __init__(self, sizer=None, limit: int | None = None) -> None:
         self._d: dict[tuple[int, int, str], dict[str, Any]] = {}
+        self._meta: dict[tuple[int, int, str], dict[str, list]] = {}    # slot -> key -> [bytes, tick, generation]
+        self._bytes: dict[int, int] = {}
+        self._limit: dict[int, int] = {}
+        self._gen: dict[int, int] = {}
+        self._dropped: dict[int, int] = {}
+        self._tick = 0
+        self._sizer = sizer
+        self._default = int(config.UNDO_CACHE_GB * 2 ** 30) if limit is None else int(limit)
+
+    # ---- use ----
+    def _touch(self, slot: tuple[int, int, str], key: str) -> None:
+        self._tick += 1
+        m = self._meta[slot][key]
+        m[1], m[2] = self._tick, self._gen.get(slot[0], 0)
+        d = self._d[slot]
+        d[key] = d.pop(key)             # most recently used last
 
     def has(self, node_id: int, lock_id: int, mode: str, key: str) -> bool:
-        return key in self._d.get((node_id, lock_id, mode), {})
+        """The state is held. Asking counts as using it: it is not dropped before this cook reads it."""
+        slot = (node_id, lock_id, mode)
+        if key not in self._d.get(slot, {}):
+            return False
+        self._touch(slot, key)
+        return True
 
     def get(self, node_id: int, lock_id: int, mode: str, key: str) -> Any:
-        slot = self._d.get((node_id, lock_id, mode))
-        if slot is None or key not in slot:
+        slot = (node_id, lock_id, mode)
+        d = self._d.get(slot)
+        if d is None or key not in d:
             return None
-        slot[key] = slot.pop(key)  # most recently used last
-        return slot[key]
+        self._touch(slot, key)
+        return d[key]
 
-    def put(self, node_id: int, lock_id: int, mode: str, key: str, value: Any) -> None:
-        slot = self._d.setdefault((node_id, lock_id, mode), {})
-        slot.pop(key, None)
-        slot[key] = value
-        while len(slot) > self.KEEP:
-            del slot[next(iter(slot))]
+    def put(self, node_id: int, lock_id: int, mode: str, key: str, value: Any, size: int | None = None) -> None:
+        slot = (node_id, lock_id, mode)
+        self._forget(slot, key)
+        if size is None:
+            size = int(self._sizer(value)) if self._sizer is not None else 0
+        self._d.setdefault(slot, {})[key] = value
+        self._meta.setdefault(slot, {})[key] = [int(size), 0, 0]
+        self._bytes[node_id] = self._bytes.get(node_id, 0) + int(size)
+        self._touch(slot, key)
+        self._trim(node_id)
+
+    def put_derived(self, node_id: int, lock_id: int, mode: str, key: str, value: Any, size: int | None = None) -> None:
+        """Store something made from a lock's cooked hair, not a cook of the lock: the display's coloured
+        copy, a whole merge, output 1's capture. The same store as `put`, under another name so that what
+        counts cooks (tests wrap `put`) counts hair grown by the loop and nothing else."""
+        LockCache.put(self, node_id, lock_id, mode, key, value, size)
+
+    def _forget(self, slot: tuple[int, int, str], key: str) -> None:
+        d = self._d.get(slot)
+        if d is None or key not in d:
+            return
+        del d[key]
+        self._bytes[slot[0]] = self._bytes.get(slot[0], 0) - self._meta[slot].pop(key)[0]
+        if not d:
+            del self._d[slot]
+            del self._meta[slot]
+
+    # ---- the limit ----
+    def begin(self, node_id: int) -> None:
+        """A cook of the node's keys starts: what is touched from here on is in use until the next one."""
+        self._gen[node_id] = self._gen.get(node_id, 0) + 1
+
+    def set_limit(self, node_id: int, limit_bytes: float) -> None:
+        self._limit[node_id] = max(0, int(limit_bytes))
+        self._trim(node_id)
+
+    def limit(self, node_id: int) -> int:
+        return self._limit.get(node_id, self._default)
+
+    def _in_use(self, slot: tuple[int, int, str], key: str) -> bool:
+        return next(reversed(self._d[slot])) == key or self._meta[slot][key][2] == self._gen.get(slot[0], 0)
+
+    TRIM_TO = 0.95      # once full, room is made down to this share of the limit: not a sort on every store
+    # slots held APART from the limit: the display's deformed states have a limit of their own (the node's
+    # "Deformed undo, GB", `keep_bytes`), so they never push a hair state out and no hair state pushes them
+    APART = ("deformed:",)
+
+    def apart_bytes(self, node_id: int) -> int:
+        return sum(m[0] for slot, keys in self._meta.items()
+                   if slot[0] == node_id and slot[2].startswith(self.APART) for m in keys.values())
+
+    def _trim(self, node_id: int) -> None:
+        limit = self.limit(node_id)
+        used = self._bytes.get(node_id, 0) - self.apart_bytes(node_id)
+        if used <= limit:
+            return
+        old = sorted((m[1], slot, key)
+                     for slot, keys in self._meta.items() if slot[0] == node_id and not slot[2].startswith(self.APART)
+                     for key, m in keys.items() if not self._in_use(slot, key))
+        for _tick, slot, key in old:
+            if used <= limit * self.TRIM_TO:
+                break
+            used -= self._meta[slot][key][0]
+            self._forget(slot, key)
+            self._dropped[node_id] = self._dropped.get(node_id, 0) + 1
+
+    def usage(self, node_id: int) -> dict:
+        """What the node's cache holds against its limit: `bytes` in all, of which `live_bytes` the state in
+        use (never dropped) and `undo_bytes` the older states an undo or redo can return to (`undo_states` of
+        them); `limit_bytes`; `dropped`: states dropped so far to stay inside the limit. The slots held apart
+        (`APART`: the deformed display) are not in those: `deformed_bytes`, `deformed_states`."""
+        live = undo = states = entries = apart = apart_n = 0
+        for slot, keys in self._meta.items():
+            if slot[0] != node_id:
+                continue
+            if slot[2].startswith(self.APART):
+                apart += sum(m[0] for m in keys.values())
+                apart_n += len(keys)
+                continue
+            for key, m in keys.items():
+                entries += 1
+                if self._in_use(slot, key):
+                    live += m[0]
+                else:
+                    undo += m[0]
+                    states += 1
+        return {"bytes": live + undo, "live_bytes": live, "undo_bytes": undo, "undo_states": states,
+                "entries": entries, "limit_bytes": self.limit(node_id), "dropped": self._dropped.get(node_id, 0),
+                "deformed_bytes": apart, "deformed_states": apart_n}
+
+    # ---- housekeeping ----
+    def keep_only(self, node_id: int, lock_id: int, mode: str, keys) -> None:
+        """Drop every state of the slot but `keys`: for what is made from another entry in a moment (the
+        display's coloured copy of a lock's strands), which is not worth undo memory."""
+        slot = (node_id, lock_id, mode)
+        for key in [k for k in self._d.get(slot, {}) if k not in keys]:
+            self._forget(slot, key)
 
     def drop(self, node_id: int, lock_id: int, mode: str) -> None:
-        self._d.pop((node_id, lock_id, mode), None)
+        slot = (node_id, lock_id, mode)
+        for key in list(self._d.get(slot, {})):
+            self._forget(slot, key)
+
+    def keep_bytes(self, node_id: int, lock_id: int, mode: str, max_bytes: float) -> int:
+        """Drop the states of one slot used longest ago until the slot holds at most `max_bytes`; the state
+        used last always stays. Returns how many went. For a slot whose states are large and made again
+        without growing hair (the deformed display): it must not push the hair's own states out."""
+        slot = (node_id, lock_id, mode)
+        meta = self._meta.get(slot, {})
+        total = sum(m[0] for m in meta.values())
+        gone = 0
+        for key in list(self._d.get(slot, {}))[:-1]:        # oldest first, never the last one used
+            if total <= max_bytes:
+                break
+            total -= meta[key][0]
+            self._forget(slot, key)
+            gone += 1
+        return gone
+
+    def latest(self, node_id: int, lock_id: int, mode: str) -> Any:
+        """The state of a slot used last (not counted as a use), None when the slot is empty."""
+        d = self._d.get((node_id, lock_id, mode))
+        return d[next(reversed(d))] if d else None
+
+    def values(self, node_id: int, mode: str) -> list:
+        """Everything held for a node under one mode, every lock and state."""
+        return [v for slot, keys in self._d.items() if slot[0] == node_id and slot[2] == mode for v in keys.values()]
 
     def nodes(self) -> set[int]:
         return {k[0] for k in self._d}
 
     def drop_node(self, node_id: int) -> None:
-        for k in [k for k in self._d if k[0] == node_id]:
-            del self._d[k]
+        for slot in [k for k in self._d if k[0] == node_id]:
+            self.drop(*slot)
+        for table in (self._bytes, self._limit, self._gen, self._dropped):
+            table.pop(node_id, None)
 
     def __len__(self) -> int:
         return sum(len(s) for s in self._d.values())
+
+
+def _geo_bytes(value: Any) -> int:
+    """Memory a cached geometry holds, bytes (its `memoryusage` intrinsic); 0 for anything else."""
+    try:
+        return int(value.intrinsicValue("memoryusage"))
+    except Exception:
+        return 0
 
 
 def hair_cache() -> LockCache:
     """The session's one LockCache. Kept on `sys`, not in this module: reloading the adapter (or
     hou.session code) must not lose it while lock_keys still says a lock is cached."""
     cache = getattr(sys, _CACHE_ATTR, None)
-    if cache is None:
-        cache = LockCache()
+    if cache is None or not hasattr(cache, "usage"):      # none yet, or one of a build before the memory limit
+        cache = LockCache(sizer=_geo_bytes)
         setattr(sys, _CACHE_ATTR, cache)
     return cache
+
+
+def undo_cache_usage(node) -> dict:
+    """How much hair the node's cache holds against its limit (the node's "Undo cache, GB"), for the panel:
+    `bytes`, `live_bytes` (what the node shows now: never dropped), `undo_bytes` / `undo_states` (older
+    states an undo or redo returns to without a recook), `limit_bytes`, `dropped`, `gb` / `limit_gb`, and
+    `capture_bytes` (the deforms' captures, one a lock, held apart from the limit)."""
+    cache = hair_cache()
+    use = cache.usage(node.sessionId())
+    use["gb"] = use["bytes"] / 2 ** 30
+    use["limit_gb"] = use["limit_bytes"] / 2 ** 30
+    use["deformed_limit_bytes"] = undo_deform_limit(node)
+    # output 1's Point Deform captures (one a lock, only once the deformed output was read): not hair, not
+    # in the limit's count
+    use["capture_bytes"] = sum(_geo_bytes(g) for mode in ("hair", "hair_preview", "drag")
+                               for g in cache.values(node.sessionId(), capture_slot(mode)))
+    return use
+
+
+def undo_cache_limit(top) -> int:
+    """The node's undo cache limit in bytes (its `undo_cache_gb`; a node built before the parm: the default)."""
+    parm = top.parm(config.UNDO_CACHE_PARM)
+    gb = float(parm.eval()) if parm is not None else config.UNDO_CACHE_GB
+    return int(max(gb, 0.0) * 2 ** 30)
+
+
+def undo_deform_limit(top) -> int:
+    """The limit of the display's deformed states in bytes (the node's `undo_deform_gb`, "Deformed undo, GB";
+    a node built before the parm: the default)."""
+    parm = top.parm(config.UNDO_DEFORM_PARM)
+    gb = float(parm.eval()) if parm is not None else config.UNDO_DEFORM_GB
+    return int(max(gb, 0.0) * 2 ** 30)
 
 
 def classify_inputs(cands: Sequence[tuple[str, int]]) -> tuple[int, int] | None:
@@ -372,9 +566,11 @@ def lock_display_attribs(data: model.GroomData, lock_ids: Sequence[int]) -> dict
 
 
 def publish_record(asset: str, version: str, usd: str, scene: str, data: model.GroomData,
-                   strands: int, node_path: str, houdini: str = "") -> dict[str, Any]:
-    """What publish.json holds next to grooming_data.json."""
+                   strands: int, node_path: str, houdini: str = "", masks: dict | None = None) -> dict[str, Any]:
+    """What publish.json holds next to grooming_data.json. `masks`: where the painted mask layers are
+    (grooming_masks.publish_masks: file, layer ids, points), {} when the groom has none."""
     return {
+        "masks": dict(masks or {}),
         "asset": asset, "version": version, "department": "grooming", "usd": usd, "scene": scene,
         "node": node_path, "houdini": houdini, "user": getpass.getuser(),
         "date": _dt.datetime.now().isoformat(timespec="seconds"),
@@ -534,6 +730,7 @@ def lock_infos(node) -> list[LockInfo]:
                     if w > 0:
                         floating[lid] = floating.get(lid, 0.0) + w * a / len(own)
     infos = []
+    rows: dict[int, dict] = {}
     for prim in geo.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
         if lid < 0:
@@ -544,14 +741,33 @@ def lock_infos(node) -> list[LockInfo]:
         a = area.get(lid, 0.0)
         # the widest band anywhere: same rule as the HDA's region_frame
         section = logic.section_cm2(max(widths, default=0.0), max(thicks, default=0.0), node.evalParm("unit_cm"))
+        strands = logic.lock_strands(prim.floatAttribValue("density"), a, section)
+        root = tuple(prim.attribValue("root"))
+        # region_frame's footprint: REGION_FOOTPRINT x the widest band of the lock's first tenth
+        rows[lid] = {"strands": strands, "root": root,
+                     "foot": config.REGION_FOOTPRINT * max(widths[:max(1, len(widths) // 10) + 1], default=0.0)}
         infos.append(LockInfo(
             id=lid, name=prim.stringAttribValue(config.ATTR_NAME), group=prim.stringAttribValue(config.ATTR_GROUP),
-            root=tuple(prim.attribValue("root")), length=prim.floatAttribValue("length"),  # type: ignore[arg-type]
+            root=root, length=prim.floatAttribValue("length"),  # type: ignore[arg-type]
             width=sum(widths) / max(len(widths), 1), thick=sum(thicks) / max(len(thicks), 1),
             twist=pts[-1].floatAttribValue(config.ATTR_LOCK_TWIST) if pts else 0.0,
-            strands=logic.lock_strands(prim.floatAttribValue("density"), a, section), region_area_cm2=a,
-            floating_cm2=floating.get(lid, 0.0),
+            strands=int(round(strands)), region_area_cm2=a, floating_cm2=floating.get(lid, 0.0),
+            auto_strands=int(round(strands)),
         ))
+    # density layers (v0.2a): what the network grows under them. Its automatic roots are kept by the layers'
+    # keep where they end up (an estimate of that share, `lock_layer_counts`), and the layers scatter their
+    # own roots on its skin (the exact count the network is given)
+    cache, sid = hair_cache(), node.sessionId()
+
+    def auto_roots(lock_id):       # the lock's automatic roots as the loop last laid them out, full density
+        return cache.latest(sid, lock_id, AUTO_MODE + "hair")
+
+    for lid, (keep, add) in grooming_masks.lock_layer_counts(node, scalp, rows, auto_roots).items():
+        for k, info in enumerate(infos):
+            if info.id == lid:
+                n = int(round(rows[lid]["strands"] * keep + add))
+                infos[k] = replace(info, strands=n, layer_strands=int(round(add)), keep_share=float(keep),
+                                   mask_share=n / max(rows[lid]["strands"], 1e-9), layered=True)
     return sorted(infos, key=lambda i: i.id)
 
 
@@ -1139,8 +1355,10 @@ def publish(node, version: str | None = None) -> PublishResult:
         if errors or not os.path.isfile(usd_tmp):
             raise RuntimeError("; ".join(errors) or "USD export wrote no file")
         staged.write_text(os.path.join(tool_dir, "grooming_data.json").replace("\\", "/"), data.to_json())
+        # the mask layers' painted values, so a later version (or another scene) can read them back
+        mask_record = grooming_masks.publish_masks(node, staged, tool_dir)
         record = publish_record(asset, version, usd, hou.hipFile.path(), data, strands, node.path(),
-                                hou.applicationVersionString())
+                                hou.applicationVersionString(), masks=mask_record)
         staged.write_text(os.path.join(tool_dir, "publish.json").replace("\\", "/"),
                           json.dumps(record, ensure_ascii=False, indent=1))
         staged.commit()
@@ -1224,8 +1442,124 @@ def on_loaded(node) -> None:
             p = node.parm(name)
             if p is not None and p.eval():
                 p.set(empty)
+        # the toggle first: mark_old_regions may write the data again, in today's schema (t66 N1)
+        kept = keep_old_lookup(node)
         mark_old_regions(node)
+    if kept:
+        _status(f"{config.HDA_LABEL}: {LOOKUP_KEPT_TEXT}")
+    # layers of an older test build's removed kinds are dropped on reading (model.migrate): said once, on
+    # the status bar, never in a dialog
+    dropped = grooming_masks.mask_dropped(node)
+    if dropped:
+        _status(f"{config.HDA_LABEL}: {dropped}")
     install_playbar_callback()
+
+
+LOOKUP_PARM = "lookup_per_piece"         # the node's "Fit lookup per lock"
+LOOKUP_SINCE_SCHEMA = 4                  # no build under schema 4 had the parm; every build from 5 on has it
+LOOKUP_NOTE = "monofx_fit_lookup"        # node user data: the choice for a scene from before the parm was made
+LOOKUP_KEPT_TEXT = ("this scene was saved before \"Fit lookup per lock\": it is off, so the groom is the one "
+                    "the scene was saved with. Turn it on on the node for faster strokes (strand points then "
+                    "move: by up to 1 cm on the Helen test scene)")
+
+
+def hip_holds(path: str | None, name: str) -> bool | None:
+    """The saved scene file holds a value of the parm: True / False, None when there is no file to read (a
+    scene never saved). A hip stores each parm of a node as a record line of its own, `<name>\t[ ...`, in
+    plain text, a .hiplc / .hipnc too. The record, not the word: the name in a sticky note, a comment, a node
+    name or an expression does not count (t68: a sticky note holding the name opened an old scene with the
+    lookup on), and neither does an embedded definition's `name "<name>"`."""
+    if not path or not os.path.isfile(path):
+        return None
+    record, tail = b"\n" + name.encode("ascii") + b"\t[", b"\n"   # the file's first line counts as after a \n
+    try:
+        with open(path, "rb") as fh:
+            while True:
+                block = fh.read(1 << 20)
+                if not block:
+                    return False
+                if record in tail + block:
+                    return True
+                tail = block[-(len(record) - 1):]
+    except OSError:
+        return None
+
+
+def scene_before_lookup(stored: str | None, held: bool | None = None) -> bool:
+    """Pure: the node comes from a scene saved before "Fit lookup per lock" existed. `held`, whether the
+    saved scene file holds the parm (`hip_holds`), is the fact itself and decides whenever it is known,
+    whatever the data's schema: the parm came in the middle of the schema 4 test builds (245f480 has it, on;
+    two schema 4 commits before it do not), so the schema cannot tell (t66 N2), and the data may have been
+    written again in today's schema before this library took over (t67: a scene opened with a library of
+    another checkout that has no such parm; its OnLoaded `mark_old_regions` rewrote the data, then OnUpdated
+    read schema 6). A v0.1 scene saved again by a build with the parm keeps what it was saved with. Without a
+    file to read (None) the schema decides: under 4 no build had it, from 5 on every build had it. A node with
+    no data yet is a new node: not such a scene (a node made in this session carries the note from
+    `on_created` and is never judged)."""
+    if not stored or not stored.strip():
+        return False
+    try:
+        schema = int(json.loads(stored).get("schema", 1))
+    except (ValueError, TypeError, AttributeError):
+        return False
+    if held is not None:
+        return not held
+    return schema < LOOKUP_SINCE_SCHEMA
+
+
+def keep_old_lookup(node) -> bool:
+    """OnLoaded: a scene saved before "Fit lookup per lock" existed opens with it OFF, written on the node (the
+    user's decision, 2026-11-15, t64 B4): such a scene holds no value for the parm, so it would take the
+    default, on, and its groom would no longer be the one it was saved and published with (same roots and
+    strand counts, strand points moved: up to 0.47 cm on a fresh Helen groom, 0.96 cm on the Helen scene as
+    v0.1 saved it, t66). Off, the groom is v0.1's within v0.1's own run-to-run difference (a few strands by
+    0.0024 cm over 10 runs, t68). Must run before anything writes `groom_data` again (OnLoaded's
+    `mark_old_regions` rewrote a schema 1 scene as today's schema first: N1). Done once a node (user data
+    `monofx_fit_lookup`, saved with the hip): after that the parm is the artist's, who may turn it on. A new
+    node keeps the default, on. A node merged from another file is judged by the scene it is merged INTO
+    (the file Houdini names). True when the parm was set."""
+    p = node.parm(LOOKUP_PARM)
+    if p is None or node.userData(LOOKUP_NOTE) is not None:
+        return False
+    if not scene_before_lookup(node.evalParm(config.DATA_PARM), hip_holds(hou.hipFile.path(), LOOKUP_PARM)):
+        return False
+    with hou.undos.disabler():
+        p.set(0)
+        node.setUserData(LOOKUP_NOTE, "off: the scene was saved before the parm existed")
+    return True
+
+
+LOOKUP_NOTE_BY_HAND = {1: "on: set by hand", 0: "off: set by hand"}
+
+
+def on_lookup_changed(node) -> None:
+    """The toggle's callback: the artist set "Fit lookup per lock" by hand, so the note says so (it said "off:
+    the scene was saved before the parm existed" after the artist had turned it on, t68). Any note means the
+    choice is made: OnLoaded / OnUpdated never judge the node again."""
+    p = node.parm(LOOKUP_PARM)
+    if p is not None:
+        with hou.undos.disabler():
+            node.setUserData(LOOKUP_NOTE, LOOKUP_NOTE_BY_HAND[1 if p.eval() else 0])
+
+
+def on_created(node) -> None:
+    """HDA OnCreated: a node made now keeps "Fit lookup per lock" at its default, on, whatever scene it is made
+    in (the note marks the choice made, so OnLoaded / OnUpdated never force it off), and the playbar
+    callback."""
+    try:
+        if node.parm(LOOKUP_PARM) is not None and node.userData(LOOKUP_NOTE) is None:
+            node.setUserData(LOOKUP_NOTE, "new node: the default")
+    except hou.Error:
+        pass
+    install_playbar_callback()
+
+
+def on_updated(node) -> None:
+    """HDA OnUpdated (the node's definition was replaced: a scene opened with another copy of the library
+    before this one took over, so this HDA's OnLoaded never ran for it): the same choice for a scene from
+    before "Fit lookup per lock" (`keep_old_lookup`)."""
+    if keep_old_lookup(node):
+        _status(f"{config.HDA_LABEL}: {LOOKUP_KEPT_TEXT}")
 
 
 OLD_REGIONS_WHY = "Regions were split by an older rule: Update regions"
@@ -1331,13 +1665,31 @@ def _key_parms(top) -> list[tuple[str, str]]:
 
 
 def capture_flag(groom: bool, wired: bool, deforming: bool) -> int:
-    """Whether a lock's strands are cooked with the Point Deform capture (`do_capture`, in the key).
-    Output 1 (Groom, groom=True) deforms whenever an animated hair mesh is wired (decided 2026-11-13:
-    a File Cache on it caches the shot whatever the view toggle); the display only while Shot deform is
-    on. Capturing every lock whenever the anim was wired, for the display too, held ~800 B a point
-    (Helen 5.9 GB after a cook, 9.5 GB after an edit, review t48), so the display's first Deform on
-    regrows its locks once."""
-    return int(wired and (groom or deforming))
+    """Whether a lock's strands are cooked with the Point Deform capture inside the per-lock loop
+    (`do_capture`, in the key): never (0), for either output.
+
+    Output 1 stopped in round 3 (t62) and the display with Shot deform on in t65: a lock's hair is the rest
+    strands whatever deforms it, one cache entry shared by the display at rest, the display deformed, output 1
+    and publish, and the capture a deform needs is made per lock from cached strands (`cook_groom_captured`),
+    kept apart (`capture_slot`), one a lock, only once a deformed output is read. Captured in the loop, every
+    state of every lock held 800 B a point (Helen: 3.3 GB live, 400 MB a stroke over 6 locks): no undo cache
+    limit could hold that, so with Shot deform on every undo regrew its locks, the cache stayed at 7.5 GB
+    after the deform was switched off (the captured strands were "what the node shows" in their own slot),
+    and switching Shot deform on regrew the whole groom once (t64 B6)."""
+    return 0
+
+
+CAPTURE_MODE = "+capture"
+
+
+def cache_mode(drag: bool, factor: float, capture: int) -> str:
+    """Pure: the LockCache slot of a lock's hair. A dragged lock's coarser strands, its preview and its full
+    hair are kept apart, and so are strands cooked with the Point Deform capture: with an anim wired the
+    Groom output captures and the display at rest does not, so the same lock has two keys at once. In one
+    slot of KEEP 2 those two filled it, and an undo found the hair from before the edit gone and regrew the
+    lock (0.65-1.5 s instead of 0.04 s, t57)."""
+    mode = "drag" if drag else "hair" if factor >= 1.0 else "hair_preview"
+    return mode + CAPTURE_MODE if capture else mode
 
 
 def cook_lock_keys(sop, groom: bool = False) -> None:
@@ -1349,9 +1701,9 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     excluded grows, at full density, never as a drag; a lock the display shows as full hair gets the
     same key, so both outputs share its cached strands.
 
-    Inputs: 0 the shown spines (`grows`), 1 PREVIEW (detail `factor`, `region_keys`: per lock id 9
-    floats summing its region prims), 2 SURFACE_KEYS (detail `surface_keys`: per piece 9 floats of its
-    lookup cloud)."""
+    Inputs: 0 the shown spines (`grows`), 1 PREVIEW (detail `factor`), 2 SURFACE_KEYS (detail
+    `surface_keys`: per piece 9 floats of its lookup cloud), 3 SCALP_REGIONS (each lock's region
+    fingerprint: grooming_masks.region_keys)."""
     import numpy as np
 
     top = sop.parent()
@@ -1370,7 +1722,11 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     # dragged locks: their real count (or the panel's fraction) with fewer points a strand; a node
     # built before drag_factor: the preview fraction
     drag_f = top.evalParm(PARM_DRAG_FACTOR) if top.parm(PARM_DRAG_FACTOR) is not None else light
-    rk = preview.floatListAttribValue("region_keys") if preview.findGlobalAttrib("region_keys") else ()
+    # each lock's region fingerprint (numpy, kept per split: grooming_masks.region_keys); input 3 SCALP_REGIONS
+    rk = grooming_masks.region_keys(top, ins[3].geometry()) if len(ins) > 3 and ins[3] is not None else {}
+    # density masks (mask_read): per lock its scope set and a digest of the factor on its own skin; the 9
+    # region sums would miss a stroke that moves density inside a region
+    mask_sets, mask_hashes, mask_adds = grooming_masks.lock_mask_keys(preview)
     sk = surface.floatListAttribValue("surface_keys") if surface.findGlobalAttrib("surface_keys") else ()
     # the mode is per lock (its `disp`, lock_shown): only its strand factor reaches the hair, so the
     # node's mode is not in the key and a lock keeps its cache when the node's Display changes
@@ -1380,6 +1736,27 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     parrays = [np.frombuffer(geo.pointFloatAttribValuesAsString(a.name()), dtype=np.float32).reshape(-1, a.size())
                for a in pattrs]
     rattrs = sorted((a for a in geo.primAttribs() if a.name() not in _KEY_SKIP_ATTRIBS), key=lambda a: a.name())
+    n_prims = geo.intrinsicValue("primitivecount")
+    columns = []                    # per attribute its values by prim, read in one call
+    for a in rattrs:
+        name, size = a.name(), a.size()
+        if a.isArrayType() or a.dataType() not in (hou.attribData.Float, hou.attribData.Int, hou.attribData.String):
+            columns.append((name, [prim.attribValue(a) for prim in geo.iterPrims()]))
+            continue
+        flat = (geo.primFloatAttribValues(name) if a.dataType() == hou.attribData.Float
+                else geo.primIntAttribValues(name) if a.dataType() == hou.attribData.Int
+                else geo.primStringAttribValues(name))
+        columns.append((name, list(flat) if size == 1 else [tuple(flat[i * size:(i + 1) * size]) for i in range(n_prims)]))
+
+    def column(name, default):
+        return list(geo.primIntAttribValues(name)) if geo.findPrimAttrib(name) is not None else [default] * n_prims
+
+    lock_ids, excluded = column(config.ATTR_LOCK_ID, -1), column("excluded", 0)
+    disps, pieces = column("disp", -1), column("piece", -1)
+    # each spine's points, from one read of the vertices (prim.points() per lock was 16 ms of every cook)
+    vertex_prim, vertex_point = grooming_masks._vertex_tables(geo)
+    order = np.argsort(vertex_prim, kind="stable")
+    spine_points = np.split(vertex_point[order], np.cumsum(np.bincount(vertex_prim, minlength=n_prims))[:-1])         if n_prims else []
     for name, default in (("cache_key", ""), ("cache_mode", ""), ("cached", 0), ("strand_factor", 1.0),
                           ("do_capture", 0), ("drag_seg", 0)):
         if geo.findPrimAttrib(name) is None:
@@ -1389,15 +1766,24 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
         if hou.nodeBySessionId(nid) is None:
             cache.drop_node(nid)
     sid = top.sessionId()
+    cache.begin(sid)                    # what this cook touches is in use: never dropped to make room
+    if not groom and not deforming:
+        # the display at rest reads neither its deformed hair nor the merge that fed the deform: left in
+        # the cache they were "what the node shows" (the last state of their slot is never dropped), 270 MB
+        # of Helen's limit gone for good once Shot deform had been on
+        cache.drop(sid, MERGED_LOCK, DEFORMED_MODE + "hair")
+        cache.drop(sid, MERGED_LOCK, MERGED_MODE + "hair_cache")
+    cache.set_limit(sid, undo_cache_limit(top))
     has_disp = geo.findPrimAttrib("disp") is not None
     preview_mode = config.DISPLAY_MODES.index("hair_preview")
-    keys, flags, factors, modes, captures, drags, grows = [], [], [], [], [], [], []
+    keys, flags, factors, modes, captures, drags, grows, msets, madds = [], [], [], [], [], [], [], [], []
+    akeys, aflags = [], []
     has_excluded = geo.findPrimAttrib("excluded") is not None
-    for prim in geo.iterPrims():
-        lid = prim.intAttribValue(config.ATTR_LOCK_ID)
+    for row in range(n_prims):
+        lid = lock_ids[row]
         if groom:   # every lock that is not excluded, whatever its eye, isolate or Display
-            grows.append(int(not (has_excluded and prim.intAttribValue("excluded"))))
-        disp = prim.intAttribValue("disp") if has_disp else config.DISPLAY_MODES.index(mode) \
+            grows.append(int(not (has_excluded and excluded[row])))
+        disp = disps[row] if has_disp else config.DISPLAY_MODES.index(mode) \
             if mode in config.DISPLAY_MODES else len(config.DISPLAY_MODES) - 1
         # hairgen's density x this (strand_factor): the preview fraction for a lock shown as preview or
         # being dragged, else full; publishing is always full
@@ -1409,22 +1795,34 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
             f = 1.0
         factors.append(f)
         drags.append(int(drag))
-        # a dragged lock's strands are coarser (DRAG_SEGMENTS): kept apart from its full hair
-        lock_mode = "drag" if drag else "hair" if f >= 1.0 else "hair_preview"
-        modes.append(lock_mode)
         # captured only where a deform reads it (capture_flag): the display while Shot deform is on,
         # the Groom output whenever an anim is wired (it cooks only when something reads it)
         cap = capture_flag(groom, wired, deforming)
         captures.append(cap)
-        piece = prim.intAttribValue("piece") if geo.findPrimAttrib("piece") else -1
-        idx = [p.number() for p in prim.points()]
-        parts: list[Any] = [shared, [(a.name(), prim.attribValue(a)) for a in rattrs]]
+        # a dragged lock's strands are coarser (DRAG_SEGMENTS): kept apart from its full hair, and
+        # captured strands apart from plain ones (cache_mode)
+        lock_mode = cache_mode(drag, f, cap)
+        modes.append(lock_mode)
+        piece = pieces[row]
+        idx = spine_points[row]
+        parts: list[Any] = [shared, [(name, values[row]) for name, values in columns]]
         parts.extend(arr[idx].tobytes() for arr in parrays)
-        parts.append(tuple(rk[lid * 9:lid * 9 + 9]) if lid >= 0 else ())
+        parts.append(rk.get(lid, ()))
         parts.append(tuple(sk[piece * 9:piece * 9 + 9]) if piece >= 0 else ())
         parts.append(f)
         parts.append(cap)
         parts.append(int(drag))
+        # the lock's automatic roots read everything above and no layer: their own key (cook_auto_store)
+        akey = lock_key(parts)
+        akeys.append(akey)
+        # 0 not kept, 1 kept, 2 kept with the order they are thinned in (thin_u: made the first time a layer
+        # covers the lock, thin_store)
+        held = cache.get(sid, lid, AUTO_MODE + lock_mode, akey)
+        aflags.append(0 if held is None else 2 if held.findPrimAttrib("thin_u") is not None else 1)
+        mset = mask_sets[lid] if 0 <= lid < len(mask_sets) else -1
+        msets.append(mset)
+        madds.append(float(mask_adds[lid]) if mset >= 0 and lid < len(mask_adds) else 0.0)
+        parts.append(mask_hashes[lid] if mset >= 0 else "")
         key = lock_key(parts)
         keys.append(key)
         flags.append(int(cache.has(sid, lid, lock_mode, key)))
@@ -1434,8 +1832,57 @@ def cook_lock_keys(sop, groom: bool = False) -> None:
     geo.setPrimIntAttribValues("do_capture", captures)
     geo.setPrimIntAttribValues("drag_seg", drags)
     geo.setPrimIntAttribValues("cached", flags)
+    # density layers: the lock's scope set (mask_skin reads mask_keep_<set> / mask_add_<set>; -1: no layer
+    # covers it, the v0.1 nodes alone) and the strands its second scatter lays out
+    geo.addAttrib(hou.attribType.Prim, "mask_set", -1)
+    geo.setPrimIntAttribValues("mask_set", msets)
+    geo.addAttrib(hou.attribType.Prim, "mask_add_n", 0.0)
+    geo.setPrimFloatAttribValues("mask_add_n", madds)
+    geo.addAttrib(hou.attribType.Prim, "auto_key", "")
+    geo.setPrimStringAttribValues("auto_key", akeys)
+    geo.addAttrib(hou.attribType.Prim, "auto_cached", 0)
+    geo.setPrimIntAttribValues("auto_cached", aflags)
     if groom:
         geo.setPrimIntAttribValues("grows", grows)
+
+
+AUTO_MODE = "auto:"      # LockCache slot (+ the hair's mode) of a lock's automatic roots, before the layers
+
+
+def _auto_slot(sop):
+    """(node session id, lock id, slot, key) of the automatic roots of the lock a loop node works on."""
+    spine = sop.inputs()[-1].geometry().prims()
+    if not spine:
+        return None
+    p = spine[0]
+    return (sop.parent().sessionId(), p.intAttribValue(config.ATTR_LOCK_ID),
+            AUTO_MODE + p.stringAttribValue("cache_mode"), p.stringAttribValue("auto_key"))
+
+
+def cook_auto_store(sop) -> None:
+    """Python SOP "auto_store" in the per-lock loop, after root_pick: keep the lock's automatic roots
+    (hairgen's scatter with the roots root_pick relocated) under its key without layers, and pass them on
+    unchanged. One state a lock: a stroke changes no automatic root, an edit of the lock replaces them.
+    Input 0 root_pick, input 1 the lock's keyed spine. "thin_store" is the same call after thin_order: the
+    entry is replaced by the roots with `thin_u` (only for a lock a layer covers, the first time)."""
+    slot = _auto_slot(sop)
+    if slot is None or not slot[3]:
+        return
+    cache = hair_cache()
+    cache.put_derived(*slot, sop.geometry().freeze(read_only=True))
+    cache.keep_only(slot[0], slot[1], slot[2], (slot[3],))
+
+
+def cook_auto_load(sop) -> None:
+    """Python SOP "auto_load": the lock's automatic roots from the cache (`lock_keys` saw them there:
+    `auto_cached`). Input 0 is the lock's keyed spine."""
+    slot = _auto_slot(sop)
+    geo = sop.geometry()
+    geo.clear()
+    got = hair_cache().get(*slot) if slot is not None else None
+    if got is None:
+        raise hou.NodeError("the lock's automatic roots are not in the cache")
+    geo.merge(got)
 
 
 def cook_cache_store(sop) -> None:
@@ -1504,7 +1951,8 @@ def geo_stats(node, lock_ids: Sequence[int] | None = None) -> dict:
         out["locks"] += 1
         out["prims"] += g.intrinsicValue("primitivecount")
         out["points"] += g.intrinsicValue("pointcount")
-        out["mode"] = out["mode"] or p.stringAttribValue("cache_mode")
+        # the panel reads "hair" / "hair_preview" / "drag": whether the strands carry the capture is not its
+        out["mode"] = out["mode"] or p.stringAttribValue("cache_mode").replace(CAPTURE_MODE, "")
         if not out["attribs"]:
             out["attribs"] = {
                 "point": sorted(a.name() for a in g.pointAttribs()),
@@ -1541,7 +1989,7 @@ def cook_hair_cache(sop) -> None:
             merged.merge(g)
         whole = merged.freeze(read_only=True)
         cache.drop(sid, MERGED_LOCK, which)
-        cache.put(sid, MERGED_LOCK, which, key, whole)
+        cache.put_derived(sid, MERGED_LOCK, which, key, whole)
     geo.merge(whole)
 
 
@@ -1556,6 +2004,166 @@ def _display_copy(g):
         if a is not None:
             a.destroy()
     return out
+
+
+GROOM_CAPTURE_MODE = "groom:capture"     # LockCache slot of a lock's captured strands (full hair) for a deform
+DEFORMED_MODE = "deformed:"              # LockCache slot (MERGED_LOCK) of the display's deformed hair, a state
+
+
+def capture_slot(hair_mode: str) -> str:
+    """The LockCache slot of a lock's captured strands by the slot of the hair they were made from: the full
+    hair's (output 1, and the display in Hair) is GROOM_CAPTURE_MODE, a preview's or a drag's its own, so the
+    display in Hair preview and output 1 do not take turns in the one capture a lock keeps."""
+    return GROOM_CAPTURE_MODE if hair_mode == "hair" else GROOM_CAPTURE_MODE + ":" + hair_mode
+
+
+def _deform_key(sop, keyed, anim) -> str:
+    """Key of the display's deformed hair: the locks that grow with the state of their hair, and what deforms
+    them (the animated mesh's points at this frame, the capture radius)."""
+    grows = keyed.findPrimAttrib("grows") is not None
+    locks = [(p.intAttribValue(config.ATTR_LOCK_ID), p.stringAttribValue("cache_mode"), p.stringAttribValue("cache_key"))
+             for p in keyed.iterPrims() if not grows or p.intAttribValue("grows")]
+    top = sop.parent()
+    radius = top.evalParm("deform_radius") if top.parm("deform_radius") is not None else 0.0
+    return lock_key([anim.pointFloatAttribValuesAsString("P"), radius, locks])
+
+
+def cook_deform_keys(sop) -> None:
+    """Python SOP "deform_keys" (display, Shot deform on): the detail `deform_key` (`_deform_key`) and
+    `deform_cached`: the deformed hair of exactly this state is in the cache, so the switch after it reads it
+    there and neither the capture loop nor the Point Deform cooks. An undo with Shot deform on then costs what
+    it costs at rest. Input 0 the keyed spines (`lock_keys`), input 1 ANIM_HAIR."""
+    keyed, anim = (i.geometry() for i in sop.inputs()[:2])
+    key = _deform_key(sop, keyed, anim)
+    geo = sop.geometry()
+    geo.clear()
+    geo.addAttrib(hou.attribType.Global, "deform_key", "")
+    geo.setGlobalAttribValue("deform_key", key)
+    geo.addAttrib(hou.attribType.Global, "deform_cached", 0)
+    geo.setGlobalAttribValue("deform_cached", int(hair_cache().has(sop.parent().sessionId(), MERGED_LOCK, DEFORMED_MODE + "hair", key)))
+
+
+def cook_deform_store(sop) -> None:
+    """Python SOP "deform_store": keep the display's deformed hair (input 0, without the capture) under
+    `deform_keys`' key (input 1) and pass it on. States of another frame are dropped first (they can never be
+    read again but by going back to that frame), and the states together hold at most the node's "Deformed
+    undo, GB" (`undo_deform_limit`; the user's decision on B6, 2026-11-15: memory, not a packed display), the
+    oldest going first; the state in use always stays. A state is the whole deformed groom, so it is large;
+    it is held apart from "Undo cache, GB" (`LockCache.APART`), so the hair's own states and the deformed ones
+    never push each other out, and neither limit is exceeded."""
+    keys = sop.inputs()[1].geometry()
+    key = keys.attribValue("deform_key")
+    cache = hair_cache()
+    top = sop.parent()
+    sid = top.sessionId()
+    slot = DEFORMED_MODE + "hair"
+    frame = hou.frame()
+    if _DEFORM_FRAME.get(sid) != frame:
+        cache.drop(sid, MERGED_LOCK, slot)
+        _DEFORM_FRAME[sid] = frame
+    cache.put_derived(sid, MERGED_LOCK, slot, key, sop.geometry().freeze(read_only=True))
+    cache.keep_bytes(sid, MERGED_LOCK, slot, undo_deform_limit(top))
+
+
+_DEFORM_FRAME: dict[int, float] = {}     # node session id -> the frame its deformed states are of
+
+
+def cook_deform_load(sop) -> None:
+    """Python SOP "deform_load": the display's deformed hair of this state from the cache (`deform_keys`,
+    input 0, saw it there)."""
+    geo = sop.geometry()
+    key = geo.attribValue("deform_key") if geo.findGlobalAttrib("deform_key") is not None else ""
+    geo.clear()
+    got = hair_cache().get(sop.parent().sessionId(), MERGED_LOCK, DEFORMED_MODE + "hair", key)
+    if got is None:
+        raise hou.NodeError("the deformed hair is not in the cache")
+    geo.merge(got)
+
+
+def cook_capture_keys(sop) -> None:
+    """Python SOP "groom_capture_keys": the keyed spines of output 1 (input 0, `groom_keys`) with
+    `capt_cached` per lock: its captured strands for this state of its hair are in the cache. Input 1 is
+    `groom_cache`: read so that every lock's hair is in the cache before the capture loop asks for it."""
+    geo = sop.geometry()
+    sop.inputs()[1].geometry()
+    cache = hair_cache()
+    sid = sop.parent().sessionId()
+    geo.addAttrib(hou.attribType.Prim, "capt_cached", 0)
+    geo.setPrimIntAttribValues("capt_cached", [
+        int(cache.has(sid, p.intAttribValue(config.ATTR_LOCK_ID), capture_slot(p.stringAttribValue("cache_mode")),
+                      p.stringAttribValue("cache_key")))
+        for p in geo.iterPrims()])
+
+
+def cook_capture_load(sop) -> None:
+    """Python SOP "groom_capture_load", first node of the capture loop: this lock's cached strands with the
+    contract's attributes only (what GROOM_REST keeps). Input 0 is the lock's keyed spine."""
+    geo = sop.geometry()
+    prims = geo.prims()
+    spine = prims[0] if prims else None
+    key = (spine.intAttribValue(config.ATTR_LOCK_ID), spine.stringAttribValue("cache_mode"),
+           spine.stringAttribValue("cache_key")) if spine is not None else None
+    geo.clear()
+    if key is None:
+        return
+    g = hair_cache().get(sop.parent().sessionId(), *key)
+    if g is None:
+        sop.addWarning("a lock's hair is not in the cache: read output 1 again")
+        return
+    geo.merge(g)
+    keep = set(config.GROOM_ATTRIBS)
+    for attribs in (geo.pointAttribs(), geo.primAttribs(), geo.vertexAttribs(), geo.globalAttribs()):
+        for a in attribs:
+            if a.name() != "P" and a.name() not in keep:
+                a.destroy()
+
+
+def cook_capture_store(sop) -> None:
+    """Python SOP "groom_capture_store", last node of the capture loop: keep this lock's captured strands
+    under its hair's key (GROOM_CAPTURE_MODE), then output nothing. Input 1 is the lock's keyed spine.
+    Stored with `put_derived`: a capture from cached strands, not a cook of the lock's hair."""
+    geo = sop.geometry()
+    prims = sop.inputs()[1].geometry().prims()
+    if prims:
+        p = prims[0]
+        sid, lid, key = sop.parent().sessionId(), p.intAttribValue(config.ATTR_LOCK_ID), p.stringAttribValue("cache_key")
+        # one capture a lock, outside the undo cache's count (size 0): the captures of a whole groom are
+        # larger than any sensible limit (Helen 3.3 GB) and would push every hair state out of it, while a
+        # capture is made again from cached strands in a moment. `undo_cache_usage` reports them apart
+        cache = hair_cache()
+        slot = capture_slot(p.stringAttribValue("cache_mode"))
+        cache.put_derived(sid, lid, slot, key, geo.freeze(read_only=True), size=0)
+        cache.keep_only(sid, lid, slot, (key,))
+    geo.clear()
+
+
+def cook_groom_captured(sop) -> None:
+    """Python SOP "groom_capture_all" (output 1's deform reads it; it cooks only when the deformed output is
+    read): every lock of the rest groom with its Point Deform capture to the rest hair mesh, merged.
+    Input 0 the capture loop (it stored what was missing), 1 the keyed spines (`groom_capture_keys`).
+
+    A lock is captured once per state of its hair (its cache key) and kept under GROOM_CAPTURE_MODE: an edit
+    captures the locks it changed, a frame change nothing. These entries are 800 B a point: only the one of
+    the hair's current state is kept per lock (an undo captures its locks again from their cached strands,
+    it regrows nothing)."""
+    geo = sop.geometry()
+    geo.clear()
+    keyed = sop.inputs()[1].geometry()
+    cache = hair_cache()
+    sid = sop.parent().sessionId()
+    grows = keyed.findPrimAttrib("grows") is not None
+    missing = 0
+    for p in keyed.iterPrims():
+        if grows and p.intAttribValue("grows") == 0:
+            continue
+        got = cache.get(sid, p.intAttribValue(config.ATTR_LOCK_ID), capture_slot(p.stringAttribValue("cache_mode")),
+                        p.stringAttribValue("cache_key"))
+        if got is None:
+            missing += 1
+        else:
+            geo.merge(got)
+    if missing:
+        sop.addWarning(f"{missing} locks have no capture in the cache: read output 1 again")
 
 
 def cook_hair_packed(sop) -> None:
@@ -1587,29 +2195,31 @@ def cook_hair_packed(sop) -> None:
         coloured = cache.get(sid, lid, mode, key)
         if coloured is None:
             tinted = _display_copy(g)
-            tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
-            tinted.setPrimFloatAttribValues("Cd", cd * len(tinted.iterPrims()))
+            # the colour is the attribute's default: every strand has it and no value is written per strand
+            # (a tuple of 3 floats a strand through Python was most of the 30 ms this node cost after an undo)
+            tinted.addAttrib(hou.attribType.Prim, "Cd", cd)
             coloured = tinted.freeze(read_only=True)
-            cache.put(sid, lid, mode, key, coloured)
+            cache.put_derived(sid, lid, mode, key, coloured)
         prim = geo.createPacked("PackedGeometry")
+        gkey = f"{key}|ghost|{alpha}"
+        # only the copies of the hair shown now are kept: a copy is made in a few ms from the lock's cached
+        # strands, so the copies of earlier states (as large as the hair itself, by the count) would only
+        # halve what the undo cache holds
+        cache.keep_only(sid, lid, mode, (key, gkey))
         if every or lid in strands:   # hair_packed_color gives them their colour, or the see-through grey
             prim.setEmbeddedGeometry(empty)
             unpacked.append(coloured)
         elif focus and lid not in focus:
             # out of focus: see-through grey, a copy made once per colour and kept like the coloured one
-            gkey = f"{key}|ghost|{alpha}"
             ghost = cache.get(sid, lid, mode, gkey)
             if ghost is None:
                 m = config.GHOST_MIX
                 gcd = tuple(c * (1 - m) + t * m for c, t in zip(cd, config.GHOST_TINT))
                 tinted = _display_copy(g)
-                tinted.addAttrib(hou.attribType.Prim, "Cd", (1.0, 1.0, 1.0))
-                tinted.addAttrib(hou.attribType.Prim, "Alpha", 1.0)
-                n = len(tinted.iterPrims())
-                tinted.setPrimFloatAttribValues("Cd", gcd * n)
-                tinted.setPrimFloatAttribValues("Alpha", (alpha,) * n)
+                tinted.addAttrib(hou.attribType.Prim, "Cd", gcd)
+                tinted.addAttrib(hou.attribType.Prim, "Alpha", float(alpha))
                 ghost = tinted.freeze(read_only=True)
-                cache.put(sid, lid, mode, gkey, ghost)
+                cache.put_derived(sid, lid, mode, gkey, ghost)
             prim.setEmbeddedGeometry(ghost)
         else:
             prim.setEmbeddedGeometry(coloured)
@@ -1629,8 +2239,14 @@ def cook_frozen_regions(sop) -> None:
 
 
 __all__ = [
+    "undo_cache_usage",
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",
     "undo", "set_isolate", "isolate_ids", "set_strands", "strand_ids", "frame_locks", "preflight", "geo_stats", "strands_all", "STRANDS_ALL", "cook_display", "set_focus", "focus_ids", "xray_opacity", "set_xray_opacity", "set_drag_preview", "deform_state", "deform_problem", "capture_flag", "set_shot_deform", "set_root_flip",
     "set_excluded",
+    # v0.2a density masks (apps/houdini/grooming_masks.py)
+    "mask_add", "mask_remove", "mask_move", "mask_set", "mask_fill", "mask_clear", "mask_invert", "mask_values",
+    "mask_cover", "mask_dropped",
+    "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush", "paint_enter", "paint_exit", "paint_layer",
+    "import_masks", "masks_from_publish",
 ]

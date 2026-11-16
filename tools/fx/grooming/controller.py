@@ -845,8 +845,8 @@ class GroomController:
         return new, sum(lk.match == "unsure" for lk in data.locks)
 
     def reassign_orphan(self, orphan_id: int, lock_id: int) -> bool:
-        """An orphan's settings go to *lock_id* (usually a lock detect marked new), and the orphan
-        leaves the list. The lock keeps its id and its name (the hair-mesh piece's name, which the next
+        """An orphan's settings and the density layers it owned go to *lock_id* (usually a lock detect
+        marked new), and the orphan leaves the list. The lock keeps its id and its name (the hair-mesh piece's name, which the next
         Detect matches by), so the geometry stays matched; its match is ok."""
         holder: dict = {}
 
@@ -855,10 +855,11 @@ class GroomController:
             lk = data.lock(lock_id)
             if orphan is None or lk is None:
                 return False
-            lk.overrides = dict(orphan.overrides)
-            lk.match = "ok"
-            data.orphans.remove(orphan)
+            # its settings and the density layers it owned (v0.2a: a layer owned by a lock follows it)
+            layers = data.reassign_orphan(orphan_id, lock_id) or []
             holder["text"] = f"{orphan.name or orphan.id} reassigned to lock {lk.id}"
+            if layers:
+                holder["text"] += f" with its {len(layers)} density layer{'s' if len(layers) != 1 else ''}"
 
         ok = self._edit(f"{UNDO_PREFIX}reassign orphan {orphan_id}", change)
         if ok:
