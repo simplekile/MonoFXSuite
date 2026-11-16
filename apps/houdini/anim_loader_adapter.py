@@ -22,7 +22,7 @@ __all__ = [
     "read_state", "write_state", "refresh", "create_loader", "cb_parm_changed", "cb_refresh",
     "cb_open_manager", "cb_apply_timeline", "apply_timeline", "menu_versions", "menu_anim_versions",
     "menu_anim_files", "menu_assets", "on_created", "find_loaders", "load_shot", "update", "set_asset",
-    "upgrade", "LoadResult",
+    "upgrade", "LoadResult", "on_loaded", "check_heavy_shot",
 ]
 
 _F_RE = re.compile(r"\$F(\d*)")
@@ -334,6 +334,8 @@ def load_shot(parent, root: str, shot: str, anim_version: str) -> LoadResult:
             merge = merge or _shot_merge(parent, shot)
             merge.setNextInput(node)
             result.created.append(node.name())
+    if result.created:
+        check_heavy_shot()
     return result
 
 
@@ -457,6 +459,14 @@ class HoudiniBackend:
         hou.undos.performUndo()
 
     @staticmethod
+    def heavy_message():
+        return None if hulls_on() else heavy_message()
+
+    @staticmethod
+    def set_hulls_only():
+        return set_hulls_only(True)
+
+    @staticmethod
     def assets(root: str) -> list[str]:
         return sorted(logic.list_asset_dirs(Path(root))) if root else []
 
@@ -525,3 +535,68 @@ def author_subd(node, stage) -> None:
         if choice.dicing is not None:
             UsdGeom.PrimvarsAPI(prim).CreatePrimvar(DICING_PRIMVAR, Sdf.ValueTypeNames.Float,
                                                     UsdGeom.Tokens.constant).Set(choice.dicing)
+
+
+def shot_subd_load() -> list[tuple[str, int]]:
+    """(loader, estimated viewport subdivision polygons) for every 2.2 geo loader in the scene."""
+    out = []
+    for n in find_loaders():
+        if n.type().name() != config.HDA_TYPE or n.evalParm(config.P_GEO_CAM) == 1:
+            continue
+        plan, faces = node_subd_plan(n)
+        out.append((n.name(), logic.subd_polygons(faces, plan)))
+    return out
+
+
+def heavy_message() -> str | None:
+    return logic.heavy_shot_message(shot_subd_load())
+
+
+def set_hulls_only(enable: bool = True) -> int:
+    """Draw Hulls Only on every Scene Viewer viewport (view state, not saved in the loaders)."""
+    n = 0
+    for pane in hou.ui.paneTabs():
+        if pane.type() == hou.paneTabType.SceneViewer:
+            for vp in pane.viewports():
+                vp.settings().setHullsOnly(enable)
+                n += 1
+    return n
+
+
+def hulls_on() -> bool:
+    for pane in hou.ui.paneTabs():
+        if pane.type() == hou.paneTabType.SceneViewer:
+            return all(vp.settings().hullsOnly() for vp in pane.viewports())
+    return False
+
+
+_CHECK_PENDING = False
+
+
+def check_heavy_shot() -> None:
+    """Shows the heavy-shot prompt when the shot's subdivision is heavy (UI only, once per burst of calls)."""
+    global _CHECK_PENDING
+    if hou is None or not hou.isUIAvailable() or _CHECK_PENDING:
+        return
+    _CHECK_PENDING = True
+
+    def run():
+        global _CHECK_PENDING
+        _CHECK_PENDING = False
+        try:
+            text = heavy_message()
+            if text and not hulls_on():
+                from tools.fx.anim_loader import ui
+
+                ui.show_heavy_shot_prompt(text, lambda: set_hulls_only(True))
+        except Exception as exc:  # never break a scene load for a hint
+            hou.ui.setStatusMessage(f"Anim Loader: {exc}", severity=hou.severityType.Warning)
+
+    import hdefereval
+
+    hdefereval.executeDeferred(run)
+
+
+def on_loaded(node) -> None:
+    """A scene with loaders opened: one heavy-shot check for the whole scene."""
+    check_heavy_shot()

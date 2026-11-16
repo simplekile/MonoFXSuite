@@ -334,3 +334,13 @@ def test_parse_subd_rules_drops_bad_entries():
 def test_subd_polygons_counts_catmull_only():
     plan = subd_plan(MESHES[:2], lookdev={MESHES[0]: "catmullClark"}, anim={}, rules=[])
     assert subd_polygons({MESHES[0]: 1000, MESHES[1]: 5000}, plan, level=2) == 16000
+
+
+def test_heavy_shot_message():
+    from tools.fx.anim_loader.logic import heavy_shot_message
+
+    assert heavy_shot_message([("char_Helen", 9_900_000), ("veh_Spaceship", 0)], threshold=5_000_000) == \
+        "Heavy shot: ~9.9 M subdivision polygons (char_Helen)"
+    assert heavy_shot_message([("a", 3_000_000), ("b", 2_500_000), ("c", 1_000_000), ("d", 900_000)],
+                              threshold=5_000_000) == "Heavy shot: ~7.4 M subdivision polygons (a, b, c, +1)"
+    assert heavy_shot_message([("a", 4_000_000)], threshold=5_000_000) is None

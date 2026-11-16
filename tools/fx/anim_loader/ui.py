@@ -455,6 +455,11 @@ class AnimLoaderManager(QWidget):
         bar, b = self._bar()
         bar.setObjectName("actions")
         b.addStretch(1)
+        self.hulls_button = self._button("Draw Hulls Only", STYLE_GHOST)
+        self.hulls_button.setToolTip("Lighter viewport to work in for a heavy shot; it does not lower memory")
+        self.hulls_button.clicked.connect(self._hulls)
+        self.hulls_button.hide()
+        b.addWidget(self.hulls_button)
         self.undo_button = self._button("Undo", STYLE_GHOST)
         self.undo_button.setToolTip("Houdini's undo of the last change")
         self.undo_button.clicked.connect(self._undo)
@@ -574,7 +579,14 @@ class AnimLoaderManager(QWidget):
         n_old = len(self.ctl.legacy_paths())
         self.upgrade_button.setText(self.ctl.upgrade_label())
         self.upgrade_button.setVisible(n_old > 0)
-        self.result.setText(self.ctl.message)
+        heavy = None
+        if getattr(self.backend, "heavy_message", None):
+            try:
+                heavy = self.backend.heavy_message()
+            except Exception:
+                heavy = None
+        self.hulls_button.setVisible(bool(heavy))
+        self.result.setText(self.ctl.message or (heavy + " · Draw Hulls Only makes the viewport lighter" if heavy else ""))
 
     def _selection_changed(self, view: QListWidget) -> None:
         self.ctl.selection = [i.data(ROLE_ROW).node_path for i in view.selectedItems() if i.data(ROLE_ROW)]
@@ -609,6 +621,11 @@ class AnimLoaderManager(QWidget):
             self._show_rows()
             self.refresh()
         return go
+
+    def _hulls(self) -> None:
+        n = self.backend.set_hulls_only()
+        self.ctl.message = f"Draw Hulls Only on in {n} viewport{'s' if n != 1 else ''} (lighter to work in; memory stays)."
+        self._update_bar()
 
     def _undo(self) -> None:
         undo = getattr(self.backend, "undo", None)
@@ -700,3 +717,100 @@ def open_manager() -> AnimLoaderManager:
     _WINDOW.resize(int(1000 * _WINDOW.s), int(640 * _WINDOW.s))
     _WINDOW.show()
     return _WINDOW
+
+
+# --- heavy-shot prompt (the user's decision, 2026-11-17) ----------------------------------------------
+# Non-modal: a modal box would hold Houdini and the MCP bridge (and a farm job) until someone clicks.
+# Draw Hulls Only makes the viewport light to work in; it does NOT lower memory (measured: Helen catmullClark
+# 12.8 GB -> 19.5 GB when turned on, 13 GB when on from the start).
+
+def prompt_allowed() -> bool:
+    return _load_prefs().get("hulls_prompt", True) is not False
+
+
+class HeavyShotPrompt(QWidget):
+    """A small floating panel: the heavy-shot line, Draw Hulls Only, Later, Don't ask again; hides itself."""
+
+    def __init__(self, text: str, on_hulls, parent: QWidget | None = None, hide_after_ms: int = 20000) -> None:
+        from PySide6.QtWidgets import QCheckBox
+
+        super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
+        self.setObjectName("AnimLoaderPrompt")
+        self.setWindowModality(Qt.WindowModality.NonModal)
+        self.setStyleSheet(f"QWidget#AnimLoaderPrompt {{ background: {BG_RAISED}; border: 1px solid {LINE};"
+                           f" border-radius: 10px; }}" + STYLE_MENU)
+        self._on_hulls = on_hulls
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 14, 16, 14)
+        lay.setSpacing(8)
+        title = QLabel(text)
+        title.setWordWrap(True)
+        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: {FS_META}px; font-weight: 600; background: transparent;")
+        lay.addWidget(title)
+        hint = QLabel("The viewport may be slow. Draw Hulls Only makes it lighter to work in; it does not lower memory.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;")
+        lay.addWidget(hint)
+        row = QHBoxLayout()
+        self.dont_ask = QCheckBox("Don't ask again")
+        self.dont_ask.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;")
+        row.addWidget(self.dont_ask)
+        row.addStretch(1)
+        self.later_button = QPushButton("Later")
+        self.later_button.setStyleSheet(STYLE_GHOST)
+        self.hulls_button = QPushButton("Draw Hulls Only")
+        self.hulls_button.setStyleSheet(STYLE_PRIMARY)
+        for b in (self.later_button, self.hulls_button):
+            row.addWidget(b)
+        lay.addLayout(row)
+        self.later_button.clicked.connect(self._close)
+        self.hulls_button.clicked.connect(self._hulls)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(hide_after_ms)
+        self._timer.timeout.connect(self._close)
+        self.setMinimumWidth(380)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._timer.start()
+
+    def _remember(self) -> None:
+        if self.dont_ask.isChecked():
+            prefs = _load_prefs()
+            prefs["hulls_prompt"] = False
+            _save_prefs(prefs)
+
+    def _close(self) -> None:
+        self._remember()
+        self.hide()
+
+    def _hulls(self) -> None:
+        self._remember()
+        try:
+            self._on_hulls()
+        finally:
+            self.hide()
+
+
+_PROMPT: HeavyShotPrompt | None = None
+
+
+def show_heavy_shot_prompt(text: str, on_hulls) -> None:
+    """Shows the prompt at the bottom right of Houdini's main window (Houdini only, with a UI)."""
+    global _PROMPT
+    import hou
+
+    if not hou.isUIAvailable() or not prompt_allowed():
+        return
+    main = hou.qt.mainWindow()
+    if _PROMPT is not None:
+        try:
+            _PROMPT.close()
+        except RuntimeError:
+            pass
+    _PROMPT = HeavyShotPrompt(text, on_hulls, main)
+    _PROMPT.adjustSize()
+    geo = main.geometry()
+    _PROMPT.move(geo.right() - _PROMPT.width() - 24, geo.bottom() - _PROMPT.height() - 48)
+    _PROMPT.show()

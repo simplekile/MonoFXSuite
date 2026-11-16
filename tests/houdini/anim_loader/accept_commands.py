@@ -124,6 +124,15 @@ def accept_asset_parm_picks_versions(net):
           node.evalParm(config.P_STATUS))
 
 
+def accept_heavy_shot(net):
+    loads = dict(ad.shot_subd_load())
+    check("subd load counted per loader", loads.get("hero_robot", 0) > 0 and loads.get("char_Robot_2", -1) >= 0,
+          str(loads))
+    check("small shot: no heavy message", ad.heavy_message() is None)
+    ad.check_heavy_shot()  # no UI in hython: must do nothing and raise nothing
+    check("no prompt without a UI", True)
+
+
 def main():
     if OUT.exists():
         shutil.rmtree(OUT)
@@ -132,7 +141,8 @@ def main():
     hou.setFps(24)
     net = hou.node("/stage")
     for step in (accept_load_shot_twice, accept_no_move, accept_load_ambiguous, accept_update_one_undo,
-                 accept_upgrade_21, accept_upgrade_21_defaults, accept_asset_parm_picks_versions):
+                 accept_upgrade_21, accept_upgrade_21_defaults, accept_asset_parm_picks_versions,
+                 accept_heavy_shot):
         try:
             step(net)
         except Exception:

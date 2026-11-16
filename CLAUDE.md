@@ -220,12 +220,17 @@
   frame's samples beat a clip, and a same-layer anim beats a cloth clip. That gives motion blur; a cache without
   time samples falls back to Sublayer `$F` (no blur, said on the node).
 - A locked LOP HDA makes its inner nodes on first cook: `node.children()` is empty before.
-- Meshes the anim file authors no `subdivisionScheme` on get `none` (Python LOP `render_only`, after the graft).
-  Blender's anim publish wrote none, USD's fallback is `catmullClark`, and Houdini GL subdivided whole shots:
-  sh025 v005 went past 45 GB and crashed in `GR_OSDSubdSurfaceVK` (Helen alone 12.5 GB with a plain Sublayer,
-  2.5 GB with `none`; the shot 3.2 GB). The anim file decides, not lookdev: Helen's lookdev V009 carries
-  `catmullClark` from a Houdini edit layer. Read the anim file itself, not the grafted stage: Graft Stages
-  flattens and writes the fallback as a value. Textures were not the cause (same 2.5 GB with viewport materials).
+- Subdivision per mesh (the user's decision, 2026-11-17; `logic.subd_plan`, `adapter.author_subd` from the
+  `render_only` Python LOP): a shot rule on the loader (hidden `mx_subd_rules`, JSON `pattern` from `/<instance>`,
+  `scheme` publish / none / catmullClark, `dicing`; a later rule wins) > lookdev publish > anim publish > `none`.
+  Never USD's fallback `catmullClark`: it made Houdini GL subdivide whole shots (sh025 v005 past 45 GB, crash in
+  `GR_OSDSubdSurfaceVK`; Helen alone 12.5 GB with a plain Sublayer, 2.5 GB with `none`). Opinions are read from
+  the publish files themselves with `TraverseAll` (lookdev holds overs): Graft Stages flattens and writes the
+  fallback as a value. Dicing is `primvars:karma:object:dicingquality` (render only).
+- Heavy shot (over `logic.HEAVY_SUBD_POLYGONS`, faces x 16): a non-modal prompt after Load shot and on scene
+  load (HDA OnLoaded, one check per burst, UI only) offers Draw Hulls Only for every viewport; "Don't ask again"
+  is a viewer pref; the manager keeps the line and a button. Draw Hulls Only makes the viewport lighter to work
+  in but does NOT lower memory (Helen catmullClark 12.8 GB -> 19.5 GB when turned on; 13 GB on from the start).
 - Lookdev and groom have "Show in Viewport" (on by default). Off: bindings move to `material:binding:full` (Karma
   only) and groom curves get purpose `render`.
 - Manager window (`ui.py` view, `controller.py` no Qt, `HoudiniBackend` in the adapter): List and Grid (the

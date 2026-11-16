@@ -493,3 +493,16 @@ def subd_polygons(face_counts: dict[str, int], plan: dict[str, SubdChoice], leve
     """About how many polygons the viewport makes for the subdivided meshes (each level x4)."""
     return sum(n * 4 ** level for mesh, n in face_counts.items()
                if plan.get(mesh) and plan[mesh].scheme != SUBD_NONE)
+
+
+HEAVY_SUBD_POLYGONS = 5_000_000  # above this the viewport gets slow: suggest Draw Hulls Only
+
+
+def heavy_shot_message(loads: list[tuple[str, int]], threshold: int = HEAVY_SUBD_POLYGONS) -> str | None:
+    """The heavy-shot line from (instance, estimated subdivision polygons), or None under the threshold."""
+    heavy = sorted([(n, p) for n, p in loads if p > 0], key=lambda x: -x[1])
+    total = sum(p for _, p in heavy)
+    if total <= threshold:
+        return None
+    names = [n for n, _ in heavy[:3]] + ([f"+{len(heavy) - 3}"] if len(heavy) > 3 else [])
+    return f"Heavy shot: ~{total / 1e6:.1f} M subdivision polygons ({', '.join(names)})"

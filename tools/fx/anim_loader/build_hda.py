@@ -75,6 +75,7 @@ if root:
 
 PYTHON_MODULE = "from apps.houdini.anim_loader_adapter import *\n"
 ON_CREATED = "from apps.houdini import anim_loader_adapter\nanim_loader_adapter.on_created(kwargs['node'])\n"
+ON_LOADED = "from apps.houdini import anim_loader_adapter\nanim_loader_adapter.on_loaded(kwargs['node'])\n"
 
 
 def _node(parent, kind, name, inputs=(), **parms):
@@ -261,6 +262,8 @@ def build(out_path: str = DEFAULT_OUT) -> str:
     d.setExtraFileOption("PythonModule/IsPython", True)
     d.addSection("OnCreated", ON_CREATED)
     d.setExtraFileOption("OnCreated/IsPython", True)
+    d.addSection("OnLoaded", ON_LOADED)
+    d.setExtraFileOption("OnLoaded/IsPython", True)
     d.save(out_path, hda, create_backup=False)
     hda.destroy()
     for f in set(glob.glob(os.path.join(backup_dir, "*"))) - had_backups:
