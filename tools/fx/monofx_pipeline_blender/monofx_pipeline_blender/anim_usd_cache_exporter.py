@@ -1794,7 +1794,7 @@ class UsdAnimCacheExportSession:
 
 
 class UsdAnimCacheMultiExportSession:
-    """Queue one USD file per linked rig (Maya-style), camera on the last job."""
+    """Queue one USD file per linked rig, camera on the last job."""
 
     def __init__(
         self,

@@ -1,5 +1,5 @@
 """
-Plan per-rig anim USD geo export jobs (Maya-style one file per linked rig).
+Plan per-rig anim USD geo export jobs (one file per linked rig).
 """
 
 from __future__ import annotations

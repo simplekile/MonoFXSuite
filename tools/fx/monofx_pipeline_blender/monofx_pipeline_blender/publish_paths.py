@@ -407,7 +407,7 @@ def next_blend_save_path(
 
 
 _SHOT_RE = re.compile(r"^(sh\d{3,}[a-z0-9]*)$", re.IGNORECASE)
-# Task folder: 01_anim (shots), 06_anim (assets), etc. — Maya parity.
+# Task folder: 01_anim (shots), 06_anim (assets), etc.
 _ANIM_TASK_RE = re.compile(r"^\d{2}_anim$", re.IGNORECASE)
 
 ANIM_PUBLISH_PATH_HINT = (
@@ -436,7 +436,7 @@ def find_anim_task_index(parts: list[str]) -> Optional[int]:
 
 def resolve_anim_publish_root_from_scene(scene_path: Path) -> Optional[Path]:
     """
-    ``.../<NN_anim>/publish`` inferred from a saved .blend path (Maya parity).
+    ``.../<NN_anim>/publish`` inferred from a saved .blend path.
 
     Examples:
       ``.../02_shots/sh002/01_anim/blender/work/foo.blend``

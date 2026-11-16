@@ -1,7 +1,7 @@
 """
 Rig library scan on disk — no DCC imports.
 
-Shared by Maya Reference Manager and Blender rig linking.
+Used by Blender rig linking; defaults are the Blender rig paths.
 """
 
 from __future__ import annotations
@@ -22,7 +22,6 @@ from .project_layout import (
 Mode = Literal["publish", "work"]
 
 DEFAULT_PUBLISH_SUBPATH = "02_rigging/02_build_rig/publish"
-DEFAULT_MAYA_WORK_SUBPATH = "02_rigging/02_build_rig/maya/work"
 DEFAULT_BLENDER_WORK_SUBPATH = "02_rigging/02_build_rig/blender/work"
 THUMB_RELATIVE = ".meta/thumb_rig.user.png"
 
@@ -34,7 +33,6 @@ KNOWN_DISPLAY_PREFIXES: Tuple[str, ...] = (
     "graphic_",
 )
 
-MAYA_EXTENSIONS: Tuple[str, ...] = (".ma", ".mb")
 BLENDER_EXTENSIONS: Tuple[str, ...] = (".blend",)
 
 
@@ -65,17 +63,12 @@ def _normalize_extensions(extensions: Sequence[str]) -> Tuple[str, ...]:
             e = f".{e}"
         if e not in out:
             out.append(e)
-    return tuple(out) if out else MAYA_EXTENSIONS
+    return tuple(out) if out else BLENDER_EXTENSIONS
 
 
 def extensions_for_path(file_path: str) -> Tuple[str, ...]:
-    """Infer DCC extensions from a rig file path suffix."""
-    suffix = Path(str(file_path).strip()).suffix.lower()
-    if suffix == ".blend":
-        return BLENDER_EXTENSIONS
-    if suffix in (".ma", ".mb"):
-        return MAYA_EXTENSIONS
-    return MAYA_EXTENSIONS
+    """Rig file extensions to scan for *file_path* (only Blender rigs are supported)."""
+    return BLENDER_EXTENSIONS
 
 
 def thumb_path_for_asset(
@@ -127,8 +120,8 @@ def scan_rigs(
     mode: Mode,
     *,
     publish_subpath: str = DEFAULT_PUBLISH_SUBPATH,
-    work_subpath: str = DEFAULT_MAYA_WORK_SUBPATH,
-    extensions: Sequence[str] = MAYA_EXTENSIONS,
+    work_subpath: str = DEFAULT_BLENDER_WORK_SUBPATH,
+    extensions: Sequence[str] = BLENDER_EXTENSIONS,
 ) -> List[RigOffer]:
     """
     List rig files under ``project_root/01_assets/<assets_group>/<asset>/`` for one group.
@@ -295,11 +288,7 @@ def _rig_entries_for_same_scene_rig(
 
     exts = _normalize_extensions(extensions) if extensions is not None else extensions_for_path(file_path)
     if work_subpath is None:
-        work_subpath = (
-            DEFAULT_BLENDER_WORK_SUBPATH
-            if exts == BLENDER_EXTENSIONS
-            else DEFAULT_MAYA_WORK_SUBPATH
-        )
+        work_subpath = DEFAULT_BLENDER_WORK_SUBPATH
 
     group, asset_folder = loc
     offers = scan_rigs(

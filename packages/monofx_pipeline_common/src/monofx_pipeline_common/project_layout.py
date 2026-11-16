@@ -1,7 +1,7 @@
 """
-Project folder layout shared by pipeline tools (Maya, Houdini, etc.).
+Project folder layout shared by pipeline tools (Houdini, Blender).
 
-Pure pathlib — no Maya / hou imports.
+Pure pathlib — no hou / bpy imports.
 """
 
 from __future__ import annotations
@@ -104,7 +104,7 @@ def parse_asset_from_project_path(
     return ``(group, asset_folder_name)``; else ``None``.
 
     Uses strict ``relative_to`` first, then a loose scan for a ``01_assets`` segment
-    (case-insensitive) so Maya / Windows paths still match when ``resolve()`` differs.
+    (case-insensitive) so Windows paths still match when ``resolve()`` differs.
     """
     assets_dir = project_root / _ASSETS
     try:
