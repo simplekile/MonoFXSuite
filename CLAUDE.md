@@ -250,6 +250,16 @@
   in but does NOT lower memory (Helen catmullClark 12.8 GB -> 19.5 GB when turned on; 13 GB on from the start).
 - Lookdev and groom have "Show in Viewport" (on by default). Off: bindings move to `material:binding:full` (Karma
   only) and groom curves get purpose `render`.
+- Manager layout R-A (the user's pick, 2026-11-17, after the Monos UI rules in `products/monos/monos/docs/`:
+  browse first, act second; the inspector is information, shown only for a selection; actions in context; no combo
+  box for a one-shot pick). Top bar: title, project crumb (menu: scene's, loaders', recent projects, Browse...), shot
+  crumb (menu), List / Grid, Load shot (menu of the shot's versions). A status line (what the primary does, count;
+  heavy-shot note + Draw Hulls Only on its right, never the headline or the primary). List = a table, 40 px rows,
+  Anim / Lookdev / Groom / Cloth / Subd columns, "–" for nothing published, colour only for work (behind, missing,
+  asset?; #6f9aff on a selected row for contrast); narrow: versions on a second line under the first header's column
+  names. Inspector (`InspectorPanel`, fixed ~360 px, under the list when narrow): name, node and versions, meshes
+  read-only; scheme / dicing / clear / apply on the meshes' right-click menu. Result line in the action bar (above
+  the buttons when narrow). Style rules for item views carry an objectName: Houdini's sheet painted the tree grey.
 - Manager window (`ui.py` view, `controller.py` no Qt, `HoudiniBackend` in the adapter): List and Grid (the
   user's pick), Monos asset thumbnails (`thumbnail.user.png`, else `.meta/thumb_lookdev.user.png`, else the
   newest `.meta/thumb_*.user.png`), Load shot finds existing loaders by user data `monofx_anim_loader`

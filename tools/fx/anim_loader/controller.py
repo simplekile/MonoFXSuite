@@ -157,9 +157,6 @@ class Controller:
             paths = set(self.retarget_paths())
             shots = sorted({r.shot for r in self._rows if r.node_path in paths})
             parts.insert(0, _plural(len(paths), "loader") + f" from {', '.join(shots)}, not {self.target_shot}")
-        heavy = self.heavy_polygons()
-        if heavy and not behind and not legacy:
-            parts.insert(0, f"Heavy shot: ~{heavy / 1e6:.1f} M subdivision polygons")
         return ", ".join(parts) if parts else "All up to date"
 
     def heavy_polygons(self) -> int:
@@ -187,7 +184,7 @@ class Controller:
 
     def primary_action(self) -> tuple[str, str] | None:
         """The one thing worth doing now, most important first: retarget loaders copied from another shot, update,
-        upgrade 2.1 loaders, Draw Hulls Only."""
+        upgrade 2.1 loaders. (A heavy shot is a note with Draw Hulls Only on the status line, not a primary.)"""
         if self.retarget_paths() and not self.selection:
             return "retarget", self.retarget_label()
         if self.selection:
@@ -201,8 +198,6 @@ class Controller:
             return "update", f"Update {n} behind"
         if self.legacy_paths():
             return "upgrade", self.upgrade_label()
-        if self.heavy_polygons() and hasattr(self.backend, "set_hulls_only"):
-            return "hulls", "Draw Hulls Only"
         return None
 
     def primary_label(self) -> str:

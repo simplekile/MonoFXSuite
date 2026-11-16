@@ -208,13 +208,12 @@ def test_primary_action_follows_what_matters_most():
     plan["faces"]["/Geo/Base_grp/Body_grp/Geo_Body"] = 1_000_000  # 1 M faces x 16 > 5 M polygons
     b.subd = lambda infos: {"/stage/b": plan}
     c.refresh()
-    assert c.primary_action() == ("hulls", "Draw Hulls Only")
-    assert c.headline().startswith("Heavy shot: ~")
-    c.primary()
-    assert b.calls[-1] == "hulls" and "memory" in c.message
+    assert c.heavy_polygons() > 5_000_000                 # a heavy shot is a note on the status line (the window),
+    assert c.primary_action() is None                      # never the primary nor the headline
+    assert c.headline() == "1 needs an asset"
     b.hulls_on = lambda: True
     c.refresh()
-    assert c.primary_action() is None and c.headline() == "1 needs an asset"
+    assert c.heavy_polygons() == 0
 
 
 def test_retarget_follows_the_scene_shot_or_the_selection():
