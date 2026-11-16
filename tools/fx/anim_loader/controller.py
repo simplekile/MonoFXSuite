@@ -75,6 +75,7 @@ class Controller:
         self._status: dict[str, Status] = {}
         self._token = 0
         self._rows: list[Row] = []
+        self._thumbs: dict[str, str] | None = None
 
     # --- reading ---------------------------------------------------------------------------------
     def begin_scan(self) -> tuple[int, list[LoaderInfo]]:
@@ -83,17 +84,24 @@ class Controller:
         self._infos = self.backend.loaders()
         return self._token, list(self._infos)
 
-    def finish_scan(self, token: int, status: dict[str, Status]) -> bool:
-        """Takes a scan's result unless a newer scan started since; True when taken."""
+    def finish_scan(self, token: int, status: dict[str, Status], thumbs: dict[str, str] | None = None) -> bool:
+        """Takes a scan's result (status and thumbnail paths, both read off the main thread) unless a newer scan
+        started since; True when taken."""
         if token != self._token:
             return False
         self._status = status
+        self._thumbs = thumbs
         self._rows = self._make_rows()
         return True
 
+    def scan_job(self, infos: list[LoaderInfo]) -> tuple[dict[str, Status], dict[str, str]]:
+        """Everything a scan reads from disk; safe on a worker thread."""
+        return self.backend.scan(infos), {i.path: self.backend.thumbnail(i.state) for i in infos if i.state}
+
     def refresh(self) -> None:
+        """Reads and scans now, on the calling thread (tests; the window scans on its worker)."""
         token, infos = self.begin_scan()
-        self.finish_scan(token, self.backend.scan(infos))
+        self.finish_scan(token, *self.scan_job(infos))
 
     def _make_rows(self) -> list[Row]:
         rows = []
@@ -105,7 +113,7 @@ class Controller:
                 continue
             rows.append(Row(info.path, st.shot, st.instance_name, st.kind, st.asset,
                             self._status.get(info.path, {}), info.legacy,
-                            self.backend.thumbnail(st), {"anim": st.anim_version, **st.versions}))
+                            (self._thumbs or {}).get(info.path, ""), {"anim": st.anim_version, **st.versions}))
         return sorted(rows, key=lambda r: (r.legacy, r.shot, r.kind == "cam", r.instance.lower()))
 
     def rows(self) -> list[Row]:
@@ -152,7 +160,6 @@ class Controller:
             return
         lines = self.backend.update(paths, ALL_PARTS)
         self.message = "; ".join(lines) if lines else "Already up to date."
-        self.refresh()
 
     def update_all(self) -> None:
         self._update(self.behind_paths())
@@ -166,15 +173,12 @@ class Controller:
     def load_shot(self, root: str, shot: str, version: str) -> None:
         created, kept = self.backend.load_shot(root, shot, version)
         self.message = f"Loaded {shot} {version}: created {len(created)}, kept {len(kept)}."
-        self.refresh()
 
     def upgrade_all(self) -> None:
         paths = self.legacy_paths()
         n = self.backend.upgrade(paths) if paths else 0
         self.message = f"Upgraded {_plural(n, 'loader')} to 2.2." if n else "No old loaders."
-        self.refresh()
 
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)
         self.message = f"{path.rsplit('/', 1)[-1]} is now {asset}."
-        self.refresh()

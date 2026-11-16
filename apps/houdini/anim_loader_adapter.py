@@ -41,12 +41,18 @@ def _set(node, name: str, value) -> None:
         p.set(value)
 
 
+def _version(node, name: str) -> str:
+    """A version parm's value when it is a version (``v003``); "" for 2.1's "select version" and the like."""
+    value = _s(node, name)
+    return value if re.match(r"^v\d+$", value, re.IGNORECASE) else ""
+
+
 def read_state(node) -> LoaderState:
     """The node's parms as a LoaderState (no disk access)."""
     enabled = {part: bool(node.evalParm(config.P_ENABLE[part])) for part in logic.PARTS}
-    versions = {part: _s(node, config.P_VERSION[part]) for part in logic.PARTS}
+    versions = {part: _version(node, config.P_VERSION[part]) for part in logic.PARTS}
     kind = "cam" if node.evalParm(config.P_GEO_CAM) == 1 else "geo"
-    return LoaderState(_s(node, config.P_ROOT), _s(node, config.P_SHOT), _s(node, config.P_ANIM_VERSION),
+    return LoaderState(_s(node, config.P_ROOT), _s(node, config.P_SHOT), _version(node, config.P_ANIM_VERSION),
                        _s(node, config.P_ANIM_FILE), _s(node, config.P_ASSET) or None,
                        _s(node, config.P_INSTANCE), kind, enabled, versions)
 
@@ -178,9 +184,11 @@ def on_created(node) -> None:
 
 def cb_parm_changed(kwargs: dict) -> None:
     node = kwargs["node"]
-    if kwargs.get("parm_name") == config.P_ANIM_FILE or (kwargs.get("parm") is not None
-                                                          and kwargs["parm"].name() == config.P_ANIM_FILE):
+    name = kwargs.get("parm_name") or (kwargs["parm"].name() if kwargs.get("parm") is not None else "")
+    if name == config.P_ANIM_FILE:
         _new_anim_file(node)
+    elif name == config.P_ASSET:  # the artist named the asset: its parts start at their newest, as in the manager
+        write_state(node, logic.with_latest(read_state(node), logic.PARTS))
     refresh(node)
 
 

@@ -514,7 +514,7 @@ class AnimLoaderManager(QWidget):
     def refresh(self) -> None:
         """Reads the loaders now (main thread) and scans the disk on the worker thread."""
         token, infos = self.ctl.begin_scan()
-        self._pending = (token, self._pool.submit(self.backend.scan, infos))
+        self._pending = (token, self._pool.submit(self.ctl.scan_job, infos))
         self._poll.start()
 
     def wait(self, timeout: float = 10.0) -> None:
@@ -529,7 +529,7 @@ class AnimLoaderManager(QWidget):
         token, fut = self._pending
         self._pending = None
         self._poll.stop()
-        if fut.exception() is None and self.ctl.finish_scan(token, fut.result()):
+        if fut.exception() is None and self.ctl.finish_scan(token, *fut.result()):
             self._show_rows()
 
     def _show_rows(self) -> None:

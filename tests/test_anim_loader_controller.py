@@ -130,3 +130,22 @@ def test_primary_label_when_nothing_is_behind():
     c.backend.status["/stage/c"]["anim"] = OK
     c.refresh()
     assert c.primary_label() == "Nothing to update"
+
+
+def test_commands_do_not_scan_on_their_own():
+    c = _ctl()
+    scans = []
+    c.backend.scan = lambda infos: scans.append(1) or {}
+    c.update_all()
+    c.load_shot("P:/proj", "sh900", "v002")
+    c.upgrade_all()
+    c.set_asset("/stage/d", "char_Robot")
+    assert scans == []  # the window rescans on its worker thread
+
+
+def test_thumbnails_come_with_the_scan():
+    c = Controller(FakeBackend())
+    c.backend.thumbnail = lambda state: (_ for _ in ()).throw(AssertionError("thumbnail on the main thread"))
+    token, infos = c.begin_scan()
+    c.finish_scan(token, FakeBackend().scan(infos), {"/stage/b": "t/helen.png"})
+    assert next(r for r in c.rows() if r.node_path == "/stage/b").thumb == "t/helen.png"

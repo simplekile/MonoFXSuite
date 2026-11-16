@@ -102,6 +102,28 @@ def accept_upgrade_21(net):
     check("upgraded node loads under /char_Robot", bool(n.stage().GetPrimAtPath("/char_Robot/Geo")))
 
 
+def accept_upgrade_21_defaults(net):
+    old = net.createNode("mono_anim_loader::2.1", "old_defaults")
+    anim = ROOT / "02_shots/sh900/01_anim/publish/v001/geo_prop_CoralSet_001.usd"
+    for k, v in (("mx_project_root", str(ROOT)), ("mx_shot", "sh900"), ("mx_anim_usd", anim.as_posix())):
+        old.parm(k).set(v)  # versions left at 2.1's "select version"
+    n = ad.upgrade([old])[0]
+    check("2.1 default versions become real ones", (n.evalParm("mx_anim_version"),
+                                                    n.evalParm(config.P_VERSION["lookdev"])) == ("v001", "v002"),
+          (n.evalParm("mx_anim_version"), n.evalParm(config.P_VERSION["lookdev"])))
+
+
+def accept_asset_parm_picks_versions(net):
+    from tools.fx.anim_loader.logic import Output
+
+    side = net.node("side") or net.createNode("lopnet", "side")
+    node = ad.create_loader(side, str(ROOT), "sh900", "v001", Output("geo_char_Robot_2.usd", "geo"))
+    node.parm(config.P_ASSET).set("char_Robot")
+    ad.cb_parm_changed({"node": node, "parm": node.parm(config.P_ASSET), "parm_name": config.P_ASSET})
+    check("asset set on the parm picks lookdev", node.evalParm(config.P_VERSION["lookdev"]) == "v002",
+          node.evalParm(config.P_STATUS))
+
+
 def main():
     if OUT.exists():
         shutil.rmtree(OUT)
@@ -110,7 +132,7 @@ def main():
     hou.setFps(24)
     net = hou.node("/stage")
     for step in (accept_load_shot_twice, accept_no_move, accept_load_ambiguous, accept_update_one_undo,
-                 accept_upgrade_21):
+                 accept_upgrade_21, accept_upgrade_21_defaults, accept_asset_parm_picks_versions):
         try:
             step(net)
         except Exception:
