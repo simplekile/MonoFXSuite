@@ -37,6 +37,10 @@ class UsdAnimCacheMeshWriter:
         logger.debug("Defined mesh prim: %s", prim_path)
         return mesh
 
+    def write_subdivision_scheme(self, mesh: UsdGeom.Mesh, scheme: str) -> None:
+        """Author ``subdivisionScheme`` at default time (USD's fallback is catmullClark)."""
+        mesh.CreateSubdivisionSchemeAttr().Set(scheme)
+
     def write_topology(
         self,
         mesh: UsdGeom.Mesh,

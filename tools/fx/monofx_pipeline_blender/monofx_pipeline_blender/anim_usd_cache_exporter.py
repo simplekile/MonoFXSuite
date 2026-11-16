@@ -23,6 +23,13 @@ from .anim_usd_cache_camera_writer import (
 )
 from .anim_usd_cache_mesh_writer import UsdAnimCacheMeshWriter
 from .anim_usd_cache_points import PointSampleFilter, degenerate_points_reason
+from .anim_usd_cache_subdiv import (
+    SCHEME_NONE,
+    ModifierState,
+    render_subdiv_index,
+    subdiv_baked_in_viewport,
+    subdivision_scheme,
+)
 from .anim_usd_cache_xform_writer import (
     MatrixXformOpCache,
     author_hierarchy_bind_xforms,
@@ -1062,6 +1069,44 @@ def _release_evaluated_mesh(obj: bpy.types.Object, needs_clear: bool) -> None:
         pass
 
 
+def _modifier_states(obj: bpy.types.Object) -> list[ModifierState]:
+    return [
+        ModifierState(
+            type=str(mod.type),
+            show_viewport=bool(mod.show_viewport),
+            show_render=bool(mod.show_render),
+            levels=int(getattr(mod, "levels", 1)),
+        )
+        for mod in obj.modifiers
+    ]
+
+
+def _prepare_mesh_subdivision(
+    obj: bpy.types.Object,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Return (scheme, modifier switched off in the viewport, warning).
+
+    A render Subdivision ending the stack is exported as ``catmullClark`` over its
+    cage, like ``wm.usd_export`` BEST_MATCH: it is switched off in the viewport while
+    the points are evaluated (the caller puts it back). If it cannot be switched off,
+    its subdivided points are kept and the scheme is ``none``.
+    """
+    states = _modifier_states(obj)
+    index = render_subdiv_index(states)
+    if index is None or not subdiv_baked_in_viewport(states[index]):
+        return subdivision_scheme(states), None, None
+    mod = obj.modifiers[index]
+    try:
+        mod.show_viewport = False
+    except Exception as exc:  # linked data without an override, etc.
+        warning = (
+            f"{strip_blender_namespace(obj.name)}: cannot switch off "
+            f"'{mod.name}' in the viewport ({exc}); exported subdivided, scheme none."
+        )
+        return SCHEME_NONE, None, warning
+    return subdivision_scheme(states, viewport_subdiv_disabled=True), mod.name, None
+
+
 def _extract_topology(mesh: bpy.types.Mesh) -> _MeshTopology:
     counts = np.empty(len(mesh.polygons), dtype=np.int32)
     mesh.polygons.foreach_get("loop_total", counts)
@@ -1241,6 +1286,9 @@ class UsdAnimCacheExportSession:
         self._start_time: Optional[float] = None
         self._mesh_index = 0
         self._frame_depsgraph_ready = False
+        self._subdiv_schemes: dict[str, str] = {}
+        # (object name, modifier name) switched off in the viewport for the export.
+        self._subdiv_viewport_off: list[tuple[str, str]] = []
 
     def _ensure_frame_evaluated(self) -> None:
         if self._scene is None or self._depsgraph is None or self._frame_depsgraph_ready:
@@ -1558,6 +1606,7 @@ class UsdAnimCacheExportSession:
         )
 
         try:
+            self._prepare_subdivision()
             if self._mesh_objects:
                 self._stage = Usd.Stage.CreateNew(str(out_path))
                 UsdGeom.SetStageUpAxis(self._stage, UsdGeom.Tokens.y)
@@ -1571,9 +1620,12 @@ class UsdAnimCacheExportSession:
                 self._xform_prims = {}
                 for node in self._hierarchy.values():
                     if node.is_mesh:
-                        self._mesh_prims[node.obj_name] = self._writer.define_mesh(
-                            node.prim_path
+                        mesh_prim = self._writer.define_mesh(node.prim_path)
+                        self._writer.write_subdivision_scheme(
+                            mesh_prim,
+                            self._subdiv_schemes.get(node.obj_name, SCHEME_NONE),
                         )
+                        self._mesh_prims[node.obj_name] = mesh_prim
                     else:
                         self._xform_prims[node.obj_name] = UsdGeom.Xform.Define(
                             self._stage, node.prim_path
@@ -1637,7 +1689,32 @@ class UsdAnimCacheExportSession:
             return None
         except Exception as exc:
             logger.exception("USD anim cache export setup failed")
+            self._restore_subdivision()
             return str(exc)
+
+    def _prepare_subdivision(self) -> None:
+        """Pick each mesh's subdivisionScheme; switch render Subdivisions to their cage."""
+        for obj in self._mesh_objects:
+            scheme, switched_off, warning = _prepare_mesh_subdivision(obj)
+            self._subdiv_schemes[obj.name] = scheme
+            if switched_off:
+                self._subdiv_viewport_off.append((obj.name, switched_off))
+            if warning:
+                self.result.warnings.append(warning)
+                logger.warning(warning)
+
+    def _restore_subdivision(self) -> None:
+        """Switch the Subdivisions turned off by ``_prepare_subdivision`` back on."""
+        for obj_name, mod_name in self._subdiv_viewport_off:
+            obj = bpy.data.objects.get(obj_name)
+            mod = obj.modifiers.get(mod_name) if obj is not None else None
+            if mod is None:
+                continue
+            try:
+                mod.show_viewport = True
+            except Exception as exc:
+                logger.warning("Cannot switch %s on again on %s: %s", mod_name, obj_name, exc)
+        self._subdiv_viewport_off = []
 
     def step(self, *, units_per_tick: int = 1, frames_per_tick: int = 1) -> Optional[str]:
         del frames_per_tick  # legacy alias; export is mesh-unit based now
@@ -1784,6 +1861,7 @@ class UsdAnimCacheExportSession:
                 pass
 
     def _restore_frame(self) -> None:
+        self._restore_subdivision()
         if self._scene is None or self._prev_frame is None:
             return
         try:
