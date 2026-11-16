@@ -461,6 +461,7 @@ class AnimLoaderManager(QWidget):
             box.setMinimumHeight(self.px(32))
             box.setMinimumWidth(self.px(84))
         self.shot_box.currentTextChanged.connect(self._fill_versions)
+        self.shot_box.currentTextChanged.connect(self._shot_changed)
         self.load_button = self._button("Load shot", STYLE_GHOST)
         self.load_button.setToolTip("A loader for every anim output of this version that has none yet")
         self.load_button.clicked.connect(self._load_shot)
@@ -525,13 +526,18 @@ class AnimLoaderManager(QWidget):
         self.undo_button = self._button("Undo", STYLE_GHOST)
         self.undo_button.setToolTip("Houdini's undo of the last change")
         self.undo_button.clicked.connect(self._undo)
+        self.retarget_button = self._button("", STYLE_GHOST)
+        self.retarget_button.setToolTip("Move loaders copied from another shot to the shot in the Load shot box: "
+                                        "newest anim there, groom / cloth from there, lookdev and settings kept")
+        self.retarget_button.clicked.connect(self._run(lambda: self.ctl.retarget()))
+        self.retarget_button.hide()
         self.upgrade_button = self._button("", STYLE_GHOST)
         self.upgrade_button.setToolTip("Change Anim Loader 2.1 nodes to 2.2, keeping their settings")
         self.upgrade_button.clicked.connect(self._run(self.ctl.upgrade_all))
         self.primary = self._button("", STYLE_PRIMARY)
         self.primary.setToolTip("The one thing worth doing now")
         self.primary.clicked.connect(self._run(self.ctl.primary))
-        for w in (self.undo_button, self.upgrade_button, self.primary):
+        for w in (self.undo_button, self.retarget_button, self.upgrade_button, self.primary):
             b.addWidget(w)
         root.addWidget(bar)
 
@@ -638,7 +644,7 @@ class AnimLoaderManager(QWidget):
         return "\n".join(lines)
 
     def _update_bar(self) -> None:
-        # One primary, the most important thing to do (update > upgrade 2.1 > Draw Hulls Only); the headline says
+        # One primary, the most important thing to do (retarget > update > upgrade 2.1 > Draw Hulls Only); the headline says
         # the same. Nothing to do: no primary button at all.
         self.headline.setText(self.ctl.headline())
         action = self.ctl.primary_action()
@@ -646,6 +652,8 @@ class AnimLoaderManager(QWidget):
         if action is not None:
             self.primary.setText(action[1])
             self.primary.setToolTip({
+                "retarget": "Move loaders copied from another shot to this shot: newest anim there, groom / cloth "
+                            "from there, lookdev and settings kept (one undo step)",
                 "update": "Move what is behind to the newest version (one undo step)",
                 "upgrade": "Change Anim Loader 2.1 nodes to 2.2, keeping their settings (one undo step)",
                 "hulls": "Draw Hulls Only in every viewport: lighter to work in; memory stays the same",
@@ -653,6 +661,8 @@ class AnimLoaderManager(QWidget):
         n_old = len(self.ctl.legacy_paths())
         self.upgrade_button.setText(self.ctl.upgrade_label())
         self.upgrade_button.setVisible(n_old > 0 and (action is None or action[0] != "upgrade"))
+        self.retarget_button.setText(self.ctl.retarget_label())
+        self.retarget_button.setVisible(bool(self.ctl.retarget_paths()) and (action is None or action[0] != "retarget"))
         self.result.setText(self.ctl.message)  # results only; the heavy-shot line lives in the Subdivision column
 
     def _selection_changed(self, view: QListWidget) -> None:
@@ -728,6 +738,9 @@ class AnimLoaderManager(QWidget):
         menu.addAction("Select node", lambda: self._select_node(item))
         if not row.legacy and row.behind:
             menu.addAction("Update this loader", self._run(lambda: self.ctl._update([row.node_path])))
+        target = self.ctl.target_shot
+        if not row.legacy and row.shot and target and row.shot != target:
+            menu.addAction(f"Retarget to {target}", self._run(lambda: self.ctl.retarget([row.node_path])))
         if row.needs_asset or (not row.legacy and row.kind == "geo"):
             sub = menu.addMenu("Asset")
             root = next((i.state.project_root for i in self.ctl._infos if i.path == row.node_path and i.state), "")
@@ -746,7 +759,13 @@ class AnimLoaderManager(QWidget):
         self.shot_box.addItems(sorted(shots))
         self.shot_box.setCurrentText(current or guess[1] or (shots[0] if shots else ""))
         self.shot_box.blockSignals(False)
+        self.ctl.scene_shot = guess[1]
+        self.ctl.target_shot = self.shot_box.currentText()
         self._fill_versions(self.shot_box.currentText())
+
+    def _shot_changed(self, shot: str) -> None:
+        self.ctl.target_shot = shot
+        self._update_bar()
 
     def _project_root(self) -> str:
         roots = [i.state.project_root for i in self.ctl._infos if i.state and i.state.project_root]

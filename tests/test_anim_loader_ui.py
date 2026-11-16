@@ -240,3 +240,22 @@ def test_heavy_warning_lives_in_the_subdivision_column_only(make):
     assert not w.subd_panel.hulls_link.isHidden()
     w.subd_panel.hulls_link.click()
     assert calls == [1] and "memory" in w.result.text()
+
+
+def test_retarget_copied_loaders_to_the_scene_shot(make):
+    mk, ui = make
+    b = FakeBackend()
+    b.project_and_shot = lambda: ("P:/proj", "sh025")    # the scene is sh025's: the sh900 loader was copied in
+    b.retarget = lambda paths, shot: b.calls.append(("retarget", tuple(paths), shot)) or ([f"{p}" for p in paths], [])
+    w = mk(b)
+    assert w.shot_box.currentText() == "sh025"
+    assert w.primary.text() == "Retarget 1 to sh025" and w.headline.text().startswith("1 loader from sh900")
+    assert w.retarget_button.isHidden()                 # it is the primary: not twice
+    w.primary.click()
+    assert b.calls[-1] == ("retarget", ("/stage/d",), "sh025") and w.result.text() == "Retargeted 1 to sh025"
+    _select(w, ui, "/stage/b")                          # a sh025 loader picked: nothing to retarget
+    w.shot_box.setCurrentText("sh900")                  # ...until the box names another shot
+    assert w.primary.text() == "Retarget 1 to sh900" and w.retarget_button.isHidden()
+    _select(w, ui, "/stage/a")                          # behind: Update stays first, Retarget beside it
+    assert w.primary.text() == "Update 1 selected"
+    assert not w.retarget_button.isHidden() and w.retarget_button.text() == "Retarget 1 to sh900"

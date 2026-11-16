@@ -155,6 +155,40 @@ def accept_subd_editing(net):
     check("clear overrides", hou.node(robot.path).evalParm(config.P_SUBD_RULES) in ("", "[]"))
 
 
+def accept_retarget(net):
+    """Loaders of sh900 copied into a sh920 scene: Retarget moves what sh920 has, names what it lacks, one undo."""
+    proj = OUT / "retarget_project"
+    shutil.copytree(ROOT, proj)
+    src = proj / "02_shots/sh900/01_anim/publish/v002"
+    dst = proj / "02_shots/sh920/01_anim/publish/v003"
+    dst.mkdir(parents=True)
+    shutil.copy(src / "geo_char_Robot.usd", dst / "geo_char_Robot.usd")
+    shutil.copy(src / "cam_sh900.usd", dst / "cam_sh920.usd")
+    hou.hipFile.clear(suppress_save_prompt=True)
+    net = hou.node("/stage")
+    ad.load_shot(net, str(proj), "sh900", "v002")
+    nodes = ad.find_loaders()
+    lookdev_before = hou.node("/stage/char_Robot").evalParm(config.P_VERSION["lookdev"])
+    hou.node("/stage/char_Robot").parm(config.P_ENABLE["cloth"]).set(0)  # a node setting that must stay
+    moved, left = ad.retarget(nodes, "sh920")
+    robot, cam = hou.node("/stage/char_Robot"), hou.node("/stage/sh920")
+    check("retarget moves what sh920 has", len(moved) == 2 and robot is not None and cam is not None, (moved, left))
+    check("robot on sh920 v003, lookdev and settings kept",
+          ad.read_state(robot).shot == "sh920" and ad.read_state(robot).anim_version == "v003"
+          and robot.evalParm(config.P_VERSION["lookdev"]) == lookdev_before
+          and robot.evalParm(config.P_ENABLE["cloth"]) == 0, str(ad.read_state(robot)))
+    check("camera reads cam_sh920", ad.read_state(cam).anim_file == "cam_sh920.usd", str(ad.read_state(cam)))
+    check("what sh920 lacks is named", sorted(left) == ["char_Robot_2 is not in sh920",
+                                                        "char_Robot_inst02 is not in sh920"], left)
+    check("user data follows the shot", ad._key(robot) == ("sh920", "geo_char_Robot.usd"))
+    hou.undos.performUndo()
+    check("retarget is one undo step", hou.node("/stage/sh900") is not None
+          and ad.read_state(hou.node("/stage/char_Robot")).shot == "sh900")
+    hou.undos.performRedo()
+    again = ad.load_shot(net, str(proj), "sh920", "v003")
+    check("load sh920 after retarget makes no second loader", again.created == [], str(again))
+
+
 def main():
     if OUT.exists():
         shutil.rmtree(OUT)
@@ -164,7 +198,7 @@ def main():
     net = hou.node("/stage")
     for step in (accept_load_shot_twice, accept_no_move, accept_load_ambiguous, accept_update_one_undo,
                  accept_upgrade_21, accept_upgrade_21_defaults, accept_asset_parm_picks_versions,
-                 accept_heavy_shot, accept_subd_editing):
+                 accept_heavy_shot, accept_subd_editing, accept_retarget):
         try:
             step(net)
         except Exception:

@@ -258,6 +258,14 @@
   Hulls Only for a heavy shot), hidden when there is nothing; the headline says the same; Upgrade shows apart only
   when it is not the primary. Styles go through `scale_css` (every px scaled by the UI scale). Grid cards share the
   row's width (as many as fit at 200 px, Qt keeps room for the scroll bar); a camera card is shorter.
+- Retarget (the user's pick, 2026-11-17; `logic.retarget_state`, `adapter.retarget`): loaders copied from another
+  shot move to the shot in the Load shot box. Which: the selected loaders from another shot; with nothing selected
+  and the box on the scene's own shot (`$HIP`), every loader from another shot (then it is the primary, above
+  Update, and the headline says "N loaders from sh025, not sh030"); a scene of no shot may load several shots.
+  Each moves to the newest anim version there that holds the same instance (the camera: that shot's camera,
+  node renamed when named after its shot), groom / cloth newest there (per shot), lookdev and every node setting
+  kept (subd rules too). A shot without that instance, or one already loaded for it, leaves the node and says so.
+  A shot merge whose loaders all moved is retagged. One undo step; also on a row's right-click menu.
   Shelf tool "Anim Loaders". Checks: `tests/test_anim_loader_*.py`, hython `tests/houdini/anim_loader/accept_*.py`
   on the fake project from `tools/fx/anim_loader/dev/make_fake_shot.py`.
 

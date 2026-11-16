@@ -215,3 +215,33 @@ def test_primary_action_follows_what_matters_most():
     b.hulls_on = lambda: True
     c.refresh()
     assert c.primary_action() is None and c.headline() == "1 needs an asset"
+
+
+def test_retarget_follows_the_scene_shot_or_the_selection():
+    b = FakeBackend()
+    b.retarget = lambda paths, shot: (b.calls.append(("retarget", tuple(paths), shot))
+                                      or ([f"{p}: moved" for p in paths[:-1]], ["char_Robot_2 is not in sh025"]))
+    c = Controller(b)
+    c.refresh()
+    c.target_shot, c.scene_shot = "sh025", ""
+    assert c.retarget_paths() == []                    # the scene is no shot's: loading two shots is fine
+    c.scene_shot = "sh025"
+    assert c.retarget_paths() == ["/stage/d"]          # a sh900 loader in a sh025 scene: copied from there
+    assert c.primary_action() == ("retarget", "Retarget 1 to sh025")
+    assert c.headline().startswith("1 loader from sh900")
+    c.scene_shot, c.target_shot = "", "sh900"
+    c.selection = ["/stage/b", "/stage/old"]
+    assert c.retarget_paths() == ["/stage/b"]           # the selection, 2.1 nodes left out
+    c.selection = ["/stage/a", "/stage/b"]
+    c.target_shot = "sh777"
+    c.retarget()
+    assert b.calls[-1] == ("retarget", ("/stage/b", "/stage/a"), "sh777")  # in row order
+    assert c.message == "Retargeted 1 to sh777; char_Robot_2 is not in sh025"
+
+
+def test_headline_follows_a_retarget_primary():
+    c = _ctl()
+    c.target_shot, c.scene_shot = "sh777", ""
+    c.selection = ["/stage/b"]                         # not behind, from sh025
+    assert c.primary_action() == ("retarget", "Retarget 1 to sh777")
+    assert c.headline().startswith("1 loader from sh025, not sh777")

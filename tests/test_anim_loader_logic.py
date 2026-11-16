@@ -373,3 +373,37 @@ def test_set_subd_rules_keeps_the_other_field():
     assert r == [{"pattern": "Geo/Base_grp/**", "scheme": "catmullClark"}]
     assert set_subd_rules([], ["Geo/x"], None, dicing=1.0) == [{"pattern": "Geo/x", "scheme": "publish", "dicing": 1.0}]
     assert KEEP is not None
+
+
+# --- Retarget to this shot -------------------------------------------------------------------------
+
+def test_retarget_moves_to_the_newest_version_of_the_other_shot(tmp_path):
+    from tools.fx.anim_loader.logic import retarget_state
+
+    root = _shot(tmp_path)
+    sh2 = "02_shots/sh920"
+    make(root, [f"{sh2}/01_anim/publish/v001/geo_char_Robot.usd", f"{sh2}/01_anim/publish/v003/geo_char_Robot.usd",
+                f"{sh2}/01_anim/publish/v004/cam_sh920.usd", f"{sh2}/01_anim/publish/v003/cam_sh920.usd"]
+         + frames(f"{sh2}/02_fx/groom/publish/v002/char_Robot", "sh920_groom", (1, 2)))
+    robot = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    robot = replace(robot, versions={**robot.versions, "lookdev": "v001"}, enabled={**robot.enabled, "cloth": False})
+    new, note = retarget_state(robot, "sh920")
+    assert note == ""
+    assert (new.shot, new.anim_version, new.anim_file, new.instance_name) == ("sh920", "v003", "geo_char_Robot.usd",
+                                                                             "char_Robot")
+    assert new.versions == {"lookdev": "v001", "groom": "v002", "cloth": ""}  # lookdev kept, groom from sh920
+    assert new.enabled["cloth"] is False                                       # node settings kept
+    cam = initial_state(root, "sh900", "v001", Output("cam_sh900.usd", "cam"))
+    new, _ = retarget_state(cam, "sh920")
+    assert (new.anim_version, new.anim_file, new.instance_name) == ("v004", "cam_sh920.usd", "sh920")
+
+
+def test_retarget_says_what_the_other_shot_lacks(tmp_path):
+    from tools.fx.anim_loader.logic import retarget_state
+
+    root = _shot(tmp_path)
+    make(root, ["02_shots/sh920/01_anim/publish/v001/cam_sh920.usd"])
+    robot = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    new, note = retarget_state(robot, "sh920")
+    assert new is None and note == "char_Robot is not in sh920"
+    assert retarget_state(robot, "sh900") == (robot, "")  # same shot: nothing to do

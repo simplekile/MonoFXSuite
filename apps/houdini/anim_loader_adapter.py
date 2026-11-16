@@ -360,6 +360,51 @@ def update(nodes: list, parts: tuple[str, ...] = ("anim", "lookdev", "groom", "c
     return lines
 
 
+def retarget(nodes: list, shot: str) -> tuple[list[str], list[str]]:
+    """Loaders copied from another shot, moved to ``shot`` (``logic.retarget_state``); one undo step.
+    (what moved, what was left and why). Never a second loader for an instance the shot already has. A shot merge
+    whose loaders all moved is taken over by the new shot; a camera node named after its shot is renamed."""
+    from apps.houdini.solaris_adapter import manual_update, undo_group
+
+    moved, left = [], []
+    nodes = [n for n in nodes if n.type().name() == config.HDA_TYPE]
+    paths = {n.path() for n in nodes}
+    have = {_key(n): n for n in find_loaders() if n.path() not in paths}
+    old_shots = set()
+    with undo_group(f"Retarget anim loaders to {shot}"), manual_update():
+        for node in nodes:
+            old = read_state(node)
+            new, why = logic.retarget_state(old, shot)
+            if new is None:
+                left.append(why)
+                continue
+            if new == old:
+                continue
+            other = have.get((shot, new.anim_file))
+            if other is not None:
+                left.append(f"{old.instance_name}: {shot} already has it ({other.name()})")
+                continue
+            write_state(node, new)
+            node.setUserData(config.USER_DATA, json.dumps({"shot": shot, "anim_file": new.anim_file}))
+            have[(shot, new.anim_file)] = node
+            if old.kind == "cam" and node.name() == old.instance_name:
+                node.setName(_unique_name(node.parent(), new.instance_name))
+            refresh(node)
+            old_shots.add(old.shot)
+            moved.append(f"{node.name()}: {old.shot} {old.anim_version} -> {shot} {new.anim_version}")
+        parent = nodes[0].parent() if nodes else None
+        if parent is not None and not any(n.userData(config.MERGE_USER_DATA) == shot for n in parent.children()):
+            for merge in parent.children():
+                tag = merge.userData(config.MERGE_USER_DATA)
+                ins = [i for i in merge.inputs() if i is not None]
+                if tag in old_shots and ins and all(_key(i)[0] == shot for i in ins if _is_loader(i)):
+                    merge.setUserData(config.MERGE_USER_DATA, shot)
+                    if merge.name().startswith(f"{tag}_merge"):
+                        merge.setName(_unique_name(parent, f"{shot}_merge"))
+                    break
+    return moved, left
+
+
 def set_asset(node, asset: str) -> None:
     """The artist names the asset of an "asset?" row; its parts start at their newest version."""
     from dataclasses import replace
@@ -490,6 +535,10 @@ class HoudiniBackend:
     @staticmethod
     def upgrade(paths):
         return len(upgrade([hou.node(p) for p in paths if hou.node(p)]))
+
+    @staticmethod
+    def retarget(paths, shot):
+        return retarget([hou.node(p) for p in paths if hou.node(p) is not None], shot)
 
     @staticmethod
     def set_asset(path, asset):

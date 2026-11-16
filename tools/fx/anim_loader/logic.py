@@ -392,6 +392,28 @@ def with_latest(state: LoaderState, parts: tuple[str, ...]) -> LoaderState:
     return st
 
 
+def retarget_state(state: LoaderState, shot: str) -> tuple[LoaderState | None, str]:
+    """A loader copied from another shot, moved to ``shot``: the newest anim version there that holds the same
+    instance (the camera: that shot's camera), groom / cloth at their newest there (they are per shot), lookdev and
+    the node's settings kept. (None, why) when the shot has no such instance; the same state for the same shot."""
+    if state.shot == shot:
+        return state, ""
+    root = Path(state.project_root)
+    pub = anim_publish_dir(root, shot)
+    assets = set(list_asset_dirs(root))
+    for version in reversed(list_versions(pub)):
+        for out in read_outputs(pub / version):
+            if out.kind != state.kind:
+                continue
+            inst = resolve_instance(out, assets)
+            if state.kind == "cam" or inst.name == state.instance_name or out.file == state.anim_file:
+                moved = LoaderState(state.project_root, shot, version, out.file, state.asset,
+                                    inst.name if state.kind == "cam" else state.instance_name, state.kind,
+                                    dict(state.enabled), {**state.versions, **{t: "" for t in FX_TASKS}})
+                return with_latest(moved, FX_TASKS), ""
+    return None, f"{state.instance_name} is not in {shot}"
+
+
 def list_part_versions(state: LoaderState, part: str) -> list[str]:
     """Versions of a part (lookdev / groom / cloth) on disk, oldest first, whether or not they hold this instance."""
     return _part_versions(Path(state.project_root), state, part)

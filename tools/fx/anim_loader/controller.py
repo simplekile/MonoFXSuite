@@ -79,6 +79,8 @@ class Controller:
         self._rows: list[Row] = []
         self._thumbs: dict[str, str] | None = None
         self._subd: dict[str, dict] = {}
+        self.target_shot = ""  # the shot in the window's Load shot box
+        self.scene_shot = ""   # the shot of the open scene ($HIP), "" when it is no shot's
 
     # --- reading ---------------------------------------------------------------------------------
     def begin_scan(self) -> tuple[int, list[LoaderInfo]]:
@@ -150,6 +152,11 @@ class Controller:
             parts.append(f"{asset} {'needs' if asset == 1 else 'need'} an asset")
         if legacy and behind:
             parts.append(_plural(legacy, "old loader"))
+        action = self.primary_action()
+        if action and action[0] == "retarget":  # the headline says what the primary button does
+            paths = set(self.retarget_paths())
+            shots = sorted({r.shot for r in self._rows if r.node_path in paths})
+            parts.insert(0, _plural(len(paths), "loader") + f" from {', '.join(shots)}, not {self.target_shot}")
         heavy = self.heavy_polygons()
         if heavy and not behind and not legacy:
             parts.insert(0, f"Heavy shot: ~{heavy / 1e6:.1f} M subdivision polygons")
@@ -165,12 +172,30 @@ class Controller:
             return 0
         return total
 
+    def retarget_paths(self) -> list[str]:
+        """Loaders to move to ``target_shot``: the selected ones from another shot; with nothing selected and the box
+        on the scene's own shot, every loader from another shot (nodes copied over from that shot)."""
+        if not self.target_shot:
+            return []
+        off = [r.node_path for r in self._rows if not r.legacy and r.shot and r.shot != self.target_shot]
+        if self.selection:
+            return [p for p in off if p in self.selection]
+        return off if self.target_shot == self.scene_shot else []
+
+    def retarget_label(self) -> str:
+        return f"Retarget {len(self.retarget_paths())} to {self.target_shot}"
+
     def primary_action(self) -> tuple[str, str] | None:
-        """The one thing worth doing now, most important first: update, upgrade 2.1 loaders, Draw Hulls Only."""
+        """The one thing worth doing now, most important first: retarget loaders copied from another shot, update,
+        upgrade 2.1 loaders, Draw Hulls Only."""
+        if self.retarget_paths() and not self.selection:
+            return "retarget", self.retarget_label()
         if self.selection:
             n = len(self.behind_paths(self.selection))
             if n:
                 return "update", f"Update {n} selected"
+            if self.retarget_paths():
+                return "retarget", self.retarget_label()
         n = len(self.behind_paths())
         if n:
             return "update", f"Update {n} behind"
@@ -211,6 +236,8 @@ class Controller:
             self.update_selected() if self.selection and self.behind_paths(self.selection) else self.update_all()
         elif kind == "upgrade":
             self.upgrade_all()
+        elif kind == "retarget":
+            self.retarget()
         elif kind == "hulls":
             n = self.backend.set_hulls_only()
             self.message = (f"Draw Hulls Only on in {n} viewport{'s' if n != 1 else ''}: lighter to work in; "
@@ -224,6 +251,14 @@ class Controller:
         paths = self.legacy_paths()
         n = self.backend.upgrade(paths) if paths else 0
         self.message = f"Upgraded {_plural(n, 'loader')} to 2.2." if n else "No old loaders."
+
+    def retarget(self, paths: list[str] | None = None) -> None:
+        paths = paths if paths is not None else self.retarget_paths()
+        if not paths:
+            self.message = "Nothing to retarget."
+            return
+        moved, left = self.backend.retarget(paths, self.target_shot)
+        self.message = "; ".join([f"Retargeted {len(moved)} to {self.target_shot}", *left])
 
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)
