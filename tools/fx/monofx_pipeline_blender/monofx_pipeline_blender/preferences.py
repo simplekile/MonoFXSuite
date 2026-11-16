@@ -110,6 +110,7 @@ class MonoFXPipelinePreferences(AddonPreferences):
     ui_sec_anim_camera_motion_guide: BoolProperty(name="Motion Guide", default=False)
     ui_sec_anim_camera_tools: BoolProperty(name="Camera Tools", default=True)
     ui_sec_anim_chain_targets: BoolProperty(name="Chain Targets", default=True)
+    ui_sec_anim_chain_bake: BoolProperty(name="Bake Range", default=False)
 
     def draw(self, _context: Context) -> None:
         from . import addon_updater
@@ -139,6 +140,7 @@ _SECTION_PROP_BY_PANEL_ID = {
     "monofx_anim_camera_rig_tools": "ui_sec_anim_camera_rig_tools",
     "monofx_anim_camera_tools": "ui_sec_anim_camera_tools",
     "monofx_anim_chain_targets": "ui_sec_anim_chain_targets",
+    "monofx_anim_chain_bake": "ui_sec_anim_chain_bake",
 }
 
 
