@@ -185,9 +185,16 @@
   `<asset>_<task>_publish.usd`; several -> the collection name after `publish`, words joined with a
   capital each (`char_Helen_uv_publish_GeoHelen.usd`).
 - Version mode File (default for new scenes): the publish version is the open work file's `_vNNN`.
-- Anim USD caches points only, never normals: the asset declares `catmullClark`; per-frame normals cost
+- Anim USD caches points only, never normals (subdivision scheme: next note); per-frame normals cost
   ~5x the file size (Helen 313 MB -> 1.53 GB). Static meshes and transforms keep only first/last samples
   (`PointSampleFilter`); a layer with one top-level prim sets it as `defaultPrim`.
+- Every anim USD mesh authors `subdivisionScheme` (USD's fallback is catmullClark: Houdini GL subdivided
+  sh025 to >45 GB). Rule (`anim_usd_cache_subdiv`, Blender's `wm.usd_export` BEST_MATCH, which model
+  publishes already use and which writes the scheme on every mesh): a render-enabled Subdivision Surface
+  ending the stack -> `catmullClark`, else `none` (Multires too). The cache evaluates the viewport
+  depsgraph, so that Subdivision is switched off in the viewport for the export (cage points, no double
+  subdivision) and back on in `_restore_frame`; if it cannot be switched off the points stay subdivided
+  and the scheme is `none`. Check in Blender: `tests/blender/accept_anim_usd_subdiv.py`.
 - `draw()` never writes scene properties (Blender 5.2 raises "Writing to ID classes in this context is not
   allowed"): `_summarize_publish_plan(..., sync=False)` from draw, sync only in `invoke`.
 
