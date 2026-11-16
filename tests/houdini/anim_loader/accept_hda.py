@@ -81,7 +81,8 @@ def main() -> None:
     check("instances move differently", a is not None and b is not None and np.abs(a - b).max() > 1e-3)
     mats = {}
     for n in ("char_Robot", "char_Robot_inst02", "char_Robot_2"):
-        m, _ = UsdShade.MaterialBindingAPI(st.GetPrimAtPath(f"/{n}{BODY}")).ComputeBoundMaterial()
+        m, _ = UsdShade.MaterialBindingAPI(st.GetPrimAtPath(f"/{n}{BODY}")).ComputeBoundMaterial(
+            UsdShade.Tokens.full)  # render binding (the viewport has none unless asked)
         mats[n] = m.GetPath().pathString if m else None
     check("lookdev bound per instance", mats == {
         "char_Robot": "/char_Robot/materials/char_Robot_mtl",
@@ -116,6 +117,26 @@ def main() -> None:
         "/char_Robot/Geo/Groom_grp/HairDriver_grp")).ComputeVisibility(Usd.TimeCode(12)) == UsdGeom.Tokens.invisible)
     cams = [p.GetPath().pathString for p in st.Traverse() if p.IsA(UsdGeom.Camera)]
     check("camera kept at its own path", cams == ["/root/sh900_cam_root/cam_sh900"], cams)
+
+    # Heavy parts render only (the viewport reads preview / all-purpose bindings and default / proxy purpose)
+    body = st.GetPrimAtPath(f"/char_Robot{BODY}")
+    full, _ = UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial(UsdShade.Tokens.full)
+    preview, _ = UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial(UsdShade.Tokens.preview)
+    check("lookdev bound for render (full)", bool(full) and full.GetPath().pathString == "/char_Robot/materials/char_Robot_mtl")
+    check("lookdev not bound in the viewport (preview)", not preview, preview.GetPath().pathString if preview else None)
+    hair_prim = st.GetPrimAtPath(f"/char_Robot_inst02{HAIR}")
+    check("groom is render purpose", UsdGeom.Imageable(hair_prim).ComputePurpose() == UsdGeom.Tokens.render)
+    inst.parm("mx_lookdev_viewport").set(1)
+    inst.parm("mx_groom_viewport").set(1)
+    st = last.stage()
+    pv, _ = UsdShade.MaterialBindingAPI(st.GetPrimAtPath(f"/char_Robot_inst02{BODY}")).ComputeBoundMaterial(
+        UsdShade.Tokens.preview)
+    check("lookdev in viewport when asked", bool(pv))
+    check("groom default purpose when asked", UsdGeom.Imageable(st.GetPrimAtPath(f"/char_Robot_inst02{HAIR}"))
+          .ComputePurpose() == UsdGeom.Tokens.default_)
+    inst.parm("mx_lookdev_viewport").set(0)
+    inst.parm("mx_groom_viewport").set(0)
+    st = last.stage()
 
     robot = nodes["char_Robot"]
     look_before = robot.evalParm(config.P_PATH["lookdev"])
