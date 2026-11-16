@@ -236,16 +236,30 @@
   fallback as a value. Dicing is `primvars:karma:object:dicingquality` (render only).
 - Manager › Subdivision column (the user's pick of three mockups, 2026-11-17: beside List / Grid, under them when
   narrower than 760 px): the selected loader's anim meshes by group (`logic.mesh_groups`, first two path levels),
-  faces, where the scheme comes from (shot / lookdev / publish / default), scheme, dicing. A selection is set once
-  (`logic.set_subd_rules`: one rule per pattern, put last; Publish with no dicing drops the override), Clear
-  overrides, Apply to all instances of the asset; each is one undo step. The plan is read by `HoudiniBackend.subd`
+  faces, where the scheme comes from (shot / lookdev / publish / default; on a mesh only when it differs from its
+  group), scheme, dicing (column only when some mesh has dicing). The scheme is a menu on each row: on a selected
+  row it sets the whole selection, else that row. Dicing has its own field + Set, which keeps each scheme
+  (`logic.set_subd_rules`: scheme None / dicing `KEEP` keep that field; one rule per pattern, put last; Publish
+  with no dicing drops the override). Clear overrides and Apply to all instances share a row; each change is one
+  undo step. The plan is read by `HoudiniBackend.subd`
   on the scan's worker thread; rows carry "subd N · ~X M".
 - Heavy shot (over `logic.HEAVY_SUBD_POLYGONS`, faces x 16): a non-modal prompt after Load shot and on scene
   load (HDA OnLoaded, one check per burst, UI only) offers Draw Hulls Only for every viewport; "Don't ask again"
-  is a viewer pref; the manager keeps the line and a button. Draw Hulls Only makes the viewport lighter to work
+  is a viewer pref. In the manager the warning lives in one place only, the Subdivision column (line + Draw Hulls
+  Only link), never in the result line. Draw Hulls Only makes the viewport lighter to work
   in but does NOT lower memory (Helen catmullClark 12.8 GB -> 19.5 GB when turned on; 13 GB on from the start).
 - Lookdev and groom have "Show in Viewport" (on by default). Off: bindings move to `material:binding:full` (Karma
   only) and groom curves get purpose `render`.
+- Manager layout R-A (the user's pick, 2026-11-17, after the Monos UI rules in `products/monos/monos/docs/`:
+  browse first, act second; the inspector is information, shown only for a selection; actions in context; no combo
+  box for a one-shot pick). Top bar: title, project crumb (menu: scene's, loaders', recent projects, Browse...), shot
+  crumb (menu), List / Grid, Load shot (menu of the shot's versions). A status line (what the primary does, count;
+  heavy-shot note + Draw Hulls Only on its right, never the headline or the primary). List = a table, 40 px rows,
+  Anim / Lookdev / Groom / Cloth / Subd columns, "–" for nothing published, colour only for work (behind, missing,
+  asset?; #6f9aff on a selected row for contrast); narrow: versions on a second line under the first header's column
+  names. Inspector (`InspectorPanel`, fixed ~360 px, under the list when narrow): name, node and versions, meshes
+  read-only; scheme / dicing / clear / apply on the meshes' right-click menu. Result line in the action bar (above
+  the buttons when narrow). Style rules for item views carry an objectName: Houdini's sheet painted the tree grey.
 - Parm pane (layout D, the user's pick 2026-11-17, checked in the Houdini 22 GUI down to 420 px; `_parm_templates`):
   Manager / Refresh, a one-line Status shown only when something needs the artist (missing file, `asset?`, notes),
   then Source / Parts / Geometry or Camera as plain groups and Advanced (project root, resolved paths) closed. The
@@ -258,6 +272,24 @@
   user's pick), Monos asset thumbnails (`thumbnail.user.png`, else `.meta/thumb_lookdev.user.png`, else the
   newest `.meta/thumb_*.user.png`), Load shot finds existing loaders by user data `monofx_anim_loader`
   (shot + anim file, any version: never a second `/char_X`), Update / Load shot / Upgrade are one undo step each.
+  One primary button, the most important thing to do (`controller.primary_action`: update > upgrade 2.1 > Draw
+  Hulls Only for a heavy shot), hidden when there is nothing; the headline says the same; Upgrade shows apart only
+  when it is not the primary. Styles go through `scale_css` (every px scaled by the UI scale). Grid cards share the
+  row's width (as many as fit at 200 px, Qt keeps room for the scroll bar); a camera card is shorter.
+- Retarget (the user's pick, 2026-11-17; `logic.retarget_state`, `adapter.retarget`): loaders copied from another
+  shot move to the shot in the Load shot box. Which: the selected loaders from another shot; with nothing selected
+  and the box on the scene's own shot (`$HIP`), every loader from another shot (then it is the primary, above
+  Update, and the headline says "N loaders from sh025, not sh030"); a scene of no shot may load several shots.
+  Each moves to the newest anim version there that holds the same instance (the camera: that shot's camera,
+  node renamed when named after its shot), groom / cloth newest there (per shot), lookdev and every node setting
+  kept (subd rules too). A shot without that instance, or one already loaded for it, leaves the node and says so.
+  A shot merge whose loaders all moved is retagged. One undo step; also on a row's right-click menu.
+- Project box (the user's pick, 2026-11-17), first in the Load shot box: the scene's project ($HIP), the loaders'
+  projects, then recent ones (`recent_projects` in `anim_loader_prefs.json`, `logic.remember_project`, 8), and
+  Browse... (a folder anywhere inside a project finds its root; inside a shot it picks that shot too). Shots come
+  from `logic.list_shots` (`02_shots/<shot>/01_anim/publish`), so Load shot works in an unsaved scene. The shot
+  box keeps only a shot the artist chose; otherwise it opens on the scene's shot, else the loaders' shot.
+  List rows / grid cards are laid out again on their view's own resize (the splitter moves it, not the window).
   Shelf tool "Anim Loaders". Checks: `tests/test_anim_loader_*.py`, hython `tests/houdini/anim_loader/accept_*.py`
   on the fake project from `tools/fx/anim_loader/dev/make_fake_shot.py`.
 

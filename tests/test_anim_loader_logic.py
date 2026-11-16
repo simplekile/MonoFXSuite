@@ -361,6 +361,73 @@ def test_set_subd_rules_replaces_same_pattern_and_appends():
                                        "Geo/Groom_grp": ["/Geo/Groom_grp/x"], "Other": ["/Other"]}
 
 
+def test_set_subd_rules_keeps_the_other_field():
+    from tools.fx.anim_loader.logic import KEEP, set_subd_rules
+
+    r = set_subd_rules([], ["Geo/Base_grp/**"], "none", dicing=0.5)
+    r = set_subd_rules(r, ["Geo/Base_grp/**"], "catmullClark")            # scheme only: dicing stays
+    assert r == [{"pattern": "Geo/Base_grp/**", "scheme": "catmullClark", "dicing": 0.5}]
+    r = set_subd_rules(r, ["Geo/Base_grp/**"], None, dicing=2.0)           # dicing only: scheme stays
+    assert r == [{"pattern": "Geo/Base_grp/**", "scheme": "catmullClark", "dicing": 2.0}]
+    r = set_subd_rules(r, ["Geo/Base_grp/**"], None, dicing=None)          # dicing cleared
+    assert r == [{"pattern": "Geo/Base_grp/**", "scheme": "catmullClark"}]
+    assert set_subd_rules([], ["Geo/x"], None, dicing=1.0) == [{"pattern": "Geo/x", "scheme": "publish", "dicing": 1.0}]
+    assert KEEP is not None
+
+
+# --- Retarget to this shot -------------------------------------------------------------------------
+
+def test_retarget_moves_to_the_newest_version_of_the_other_shot(tmp_path):
+    from tools.fx.anim_loader.logic import retarget_state
+
+    root = _shot(tmp_path)
+    sh2 = "02_shots/sh920"
+    make(root, [f"{sh2}/01_anim/publish/v001/geo_char_Robot.usd", f"{sh2}/01_anim/publish/v003/geo_char_Robot.usd",
+                f"{sh2}/01_anim/publish/v004/cam_sh920.usd", f"{sh2}/01_anim/publish/v003/cam_sh920.usd"]
+         + frames(f"{sh2}/02_fx/groom/publish/v002/char_Robot", "sh920_groom", (1, 2)))
+    robot = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    robot = replace(robot, versions={**robot.versions, "lookdev": "v001"}, enabled={**robot.enabled, "cloth": False})
+    new, note = retarget_state(robot, "sh920")
+    assert note == ""
+    assert (new.shot, new.anim_version, new.anim_file, new.instance_name) == ("sh920", "v003", "geo_char_Robot.usd",
+                                                                             "char_Robot")
+    assert new.versions == {"lookdev": "v001", "groom": "v002", "cloth": ""}  # lookdev kept, groom from sh920
+    assert new.enabled["cloth"] is False                                       # node settings kept
+    cam = initial_state(root, "sh900", "v001", Output("cam_sh900.usd", "cam"))
+    new, _ = retarget_state(cam, "sh920")
+    assert (new.anim_version, new.anim_file, new.instance_name) == ("v004", "cam_sh920.usd", "sh920")
+
+
+def test_retarget_says_what_the_other_shot_lacks(tmp_path):
+    from tools.fx.anim_loader.logic import retarget_state
+
+    root = _shot(tmp_path)
+    make(root, ["02_shots/sh920/01_anim/publish/v001/cam_sh920.usd"])
+    robot = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    new, note = retarget_state(robot, "sh920")
+    assert new is None and note == "char_Robot is not in sh920"
+    assert retarget_state(robot, "sh900") == (robot, "")  # same shot: nothing to do
+
+
+# --- Project box ----------------------------------------------------------------------------------------
+
+def test_list_shots_only_with_an_anim_publish(tmp_path):
+    from tools.fx.anim_loader.logic import list_shots
+
+    root = make(tmp_path, ["02_shots/sh010/01_anim/publish/v001/cam_sh010.usd", "02_shots/SH002a/01_anim/publish/",
+                           "02_shots/sh003/02_fx/", "02_shots/notes.txt"])
+    assert list_shots(root) == ["SH002a", "sh010"]
+    assert list_shots(tmp_path / "missing") == []
+
+
+def test_remember_project_puts_it_first_once():
+    from tools.fx.anim_loader.logic import remember_project
+
+    recent = ["D:/a", "D:/b"]
+    assert remember_project(recent, "d:/B/") == ["d:/B/", "D:/a"]
+    assert remember_project(recent, "") == recent
+    assert len(remember_project([f"D:/p{i}" for i in range(8)], "D:/new")) == 8
+
 # --- parm pane: status in the version menus, the node comment, problems only in mx_status ------------
 
 from tools.fx.anim_loader.logic import status_comment, status_problems, version_choices, version_menu  # noqa: E402

@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
-from tools.fx.anim_loader.logic import STATUS_ASSET, STATUS_MISSING, STATUS_NEWER, LoaderState
+from tools.fx.anim_loader.logic import KEEP, STATUS_ASSET, STATUS_MISSING, STATUS_NEWER, LoaderState
 
 ALL_PARTS = ("anim", "lookdev", "groom", "cloth")
 Status = dict[str, tuple[str, str | None]]
@@ -79,6 +79,8 @@ class Controller:
         self._rows: list[Row] = []
         self._thumbs: dict[str, str] | None = None
         self._subd: dict[str, dict] = {}
+        self.target_shot = ""  # the shot in the window's Load shot box
+        self.scene_shot = ""   # the shot of the open scene ($HIP), "" when it is no shot's
 
     # --- reading ---------------------------------------------------------------------------------
     def begin_scan(self) -> tuple[int, list[LoaderInfo]]:
@@ -144,11 +146,59 @@ class Controller:
         if not self._rows:
             return "No anim loaders in the scene"
         parts = [f"{behind} behind"] if behind else []
+        if legacy and not behind:
+            parts.append(_plural(legacy, "old loader") + " to upgrade")
         if asset:
             parts.append(f"{asset} {'needs' if asset == 1 else 'need'} an asset")
-        if legacy:
+        if legacy and behind:
             parts.append(_plural(legacy, "old loader"))
+        action = self.primary_action()
+        if action and action[0] == "retarget":  # the headline says what the primary button does
+            paths = set(self.retarget_paths())
+            shots = sorted({r.shot for r in self._rows if r.node_path in paths})
+            parts.insert(0, _plural(len(paths), "loader") + f" from {', '.join(shots)}, not {self.target_shot}")
         return ", ".join(parts) if parts else "All up to date"
+
+    def heavy_polygons(self) -> int:
+        """The shot's estimated viewport subdivision polygons when over the threshold and Draw Hulls Only is off."""
+        from tools.fx.anim_loader.logic import HEAVY_SUBD_POLYGONS
+
+        total = sum(r.subd[1] for r in self._rows if r.subd)
+        hulls = getattr(self.backend, "hulls_on", None)
+        if total <= HEAVY_SUBD_POLYGONS or (hulls is not None and hulls()):
+            return 0
+        return total
+
+    def retarget_paths(self) -> list[str]:
+        """Loaders to move to ``target_shot``: the selected ones from another shot; with nothing selected and the box
+        on the scene's own shot, every loader from another shot (nodes copied over from that shot)."""
+        if not self.target_shot:
+            return []
+        off = [r.node_path for r in self._rows if not r.legacy and r.shot and r.shot != self.target_shot]
+        if self.selection:
+            return [p for p in off if p in self.selection]
+        return off if self.target_shot == self.scene_shot else []
+
+    def retarget_label(self) -> str:
+        return f"Retarget {len(self.retarget_paths())} to {self.target_shot}"
+
+    def primary_action(self) -> tuple[str, str] | None:
+        """The one thing worth doing now, most important first: retarget loaders copied from another shot, update,
+        upgrade 2.1 loaders. (A heavy shot is a note with Draw Hulls Only on the status line, not a primary.)"""
+        if self.retarget_paths() and not self.selection:
+            return "retarget", self.retarget_label()
+        if self.selection:
+            n = len(self.behind_paths(self.selection))
+            if n:
+                return "update", f"Update {n} selected"
+            if self.retarget_paths():
+                return "retarget", self.retarget_label()
+        n = len(self.behind_paths())
+        if n:
+            return "update", f"Update {n} behind"
+        if self.legacy_paths():
+            return "upgrade", self.upgrade_label()
+        return None
 
     def primary_label(self) -> str:
         if self.selection:
@@ -175,7 +225,18 @@ class Controller:
         self._update(self.behind_paths(self.selection))
 
     def primary(self) -> None:
-        self.update_selected() if self.selection else self.update_all()
+        action = self.primary_action()
+        kind = action[0] if action else None
+        if kind == "update":
+            self.update_selected() if self.selection and self.behind_paths(self.selection) else self.update_all()
+        elif kind == "upgrade":
+            self.upgrade_all()
+        elif kind == "retarget":
+            self.retarget()
+        elif kind == "hulls":
+            n = self.backend.set_hulls_only()
+            self.message = (f"Draw Hulls Only on in {n} viewport{'s' if n != 1 else ''}: lighter to work in; "
+                            "memory stays the same.")
 
     def load_shot(self, root: str, shot: str, version: str) -> None:
         created, kept = self.backend.load_shot(root, shot, version)
@@ -185,6 +246,14 @@ class Controller:
         paths = self.legacy_paths()
         n = self.backend.upgrade(paths) if paths else 0
         self.message = f"Upgraded {_plural(n, 'loader')} to 2.2." if n else "No old loaders."
+
+    def retarget(self, paths: list[str] | None = None) -> None:
+        paths = paths if paths is not None else self.retarget_paths()
+        if not paths:
+            self.message = "Nothing to retarget."
+            return
+        moved, left = self.backend.retarget(paths, self.target_shot)
+        self.message = "; ".join([f"Retargeted {len(moved)} to {self.target_shot}", *left])
 
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)
@@ -204,11 +273,17 @@ class Controller:
         """{"plan": {mesh: SubdChoice}, "faces": {mesh: n}} of a loader, as the last scan read it."""
         return self._subd.get(path)
 
-    def set_subd(self, path: str, patterns: list[str], scheme: str, dicing: float | None) -> None:
+    def set_subd(self, path: str, patterns: list[str], scheme: str | None, dicing: Any = KEEP) -> None:
+        """``scheme`` None keeps each pattern's scheme; ``dicing`` left out keeps its dicing, None clears it."""
         self.backend.set_subd(path, patterns, scheme, dicing)
-        word = {"none": "Off", "catmullClark": "Catmull-Clark", "publish": "Publish"}.get(scheme, scheme)
-        extra = f", dicing {dicing:g}" if dicing is not None else ""
-        self.message = f"{path.rsplit('/', 1)[-1]}: {word}{extra} on {len(patterns)} item{'s' if len(patterns) != 1 else ''} (shot override)."
+        n = len(patterns)
+        what = _plural(n, "item")
+        parts = []
+        if scheme is not None:
+            parts.append({"none": "Off", "catmullClark": "Catmull-Clark", "publish": "Publish"}.get(scheme, scheme))
+        if dicing is not KEEP:
+            parts.append(f"dicing {dicing:g}" if dicing is not None else "dicing cleared")
+        self.message = f"{path.rsplit('/', 1)[-1]}: {', '.join(parts)} on {what} (shot override)."
 
     def clear_subd(self, path: str, patterns: list[str] | None) -> None:
         self.backend.clear_subd(path, patterns)

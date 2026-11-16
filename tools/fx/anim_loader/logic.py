@@ -114,6 +114,25 @@ def _subdirs(folder: Path) -> list[Path]:
         return []
 
 
+def list_shots(project_root: Path) -> list[str]:
+    """Shots of a project with an anim publish folder (``02_shots/<shot>/01_anim/publish``), by name."""
+    return sorted((d.name for d in _subdirs(project_root / "02_shots") if (d / "01_anim" / "publish").is_dir()),
+                  key=str.lower)
+
+
+RECENT_PROJECTS = 8
+
+
+def remember_project(recent: list[str], root: str) -> list[str]:
+    """``root`` first in the recent projects list (paths compared case- and slash-blind), at most 8."""
+    def key(p: str) -> str:
+        return p.replace("\\", "/").rstrip("/").lower()
+
+    if not root:
+        return list(recent)
+    return [root, *[p for p in recent if key(p) != key(root)]][:RECENT_PROJECTS]
+
+
 def list_asset_dirs(project_root: Path) -> dict[str, Path]:
     """Every asset folder: ``01_assets/_<group>/<asset>``."""
     out: dict[str, Path] = {}
@@ -392,6 +411,28 @@ def with_latest(state: LoaderState, parts: tuple[str, ...]) -> LoaderState:
     return st
 
 
+def retarget_state(state: LoaderState, shot: str) -> tuple[LoaderState | None, str]:
+    """A loader copied from another shot, moved to ``shot``: the newest anim version there that holds the same
+    instance (the camera: that shot's camera), groom / cloth at their newest there (they are per shot), lookdev and
+    the node's settings kept. (None, why) when the shot has no such instance; the same state for the same shot."""
+    if state.shot == shot:
+        return state, ""
+    root = Path(state.project_root)
+    pub = anim_publish_dir(root, shot)
+    assets = set(list_asset_dirs(root))
+    for version in reversed(list_versions(pub)):
+        for out in read_outputs(pub / version):
+            if out.kind != state.kind:
+                continue
+            inst = resolve_instance(out, assets)
+            if state.kind == "cam" or inst.name == state.instance_name or out.file == state.anim_file:
+                moved = LoaderState(state.project_root, shot, version, out.file, state.asset,
+                                    inst.name if state.kind == "cam" else state.instance_name, state.kind,
+                                    dict(state.enabled), {**state.versions, **{t: "" for t in FX_TASKS}})
+                return with_latest(moved, FX_TASKS), ""
+    return None, f"{state.instance_name} is not in {shot}"
+
+
 def list_part_versions(state: LoaderState, part: str) -> list[str]:
     """Versions of a part (lookdev / groom / cloth) on disk, oldest first, whether or not they hold this instance."""
     return _part_versions(Path(state.project_root), state, part)
@@ -574,16 +615,25 @@ def heavy_shot_message(loads: list[tuple[str, int]], threshold: int = HEAVY_SUBD
     return f"Heavy shot: ~{total / 1e6:.1f} M subdivision polygons ({', '.join(names)})"
 
 
-def set_subd_rules(rules: list[dict], patterns: list[str], scheme: str, dicing: float | None = None) -> list[dict]:
-    """Rules with one rule per pattern set to ``scheme`` / ``dicing`` (put last, so it wins). ``publish`` without
-    dicing removes the override."""
+KEEP = object()  # set_subd_rules: leave this field as the pattern's rule has it
+
+
+def set_subd_rules(rules: list[dict], patterns: list[str], scheme: str | None,
+                   dicing: float | None | object = KEEP) -> list[dict]:
+    """Rules with one rule per pattern, put last so it wins. ``scheme`` None keeps the pattern's scheme (publish
+    when it had none); ``dicing`` KEEP keeps its dicing, None clears it. A rule left with publish and no dicing
+    says nothing, so it is dropped."""
+    old = {r["pattern"]: r for r in rules}
     keep = [r for r in rules if r["pattern"] not in patterns]
-    if scheme == SUBD_PUBLISH and dicing is None:
-        return keep
     for p in patterns:
-        rule = {"pattern": p, "scheme": scheme}
-        if dicing is not None:
-            rule["dicing"] = float(dicing)
+        before = old.get(p, {})
+        sch = scheme if scheme is not None else before.get("scheme", SUBD_PUBLISH)
+        dic = before.get("dicing") if dicing is KEEP else dicing
+        if sch == SUBD_PUBLISH and dic is None:
+            continue
+        rule = {"pattern": p, "scheme": sch}
+        if dic is not None:
+            rule["dicing"] = float(dic)
         keep.append(rule)
     return keep
 

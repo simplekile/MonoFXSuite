@@ -45,9 +45,9 @@ for view in ("list", "grid"):
         app.processEvents()
         time.sleep(0.05)
     w.grab().save(str(OUT / f"sh025_{view}.png"))
-w.shot_box.setCurrentText("sh025")
-print("versions offered", [w.version_box.itemText(i) for i in range(w.version_box.count())])
-w.load_button.click()
+w.pick_shot("sh025")
+print("versions offered", w.versions, [a.text() for a in w.load_menu.actions()])
+w.load_menu.actions()[0].trigger()  # the newest
 print("second load:", w.result.text())
 assert len(ad.find_loaders()) == 4, "Load shot again must create nothing"
 print("DONE")

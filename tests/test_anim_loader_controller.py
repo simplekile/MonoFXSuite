@@ -186,3 +186,61 @@ def test_subd_commands():
     assert c.backend.calls[-1] == ("clear_subd", "/stage/b", None)
     c.subd_to_asset("/stage/b")
     assert c.backend.calls[-1] == ("subd_to_asset", "/stage/b") and "2" in c.message
+
+
+def test_primary_action_follows_what_matters_most():
+    from tools.fx.anim_loader.logic import STATUS_OK
+
+    b = _subd_backend()
+    b.calls = []
+    c = Controller(b)
+    c.refresh()
+    assert c.primary_action() == ("update", "Update 2 behind")
+    b.status["/stage/a"]["lookdev"] = (STATUS_OK, None)
+    b.status["/stage/c"]["anim"] = (STATUS_OK, None)
+    c.refresh()
+    assert c.primary_action() == ("upgrade", "Upgrade 1 old")
+    assert c.headline().startswith("1 old loader")
+    b.infos = [i for i in b.infos if not i.legacy]
+    b.hulls_on = lambda: False
+    b.set_hulls_only = lambda: b.calls.append("hulls") or 2
+    plan = b.subd(None)["/stage/b"]
+    plan["faces"]["/Geo/Base_grp/Body_grp/Geo_Body"] = 1_000_000  # 1 M faces x 16 > 5 M polygons
+    b.subd = lambda infos: {"/stage/b": plan}
+    c.refresh()
+    assert c.heavy_polygons() > 5_000_000                 # a heavy shot is a note on the status line (the window),
+    assert c.primary_action() is None                      # never the primary nor the headline
+    assert c.headline() == "1 needs an asset"
+    b.hulls_on = lambda: True
+    c.refresh()
+    assert c.heavy_polygons() == 0
+
+
+def test_retarget_follows_the_scene_shot_or_the_selection():
+    b = FakeBackend()
+    b.retarget = lambda paths, shot: (b.calls.append(("retarget", tuple(paths), shot))
+                                      or ([f"{p}: moved" for p in paths[:-1]], ["char_Robot_2 is not in sh025"]))
+    c = Controller(b)
+    c.refresh()
+    c.target_shot, c.scene_shot = "sh025", ""
+    assert c.retarget_paths() == []                    # the scene is no shot's: loading two shots is fine
+    c.scene_shot = "sh025"
+    assert c.retarget_paths() == ["/stage/d"]          # a sh900 loader in a sh025 scene: copied from there
+    assert c.primary_action() == ("retarget", "Retarget 1 to sh025")
+    assert c.headline().startswith("1 loader from sh900")
+    c.scene_shot, c.target_shot = "", "sh900"
+    c.selection = ["/stage/b", "/stage/old"]
+    assert c.retarget_paths() == ["/stage/b"]           # the selection, 2.1 nodes left out
+    c.selection = ["/stage/a", "/stage/b"]
+    c.target_shot = "sh777"
+    c.retarget()
+    assert b.calls[-1] == ("retarget", ("/stage/b", "/stage/a"), "sh777")  # in row order
+    assert c.message == "Retargeted 1 to sh777; char_Robot_2 is not in sh025"
+
+
+def test_headline_follows_a_retarget_primary():
+    c = _ctl()
+    c.target_shot, c.scene_shot = "sh777", ""
+    c.selection = ["/stage/b"]                         # not behind, from sh025
+    assert c.primary_action() == ("retarget", "Retarget 1 to sh777")
+    assert c.headline().startswith("1 loader from sh025, not sh777")
