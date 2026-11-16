@@ -863,7 +863,9 @@ def test_panel_smoke(app, prefs) -> None:
     app.processEvents()
     assert ui._tree.topLevelItemCount() == 2             # All locks (holding the groups), Missing locks
     root = ui._rows[(ctl.SEL_DEFAULTS, "")]
-    assert root.text(0) == "All locks" and root.childCount() == 2 and root.isExpanded()
+    # All locks holds its layers first (here only the locked Automatic, v0.2a), then the two groups
+    assert root.text(0) == "All locks" and root.childCount() == 3 and root.isExpanded()
+    assert root.child(0).text(0) == "Automatic" and root.child(1).text(0) == "Fringe"
     assert ui._tree.columnCount() == 3 and ui._tree.columnWidth(0) > 150   # the names have room
     # Selecting a lock row in the tree selects it in the viewport and shows its settings
     ui._rows[(ctl.SEL_LOCKS, 2)].setSelected(True)

@@ -4,8 +4,8 @@ MONO Grooming panel — one window, floating or docked in a Houdini pane.
 Zones, each on its own surface with a line between them:
   top bar      the node, its asset, Settings (font size, X-ray strength), Dock; under it the view bar: what the viewport draws
                (Display, Color by, Deform, Isolate). Viewing never sits next to an action that writes.
-  left         the layer tree (All locks › group › lock, Missing locks): swatch, name, status, eye (shown on
-               hover, on the selection, or when not the default);
+  left         the lock tree (All locks › group › lock, Missing locks), each row with its density layers and
+               their mask layers (v0.2a, ui_layers.py); eye at the left edge, swatch, name, status;
                a filter, Confirm all while locks are new or to check; drag to reorder or regroup
   right (main) the selection: title, what the viewport does with it, its actions (Hidden, Flip root,
                Exclude), measured shape (cm), then one compact row per setting; with
@@ -81,6 +81,8 @@ from tools.fx.auto_material.ui import (
     _rgba,
 )
 from tools.fx.grooming import config
+from tools.fx.grooming import ui_layers as L
+from tools.fx.grooming.layers import SEL_LAYER
 from tools.fx.grooming.controller import (
     COLOR_BY_LABELS,
     DISPLAY_LABELS,
@@ -280,6 +282,7 @@ def _sheet(z: Sz) -> str:
     QWidget#GroomingWindow QWidget {{ font-size: {p(16)}px; }}
     QWidget#TopBar, QWidget#ViewBar, QWidget#TreePane, QWidget#ActionBar {{ background: {PANE}; }}
     QWidget#PropsPane {{ background: {BG_APP}; }}
+    QWidget#PaintStrip {{ background: #151a28; }}
     QFrame[line="true"] {{ background: {SEPARATOR}; border: none; }}
     QLabel {{ color: {TEXT_PRIMARY}; background: transparent; }}
     QWidget#GroomingWindow QLabel[role="title"] {{ {t["title"]} }}
@@ -571,7 +574,7 @@ class _StatusDelegate(QStyledItemDelegate):
         x = option.rect.right() - z.px(6)
         cy = option.rect.center().y()
         dim = row.get("dimmed")
-        parts: list[tuple[str, str]] = []
+        parts: list[tuple[str, str]] = list(row.get("parts", []))   # a layer row: its numbers
         for badge in ("new", "unsure"):
             if badge in row.get("badges", []):
                 parts.append((STATUS_WORD[badge], STATUS_TEXT[badge]))
@@ -755,6 +758,11 @@ class _LayerTree(QTreeWidget):
         if item is not None and event.button() == Qt.MouseButton.LeftButton \
                 and self.columnAt(pos.x()) == COL_EYE:
             row = item.data(COL_NAME, ROLE_ROW)
+            if row and row["kind"] == SEL_LAYER:   # a layer's own eye (Automatic has none)
+                if row["layer"] != "base":
+                    self._ui._fire("set_layer_on", row["id"], not row.get("on", True))
+                event.accept()
+                return
             if row and row["kind"] in (SEL_GROUP, SEL_LOCKS):
                 kind, ids = self._ui._targets(row)
                 if event.modifiers() & Qt.KeyboardModifier.AltModifier:   # only these shown (again: all)
@@ -769,6 +777,12 @@ class _LayerTree(QTreeWidget):
         """On the eye a double-click is two clicks: the eye toggles back."""
         if self.columnAt(event.position().toPoint().x()) == COL_EYE:
             self.mousePressEvent(event)
+            return
+        item = self.itemAt(event.position().toPoint())
+        row = item.data(COL_NAME, ROLE_ROW) if item is not None else None
+        if row and row["kind"] == SEL_LAYER and row["layer"] != "base":   # rename in place
+            self.editItem(item, COL_NAME)
+            event.accept()
             return
         super().mouseDoubleClickEvent(event)
 
@@ -1042,6 +1056,8 @@ class GroomingUI(QWidget):
         self._tree_rows: list[dict] = []
         self._collapsed: set = set()     # rows the user closed (All locks opens unless closed)
         self._props: dict = {}
+        self._props_folded = False     # Properties folded while painting (view)
+        self._settings_open = False    # the settings page holds the Properties column
         self._timer: QTimer | None = None
         self._icons: list[tuple[Any, str, str, int]] = []  # (button, icon, colour, px at size 1)
         prefs = load_prefs()
@@ -1061,6 +1077,7 @@ class GroomingUI(QWidget):
         root.addWidget(_line())
         root.addWidget(self._build_view_bar())
         root.addWidget(_line())
+        root.addWidget(L.build_paint_strip(self))   # while painting: what the scalp shows, the legend
         body = QSplitter(Qt.Orientation.Horizontal)
         body.setHandleWidth(1)
         body.setChildrenCollapsible(False)
@@ -1209,6 +1226,9 @@ class GroomingUI(QWidget):
             act.setCheckable(True)
             act.triggered.connect(lambda _c=False, n=name: self.set_xray_level(n))
         xray.aboutToShow.connect(lambda: [a.setChecked(a.text() == self._xray_level) for a in xray.actions()])
+        menu.addSeparator()
+        menu.addAction(_lucide_icon("sliders", self.z.px(15)), "Node settings and undo cache…").triggered.connect(
+            lambda: self.show_settings(self._ask("settings_info") or {}))
         self._settings_btn.setMenu(menu)
         self._settings_menus = {"font": fonts, "xray": xray}
         lay.addWidget(self._settings_btn)
@@ -1305,10 +1325,11 @@ class GroomingUI(QWidget):
         lay.setSpacing(6)
         head = QHBoxLayout()
         head.setContentsMargins(6, 0, 0, 0)
-        head.addWidget(_label("LAYERS", "caps"))
+        head.addWidget(_label("LOCKS", "caps"))
         self._count_label = _label("", "small")
         head.addWidget(self._count_label)
         head.addStretch(1)
+        L.build_tree_tools(self, head)
         lay.addLayout(head)
 
         self._filter = QLineEdit()
@@ -1319,6 +1340,7 @@ class GroomingUI(QWidget):
                                 " hidden, edited, excluded, flipped")
         self._filter.textChanged.connect(lambda _t: self._apply_filter())
         lay.addWidget(self._filter)
+        lay.addWidget(L.build_row_bar(self))   # the selected layer's blend / opacity or D / opacity
 
         # New / to-check locks: one line with Confirm all, instead of a word on every row
         self._review = QWidget()
@@ -1380,6 +1402,13 @@ class GroomingUI(QWidget):
         header.setSectionResizeMode(COL_NAME, header.ResizeMode.Stretch)
         for col in (COL_STATUS, COL_EYE):
             header.setSectionResizeMode(col, header.ResizeMode.Fixed)
+        header.moveSection(header.visualIndex(COL_EYE), 0)   # the eye at the left edge: every eye lines up
+        tree.setEditTriggers(QAbstractItemView.EditTrigger.EditKeyPressed)   # F2 renames a layer
+        tree.itemChanged.connect(self._on_item_renamed)
+        delete = QShortcut(QKeySequence(Qt.Key.Key_Delete), tree)
+        delete.setContext(Qt.ShortcutContext.WidgetShortcut)
+        delete.activated.connect(lambda: self._fire("delete_layer")
+                                 if self._props.get("kind") == SEL_LAYER else None)
         self._tree = tree
         lay.addWidget(tree, stretch=1)
         self._drop_label = _label("", "small", WARN)
@@ -1577,10 +1606,10 @@ class GroomingUI(QWidget):
         super().hideEvent(event)
         self._fire("hidden")   # the viewport draws every lock in its colour again
 
-    def _fire(self, event: str, *args) -> None:
+    def _fire(self, event: str, *args, **kwargs) -> None:
         cb = self._callbacks.get(event)
         if cb is not None:
-            cb(*args)
+            cb(*args, **kwargs)
 
     def _ask(self, event: str, *args) -> Any:
         cb = self._callbacks.get(event)
@@ -1625,6 +1654,7 @@ class GroomingUI(QWidget):
         root = None   # All locks: the defaults, and the level every group inherits from, so it holds them
         for row in rows:
             item = self._make_item(row)
+            L.add_layers(self, item, row, self._collapsed)
             if row["kind"] == SEL_DEFAULTS:
                 root = item
                 self._tree.addTopLevelItem(item)
@@ -1633,10 +1663,13 @@ class GroomingUI(QWidget):
             else:
                 self._tree.addTopLevelItem(item)
             for child in row.get("children", []):
-                item.addChild(self._make_item(child, parent=row))
+                child_item = self._make_item(child, parent=row)
+                item.addChild(child_item)
+                L.add_layers(self, child_item, child, self._collapsed)
                 locks += child["kind"] == SEL_LOCKS
             key = (row["kind"], row["id"])
             item.setExpanded(first or key in expanded or row["kind"] == SEL_DEFAULTS and key not in self._collapsed)
+        L.expand_layers(self, self._collapsed)
         groups = sum(r["kind"] == SEL_GROUP for r in rows)
         self._count_label.setText(f"{locks} locks · {groups} groups")
         self._apply_filter()
@@ -1772,17 +1805,30 @@ class GroomingUI(QWidget):
             self._tree.scrollToItem(first)
         self._filling = False
 
-    def show_properties(self, props: dict) -> None:
-        z = self.z
-        self._props = props
-        scroll = self._scroll.verticalScrollBar().value()
+    def _clear_props(self) -> None:
         while self._props_lay.count():
             entry = self._props_lay.takeAt(0)
             if entry.widget() is not None:  # hidden now: deleteLater waits for the event loop
                 entry.widget().hide()
                 entry.widget().deleteLater()
+            elif entry.layout() is not None:
+                entry.layout().setParent(None)
+
+    def show_properties(self, props: dict) -> None:
+        z = self.z
+        self._props = props
+        L.show_row_bar(self, props)
+        L.update_tree_tools(self, props)
+        if self._settings_open:   # the settings page stays until Back or another selection
+            return
+        scroll = self._scroll.verticalScrollBar().value()
+        self._clear_props()
         kind = props.get("kind", SEL_NONE)
         lay = self._props_lay
+        if kind == SEL_LAYER:
+            L.layer_props(self, props)
+            QTimer.singleShot(0, lambda: self._scroll.verticalScrollBar().setValue(scroll))
+            return
         if kind == SEL_NONE:
             self._overview(props)
             return
@@ -2052,6 +2098,22 @@ class GroomingUI(QWidget):
     def publish_warning(self) -> str:
         return self._warning_label.text() if self._warning.isVisibleTo(self) else ""
 
+    def set_paint_state(self, on: bool, brush: dict, reference: float | None = None) -> None:
+        """Paint on / off and the brush: the strip of what the scalp shows, the legend."""
+        L.set_paint_state(self, on, brush, reference)
+
+    def show_settings(self, info: dict) -> None:
+        """The settings page in the Properties column (the node's values, the undo cache)."""
+        L.show_settings(self, info)
+
+    def _on_item_renamed(self, item: QTreeWidgetItem, column: int) -> None:
+        if self._filling or column != COL_NAME:
+            return
+        row = item.data(COL_NAME, ROLE_ROW) or {}
+        if row.get("kind") == SEL_LAYER and item.text(COL_NAME).strip() != row.get("name"):
+            name = item.text(COL_NAME).strip()
+            QTimer.singleShot(0, lambda: self._fire("rename_layer", row["id"], name))
+
     def _drop_hint(self, text: str) -> None:
         self._drop_label.setText(f"Not here: {text}" if text else "")
         self._drop_label.setVisible(bool(text))
@@ -2067,6 +2129,14 @@ class GroomingUI(QWidget):
         if self._filling:
             return
         rows = [r for r in self._selected_rows() if r["kind"] != ORPHANS_ROW]
+        self._settings_open = False
+        current = self._tree.currentItem()
+        current = current.data(COL_NAME, ROLE_ROW) if current is not None else None
+        layers = [r for r in rows if r["kind"] == SEL_LAYER]
+        if layers:   # one layer at a time: the one clicked last
+            pick = current if current in layers else layers[0]
+            self._fire("select", SEL_LAYER, (pick["id"],))
+            return
         if not rows:
             self._fire("select", SEL_NONE, ())
             return
@@ -2109,6 +2179,10 @@ class GroomingUI(QWidget):
         z = self.z
         row = item.data(COL_NAME, ROLE_ROW)
         menu = self._menu()
+        if row["kind"] == SEL_LAYER:
+            L.layer_menu(self, row, menu)
+            menu.exec(self._tree.viewport().mapToGlobal(pos))
+            return
         if row["kind"] in (SEL_GROUP, SEL_LOCKS):
             kind, ids = self._targets(row)
             visible = row.get("visible", True)

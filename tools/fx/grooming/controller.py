@@ -20,6 +20,7 @@ import math
 from typing import Any, Callable
 
 from tools.fx.grooming import config, logic, model
+from tools.fx.grooming.layers import SEL_LAYER, LayersMixin
 
 # How often the panel reads the viewport selection and the node's data (ms)
 SELECTION_POLL_MS = 400
@@ -146,7 +147,7 @@ def _names(names: list[str], most: int = 3) -> str:
     return shown + (f" +{len(names) - most}" if len(names) > most else "")
 
 
-class GroomController:
+class GroomController(LayersMixin):
     """The panel's actions on one node. *view* gets what to show (see the module docstring)."""
 
     def __init__(self, adapter: Any, view: Any, node: Any = None) -> None:
@@ -179,6 +180,7 @@ class GroomController:
     # Node and reading
     # ------------------------------------------------------------------
     def set_node(self, node: Any) -> None:
+        self.paint_off()
         self.focus_off()
         self.node = node
         self._node_lost = False
@@ -197,6 +199,7 @@ class GroomController:
         if hasattr(self.view, "set_deform_state"):
             self.view.set_deform_state(*self.deform_state())
         self.refresh_publish_version()
+        self.load_notes()
         level = getattr(self.view, "xray_level", None)
         if level is not None:
             self.set_xray(level())
@@ -294,6 +297,10 @@ class GroomController:
             self.selection = (SEL_NONE, ())
         elif kind == SEL_ORPHAN and not any(o.id == ids[0] for o in data.orphans):
             self.selection = (SEL_NONE, ())
+        elif kind == SEL_LAYER and data.mask(ids[0]) is None:   # deleted, or undone away
+            if self.paint_layer_id == ids[0]:
+                self.paint_off()
+            self.selection = (SEL_NONE, ())
 
     # ------------------------------------------------------------------
     # What the view shows
@@ -350,7 +357,7 @@ class GroomController:
                               "badges": ["edited"] if o.overrides else [], "meta": o.group}
                              for o in data.orphans],
             })
-        return rows
+        return self.attach_layers(data, rows)
 
     @staticmethod
     def _group_order(data: model.GroomData) -> list[str]:
@@ -397,6 +404,8 @@ class GroomController:
         where it comes from, whether Reset applies) and the measured values."""
         data = data or self.data()
         kind, ids = self.selection
+        if kind == SEL_LAYER:
+            return self.layer_properties(data)
         if kind == SEL_NONE:
             overview, attribs = self._with_geometry(self._overview(data), None)
             return {"kind": SEL_NONE, "title": "", "settings": [], "measured": [],
@@ -1128,7 +1137,9 @@ class GroomController:
         return self._set_isolate(None)
 
     def escape(self) -> bool:
-        """Esc / the banner's button: out of isolate first; else nothing selected (the whole groom)."""
+        """Esc / the banner's button: Paint off first, then out of isolate; else nothing selected."""
+        if self.paint_off():
+            return True
         if self.isolate_off():
             return True
         if self.selection[0] == SEL_NONE:
@@ -1364,10 +1375,17 @@ class GroomController:
             return sorted(ids)
         if kind == SEL_GROUP:
             return sorted(lk.id for lk in data.locks if lk.group == ids[0])
+        if kind == SEL_LAYER:
+            return self.layer_lock_ids(data, ids[0])
         return []
 
     def select(self, kind: str, ids=()) -> None:
         """The panel's selection changed: show its properties and select its locks in the viewport."""
+        if kind == SEL_LAYER:
+            self.select_layer(ids[0])
+            return
+        if self.paint_layer_id is not None:   # a lock row paints nothing: Paint ends
+            self.paint_off()
         data = self.data()
         if kind == SEL_LOCKS:
             ids = [i for i in ids if data.lock(i) is not None]
@@ -1445,6 +1463,7 @@ class GroomController:
         viewport selection changed → select those locks here."""
         if self.node is None:
             return
+        self.poll_paint()
         if self._drag_origin is not None:
             # a slider is being dragged: its ticks change groom_data, and showing it again would rebuild
             # the settings under the mouse and end the drag
@@ -1521,7 +1540,7 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("isolate_off", controller.isolate_off)
     ui.on("escape", controller.escape)
     ui.on("undo", controller.undo)
-    ui.on("hidden", controller.focus_off)
+    ui.on("hidden", lambda: (controller.paint_off(), controller.focus_off()))
     ui.on("shown", lambda: controller._sync_viewport() if controller.node is not None else None)
     ui.on("redo", lambda: controller.undo(redo=True))
     ui.on("xray", controller.toggle_xray)
@@ -1536,6 +1555,21 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("drop", controller.drop)
     ui.on("poll", controller.poll)
     ui.on("refresh", controller.refresh)
+    # density layers (v0.2a)
+    ui.on("add_density_layer", controller.add_density_layer)
+    ui.on("add_mask_layer", controller.add_mask_layer)
+    ui.on("delete_layer", controller.delete_layer)
+    ui.on("move_layer", controller.move_layer)
+    ui.on("set_layer", controller.set_layer)
+    ui.on("set_layer_on", controller.set_layer_on)
+    ui.on("set_layer_owner", controller.set_layer_owner)
+    ui.on("rename_layer", controller.rename_layer)
+    ui.on("paint_layer_action", controller.paint_layer_action)
+    ui.on("toggle_paint", controller.toggle_paint)
+    ui.on("paint_off", controller.paint_off)
+    ui.on("set_brush", controller.set_brush)
+    ui.on("settings_info", controller.settings_info)
+    ui.on("set_node_setting", controller.set_node_setting)
 
 
 def _adapter():

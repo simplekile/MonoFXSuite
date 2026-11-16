@@ -1542,6 +1542,45 @@ def on_lookup_changed(node) -> None:
             node.setUserData(LOOKUP_NOTE, LOOKUP_NOTE_BY_HAND[1 if p.eval() else 0])
 
 
+LOOKUP_KEPT_NOTE = "off: the scene was saved before the parm existed"   # what keep_old_lookup writes
+NODE_SETTING_PARMS = {"lookup": LOOKUP_PARM, "undo_cache_gb": config.UNDO_CACHE_PARM,
+                      "undo_deform_gb": config.UNDO_DEFORM_PARM}
+NODE_SETTING_LABELS = {"lookup": "Fit lookup per lock", "undo_cache_gb": "Undo cache, GB",
+                       "undo_deform_gb": "Deformed undo, GB"}
+
+
+def node_settings(node) -> dict:
+    """The node's own values the panel's settings page shows: "Fit lookup per lock" (`lookup`, and
+    `lookup_kept` with `lookup_text` while it is off because the scene was saved before it existed), "Undo cache,
+    GB" and "Deformed undo, GB". A parm the node does not have (an older build) is left out."""
+    out: dict = {}
+    for key, name in NODE_SETTING_PARMS.items():
+        p = node.parm(name)
+        if p is not None:
+            out[key] = bool(p.eval()) if key == "lookup" else float(p.eval())
+    if "lookup" in out:
+        out["lookup_kept"] = not out["lookup"] and node.userData(LOOKUP_NOTE) == LOOKUP_KEPT_NOTE
+        out["lookup_text"] = LOOKUP_KEPT_TEXT
+    return out
+
+
+def set_node_setting(node, key: str, value) -> None:
+    """Set one of `node_settings` from the panel: one undo step named "MONO Grooming: <label>". The lookup
+    toggle also records that the artist chose it (`on_lookup_changed`, what its own callback does: a parm set
+    from Python runs no callback). Neither parm is in a lock's cache key: setting them regrows nothing except
+    the lookup, which is in every lock's key."""
+    name = NODE_SETTING_PARMS[key]
+    p = node.parm(name)
+    if p is None:
+        raise KeyError(f"{node.path()} has no parm {name} (an older build of the node)")
+    with hou.undos.group(f"{UNDO_PREFIX}{NODE_SETTING_LABELS[key]}"):
+        if key == "lookup":
+            p.set(1 if value else 0)
+            on_lookup_changed(node)
+        else:
+            p.set(max(float(value), 0.01))
+
+
 def on_created(node) -> None:
     """HDA OnCreated: a node made now keeps "Fit lookup per lock" at its default, on, whatever scene it is made
     in (the note marks the choice made, so OnLoaded / OnUpdated never force it off), and the playbar

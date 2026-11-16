@@ -30,6 +30,14 @@
     {"label": "chip missing text on its fill", "fg": "#f87171", "bg": {"color": "#f87171", "alpha": 0.14, "over": "#17171b"}, "kind": "text"},
     {"label": "chip update text on its fill", "fg": "#5b8cff", "bg": {"color": "#5b8cff", "alpha": 0.14, "over": "#17171b"}, "kind": "text"},
     {"label": "warn text (unsure) on PANE", "fg": "#f5b14c", "bg": "#17171b", "kind": "text"},
-    {"label": "new text on PANE", "fg": "#a78bfa", "bg": "#17171b", "kind": "text"}
+    {"label": "new text on PANE", "fg": "#a78bfa", "bg": "#17171b", "kind": "text"},
+    {"label": "Grooming v0.2a: TEXT_PRIMARY on the paint strip", "fg": "#ededf0", "bg": "#151a28", "kind": "text"},
+    {"label": "Grooming v0.2a: TEXT_LABEL legend numbers on the paint strip", "fg": "#a3a3ae", "bg": "#151a28", "kind": "text"},
+    {"label": "Grooming v0.2a: TEXT_PRIMARY checked view button on the paint strip", "fg": "#ededf0", "bg": {"color": "#5b8cff", "alpha": 0.18, "over": "#151a28"}, "kind": "text"},
+    {"label": "Grooming v0.2a: ACCENT brush icon (the layer being painted) on the SELECTED row", "fg": "#5b8cff", "bg": "#273352", "kind": "ui"},
+    {"label": "Grooming v0.2a: TEXT_ERROR Clear button on BG_APP", "fg": "#fca5a5", "bg": "#111113", "kind": "text"},
+    {"label": "Grooming v0.2a: FAINT padlock (Automatic's eye) on PANE", "fg": "#63636b", "bg": "#17171b", "kind": "ui"},
+    {"label": "Grooming v0.2a: density ramp's 0 stop on the paint strip", "fg": "#050519", "bg": "#151a28", "kind": "ui",
+     "known_fail": "The ramp is logic.DENSITY_RAMP, the viewport's own colours: its 0 stop is near black by design. The numbers under the ramp carry the values"}
   ]
 }
