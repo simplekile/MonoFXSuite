@@ -186,3 +186,32 @@ def test_subd_commands():
     assert c.backend.calls[-1] == ("clear_subd", "/stage/b", None)
     c.subd_to_asset("/stage/b")
     assert c.backend.calls[-1] == ("subd_to_asset", "/stage/b") and "2" in c.message
+
+
+def test_primary_action_follows_what_matters_most():
+    from tools.fx.anim_loader.logic import STATUS_OK
+
+    b = _subd_backend()
+    b.calls = []
+    c = Controller(b)
+    c.refresh()
+    assert c.primary_action() == ("update", "Update 2 behind")
+    b.status["/stage/a"]["lookdev"] = (STATUS_OK, None)
+    b.status["/stage/c"]["anim"] = (STATUS_OK, None)
+    c.refresh()
+    assert c.primary_action() == ("upgrade", "Upgrade 1 old")
+    assert c.headline().startswith("1 old loader")
+    b.infos = [i for i in b.infos if not i.legacy]
+    b.hulls_on = lambda: False
+    b.set_hulls_only = lambda: b.calls.append("hulls") or 2
+    plan = b.subd(None)["/stage/b"]
+    plan["faces"]["/Geo/Base_grp/Body_grp/Geo_Body"] = 1_000_000  # 1 M faces x 16 > 5 M polygons
+    b.subd = lambda infos: {"/stage/b": plan}
+    c.refresh()
+    assert c.primary_action() == ("hulls", "Draw Hulls Only")
+    assert c.headline().startswith("Heavy shot: ~")
+    c.primary()
+    assert b.calls[-1] == "hulls" and "memory" in c.message
+    b.hulls_on = lambda: True
+    c.refresh()
+    assert c.primary_action() is None and c.headline() == "1 needs an asset"

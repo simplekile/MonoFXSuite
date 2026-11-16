@@ -144,11 +144,41 @@ class Controller:
         if not self._rows:
             return "No anim loaders in the scene"
         parts = [f"{behind} behind"] if behind else []
+        if legacy and not behind:
+            parts.append(_plural(legacy, "old loader") + " to upgrade")
         if asset:
             parts.append(f"{asset} {'needs' if asset == 1 else 'need'} an asset")
-        if legacy:
+        if legacy and behind:
             parts.append(_plural(legacy, "old loader"))
+        heavy = self.heavy_polygons()
+        if heavy and not behind and not legacy:
+            parts.insert(0, f"Heavy shot: ~{heavy / 1e6:.1f} M subdivision polygons")
         return ", ".join(parts) if parts else "All up to date"
+
+    def heavy_polygons(self) -> int:
+        """The shot's estimated viewport subdivision polygons when over the threshold and Draw Hulls Only is off."""
+        from tools.fx.anim_loader.logic import HEAVY_SUBD_POLYGONS
+
+        total = sum(r.subd[1] for r in self._rows if r.subd)
+        hulls = getattr(self.backend, "hulls_on", None)
+        if total <= HEAVY_SUBD_POLYGONS or (hulls is not None and hulls()):
+            return 0
+        return total
+
+    def primary_action(self) -> tuple[str, str] | None:
+        """The one thing worth doing now, most important first: update, upgrade 2.1 loaders, Draw Hulls Only."""
+        if self.selection:
+            n = len(self.behind_paths(self.selection))
+            if n:
+                return "update", f"Update {n} selected"
+        n = len(self.behind_paths())
+        if n:
+            return "update", f"Update {n} behind"
+        if self.legacy_paths():
+            return "upgrade", self.upgrade_label()
+        if self.heavy_polygons() and hasattr(self.backend, "set_hulls_only"):
+            return "hulls", "Draw Hulls Only"
+        return None
 
     def primary_label(self) -> str:
         if self.selection:
@@ -175,7 +205,16 @@ class Controller:
         self._update(self.behind_paths(self.selection))
 
     def primary(self) -> None:
-        self.update_selected() if self.selection else self.update_all()
+        action = self.primary_action()
+        kind = action[0] if action else None
+        if kind == "update":
+            self.update_selected() if self.selection and self.behind_paths(self.selection) else self.update_all()
+        elif kind == "upgrade":
+            self.upgrade_all()
+        elif kind == "hulls":
+            n = self.backend.set_hulls_only()
+            self.message = (f"Draw Hulls Only on in {n} viewport{'s' if n != 1 else ''}: lighter to work in; "
+                            "memory stays the same.")
 
     def load_shot(self, root: str, shot: str, version: str) -> None:
         created, kept = self.backend.load_shot(root, shot, version)

@@ -158,3 +158,23 @@ def test_subd_empty_state(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/c")  # the camera
     assert w.subd_panel.tree.topLevelItemCount() == 0 and "No meshes" in w.subd_panel.title.text()
+
+
+def test_every_style_follows_the_ui_scale(make):
+    _, ui = make
+    from tests.test_anim_loader_controller import FakeBackend
+
+    w = ui.AnimLoaderManager(FakeBackend(), scale=1.5)
+    w.wait()
+    assert "font-size: 22px" in w.primary.styleSheet()        # 15 px body x 1.5
+    assert "font-size: 21px" in w.load_button.styleSheet()    # 14 px meta x 1.5
+    assert "font-size: 21px" in w.shot_box.styleSheet()
+    assert "down-arrow" not in w.shot_box.styleSheet()        # Houdini's own arrow, not a CSS triangle
+    w.close()
+
+
+def test_scale_css():
+    from tools.fx.anim_loader.ui import scale_css
+
+    assert scale_css("a { padding: 9px 14px; font-size: 15px; border: 1px solid; }", 1.5) == \
+        "a { padding: 14px 21px; font-size: 22px; border: 1px solid; }"

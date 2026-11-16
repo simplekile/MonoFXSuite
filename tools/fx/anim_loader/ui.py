@@ -77,6 +77,31 @@ ROLE_ROW = Qt.ItemDataRole.UserRole + 10
 ROLE_HEADER = Qt.ItemDataRole.UserRole + 11
 
 
+def scale_css(css: str, scale: float) -> str:
+    """Every size in a style sheet times the UI scale (Houdini's x the window's); 1 px lines stay 1 px."""
+    import re
+
+    def one(m):
+        v = float(m.group(1))
+        return m.group(0) if v <= 1 else f"{round(v * scale)}px"
+
+    return css if scale == 1 else re.sub(r"(\d+(?:\.\d+)?)px", one, css)
+
+
+# Combo boxes keep Houdini's own arrow: the suite's border-triangle trick drew a square in Houdini 22.
+COMBO_CSS = f"""
+    QComboBox {{
+        padding: 6px 10px; border: 1px solid #2c2c33; border-radius: 8px; background: {BG_RAISED};
+        color: {TEXT_PRIMARY}; font-size: {FS_META}px;
+    }}
+    QComboBox:focus {{ border: 1px solid {ACCENT}; }}
+    QComboBox QAbstractItemView {{
+        background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};
+        selection-background-color: #273352; padding: 4px; outline: none;
+    }}
+"""
+
+
 def chip(state: str, newer: str | None, version: str) -> tuple[str, str]:
     """(text, colour) of a part's chip; colour never stands alone: the word says it too."""
     if state == logic.STATUS_OK:
@@ -352,7 +377,7 @@ class AnimLoaderManager(QWidget):
         self._poll.timeout.connect(self._collect)
         self._thumbs = _Thumbnails(self._repaint_views)
         self._paint = _Painter(self._thumbs, scale)
-        self.setStyleSheet(STYLE_WINDOW.replace("AutoMaterialWindow", WINDOW_NAME) + STYLE_MENU)
+        self.setStyleSheet(self.css(STYLE_WINDOW.replace("AutoMaterialWindow", WINDOW_NAME) + STYLE_MENU))
         self._build()
         self.set_view(self.prefs.get("view", "list"))
         self.refresh()
@@ -360,6 +385,9 @@ class AnimLoaderManager(QWidget):
     # --- layout --------------------------------------------------------------------------------
     def px(self, v: float) -> int:
         return int(round(v * self.s))
+
+    def css(self, style: str) -> str:
+        return scale_css(style, self.s)
 
     def _label(self, text: str, px: int, weight=QFont.Weight.Normal, color: str = TEXT_PRIMARY) -> QLabel:
         lab = QLabel(text)
@@ -371,7 +399,7 @@ class AnimLoaderManager(QWidget):
 
     def _button(self, text: str, style: str) -> QPushButton:
         b = QPushButton(text)
-        b.setStyleSheet(style)
+        b.setStyleSheet(self.css(style))
         b.setFont(_font(self.px(FS_META if style is not STYLE_PRIMARY else FS_BODY),
                         QFont.Weight.DemiBold if style is STYLE_PRIMARY else QFont.Weight.Normal))
         b.setMinimumHeight(self.px(32))
@@ -409,7 +437,7 @@ class AnimLoaderManager(QWidget):
         self.version_box = QComboBox()
         self.version_box.setToolTip("Anim version to load")
         for box in (self.shot_box, self.version_box):
-            box.setStyleSheet(STYLE_COMBO)
+            box.setStyleSheet(self.css(COMBO_CSS))
             box.setMinimumHeight(self.px(32))
             box.setMinimumWidth(self.px(84))
         self.shot_box.currentTextChanged.connect(self._fill_versions)
@@ -674,7 +702,7 @@ class AnimLoaderManager(QWidget):
         if row is None:
             return
         menu = QMenu(self)
-        menu.setStyleSheet(STYLE_MENU)
+        menu.setStyleSheet(self.css(STYLE_MENU))
         menu.addAction("Select node", lambda: self._select_node(item))
         if not row.legacy and row.behind:
             menu.addAction("Update this loader", self._run(lambda: self.ctl._update([row.node_path])))
@@ -759,35 +787,37 @@ def prompt_allowed() -> bool:
 class HeavyShotPrompt(QWidget):
     """A small floating panel: the heavy-shot line, Draw Hulls Only, Later, Don't ask again; hides itself."""
 
-    def __init__(self, text: str, on_hulls, parent: QWidget | None = None, hide_after_ms: int = 20000) -> None:
+    def __init__(self, text: str, on_hulls, parent: QWidget | None = None, hide_after_ms: int = 20000,
+                 scale: float = 1.0) -> None:
         from PySide6.QtWidgets import QCheckBox
 
+        css = lambda c: scale_css(c, scale)  # noqa: E731
         super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.setObjectName("AnimLoaderPrompt")
         self.setWindowModality(Qt.WindowModality.NonModal)
-        self.setStyleSheet(f"QWidget#AnimLoaderPrompt {{ background: {BG_RAISED}; border: 1px solid {LINE};"
-                           f" border-radius: 10px; }}" + STYLE_MENU)
+        self.setStyleSheet(css(f"QWidget#AnimLoaderPrompt {{ background: {BG_RAISED}; border: 1px solid {LINE};"
+                               f" border-radius: 10px; }}" + STYLE_MENU))
         self._on_hulls = on_hulls
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(8)
         title = QLabel(text)
         title.setWordWrap(True)
-        title.setStyleSheet(f"color: {TEXT_PRIMARY}; font-size: {FS_META}px; font-weight: 600; background: transparent;")
+        title.setStyleSheet(css(f"color: {TEXT_PRIMARY}; font-size: {FS_META}px; font-weight: 600; background: transparent;"))
         lay.addWidget(title)
         hint = QLabel("The viewport may be slow. Draw Hulls Only makes it lighter to work in; it does not lower memory.")
         hint.setWordWrap(True)
-        hint.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;")
+        hint.setStyleSheet(css(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;"))
         lay.addWidget(hint)
         row = QHBoxLayout()
         self.dont_ask = QCheckBox("Don't ask again")
-        self.dont_ask.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;")
+        self.dont_ask.setStyleSheet(css(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;"))
         row.addWidget(self.dont_ask)
         row.addStretch(1)
         self.later_button = QPushButton("Later")
-        self.later_button.setStyleSheet(STYLE_GHOST)
+        self.later_button.setStyleSheet(css(STYLE_GHOST))
         self.hulls_button = QPushButton("Draw Hulls Only")
-        self.hulls_button.setStyleSheet(STYLE_PRIMARY)
+        self.hulls_button.setStyleSheet(css(STYLE_PRIMARY))
         for b in (self.later_button, self.hulls_button):
             row.addWidget(b)
         lay.addLayout(row)
@@ -797,7 +827,7 @@ class HeavyShotPrompt(QWidget):
         self._timer.setSingleShot(True)
         self._timer.setInterval(hide_after_ms)
         self._timer.timeout.connect(self._close)
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(round(380 * scale))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
@@ -837,7 +867,7 @@ def show_heavy_shot_prompt(text: str, on_hulls) -> None:
             _PROMPT.close()
         except RuntimeError:
             pass
-    _PROMPT = HeavyShotPrompt(text, on_hulls, main)
+    _PROMPT = HeavyShotPrompt(text, on_hulls, main, scale=max(0.5, min(3.0, hou.ui.scaledSize(1000) / 1000.0)))
     _PROMPT.adjustSize()
     geo = main.geometry()
     _PROMPT.move(geo.right() - _PROMPT.width() - 24, geo.bottom() - _PROMPT.height() - 48)
@@ -909,7 +939,7 @@ class SubdPanel(QWidget):
         row.addWidget(self.sel_label)
         self.scheme = QComboBox()
         self.scheme.addItems(list(SCHEME_WORD.values()))
-        self.scheme.setStyleSheet(STYLE_COMBO)
+        self.scheme.setStyleSheet(owner.css(COMBO_CSS))
         self.scheme.setToolTip("Publish: lookdev, else the anim publish, else none")
         self.scheme.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.scheme.setMinimumContentsLength(7)
