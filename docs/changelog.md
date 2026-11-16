@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+
+## [0.1.26] - 2026-11-17
+
 ### Houdini
 - **Auto Material**: Fix colorspace button. Select a Material Library LOP and click it: every MaterialX image with an empty colour space gets the one in its file name (`_ACEScg`, `_Raw`, `_sRGB`, `_Linear`). Materials Houdini converts from a USD leave it empty, which made base colours look washed out; images that already have a value are not changed. One undo step.
 - **MONO Grooming** (v0.2a): density layers. Paint a density mask on the scalp in the viewport; each layer sets its own strands per cm² under its own mask stack, stacked over the base density. Scenes saved by v0.1 open with their groom unchanged.
