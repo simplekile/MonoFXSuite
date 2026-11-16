@@ -5,6 +5,7 @@ Anim geo USD basename helpers — mirrors Maya USD exporter naming (no bpy).
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import MutableSet, Optional
 
 INVALID_FILENAME_CHARS = '<>:"/\\|?*'
@@ -49,12 +50,14 @@ def geo_usd_basename_from_publish_name(publish_name: str) -> str:
 
 
 def alloc_unique_basename(base: str, used: MutableSet[str]) -> str:
+    """``base``, then ``base_inst02``, ``base_inst03``... for clones (``_2`` clashed with asset names like
+    ``char_Robot_2``; Mono Anim Loader 2.2, docs/plans/anim_loader_v2_2.md)."""
     if base not in used:
         used.add(base)
         return base
     i = 2
     while True:
-        cand = f"{base}_{i}"
+        cand = f"{base}_inst{i:02d}"
         if cand not in used:
             used.add(cand)
             return cand
@@ -76,3 +79,30 @@ def resolve_geo_usd_basename(
     if used is None:
         return base
     return alloc_unique_basename(base, used)
+
+
+_CLONE_RE = re.compile(r"_inst(\d{2,})$")
+
+
+def find_project_root(path: Path) -> Optional[Path]:
+    """The first folder upwards holding both ``01_assets`` and ``02_shots``."""
+    for p in (path, *path.parents):
+        if (p / "01_assets").is_dir() and (p / "02_shots").is_dir():
+            return p
+    return None
+
+
+def publish_meta_geo_entry(file_name: str, project_root: Optional[Path]) -> dict:
+    """A publish_meta.json ``outputs`` entry for a geo USD: ``asset`` and ``instance`` only when the name
+    (``geo_<asset>`` / ``geo_<asset>_instNN``) names an asset folder of the project."""
+    entry: dict = {"file": file_name, "type": "geo"}
+    stem = Path(file_name).stem
+    body = stem[4:] if stem.lower().startswith("geo_") else stem
+    m = _CLONE_RE.search(body)
+    asset, instance = (body[: m.start()], int(m.group(1))) if m else (body, 1)
+    if project_root is not None and any(
+        (g / asset).is_dir() for g in (project_root / "01_assets").glob("_*")
+    ):
+        entry["asset"] = asset
+        entry["instance"] = instance
+    return entry
