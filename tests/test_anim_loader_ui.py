@@ -259,3 +259,48 @@ def test_retarget_copied_loaders_to_the_scene_shot(make):
     _select(w, ui, "/stage/a")                          # behind: Update stays first, Retarget beside it
     assert w.primary.text() == "Update 1 selected"
     assert not w.retarget_button.isHidden() and w.retarget_button.text() == "Retarget 1 to sh900"
+
+
+def test_project_box_loads_a_shot_in_an_unsaved_scene(make, tmp_path, monkeypatch):
+    from tests.anim_loader_tree import make as make_tree
+
+    mk, ui = make
+    proj = make_tree(tmp_path / "proj", ["01_assets/", "02_shots/sh010/01_anim/publish/v001/cam_sh010.usd",
+                                         "02_shots/sh020/01_anim/publish/v002/cam_sh020.usd"])
+    other = make_tree(tmp_path / "other", ["01_assets/", "02_shots/sh500/01_anim/publish/v001/cam_sh500.usd"])
+    ui._save_prefs({"recent_projects": [proj.as_posix()]})
+    b = FakeBackend()
+    b.infos = []                                          # an empty, unsaved scene
+    b.project_and_shot = lambda: ("", "")
+    w = mk(b)
+    assert w.project_box.currentText() == "proj" and w.project_box.currentData() == proj.as_posix()
+    assert [w.shot_box.itemText(i) for i in range(w.shot_box.count())] == ["sh010", "sh020"]
+    w.shot_box.setCurrentText("sh020")
+    assert w.version_box.currentText() == "v002" and w.load_button.isEnabled()
+    w.load_button.click()
+    assert b.calls[-1] == ("load_shot", proj.as_posix(), "sh020", "v002")
+    monkeypatch.setattr(ui.QFileDialog, "getExistingDirectory", lambda *a, **k: str(other / "02_shots"))
+    browse = w.project_box.findData(ui.BROWSE)
+    w.project_box.setCurrentIndex(browse)
+    w.project_box.activated.emit(browse)
+    assert w.project_box.currentData() == other.as_posix()   # a folder inside a project finds the project
+    assert w.shot_box.currentText() == "sh500"
+    monkeypatch.setattr(ui.QFileDialog, "getExistingDirectory", lambda *a, **k: str(proj / "02_shots/sh020"))
+    w.project_box.activated.emit(w.project_box.findData(ui.BROWSE))
+    assert w.project_box.currentData() == proj.as_posix() and w.shot_box.currentText() == "sh020"  # its shot too
+    assert ui._load_prefs()["recent_projects"][:2] == [proj.as_posix(), other.as_posix()]  # last picked first
+
+
+def test_unsaved_scene_shot_box_starts_on_the_loaders_shot(make, tmp_path):
+    from tests.anim_loader_tree import make as make_tree
+
+    mk, ui = make
+    proj = make_tree(tmp_path / "proj", ["01_assets/", "02_shots/sh001/01_anim/publish/",
+                                         "02_shots/sh900/01_anim/publish/v001/cam_sh900.usd"])
+    b = FakeBackend()
+    b.infos = [i for i in b.infos if i.state is None or i.state.shot == "sh900"]
+    b.infos = [i if i.state is None else type(i)(i.path, __import__("dataclasses").replace(
+        i.state, project_root=proj.as_posix()), i.legacy) for i in b.infos]
+    b.project_and_shot = lambda: ("", "")
+    w = mk(b)
+    assert w.project_box.currentData() == proj.as_posix() and w.shot_box.currentText() == "sh900"

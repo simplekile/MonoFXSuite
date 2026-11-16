@@ -266,6 +266,12 @@
   node renamed when named after its shot), groom / cloth newest there (per shot), lookdev and every node setting
   kept (subd rules too). A shot without that instance, or one already loaded for it, leaves the node and says so.
   A shot merge whose loaders all moved is retagged. One undo step; also on a row's right-click menu.
+- Project box (the user's pick, 2026-11-17), first in the Load shot box: the scene's project ($HIP), the loaders'
+  projects, then recent ones (`recent_projects` in `anim_loader_prefs.json`, `logic.remember_project`, 8), and
+  Browse... (a folder anywhere inside a project finds its root; inside a shot it picks that shot too). Shots come
+  from `logic.list_shots` (`02_shots/<shot>/01_anim/publish`), so Load shot works in an unsaved scene. The shot
+  box keeps only a shot the artist chose; otherwise it opens on the scene's shot, else the loaders' shot.
+  List rows / grid cards are laid out again on their view's own resize (the splitter moves it, not the window).
   Shelf tool "Anim Loaders". Checks: `tests/test_anim_loader_*.py`, hython `tests/houdini/anim_loader/accept_*.py`
   on the fake project from `tools/fx/anim_loader/dev/make_fake_shot.py`.
 

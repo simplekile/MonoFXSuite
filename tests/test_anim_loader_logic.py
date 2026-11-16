@@ -407,3 +407,23 @@ def test_retarget_says_what_the_other_shot_lacks(tmp_path):
     new, note = retarget_state(robot, "sh920")
     assert new is None and note == "char_Robot is not in sh920"
     assert retarget_state(robot, "sh900") == (robot, "")  # same shot: nothing to do
+
+
+# --- Project box ----------------------------------------------------------------------------------------
+
+def test_list_shots_only_with_an_anim_publish(tmp_path):
+    from tools.fx.anim_loader.logic import list_shots
+
+    root = make(tmp_path, ["02_shots/sh010/01_anim/publish/v001/cam_sh010.usd", "02_shots/SH002a/01_anim/publish/",
+                           "02_shots/sh003/02_fx/", "02_shots/notes.txt"])
+    assert list_shots(root) == ["SH002a", "sh010"]
+    assert list_shots(tmp_path / "missing") == []
+
+
+def test_remember_project_puts_it_first_once():
+    from tools.fx.anim_loader.logic import remember_project
+
+    recent = ["D:/a", "D:/b"]
+    assert remember_project(recent, "d:/B/") == ["d:/B/", "D:/a"]
+    assert remember_project(recent, "") == recent
+    assert len(remember_project([f"D:/p{i}" for i in range(8)], "D:/new")) == 8

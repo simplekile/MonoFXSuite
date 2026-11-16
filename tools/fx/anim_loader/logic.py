@@ -114,6 +114,25 @@ def _subdirs(folder: Path) -> list[Path]:
         return []
 
 
+def list_shots(project_root: Path) -> list[str]:
+    """Shots of a project with an anim publish folder (``02_shots/<shot>/01_anim/publish``), by name."""
+    return sorted((d.name for d in _subdirs(project_root / "02_shots") if (d / "01_anim" / "publish").is_dir()),
+                  key=str.lower)
+
+
+RECENT_PROJECTS = 8
+
+
+def remember_project(recent: list[str], root: str) -> list[str]:
+    """``root`` first in the recent projects list (paths compared case- and slash-blind), at most 8."""
+    def key(p: str) -> str:
+        return p.replace("\\", "/").rstrip("/").lower()
+
+    if not root:
+        return list(recent)
+    return [root, *[p for p in recent if key(p) != key(root)]][:RECENT_PROJECTS]
+
+
 def list_asset_dirs(project_root: Path) -> dict[str, Path]:
     """Every asset folder: ``01_assets/_<group>/<asset>``."""
     out: dict[str, Path] = {}

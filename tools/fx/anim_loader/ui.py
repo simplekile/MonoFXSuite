@@ -17,12 +17,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QListView,
@@ -131,6 +132,13 @@ def row_summary(row: Row) -> tuple[str, str]:
     if row.missing:
         return "something missing", STATUS_COLORS[AM_MISSING]
     return "up to date", STATUS_COLORS[AM_OK]
+
+
+BROWSE = "__browse__"  # the Project box's last item
+
+
+def _path_key(path: str) -> str:
+    return path.replace("\\", "/").rstrip("/").lower()
 
 
 def _load_prefs() -> dict:
@@ -260,7 +268,8 @@ class _ListDelegate(QStyledItemDelegate):
         if row.subd:
             fm = p.fontMetrics()
             tail = f"  ·  {subd_chip(row)}"
-            head_w = min(fm.horizontalAdvance(sub), max(0, name_w - fm.horizontalAdvance(tail)))
+            # a few px over the measured width: eliding to the exact width cuts text that fits (hinting)
+            head_w = min(fm.horizontalAdvance(sub) + pt.px(4), max(0, name_w - fm.horizontalAdvance(tail)))
             p.drawText(QRect(name_x, sub_rect.top(), head_w, sub_rect.height()), top_left,
                        fm.elidedText(sub, Qt.TextElideMode.ElideMiddle, head_w))
             if row.subd[1] > logic.HEAVY_SUBD_POLYGONS:
@@ -295,7 +304,11 @@ class _ListDelegate(QStyledItemDelegate):
         width = self.view.viewport().width() if self.view is not None else 1000
         if index.data(ROLE_HEADER):
             return QSize(width, self.pt.px(34))
-        return QSize(width, self.pt.px(128 if width < self.pt.px(NARROW_ROW_PX) else 56))
+        if width >= self.pt.px(NARROW_ROW_PX):
+            return QSize(width, self.pt.px(56))
+        row = index.data(ROLE_ROW)
+        one_line = row is not None and (row.kind == "cam" or row.legacy)  # one chip line, not two
+        return QSize(width, self.pt.px(102 if one_line else 128))
 
 
 class _GridDelegate(QStyledItemDelegate):
@@ -451,6 +464,18 @@ class AnimLoaderManager(QWidget):
             b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             self.view_buttons.addButton(b)
             t.addWidget(b)
+        # Project: the scene's, the loaders', then recent ones (prefs), and Browse...; so Load shot works in a
+        # scene that is saved nowhere yet
+        self.project_box = QComboBox()
+        self.project_box.setToolTip("Project to load from: the scene's, recent ones, or Browse for another")
+        self.project_box.setStyleSheet(self.css(COMBO_CSS))
+        self.project_box.setMinimumHeight(self.px(32))
+        self.project_box.setMinimumWidth(self.px(120))
+        self.project_box.setMaximumWidth(self.px(280))
+        self.project_box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToContents)
+        self.project_box.activated.connect(self._project_picked)
+        self._project = ""
+        self._picked_shot = ""  # a shot the artist chose; any other is picked again on each fill
         self.shot_box = QComboBox()
         self.shot_box.setEditable(True)
         self.shot_box.setToolTip("Shot to load")
@@ -472,7 +497,7 @@ class AnimLoaderManager(QWidget):
         lb.setContentsMargins(0, 0, 0, 0)
         lb.setSpacing(self.px(8))
         lb.addStretch(1)
-        for w in (self.shot_box, self.version_box, self.load_button):
+        for w in (self.project_box, self.shot_box, self.version_box, self.load_button):
             lb.addWidget(w)
         self.load_box.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._top_layout = t
@@ -565,6 +590,7 @@ class AnimLoaderManager(QWidget):
             v.setItemDelegate(_GridDelegate(self._paint, v, v))
         else:
             v.setItemDelegate(_ListDelegate(self._paint, v, v))
+        v.viewport().installEventFilter(self)  # rows / cards follow the view's own width (the splitter moves it)
         v.itemSelectionChanged.connect(lambda view=v: self._selection_changed(view))
         v.itemDoubleClicked.connect(self._select_node)
         v.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -680,6 +706,13 @@ class AnimLoaderManager(QWidget):
 
     NARROW_PX = 640
 
+    def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.Resize:
+            for v in (getattr(self, "list_view", None), getattr(self, "grid_view", None)):
+                if v is not None and obj is v.viewport():
+                    QTimer.singleShot(0, v.doItemsLayout)
+        return super().eventFilter(obj, event)
+
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         narrow = self.width() < self.px(self.NARROW_PX)
@@ -748,30 +781,85 @@ class AnimLoaderManager(QWidget):
                 sub.addAction(asset, self._run(lambda a=asset: self.ctl.set_asset(row.node_path, a)))
         menu.exec(view.viewport().mapToGlobal(pos))
 
+    def _fill_projects(self) -> None:
+        """The scene's project, the loaders' projects, then recent ones; the one picked stays picked."""
+        hip_root = getattr(self.backend, "project_and_shot", lambda: ("", ""))()[0]
+        loader_roots = [i.state.project_root for i in self.ctl._infos if i.state and i.state.project_root]
+        recent = _load_prefs().get("recent_projects", [])
+        paths: list[str] = []
+        for path in [self._project, hip_root, *loader_roots, *(recent if isinstance(recent, list) else [])]:
+            if path and _path_key(path) not in {_path_key(x) for x in paths}:
+                paths.append(path)
+        self._project = self._project or (paths[0] if paths else "")
+        self.project_box.blockSignals(True)
+        self.project_box.clear()
+        for path in paths:
+            self.project_box.addItem(Path(path).name or path, path)
+            self.project_box.setItemData(self.project_box.count() - 1, path, Qt.ItemDataRole.ToolTipRole)
+        self.project_box.addItem("Browse...", BROWSE)
+        self.project_box.setCurrentIndex(max(0, next((i for i, x in enumerate(paths)
+                                                      if _path_key(x) == _path_key(self._project)), 0)))
+        self.project_box.blockSignals(False)
+
+    def _project_picked(self, index: int) -> None:
+        shot = ""
+        if self.project_box.itemData(index) == BROWSE:
+            folder = QFileDialog.getExistingDirectory(self, "Project folder", self._project)
+            root = logic.find_project_root(Path(folder)) if folder else None
+            if folder and root is None:
+                self.ctl.message = f"{folder} is in no project (a folder with 01_assets and 02_shots)."
+                self._update_bar()
+            if root is not None:
+                self._project = root.as_posix()
+                self._remember_project(self._project)
+                shot = logic.detect_shot(Path(folder).relative_to(root)) or ""  # a folder inside a shot picks it
+        else:
+            self._project = self.project_box.itemData(index) or ""
+        self._picked_shot = shot
+        self.shot_box.blockSignals(True)
+        self.shot_box.setCurrentText(shot)
+        self.shot_box.blockSignals(False)
+        self._fill_shots()
+
+    @staticmethod
+    def _remember_project(root: str) -> None:
+        prefs = _load_prefs()
+        recent = prefs.get("recent_projects", [])
+        prefs["recent_projects"] = logic.remember_project(recent if isinstance(recent, list) else [], root)
+        _save_prefs(prefs)
+
     def _fill_shots(self) -> None:
-        current = self.shot_box.currentText()
-        shots = self.ctl.shots()
+        self._fill_projects()
+        root = self._project_root()
+        current = self._picked_shot
         guess = getattr(self.backend, "project_and_shot", lambda: ("", ""))()
-        if guess[1] and guess[1] not in shots:
-            shots.append(guess[1])
+        shots = set(logic.list_shots(Path(root))) if root else set()
+        shots |= {r.shot for r in self.ctl.rows() if r.shot and any(
+            i.path == r.node_path and i.state and _path_key(i.state.project_root) == _path_key(root)
+            for i in self.ctl._infos)}
+        if guess[1] and _path_key(guess[0]) == _path_key(root):
+            shots.add(guess[1])
+        shots_sorted = sorted(shots, key=str.lower)
+        if current not in shots:
+            current = ""
         self.shot_box.blockSignals(True)
         self.shot_box.clear()
-        self.shot_box.addItems(sorted(shots))
-        self.shot_box.setCurrentText(current or guess[1] or (shots[0] if shots else ""))
+        self.shot_box.addItems(shots_sorted)
+        loaded = [x for x in self.ctl.shots() if x in shots]  # an unsaved scene: the shot its loaders are from
+        self.shot_box.setCurrentText(current or (guess[1] if guess[1] in shots else "") or (loaded[0] if loaded else "")
+                                     or (shots_sorted[0] if shots_sorted else ""))
         self.shot_box.blockSignals(False)
         self.ctl.scene_shot = guess[1]
         self.ctl.target_shot = self.shot_box.currentText()
         self._fill_versions(self.shot_box.currentText())
 
     def _shot_changed(self, shot: str) -> None:
+        self._picked_shot = shot  # fills block the box's signals: this is the artist's choice
         self.ctl.target_shot = shot
         self._update_bar()
 
     def _project_root(self) -> str:
-        roots = [i.state.project_root for i in self.ctl._infos if i.state and i.state.project_root]
-        if roots:
-            return roots[0]
-        return getattr(self.backend, "project_and_shot", lambda: ("", ""))()[0]
+        return self._project
 
     def _fill_versions(self, shot: str) -> None:
         root = self._project_root()
@@ -786,6 +874,7 @@ class AnimLoaderManager(QWidget):
             self.ctl.message = "Pick a shot and a version first."
             self._update_bar()
             return
+        self._remember_project(root)
         self._run(lambda: self.ctl.load_shot(root, shot, version))()
 
 
