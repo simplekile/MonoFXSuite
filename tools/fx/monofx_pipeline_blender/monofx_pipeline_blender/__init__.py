@@ -153,7 +153,7 @@ from . import addon_updater
 bl_info = {
     "name": "MonoFX Pipeline Blender",
     "author": "MonoFXSuite",
-    "version": (0, 9, 144),
+    "version": (0, 9, 146),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > MonoFX",
     "description": (
@@ -1764,6 +1764,7 @@ def _run_usd_export(props, objs: list, out_path: str) -> None:
         generate_materialx_network=props.generate_materialx_network,
         export_lights=props.export_lights,
         export_cameras=props.export_cameras,
+        asset_kind="component",
         export_objects=objs,
         convert_orientation=props.convert_orientation,
         export_global_forward_selection=props.export_forward_axis,
