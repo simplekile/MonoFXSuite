@@ -5,6 +5,9 @@
 ### Blender
 - **Anim USD**: a second rig of the same asset is named `geo_<asset>_inst02.usd` (then `_inst03`...), not `_2`, which clashed with assets whose names end in a number (`char_Robot_2`, `prop_CoralSet_001`). `publish_meta.json` now gives each geo output its `asset` and `instance` when the name is an asset folder of the project. Read by Mono Anim Loader 2.2.
 
+### Houdini
+- **Mono Anim Loader 2.2** (`mono_anim_loader::2.2`, built from code into `otls/`): one node per character, clone or camera of a shot, grafted under `/<asset>` (clones `/<asset>_instNN`) so several characters and clones load together; lookdev, groom and cloth found for that instance only; groom / cloth caches with time samples load as value clips (motion blur); versions never change by themselves. Manager window and shelf tool **Anim Loaders**: every loader in the scene as a list or a grid with Monos thumbnails, what is behind, Update (one undo step), Load shot, Upgrade 2.1 nodes.
+
 
 ## [0.1.28] - 2026-11-17
 

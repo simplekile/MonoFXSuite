@@ -194,6 +194,36 @@
   before working on the grooming tool, its adapter, its HDA build or the `grooming-check` skill, and add
   new grooming notes there, not here.
 
+## Mono Anim Loader 2.2 (Houdini, `tools/fx/anim_loader/` + `apps/houdini/anim_loader_adapter.py`)
+
+- Spec and decisions: `docs/plans/anim_loader_v2_2.md` (spikes S1/S2 in its section 6); plan
+  `docs/plans/anim_loader_v2_2_plan.md`. LOP HDA `mono_anim_loader::2.2` built by `tools/fx/anim_loader/build_hda.py`
+  into `otls/mono_anim_loader.hdalc`; its PythonModule only imports the adapter. 2.1 (Dropbox library) keeps working;
+  the manager's Upgrade changes a 2.1 node to 2.2 keeping its parms (2.1 parm names are kept where the meaning is the same).
+- One node = one instance of an asset in a shot (or the camera). The instance is grafted (Graft Stages,
+  `primpath=/<instance>`, `destpath=""`: `"/"` nests the input node's name) on input 0, which passes through:
+  `/char_Helen/Geo/...`, clones `/char_Helen_inst02/...` (the user's convention: a Null named after the asset).
+  Every anim publish has the root `/Geo`, so instances never share one stage before the graft. Camera: no graft.
+- Clones are `geo_<asset>_instNN.usd` (Blender add-on, branch `claude/blender-clone-inst-meta`); `_2` was the
+  old suffix and clashes with assets named with a number (`prop_CoralSet_001`). `publish_meta.json` gives
+  `asset` / `instance`; without them the loader guesses (`logic.resolve_instance`) and says "asset?" instead of
+  guessing between two assets. Groom / cloth come from the grooming department's per-frame caches
+  `02_fx/{groom,cloth}/publish/vNNN/<instance folder>/<shot>_{groom,cloth}.####.usd`, only from the instance's
+  own folder, never another's.
+- Versions on the node are explicit `vNNN`; nothing moves by itself (newest picked once at creation; the status
+  and the manager say what is newer). "missing" = the version on the node is gone; "none" = never published.
+- Groom / cloth with time samples load as value clips authored AFTER the graft on a new layer (Configure Layer
+  `startnewlayer` + Python LOP, no manifest): Graft Stages flattens its branch into one layer, where the first
+  frame's samples beat a clip, and a same-layer anim beats a cloth clip. That gives motion blur; a cache without
+  time samples falls back to Sublayer `$F` (no blur, said on the node).
+- A locked LOP HDA makes its inner nodes on first cook: `node.children()` is empty before.
+- Manager window (`ui.py` view, `controller.py` no Qt, `HoudiniBackend` in the adapter): List and Grid (the
+  user's pick), Monos asset thumbnails (`thumbnail.user.png`, else `.meta/thumb_lookdev.user.png`, else the
+  newest `.meta/thumb_*.user.png`), Load shot finds existing loaders by user data `monofx_anim_loader`
+  (shot + anim file, any version: never a second `/char_X`), Update / Load shot / Upgrade are one undo step each.
+  Shelf tool "Anim Loaders". Checks: `tests/test_anim_loader_*.py`, hython `tests/houdini/anim_loader/accept_*.py`
+  on the fake project from `tools/fx/anim_loader/dev/make_fake_shot.py`.
+
 ## Tool panels (skill `.claude/skills/dcc-panel-design`)
 
 - Any new or changed Qt panel inside a DCC (Houdini first) goes through the skill: artist tasks, the
