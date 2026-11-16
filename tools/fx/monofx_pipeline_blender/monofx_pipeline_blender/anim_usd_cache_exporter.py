@@ -1098,13 +1098,10 @@ def _write_publish_meta(
     frame_end: int,
     camera_path: Optional[Path] = None,
 ) -> None:
-    outputs = [
-        {
-            "file": geo_path.name,
-            "type": "geo",
-        }
-        for geo_path in geo_paths
-    ]
+    from monofx_pipeline_common.anim_geo_naming import find_project_root, publish_meta_geo_entry
+
+    project_root = find_project_root(version_dir)
+    outputs = [publish_meta_geo_entry(geo_path.name, project_root) for geo_path in geo_paths]
     if camera_path is not None:
         outputs.append(
             {

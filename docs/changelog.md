@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Blender
+- **Anim USD**: a second rig of the same asset is named `geo_<asset>_inst02.usd` (then `_inst03`...), not `_2`, which clashed with assets whose names end in a number (`char_Robot_2`, `prop_CoralSet_001`). `publish_meta.json` now gives each geo output its `asset` and `instance` when the name is an asset folder of the project. Read by Mono Anim Loader 2.2.
+
 
 ## [0.1.28] - 2026-11-17
 
