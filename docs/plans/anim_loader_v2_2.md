@@ -187,7 +187,7 @@ refresh. Một node 2.1 chưa upgrade vẫn ở gốc `/Geo`; cửa sổ báo đ
   (lệch 0.0 m), còn blur sau khi USD ROP ghi stage để render; cloth đè được điểm của anim (cùng layer thì
   anim thắng).
 - **Chọn:** mỗi sequence: file đầu có time sample trên `points` → value clip sau graft; không có → Sublayer
-  `$F4` (không blur) và node báo "groom: no motion blur (cache has no time samples)". Cần kiểm lại trên cache
+  `$F4` (không blur) và node báo "groom: no motion blur (no time samples)". Cần kiểm lại trên cache
   thật đầu tiên (mục 8).
 
 ## 7. Phía add-on Blender

@@ -56,8 +56,8 @@ stage = hou.pwd().editableStage()
 from pxr import Usd, UsdGeom, UsdShade
 inst = hda.evalParm("mx_instance_name")
 root = stage.GetPrimAtPath("/" + inst) if inst else None
-look_vp = hda.evalParm("mx_lookdev_viewport")
-groom_vp = hda.evalParm("mx_groom_viewport")
+vp = hda.evalParm("mx_viewport")
+look_vp, groom_vp = vp & 1, vp & 2
 if root:
     # Subdivision per mesh: shot rule > lookdev > anim > none (adapter.author_subd, logic.subd_plan)
     from apps.houdini import anim_loader_adapter
@@ -134,16 +134,22 @@ def build_network(sub) -> None:
 
 
 def _parm_templates() -> hou.ParmTemplateGroup:
+    """Layout D (the user's pick, 2026-11-17, checked in the Houdini 22 GUI at 420-760 px): Manager / Refresh on one row, a
+    one-line status only when there is something to act on, Source / Parts / Geometry or Camera as plain groups,
+    a checkbox in the label column per part, the status in the version menus' labels, Advanced closed. Joined rows
+    only for checkbox + field: wider joins overflow a docked pane. Names of 2.1 are kept (Upgrade keeps values)."""
     T = hou
     g = hou.ParmTemplateGroup()
     cb = "hou.phm().cb_parm_changed(kwargs)"
+    geo_only = f"{{ {config.P_GEO_CAM} == 1 }}"
+    cam_only = f"{{ {config.P_GEO_CAM} == 0 }}"
 
     def s(name, label, default="", menu=None, callback=True, **kw):
         t = T.StringParmTemplate(name, label, 1, default_value=(default,), **kw)
         if menu:
             t.setItemGeneratorScript(menu)
             t.setItemGeneratorScriptLanguage(T.scriptLanguage.Python)
-            t.setMenuType(T.menuType.StringReplace)
+            t.setMenuType(T.menuType.Normal)  # the field shows the item's label: version + status
         if callback:
             t.setScriptCallback(cb)
             t.setScriptCallbackLanguage(T.scriptLanguage.Python)
@@ -156,75 +162,105 @@ def _parm_templates() -> hou.ParmTemplateGroup:
             t.setScriptCallbackLanguage(T.scriptLanguage.Python)
         return t
 
-    def button(name, label, script):
+    def button(name, label, script, help_text):
         t = T.ButtonParmTemplate(name, label)
         t.setScriptCallback(script)
         t.setScriptCallbackLanguage(T.scriptLanguage.Python)
+        t.setHelp(help_text)
+        return t
+
+    def read_only(t):
+        t.setConditional(T.parmCondType.DisableWhen, "{ 1 == 1 }")
         return t
 
     def hidden(t):
         t.hide(True)
         return t
 
-    status = T.StringParmTemplate(config.P_STATUS, "Status", 1)
-    status.setTags({"editor": "1", "editorlines": "2-6"})
-    status.setDisableWhen("{ 1 == 1 }")
+    manager = button("mx_manager", "Manager", "hou.phm().cb_open_manager(kwargs)",
+                     "Every loader of the shot: versions, update, load shot, subdivision.")
+    manager.setJoinWithNext(True)  # two buttons fit a 420 px pane; Timeline sits with the anim it reads
+    g.append(manager)
+    g.append(button("mx_refresh", "Refresh", "hou.phm().cb_refresh(kwargs)",
+                    "Read the publish folders again. Never changes a version."))
+    status = read_only(T.StringParmTemplate(config.P_STATUS, "Status", 1))
+    status.setConditional(T.parmCondType.HideWhen, '{ %s == "" }' % config.P_STATUS)
+    status.setHelp("What needs you: a missing file, an unknown asset, a note. Newer versions show in the menus.")
     g.append(status)
-    g.append(button("mx_manager", "Manager", "hou.phm().cb_open_manager(kwargs)"))
-    g.append(button("mx_refresh", "Refresh", "hou.phm().cb_refresh(kwargs)"))
-    g.append(button("apply_mx_timeline", "Apply Timeline", "hou.phm().cb_apply_timeline(kwargs)"))
 
-    shot = T.FolderParmTemplate("f_shot", "Shot", folder_type=T.folderType.Simple)
-    shot.addParmTemplate(s(config.P_ROOT, "Project Root", string_type=T.stringParmType.FileReference,
-                           file_type=T.fileType.Directory))
-    shot.addParmTemplate(s(config.P_SHOT, "Shot"))
-    shot.addParmTemplate(s(config.P_ANIM_VERSION, "Anim Version", menu="hou.phm().menu_anim_versions(hou.pwd())"))
-    shot.addParmTemplate(s(config.P_ANIM_FILE, "Anim File", menu="hou.phm().menu_anim_files(hou.pwd())"))
-    shot.addParmTemplate(s(config.P_ASSET, "Asset", menu="hou.phm().menu_assets(hou.pwd())"))
-    inst = s(config.P_INSTANCE, "Prim Name", callback=True)
+    src = T.FolderParmTemplate("f_source", "Source", folder_type=T.folderType.Simple)
+    src.addParmTemplate(s(config.P_SHOT, "Shot"))
+    src.addParmTemplate(s(config.P_ANIM_VERSION, "Anim Version", menu="hou.phm().menu_anim_versions(hou.pwd())"))
+    src.addParmTemplate(s(config.P_ANIM_FILE, "Anim File", menu="hou.phm().menu_anim_files(hou.pwd())"))
+    src.addParmTemplate(button("apply_mx_timeline", "Apply Timeline", "hou.phm().cb_apply_timeline(kwargs)",
+                               "Frame range and fps of the scene from the anim publish."))
+    asset = s(config.P_ASSET, "Asset", menu="hou.phm().menu_assets(hou.pwd())")
+    asset.setConditional(T.parmCondType.HideWhen, geo_only)
+    src.addParmTemplate(asset)
+    inst = s(config.P_INSTANCE, "Prim Name")
     inst.setHelp("The prim the instance is grafted under: /<name>/Geo/...")
-    shot.addParmTemplate(inst)
-    g.append(shot)
+    inst.setConditional(T.parmCondType.HideWhen, geo_only)
+    src.addParmTemplate(inst)
+    g.append(src)
 
+    parts = T.FolderParmTemplate("f_parts", "Parts", folder_type=T.folderType.Simple)
+    parts.setConditional(T.parmCondType.HideWhen, geo_only)
     for part, label in (("lookdev", "Lookdev"), ("groom", "Groom"), ("cloth", "Cloth")):
-        f = T.FolderParmTemplate(f"f_{part}", label, folder_type=T.folderType.Collapsible)
-        f.setConditional(T.parmCondType.HideWhen, f"{{ {config.P_GEO_CAM} == 1 }}")
-        f.addParmTemplate(toggle(config.P_ENABLE[part], f"Enable {label}"))
-        f.addParmTemplate(s(config.P_VERSION[part], "Version",
-                            menu=f'hou.phm().menu_versions(hou.pwd(), "{part}")'))
-        f.addParmTemplate(s(config.P_PATH[part], "File", callback=False))
-        if part in ("lookdev", "groom"):
-            vp = T.ToggleParmTemplate(f"mx_{part}_viewport", "Show in Viewport", default_value=True)
-            vp.setHelp("Off: loaded for render only (Karma), for a lighter viewport.")
-            f.addParmTemplate(vp)
-        g.append(f)
+        on = toggle(config.P_ENABLE[part], label)
+        on.hideLabel(True)
+        on.setJoinWithNext(True)  # the checkbox sits in the label column
+        ver = s(config.P_VERSION[part], label, menu=f'hou.phm().menu_versions(hou.pwd(), "{part}")')
+        ver.setConditional(T.parmCondType.DisableWhen, f"{{ {config.P_ENABLE[part]} == 0 }}")
+        parts.addParmTemplate(on)
+        parts.addParmTemplate(ver)
+    vp_parts = tuple(config.VIEWPORT_BITS)
+    vp = T.MenuParmTemplate(config.P_VIEWPORT, "Show in Viewport", vp_parts, tuple(p.title() for p in vp_parts),
+                            default_value=sum(config.VIEWPORT_BITS.values()), is_button_strip=True,
+                            menu_type=T.menuType.StringToggle)
+    vp.setHelp("Off: loaded for render only (Karma), for a lighter viewport.")
+    parts.addParmTemplate(vp)
+    g.append(parts)
 
-    geo = T.FolderParmTemplate("folder1", "Geometry Setting", folder_type=T.folderType.Collapsible)
-    geo.setConditional(T.parmCondType.HideWhen, f"{{ {config.P_GEO_CAM} == 1 }}")
+    geo = T.FolderParmTemplate("f_geo", "Geometry", folder_type=T.folderType.Simple)
+    geo.setConditional(T.parmCondType.HideWhen, geo_only)
     geo.addParmTemplate(T.FloatParmTemplate("scale", "Uniform Scale", 1, default_value=(1.0,), min=0, max=10))
-    geo.addParmTemplate(T.ToggleParmTemplate("mx_hide_enable", "Hide Hair Driver", default_value=True))
-    geo.addParmTemplate(T.StringParmTemplate("mx_hide_pattern", "Hidden Prims", 1,
-                                             default_value=("Geo/Groom_grp/HairDriver_grp",)))
+    hide_on = T.ToggleParmTemplate("mx_hide_enable", "Hide", default_value=True)
+    hide_on.hideLabel(True)
+    hide_on.setJoinWithNext(True)
+    hide = T.StringParmTemplate("mx_hide_pattern", "Hide Prims", 1, default_value=("Geo/Groom_grp/HairDriver_grp",))
+    hide.setConditional(T.parmCondType.DisableWhen, "{ mx_hide_enable == 0 }")
+    hide.setHelp("Prims under the instance made invisible, e.g. the hair driver mesh.")
+    geo.addParmTemplate(hide_on)
+    geo.addParmTemplate(hide)
     g.append(geo)
 
-    cam = T.FolderParmTemplate("xn__Camerasetting_uma", "Camera setting", folder_type=T.folderType.Collapsible)
-    cam.setConditional(T.parmCondType.HideWhen, f"{{ {config.P_GEO_CAM} == 0 }}")
-    cam.addParmTemplate(T.FloatParmTemplate("scale2", "Uniform Scale", 1, default_value=(1.0,), min=0, max=10))
+    cam = T.FolderParmTemplate("f_cam", "Camera", folder_type=T.folderType.Simple)
+    cam.setConditional(T.parmCondType.HideWhen, cam_only)
     cam.addParmTemplate(T.FloatParmTemplate("horizontalAperture", "Horizontal Aperture", 1, default_value=(36.0,),
                                             min=1, max=100))
-    cam.addParmTemplate(T.FloatParmTemplate("xn__houdiniguidescale_s3a", "Scale Guide Geometry", 1,
-                                            default_value=(1.0,), min=0, max=10))
+    cam.addParmTemplate(T.FloatParmTemplate("aspectratio", "Aspect Ratio", 2, default_value=(16.0, 9.0),
+                                            naming_scheme=T.parmNamingScheme.XYZW))
     # Base1 names (clippingRange1 / 2), as in 2.1 and as the inner camera reads them; the default XYZW named them
     # clippingRangex / y and the clipping never reached the camera
     cam.addParmTemplate(T.FloatParmTemplate("clippingRange", "Clipping Range", 2, default_value=(0.001, 1e6),
                                             naming_scheme=T.parmNamingScheme.Base1))
-    cam.addParmTemplate(T.FloatParmTemplate("aspectratio", "Aspect Ratio", 2, default_value=(16.0, 9.0),
-                                            naming_scheme=T.parmNamingScheme.XYZW))
+    cam.addParmTemplate(T.FloatParmTemplate("scale2", "Uniform Scale", 1, default_value=(1.0,), min=0, max=10))
+    cam.addParmTemplate(T.FloatParmTemplate("xn__houdiniguidescale_s3a", "Guide Scale", 1,
+                                            default_value=(1.0,), min=0, max=10))
     g.append(cam)
+
+    adv = T.FolderParmTemplate("f_advanced", "Advanced", folder_type=T.folderType.Collapsible)
+    adv.addParmTemplate(s(config.P_ROOT, "Project Root", string_type=T.stringParmType.FileReference,
+                          file_type=T.fileType.Directory))
+    adv.addParmTemplate(read_only(T.StringParmTemplate(config.P_ANIM_PATH, "Anim Path", 1)))
+    for part in ("lookdev", "groom", "cloth"):
+        p = read_only(T.StringParmTemplate(config.P_PATH[part], f"{part.title()} Path", 1))
+        p.setConditional(T.parmCondType.HideWhen, geo_only)
+        adv.addParmTemplate(p)
+    g.append(adv)
 
     for t in (
         T.IntParmTemplate(config.P_GEO_CAM, "Geo / Cam", 1, default_value=(0,)),
-        T.StringParmTemplate(config.P_ANIM_PATH, "Anim File Path", 1),
         T.ToggleParmTemplate("LOP_scale", "LOP scale (2.1)", default_value=True),
         T.StringParmTemplate("mx_anim_publish_parent", "Anim Publish Folder (2.1)", 1),
         T.StringParmTemplate("mx_groom_asset", "Groom Asset (2.1)", 1),

@@ -34,5 +34,9 @@ P_PATH = {"lookdev": "mx_selected_lookdev_usd_path", "groom": "mx_selected_groom
 P_LAYERS = tuple(f"mx_layer_{i}" for i in range(1, 5))
 P_FX = {t: {k: f"mx_{t}_{k}" for k in ("mode", "template", "first", "last", "roots")} for t in ("groom", "cloth")}
 
+# Show in Viewport: a button strip, one bit per part (on = the viewport draws it; off = Karma only).
+P_VIEWPORT = "mx_viewport"
+VIEWPORT_BITS = {"lookdev": 1, "groom": 2}
+
 # Shot rules for subdivision (JSON list of {"pattern", "scheme", "dicing"}), see logic.subd_plan.
 P_SUBD_RULES = "mx_subd_rules"
