@@ -163,6 +163,26 @@ refresh. Một node 2.1 chưa upgrade vẫn ở gốc `/Geo`; cửa sổ báo đ
   khác nhau trên sh012a: binding material đúng, groom / cloth khớp lưới anim, đổi frame và play không chậm
   hơn cách làm tay của người dùng, value clip của S1 còn chạy sau khi ghép.
 
+### Kết quả (2026-11-17, hython 22.0.466; `tools/fx/anim_loader/dev/spike_s1_s2.py`, `spike_s2b_clips_after_graft.py`)
+
+- **S1.** Groom giả sh025 (Helen v005, 20k sợi × 8 điểm, 46 frame): Sublayer `$F4` mở 0.086 s, mỗi frame
+  0.004 s, **không blur** (điểm ở 10.5 bằng ở 10); value clip (template `sh025_groom.####.usd`) mở 0.006 s,
+  mỗi frame 0.0005 s, **blur đúng** (10.5 nằm giữa 10 và 11), khớp file ở frame 10. Cache chỉ có giá trị
+  mặc định (không time sample): clip **không** chạy (USD chỉ đọc time sample trong clip).
+- **S2.** Graft Stages với `primpath=/<instance>`, `destpath=""` cho `/char_Robot/Geo/…`,
+  `/char_Robot_inst02/Geo/…`, `/char_Robot_2/Geo/…` (`destpath="/"` lồng thêm tên node vào giữa). Hai instance
+  chuyển động khác nhau; material của lookdev (ở `/materials`, ngoài `/Geo`) đi theo:
+  `/char_Robot_inst02/materials/char_Robot_mtl`.
+- **Graft làm phẳng nhánh vào một layer**, nên clip đặt **trong** nhánh bị time sample của frame đầu (lấy
+  làm topology) đè: tóc đứng yên sau graft. Cách chạy: clip đặt **sau** graft, ở `/<instance>/Geo/…`,
+  trên **layer mới** (Configure Layer `startnewlayer=1` rồi Python LOP); không cần file manifest (USD tự
+  sinh). Kết quả: tóc khớp file ở 12, blur ở 10.5, chân tóc nằm trên lưới HairDriver của đúng instance
+  (lệch 0.0 m), còn blur sau khi USD ROP ghi stage để render; cloth đè được điểm của anim (cùng layer thì
+  anim thắng).
+- **Chọn:** mỗi sequence: file đầu có time sample trên `points` → value clip sau graft; không có → Sublayer
+  `$F4` (không blur) và node báo "groom: no motion blur (cache has no time samples)". Cần kiểm lại trên cache
+  thật đầu tiên (mục 8).
+
 ## 7. Phía add-on Blender (và exporter Maya đặt tên giống nó)
 
 - `anim_geo_naming.alloc_unique_basename`: clone thành `_instNN` thay cho `_2`.
