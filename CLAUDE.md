@@ -151,6 +151,21 @@
   textures in LOP, base-colour materials for other images, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
   drop handler and tests read prefs without Qt.
 
+## Installer and Monos (`build/installer/MonoFXSuite.iss`, `build/build.ps1`)
+
+- Monos reads the installed MonoFX version from `tools/MonoFXSuite/VERSION` beside its exe, the folder in
+  `%LOCALAPPDATA%\Monos\install_path.txt`, then `%LOCALAPPDATA%\Monos\tools\MonoFXSuite\VERSION`; the
+  installer writes the last one (always writable, removed on uninstall). The old `MonoStudio\install_path.txt`
+  path is kept for MonoStudio.
+- Task `blenderaddon` installs the Blender add-on like Monos installs its extensions: Blender itself turns it on
+  (`blender -b --python-exit-code 3 --python-expr "assert addon_utils.enable(...); save_userpref()"`, no
+  `--factory-startup`, which would save factory prefs over the user's). It stays a legacy add-on in
+  `%APPDATA%\Blender Foundation\Blender\X.Y\scripts\addons`: as an extension its module would become
+  `bl_ext.user_default.monofx_pipeline_blender` and lose its saved preferences and the scripts importing it.
+  Every `Program Files\Blender Foundation\Blender X.Y\blender.exe` with X >= 5 (bl_info "blender": (5, 0, 0)).
+  `build.ps1` builds the add-on ZIP first: that vendors `monofx_pipeline_common` into the add-on folder the
+  installer ships.
+
 ## Blender add-on USD publish (`tools/fx/monofx_pipeline_blender/`)
 
 - Model publish keeps materials inside the asset: after `wm.usd_export` (Blender 5.2 always writes

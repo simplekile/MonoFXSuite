@@ -33,6 +33,9 @@ PrivilegesRequired=lowest
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
+[Tasks]
+Name: "blenderaddon"; Description: "Install the MonoFX Blender add-on into Blender 5.0 or newer on this PC (close Blender first)"
+
 [Files]
 ; Source = repo root (chạy ISCC từ repo root)
 Source: "..\..\packages\monofx_pipeline_common\src\*"; DestDir: "{app}\packages\monofx_pipeline_common\src"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -50,8 +53,13 @@ Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 ; Houdini reads OPmenu.xml from the root of each HOUDINI_PATH folder (MonoFX node menu)
 Source: "..\..\OPmenu.xml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\otls\*"; DestDir: "{app}\otls"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Blender add-on, staged here and copied into each Blender's scripts\addons after install (InstallBlenderAddon).
+Source: "..\..\tools\fx\monofx_pipeline_blender\monofx_pipeline_blender\*"; DestDir: "{app}\blender\monofx_pipeline_blender"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "__pycache__,*.pyc"; Tasks: blenderaddon
 ; MonoStudio version detection (optional): if MonoStudio is installed, drop VERSION into its tools folder.
 Source: "..\..\VERSION"; DestDir: "{code:GetMonoStudioToolsSuiteDir}"; Flags: ignoreversion; Check: ShouldInstallMonoStudioVersion
+; Monos (Settings > Add-ons > Studio tools) reads the installed version from
+; %LOCALAPPDATA%\Monos\tools\MonoFXSuite\VERSION. Uninstall removes it, so Monos shows "not installed".
+Source: "..\..\VERSION"; DestDir: "{localappdata}\Monos\tools\MonoFXSuite"; Flags: ignoreversion; Check: IsMonosPresent
 ; Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 ; Bỏ .git nếu không cần updater từ git
 ; Source: "..\..\.git\*"; DestDir: "{app}\.git"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -221,6 +229,12 @@ end;
 function ShouldInstallMonoStudioVersion: Boolean;
 begin
   Result := GetMonoStudioToolsSuiteDir('') <> '';
+end;
+
+{ Monos keeps its per-user data in %LOCALAPPDATA%\Monos; present once Monos has run. }
+function IsMonosPresent: Boolean;
+begin
+  Result := DirExists(ExpandConstant('{localappdata}\Monos'));
 end;
 
 procedure InitializeWizard;
@@ -469,6 +483,77 @@ begin
   WriteMonofxShelfPackage(HoudiniUserDir);
 end;
 
+const
+  { bl_info "blender": (5, 0, 0) in monofx_pipeline_blender/__init__.py }
+  BlenderAddonMinMajor = 5;
+  BlenderAddonModule = 'monofx_pipeline_blender';
+
+{ Like Monos does for its Blender extensions: Blender itself enables the add-on and saves the user's
+  prefs (no --factory-startup, which would save factory prefs over the user's). The legacy add-on
+  layout (scripts\addons\monofx_pipeline_blender) is kept: an extension would rename the module to
+  bl_ext.user_default.monofx_pipeline_blender and lose the add-on's saved preferences. }
+procedure InstallBlenderAddon;
+var
+  fr: TFindRec;
+  pfBase, ver, exe, src, dst, params, failed, done: string;
+  rc, major, dot: Integer;
+begin
+  failed := '';
+  done := '';
+  src := ExpandConstant('{app}\blender\') + BlenderAddonModule;
+  if not DirExists(src) then
+  begin
+    Log('Blender add-on: nothing staged at ' + src);
+    Exit;
+  end;
+  pfBase := ExpandConstant('{commonpf64}\Blender Foundation');
+  if not FindFirst(pfBase + '\Blender *', fr) then
+  begin
+    Log('Blender add-on: no Blender under ' + pfBase);
+    Exit;
+  end;
+  try
+    repeat
+      if (fr.Attributes and 16) = 0 then
+        continue;
+      ver := Trim(Copy(fr.Name, 9, 32));   { "Blender 5.2" -> "5.2" }
+      dot := Pos('.', ver);
+      if dot = 0 then
+        continue;
+      major := StrToIntDef(Copy(ver, 1, dot - 1), 0);
+      exe := pfBase + '\' + fr.Name + '\blender.exe';
+      if (major < BlenderAddonMinMajor) or not FileExists(exe) then
+        continue;
+      dst := ExpandConstant('{userappdata}\Blender Foundation\Blender\') + ver + '\scripts\addons\' + BlenderAddonModule;
+      { Replace the whole folder so files removed from the add-on do not linger. }
+      if DirExists(dst) then
+        DelTree(dst, True, True, True);
+      _copy_dir_tree(src, dst);
+      { Blender exits 0 even when an add-on fails to register: assert + --python-exit-code make it say so. }
+      params := '-b --python-exit-code 3 --python-expr "import addon_utils, bpy; assert addon_utils.enable(''' +
+        BlenderAddonModule + ''', default_set=True, persistent=True); bpy.ops.wm.save_userpref()"';
+      if Exec(exe, params, '', SW_HIDE, ewWaitUntilTerminated, rc) and (rc = 0) then
+      begin
+        Log('Blender add-on: Blender ' + ver + ' -> ' + dst + ', enabled');
+        done := done + ' ' + ver;
+      end
+      else
+      begin
+        Log('Blender add-on: copied to ' + dst + ', enabling in Blender ' + ver + ' failed (exit code ' + IntToStr(rc) + ')');
+        failed := failed + #13#10 + '  Blender ' + ver;
+      end;
+    until not FindNext(fr);
+  finally
+    FindClose(fr);
+  end;
+  if done = '' then
+    Log('Blender add-on: no Blender ' + IntToStr(BlenderAddonMinMajor) + '.0+ found under ' + pfBase);
+  if failed <> '' then
+    SuppressibleMsgBox('The MonoFX Blender add-on was copied but could not be turned on in:' + failed + #13#10#13#10 +
+      'Open that Blender, Edit > Preferences > Add-ons, and enable "MonoFX Pipeline Blender".',
+      mbInformation, MB_OK, IDOK);
+end;
+
 procedure CurStepChanged(CurStep: TSetupStep);
 var
   i: Integer;
@@ -512,6 +597,9 @@ begin
       { Shelf only after full code tree is in place for this version }
       CopyShelfForInstalledPref(targetPref, srcMonofx);
     end;
+
+    if WizardIsTaskSelected('blenderaddon') then
+      InstallBlenderAddon;
 
     DetectedHoudiniVersions := DetectHoudiniVersions;
   end;
