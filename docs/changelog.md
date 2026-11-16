@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+
+## [0.1.28] - 2026-11-17
+
 ### Blender
 - **Model publish**: materials stay where Blender writes them (`/_materials`, beside the asset root), as before v0.1.26: the move into `/<root>/material` is taken out.
 - **Model publish**: the asset root is marked `kind = component` (USD asset structure). A kind already there, or a component / group / assembly below the root, is left alone.
