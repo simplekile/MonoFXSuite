@@ -25,18 +25,8 @@ if (Test-Path $VersionFile) {
 }
 Write-Host "Version: $Version"
 
-Write-Host "Building MonoFX Suite installer..."
-& $Iscc "/DMyAppVersion=$Version" $IssPath
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-$Exe = Join-Path $OutputDir "MonoFXSuite_Setup.exe"
-if (Test-Path $Exe) {
-    Write-Host "Done. Output: $Exe"
-} else {
-    Write-Host "Build finished. Check: $OutputDir"
-}
-
-# Blender add-on ZIP (Install from disk in Blender Preferences)
+# Blender add-on ZIP first: it vendors monofx_pipeline_common into the add-on folder, which the
+# installer ships too (task "blenderaddon" copies it into each Blender 5.0+ and enables it).
 $BlenderBuild = Join-Path $ProjectRoot "tools\fx\monofx_pipeline_blender\build.ps1"
 if (Test-Path $BlenderBuild) {
     Write-Host "Building MonoFX Pipeline Blender add-on ZIP..."
@@ -48,10 +38,22 @@ if (Test-Path $BlenderBuild) {
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     if ($latestZip) {
+        New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
         $destZip = Join-Path $OutputDir $latestZip.Name
         Copy-Item -Path $latestZip.FullName -Destination $destZip -Force
         Write-Host "Blender add-on ZIP: $destZip"
     } else {
         Write-Warning "Blender ZIP not found under $BlenderReleases"
     }
+}
+
+Write-Host "Building MonoFX Suite installer..."
+& $Iscc "/DMyAppVersion=$Version" $IssPath
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+$Exe = Join-Path $OutputDir "MonoFXSuite_Setup.exe"
+if (Test-Path $Exe) {
+    Write-Host "Done. Output: $Exe"
+} else {
+    Write-Host "Build finished. Check: $OutputDir"
 }

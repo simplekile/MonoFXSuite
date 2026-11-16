@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import List, Optional
 
 import bpy
+import bpy.utils.previews  # not loaded by Blender in background mode (blender -b, the installer's enable step)
 from bpy.types import Context, Menu, UILayout
 
 from . import anim_ui
