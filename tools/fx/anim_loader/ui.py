@@ -228,6 +228,8 @@ class _ListDelegate(QStyledItemDelegate):
         p.setFont(_font(pt.px(FS_META)))
         p.setPen(QColor(TEXT_LABEL))
         sub = "camera" if row.kind == "cam" else ("Anim Loader 2.1" if row.legacy else f"/{row.instance}")
+        if row.subd:
+            sub += f"  ·  {subd_chip(row)}"
         p.drawText(QRect(name_x, mid + pt.px(1), name_w, pt.px(20)), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop,
                    p.fontMetrics().elidedText(sub, Qt.TextElideMode.ElideMiddle, name_w))
         if narrow:  # chips under the name, two by two, across the whole row
@@ -300,6 +302,10 @@ class _GridDelegate(QStyledItemDelegate):
         p.setFont(_font(pt.px(FS_SMALL), QFont.Weight.DemiBold))
         p.setPen(QColor(color))
         p.drawText(QRect(x, y, w, pt.px(18)), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, text)
+        if row.subd:
+            p.setPen(QColor(STATUS_COLORS[AM_WARN] if row.subd[1] > 5_000_000 else TEXT_LABEL))
+            p.drawText(QRect(x, y, w, pt.px(18)), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+                       subd_chip(row).split(" · ")[0])
         y += pt.px(24)
         if not row.legacy:
             parts = ALL_PARTS[:1] if row.kind == "cam" else ALL_PARTS
@@ -444,7 +450,17 @@ class AnimLoaderManager(QWidget):
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setWordWrap(True)
         self.stack.addWidget(self.empty)
-        root.addWidget(self.stack, 1)
+        from PySide6.QtWidgets import QSplitter
+
+        self.split = QSplitter(Qt.Orientation.Horizontal)
+        self.split.setChildrenCollapsible(False)
+        self.split.addWidget(self.stack)
+        self.subd_panel = SubdPanel(self)
+        self.subd_panel.setMinimumWidth(1)  # set by resizeEvent: 360 beside the list, free when stacked
+        self.split.addWidget(self.subd_panel)
+        self.split.setStretchFactor(0, 3)
+        self.split.setStretchFactor(1, 2)
+        root.addWidget(self.split, 1)
 
         root.addWidget(self._line())
         self.result = self._label("", FS_META, color=TEXT_LABEL)
@@ -560,6 +576,9 @@ class AnimLoaderManager(QWidget):
                 item.setSelected(row.node_path in keep)
             view.blockSignals(False)
         self.stack.setCurrentWidget(self.current_view() if rows else self.empty)
+        if hasattr(self, "subd_panel"):
+            self.ctl.selection = [p for p in self.ctl.selection if any(r.node_path == p for r in rows)]
+            self._show_subd()
         self._fill_shots()
         self._update_bar()
 
@@ -591,6 +610,11 @@ class AnimLoaderManager(QWidget):
     def _selection_changed(self, view: QListWidget) -> None:
         self.ctl.selection = [i.data(ROLE_ROW).node_path for i in view.selectedItems() if i.data(ROLE_ROW)]
         self._update_bar()
+        self._show_subd()
+
+    def _show_subd(self) -> None:
+        sel = self.ctl.selection[-1] if self.ctl.selection else ""
+        self.subd_panel.show_row(next((r for r in self.ctl.rows() if r.node_path == sel), None))
 
     def _repaint_views(self) -> None:
         for v in (self.list_view, self.grid_view):
@@ -610,6 +634,10 @@ class AnimLoaderManager(QWidget):
         self.load_row.setVisible(narrow)
         self.grid_view.doItemsLayout()  # grid headers span the row
         self.list_view.doItemsLayout()  # list rows change height when narrow
+        # the subdivision column sits beside the list, or under it when docked narrow
+        narrow_split = self.width() < self.px(760)
+        self.split.setOrientation(Qt.Orientation.Vertical if narrow_split else Qt.Orientation.Horizontal)
+        self.subd_panel.setMinimumWidth(1 if narrow_split else self.px(360))
 
     # --- commands --------------------------------------------------------------------------------
     def _run(self, fn):
@@ -814,3 +842,184 @@ def show_heavy_shot_prompt(text: str, on_hulls) -> None:
     geo = main.geometry()
     _PROMPT.move(geo.right() - _PROMPT.width() - 24, geo.bottom() - _PROMPT.height() - 48)
     _PROMPT.show()
+
+
+# --- subdivision column (the user's pick, 2026-11-17: option A, a detail column beside List / Grid) ----------
+
+SCHEME_WORD = {"publish": "Publish", "none": "Off", "catmullClark": "Catmull-Clark"}
+WORD_SCHEME = {v: k for k, v in SCHEME_WORD.items()}
+ROLE_PATTERN = Qt.ItemDataRole.UserRole + 20
+
+
+def subd_chip(row: Row) -> str:
+    """The row's subdivision chip: "subd 26 · ~9.9 M" (meshes subdivided, estimated viewport polygons)."""
+    if not row.subd:
+        return ""
+    n, polys = row.subd
+    return f"subd {n} · ~{polys / 1e6:.1f} M"
+
+
+def _faces_word(n: int) -> str:
+    return f"{n / 1000:.1f}k" if n < 1_000_000 else f"{n / 1e6:.2f} M"
+
+
+class SubdPanel(QWidget):
+    """The selected loader's meshes by group: faces, where the scheme comes from, scheme, dicing; set on a
+    selection (one undo step), clear overrides, apply to every instance of the asset."""
+
+    def __init__(self, owner, parent=None) -> None:
+        from PySide6.QtWidgets import QAbstractItemView, QLineEdit, QTreeWidget
+
+        super().__init__(parent)
+        self.owner = owner
+        self.path = ""
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(owner.px(12), owner.px(10), owner.px(12), owner.px(10))
+        lay.setSpacing(owner.px(8))
+        self.title = owner._label("Pick a character to see its subdivision.", 19, QFont.Weight.DemiBold)
+        self.title.setWordWrap(True)
+        lay.addWidget(self.title)
+        self.load = owner._label("", FS_SMALL, color=TEXT_LABEL)
+        self.load.setWordWrap(True)
+        lay.addWidget(self.load)
+        self.tree = QTreeWidget()
+        self.tree.setColumnCount(5)
+        self.tree.setHeaderLabels(["Mesh", "Faces", "From", "Scheme", "Dice"])
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree.setRootIsDecorated(True)
+        self.tree.setStyleSheet(
+            f"QTreeWidget {{ background: {BG_APP}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};"
+            f" border-radius: 8px; font-size: {owner.px(FS_SMALL)}px; outline: none; }}"
+            f"QTreeWidget::item {{ padding: {owner.px(3)}px 0; }}"
+            f"QTreeWidget::item:selected {{ background: {SELECTED}; color: {TEXT_PRIMARY}; }}"
+            f"QHeaderView::section {{ background: {BG_APP}; color: {TEXT_LABEL}; border: none;"
+            f" border-bottom: 1px solid {LINE}; padding: 4px; font-size: {owner.px(FS_SMALL)}px; }}")
+        self.tree.itemSelectionChanged.connect(self._sel_changed)
+        from PySide6.QtWidgets import QHeaderView
+
+        head = self.tree.header()
+        head.setStretchLastSection(False)
+        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for col in range(1, 5):
+            head.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        lay.addWidget(self.tree, 1)
+        row = QHBoxLayout()
+        self.sel_label = owner._label("Nothing selected", FS_SMALL, color=TEXT_LABEL)
+        self.sel_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        row.addWidget(self.sel_label)
+        self.scheme = QComboBox()
+        self.scheme.addItems(list(SCHEME_WORD.values()))
+        self.scheme.setStyleSheet(STYLE_COMBO)
+        self.scheme.setToolTip("Publish: lookdev, else the anim publish, else none")
+        self.scheme.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.scheme.setMinimumContentsLength(7)
+        row.addWidget(self.scheme)
+        row.addWidget(owner._label("Dice", FS_SMALL, color=TEXT_LABEL))
+        self.dicing = QLineEdit()
+        self.dicing.setPlaceholderText("-")
+        self.dicing.setToolTip("Karma dicing quality (render only); empty keeps it")
+        self.dicing.setFixedWidth(owner.px(48))
+        self.dicing.setStyleSheet(f"QLineEdit {{ background: {BG_RAISED}; color: {TEXT_PRIMARY};"
+                                  f" border: 1px solid #2c2c33; border-radius: 8px; padding: 4px 6px; }}")
+        row.addWidget(self.dicing)
+        self.set_button = owner._button("Set", STYLE_GHOST)
+        self.set_button.clicked.connect(self._set)
+        row.addWidget(self.set_button)
+        lay.addLayout(row)
+        row2 = QHBoxLayout()
+        self.clear_button = owner._button("Clear overrides", STYLE_GHOST)
+        self.clear_button.setToolTip("Drop the shot overrides of the selection (or of the whole character if none)")
+        self.clear_button.clicked.connect(self._clear)
+        self.asset_button = owner._button("Apply to all instances", STYLE_GHOST)
+        self.asset_button.clicked.connect(self._to_asset)
+        row2.addWidget(self.clear_button)
+        row2.addStretch(1)
+        lay.addLayout(row2)
+        row3 = QHBoxLayout()  # its own row: the asset name makes it long
+        row3.addWidget(self.asset_button)
+        row3.addStretch(1)
+        lay.addLayout(row3)
+        self._sel_changed()
+
+    def show_row(self, row) -> None:
+        from PySide6.QtWidgets import QTreeWidgetItem
+
+        from tools.fx.anim_loader.logic import HEAVY_SUBD_POLYGONS, mesh_groups, subd_polygons
+
+        self.tree.clear()
+        detail = self.owner.ctl.subd_detail(row.node_path) if row else None
+        self.path = row.node_path if row and detail and detail["plan"] else ""
+        for w in (self.scheme, self.dicing, self.clear_button, self.asset_button):
+            w.setEnabled(bool(self.path))
+        self._sel_changed()
+        if row is None:
+            self.title.setText("Pick a character to see its subdivision.")
+            self.load.setText("")
+            return
+        if not self.path:
+            self.title.setText(f"{row.instance}: No meshes to subdivide.")
+            self.load.setText("")
+            return
+        self.title.setText(f"{row.instance} · Subdivision")
+        plan, faces = detail["plan"], detail["faces"]
+        polys = subd_polygons(faces, plan)
+        warn = polys > HEAVY_SUBD_POLYGONS
+        self.load.setText(f"~{polys / 1e6:.1f} M viewport polygons"
+                          + (" · over 5 M: the viewport may be slow" if warn else ""))
+        self.load.setStyleSheet(f"color: {STATUS_COLORS[AM_WARN] if warn else TEXT_LABEL}; font-size: "
+                                f"{self.owner.px(FS_SMALL)}px; background: transparent;")
+        self.asset_button.setToolTip(f"Copy these overrides to every {row.asset} loader in the scene" if row.asset
+                                     else "Copy these overrides to every loader of this asset")
+        for key, meshes in mesh_groups(list(plan)).items():
+            g = QTreeWidgetItem([key.rsplit("/", 1)[-1], _faces_word(sum(faces.get(m, 0) for m in meshes)),
+                                 self._common([plan[m].source for m in meshes]),
+                                 self._common([SCHEME_WORD.get(plan[m].scheme, plan[m].scheme) for m in meshes]),
+                                 self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "-" for m in meshes])])
+            g.setData(0, ROLE_PATTERN, key + "/**")
+            for m in meshes:
+                c = plan[m]
+                item = QTreeWidgetItem([m.rsplit("/", 1)[-1], _faces_word(faces.get(m, 0)), c.source,
+                                        SCHEME_WORD.get(c.scheme, c.scheme), f"{c.dicing:g}" if c.dicing else "-"])
+                item.setData(0, ROLE_PATTERN, m.strip("/"))
+                item.setToolTip(0, m)
+                if c.source == "shot":
+                    item.setForeground(2, QColor(ACCENT))
+                g.addChild(item)
+            self.tree.addTopLevelItem(g)
+        self.tree.expandAll()
+
+    @staticmethod
+    def _common(values: list[str]) -> str:
+        return values[0] if values and all(v == values[0] for v in values) else "mixed"
+
+    def _patterns(self) -> list[str]:
+        return [i.data(0, ROLE_PATTERN) for i in self.tree.selectedItems()]
+
+    def _sel_changed(self) -> None:
+        n = len(self.tree.selectedItems())
+        self.sel_label.setText(f"{n} selected:" if n else "Nothing selected")
+        self.set_button.setEnabled(bool(n and self.path))
+
+    def _set(self) -> None:
+        pats = self._patterns()
+        if not pats or not self.path:
+            return
+        text = self.dicing.text().strip()
+        try:
+            dicing = float(text) if text else None
+        except ValueError:
+            dicing = None
+        scheme = WORD_SCHEME.get(self.scheme.currentText(), "publish")
+        path = self.path
+        self.owner._run(lambda: self.owner.ctl.set_subd(path, pats, scheme, dicing))()
+
+    def _clear(self) -> None:
+        if self.path:
+            pats = self._patterns() or None
+            path = self.path
+            self.owner._run(lambda: self.owner.ctl.clear_subd(path, pats))()
+
+    def _to_asset(self) -> None:
+        if self.path:
+            path = self.path
+            self.owner._run(lambda: self.owner.ctl.subd_to_asset(path))()

@@ -25,6 +25,7 @@ class LoaderInfo:
     state: LoaderState | None
     legacy: bool
     legacy_name: str = ""
+    subd_rules: str = ""
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,7 @@ class Row:
     legacy: bool = False
     thumb: str = ""
     versions: dict[str, str] = field(default_factory=dict)
+    subd: tuple[int, int] | None = None  # (subdivided meshes, estimated viewport polygons)
 
     @property
     def behind(self) -> bool:
@@ -76,6 +78,7 @@ class Controller:
         self._token = 0
         self._rows: list[Row] = []
         self._thumbs: dict[str, str] | None = None
+        self._subd: dict[str, dict] = {}
 
     # --- reading ---------------------------------------------------------------------------------
     def begin_scan(self) -> tuple[int, list[LoaderInfo]]:
@@ -84,19 +87,22 @@ class Controller:
         self._infos = self.backend.loaders()
         return self._token, list(self._infos)
 
-    def finish_scan(self, token: int, status: dict[str, Status], thumbs: dict[str, str] | None = None) -> bool:
+    def finish_scan(self, token: int, status: dict[str, Status], thumbs: dict[str, str] | None = None,
+                    subd: dict[str, dict] | None = None) -> bool:
         """Takes a scan's result (status and thumbnail paths, both read off the main thread) unless a newer scan
         started since; True when taken."""
         if token != self._token:
             return False
         self._status = status
         self._thumbs = thumbs
+        self._subd = subd or {}
         self._rows = self._make_rows()
         return True
 
     def scan_job(self, infos: list[LoaderInfo]) -> tuple[dict[str, Status], dict[str, str]]:
         """Everything a scan reads from disk; safe on a worker thread."""
-        return self.backend.scan(infos), {i.path: self.backend.thumbnail(i.state) for i in infos if i.state}
+        subd = self.backend.subd(infos) if hasattr(self.backend, "subd") else {}
+        return self.backend.scan(infos), {i.path: self.backend.thumbnail(i.state) for i in infos if i.state}, subd
 
     def refresh(self) -> None:
         """Reads and scans now, on the calling thread (tests; the window scans on its worker)."""
@@ -113,7 +119,8 @@ class Controller:
                 continue
             rows.append(Row(info.path, st.shot, st.instance_name, st.kind, st.asset,
                             self._status.get(info.path, {}), info.legacy,
-                            (self._thumbs or {}).get(info.path, ""), {"anim": st.anim_version, **st.versions}))
+                            (self._thumbs or {}).get(info.path, ""), {"anim": st.anim_version, **st.versions},
+                            self._subd_summary(info.path)))
         return sorted(rows, key=lambda r: (r.legacy, r.shot, r.kind == "cam", r.instance.lower()))
 
     def rows(self) -> list[Row]:
@@ -146,7 +153,7 @@ class Controller:
     def primary_label(self) -> str:
         if self.selection:
             n = len(self.behind_paths(self.selection))
-            return f"Update {n} selected" if n else "Nothing selected to update"
+            return f"Update {n} selected" if n else "Nothing to update"
         n = len(self.behind_paths())
         return f"Update {n} behind" if n else "Nothing to update"
 
@@ -182,3 +189,31 @@ class Controller:
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)
         self.message = f"{path.rsplit('/', 1)[-1]} is now {asset}."
+
+    # --- subdivision ----------------------------------------------------------------------------------
+    def _subd_summary(self, path: str) -> tuple[int, int] | None:
+        from tools.fx.anim_loader.logic import SUBD_NONE, subd_polygons
+
+        d = self._subd.get(path)
+        if not d:
+            return None
+        n = sum(1 for c in d["plan"].values() if c.scheme != SUBD_NONE)
+        return (n, subd_polygons(d["faces"], d["plan"])) if n else None
+
+    def subd_detail(self, path: str) -> dict | None:
+        """{"plan": {mesh: SubdChoice}, "faces": {mesh: n}} of a loader, as the last scan read it."""
+        return self._subd.get(path)
+
+    def set_subd(self, path: str, patterns: list[str], scheme: str, dicing: float | None) -> None:
+        self.backend.set_subd(path, patterns, scheme, dicing)
+        word = {"none": "Off", "catmullClark": "Catmull-Clark", "publish": "Publish"}.get(scheme, scheme)
+        extra = f", dicing {dicing:g}" if dicing is not None else ""
+        self.message = f"{path.rsplit('/', 1)[-1]}: {word}{extra} on {len(patterns)} item{'s' if len(patterns) != 1 else ''} (shot override)."
+
+    def clear_subd(self, path: str, patterns: list[str] | None) -> None:
+        self.backend.clear_subd(path, patterns)
+        self.message = f"{path.rsplit('/', 1)[-1]}: overrides cleared, lookdev / publish decide again."
+
+    def subd_to_asset(self, path: str) -> None:
+        n = self.backend.subd_to_asset(path)
+        self.message = f"Subdivision overrides copied to {n} other instance{'s' if n != 1 else ''} of the asset."

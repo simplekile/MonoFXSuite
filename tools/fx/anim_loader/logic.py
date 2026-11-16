@@ -506,3 +506,32 @@ def heavy_shot_message(loads: list[tuple[str, int]], threshold: int = HEAVY_SUBD
         return None
     names = [n for n, _ in heavy[:3]] + ([f"+{len(heavy) - 3}"] if len(heavy) > 3 else [])
     return f"Heavy shot: ~{total / 1e6:.1f} M subdivision polygons ({', '.join(names)})"
+
+
+def set_subd_rules(rules: list[dict], patterns: list[str], scheme: str, dicing: float | None = None) -> list[dict]:
+    """Rules with one rule per pattern set to ``scheme`` / ``dicing`` (put last, so it wins). ``publish`` without
+    dicing removes the override."""
+    keep = [r for r in rules if r["pattern"] not in patterns]
+    if scheme == SUBD_PUBLISH and dicing is None:
+        return keep
+    for p in patterns:
+        rule = {"pattern": p, "scheme": scheme}
+        if dicing is not None:
+            rule["dicing"] = float(dicing)
+        keep.append(rule)
+    return keep
+
+
+def clear_subd_rules(rules: list[dict], patterns: list[str] | None) -> list[dict]:
+    """Rules without those patterns (None: no rules at all)."""
+    return [] if patterns is None else [r for r in rules if r["pattern"] not in patterns]
+
+
+def mesh_groups(meshes: list[str]) -> dict[str, list[str]]:
+    """Meshes by their first two path levels (``Geo/Base_grp``), as the manager's tree shows them."""
+    groups: dict[str, list[str]] = {}
+    for m in meshes:
+        parts = m.strip("/").split("/")
+        key = "/".join(parts[:2]) if len(parts) > 2 else "/".join(parts[:-1]) or parts[0]
+        groups.setdefault(key, []).append(m)
+    return groups

@@ -133,6 +133,28 @@ def accept_heavy_shot(net):
     check("no prompt without a UI", True)
 
 
+def accept_subd_editing(net):
+    b = ad.HoudiniBackend()
+    infos = b.loaders()
+    robot = next(i for i in infos if i.state and i.state.instance_name == "char_Robot")
+    d = b.subd([robot])[robot.path]
+    body = "/Geo/Base_grp/Body_grp/Geo_Body"
+    check("scan plan: body from lookdev", d["plan"][body].source == "lookdev" and d["faces"][body] > 0)
+    b.set_subd(robot.path, ["Geo/Base_grp/**"], "none", 0.5)
+    d = b.subd([b.loaders()[[i.path for i in b.loaders()].index(robot.path)]])[robot.path]
+    check("set_subd: shot override", d["plan"][body].scheme == "none" and d["plan"][body].source == "shot"
+          and d["plan"][body].dicing == 0.5)
+    hou.undos.performUndo()
+    check("set_subd is one undo step", hou.node(robot.path).evalParm(config.P_SUBD_RULES) == "")
+    b.set_subd(robot.path, ["Geo/Base_grp/**"], "none", None)
+    n = b.subd_to_asset(robot.path)
+    inst2 = next(x for x in ad.find_loaders() if x.evalParm(config.P_INSTANCE) == "char_Robot_inst02")
+    check("apply to all instances of the asset", n >= 1 and "Geo/Base_grp/**" in inst2.evalParm(config.P_SUBD_RULES),
+          (n, inst2.evalParm(config.P_SUBD_RULES)))
+    b.clear_subd(robot.path, None)
+    check("clear overrides", hou.node(robot.path).evalParm(config.P_SUBD_RULES) in ("", "[]"))
+
+
 def main():
     if OUT.exists():
         shutil.rmtree(OUT)
@@ -142,7 +164,7 @@ def main():
     net = hou.node("/stage")
     for step in (accept_load_shot_twice, accept_no_move, accept_load_ambiguous, accept_update_one_undo,
                  accept_upgrade_21, accept_upgrade_21_defaults, accept_asset_parm_picks_versions,
-                 accept_heavy_shot):
+                 accept_heavy_shot, accept_subd_editing):
         try:
             step(net)
         except Exception:

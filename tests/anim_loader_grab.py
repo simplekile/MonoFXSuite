@@ -31,3 +31,20 @@ def make_list(scale: float):
 
 def make_grid(scale: float):
     return _make(scale, "grid")
+
+
+def make_subd(scale: float):
+    from tests.test_anim_loader_controller import _subd_backend
+    from tools.fx.anim_loader.ui import ROLE_ROW, AnimLoaderManager
+
+    b = _subd_backend()
+    b.thumbnail = GrabBackend().thumbnail
+    w = AnimLoaderManager(b, scale=scale)
+    w.wait()
+    w.set_view("list")
+    for i in range(w.list_view.count()):
+        r = w.list_view.item(i).data(ROLE_ROW)
+        w.list_view.item(i).setSelected(bool(r) and r.node_path == "/stage/b")
+    w.subd_panel.tree.expandAll()
+    w.subd_panel.tree.topLevelItem(0).setSelected(True)
+    return w

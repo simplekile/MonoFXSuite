@@ -344,3 +344,18 @@ def test_heavy_shot_message():
     assert heavy_shot_message([("a", 3_000_000), ("b", 2_500_000), ("c", 1_000_000), ("d", 900_000)],
                               threshold=5_000_000) == "Heavy shot: ~7.4 M subdivision polygons (a, b, c, +1)"
     assert heavy_shot_message([("a", 4_000_000)], threshold=5_000_000) is None
+
+
+def test_set_subd_rules_replaces_same_pattern_and_appends():
+    from tools.fx.anim_loader.logic import clear_subd_rules, mesh_groups, set_subd_rules
+
+    r = set_subd_rules([], ["Geo/Base_grp/**"], "none")
+    r = set_subd_rules(r, ["Geo/Groom_grp/HairDriver_grp/Geo_HairBack"], "catmullClark", dicing=0.5)
+    r = set_subd_rules(r, ["Geo/Base_grp/**"], "catmullClark")
+    assert r == [{"pattern": "Geo/Groom_grp/HairDriver_grp/Geo_HairBack", "scheme": "catmullClark", "dicing": 0.5},
+                 {"pattern": "Geo/Base_grp/**", "scheme": "catmullClark"}]
+    assert set_subd_rules(r, ["Geo/Base_grp/**"], "publish") == r[:1]  # publish, no dicing: the override is dropped
+    assert clear_subd_rules(r, ["Geo/Base_grp/**"]) == r[:1] and clear_subd_rules(r, None) == []
+    assert mesh_groups(["/Geo/Base_grp/Body_grp/Geo_Body", "/Geo/Base_grp/Head_grp/Geo_Head", "/Geo/Groom_grp/x",
+                        "/Other"]) == {"Geo/Base_grp": ["/Geo/Base_grp/Body_grp/Geo_Body", "/Geo/Base_grp/Head_grp/Geo_Head"],
+                                       "Geo/Groom_grp": ["/Geo/Groom_grp/x"], "Other": ["/Other"]}

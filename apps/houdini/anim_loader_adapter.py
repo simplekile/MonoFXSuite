@@ -417,12 +417,59 @@ class HoudiniBackend:
         out = []
         for n in find_loaders():
             legacy = n.type().name() != config.HDA_TYPE
-            out.append(LoaderInfo(n.path(), None if legacy else read_state(n), legacy, n.name()))
+            out.append(LoaderInfo(n.path(), None if legacy else read_state(n), legacy, n.name(),
+                                  "" if legacy else _s(n, config.P_SUBD_RULES)))
         return out
 
     @staticmethod
     def scan(infos):
         return {i.path: logic.status(i.state) for i in infos if i.state is not None}
+
+    @staticmethod
+    def subd(infos):
+        """Per geo loader {"plan", "faces"}, from the publish files (worker thread)."""
+        out = {}
+        for i in infos:
+            st = i.state
+            if st is None or st.kind != "geo":
+                continue
+            r = logic.resolve(st)
+            plan, faces = plan_for(r.anim, r.lookdev if st.enabled.get("lookdev") else "", i.subd_rules)
+            out[i.path] = {"plan": plan, "faces": faces}
+        return out
+
+    @staticmethod
+    def set_subd(path, patterns, scheme, dicing):
+        from apps.houdini.solaris_adapter import undo_group
+
+        node = hou.node(path)
+        rules = logic.parse_subd_rules(_s(node, config.P_SUBD_RULES))
+        with undo_group(f"Subdivision {node.name()}"):
+            node.parm(config.P_SUBD_RULES).set(json.dumps(logic.set_subd_rules(rules, list(patterns), scheme, dicing)))
+
+    @staticmethod
+    def clear_subd(path, patterns):
+        from apps.houdini.solaris_adapter import undo_group
+
+        node = hou.node(path)
+        rules = logic.parse_subd_rules(_s(node, config.P_SUBD_RULES))
+        left = logic.clear_subd_rules(rules, patterns)
+        with undo_group(f"Clear subdivision {node.name()}"):
+            node.parm(config.P_SUBD_RULES).set(json.dumps(left) if left else "")
+
+    @staticmethod
+    def subd_to_asset(path):
+        """The loader's rules on every other 2.2 loader of the same asset; returns how many."""
+        from apps.houdini.solaris_adapter import undo_group
+
+        src = hou.node(path)
+        asset, text = _s(src, config.P_ASSET), _s(src, config.P_SUBD_RULES)
+        others = [n for n in find_loaders() if n.type().name() == config.HDA_TYPE and n.path() != path
+                  and asset and _s(n, config.P_ASSET) == asset]
+        with undo_group(f"Subdivision to every {asset}"):
+            for n in others:
+                n.parm(config.P_SUBD_RULES).set(text)
+        return len(others)
 
     @staticmethod
     def thumbnail(state) -> str:
@@ -509,14 +556,17 @@ def subd_opinions(path: str) -> tuple[list[str], dict[str, str], dict[str, int]]
     return _SUBD_CACHE[key]
 
 
+def plan_for(anim: str, lookdev: str, rules_text: str) -> tuple[dict, dict[str, int]]:
+    """Subdivision plan from the publish files (no hou: safe on the manager's worker thread)."""
+    meshes, anim_ops, faces = subd_opinions(anim)
+    _, look_ops, _ = subd_opinions(lookdev)
+    return logic.subd_plan(meshes, look_ops, anim_ops, logic.parse_subd_rules(rules_text)), faces
+
+
 def node_subd_plan(node) -> tuple[dict, dict[str, int]]:
     """The subdivision plan of a loader (logic.subd_plan) and the anim meshes' face counts."""
-    anim = _s(node, config.P_ANIM_PATH)
-    meshes, anim_ops, faces = subd_opinions(anim)
     look = _s(node, config.P_PATH["lookdev"]) if node.evalParm(config.P_ENABLE["lookdev"]) else ""
-    _, look_ops, _ = subd_opinions(look)
-    rules = logic.parse_subd_rules(_s(node, config.P_SUBD_RULES))
-    return logic.subd_plan(meshes, look_ops, anim_ops, rules), faces
+    return plan_for(_s(node, config.P_ANIM_PATH), look, _s(node, config.P_SUBD_RULES))
 
 
 def author_subd(node, stage) -> None:

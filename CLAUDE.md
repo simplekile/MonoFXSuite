@@ -227,6 +227,12 @@
   `GR_OSDSubdSurfaceVK`; Helen alone 12.5 GB with a plain Sublayer, 2.5 GB with `none`). Opinions are read from
   the publish files themselves with `TraverseAll` (lookdev holds overs): Graft Stages flattens and writes the
   fallback as a value. Dicing is `primvars:karma:object:dicingquality` (render only).
+- Manager › Subdivision column (the user's pick of three mockups, 2026-11-17: beside List / Grid, under them when
+  narrower than 760 px): the selected loader's anim meshes by group (`logic.mesh_groups`, first two path levels),
+  faces, where the scheme comes from (shot / lookdev / publish / default), scheme, dicing. A selection is set once
+  (`logic.set_subd_rules`: one rule per pattern, put last; Publish with no dicing drops the override), Clear
+  overrides, Apply to all instances of the asset; each is one undo step. The plan is read by `HoudiniBackend.subd`
+  on the scan's worker thread; rows carry "subd N · ~X M".
 - Heavy shot (over `logic.HEAVY_SUBD_POLYGONS`, faces x 16): a non-modal prompt after Load shot and on scene
   load (HDA OnLoaded, one check per burst, UI only) offers Draw Hulls Only for every viewport; "Don't ask again"
   is a viewer pref; the manager keeps the line and a button. Draw Hulls Only makes the viewport lighter to work

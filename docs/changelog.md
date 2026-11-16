@@ -4,6 +4,7 @@
 
 ### Houdini
 - **Mono Anim Loader**: subdivision per mesh comes from a shot rule on the loader, else the lookdev publish, else the anim publish, else none. USD reads a missing scheme as Catmull-Clark, so the viewport subdivided whole shots (sh025: over 45 GB, then a crash). Rules can also set Karma dicing quality.
+- **Mono Anim Loader** manager: a **Subdivision** column beside the list shows the selected character's meshes by group, where each scheme comes from and its dicing; set Publish / Off / Catmull-Clark and dicing on a selection, clear overrides, or apply them to every instance of the asset. Rows show "subd N · ~X M".
 - **Mono Anim Loader**: a heavy shot (lots of subdivision) shows a small non-modal prompt offering **Draw Hulls Only** for the viewport (lighter to work in; it does not lower memory), with Don't ask again.
 - **Mono Anim Loader**: Lookdev and Groom get **Show in Viewport** (on). Off loads them for render only (Karma).
 - **Mono Anim Loader**: the camera's **Clipping Range** works again (its parms were named `clippingRangex/y`; the camera read `clippingRange1/2`, as in 2.1), and defaults to 0.001 - 1e6.

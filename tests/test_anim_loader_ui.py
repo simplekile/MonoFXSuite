@@ -110,3 +110,51 @@ def test_paints_at_both_scales(make):
             w.set_view(view)
             assert not w.grab().isNull()
         w.close()
+
+
+def _subd_window(make):
+    from tests.test_anim_loader_controller import _subd_backend
+
+    mk, ui = make
+    return mk(_subd_backend()), ui
+
+
+def _select(w, ui, path):
+    for i in range(w.list_view.count()):
+        r = w.list_view.item(i).data(ui.ROLE_ROW)
+        w.list_view.item(i).setSelected(bool(r) and r.node_path == path)
+
+
+def test_subd_detail_shows_groups_and_meshes(make):
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/b")
+    tree = w.subd_panel.tree
+    groups = [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+    assert groups == ["Base_grp", "Outfit_grp"]
+    base = tree.topLevelItem(0)
+    assert base.text(2) == "mixed" and base.childCount() == 2
+    assert "~6.6 M" in w.subd_panel.load.text()
+
+
+def test_subd_set_on_selection_calls_backend(make):
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/b")
+    tree = w.subd_panel.tree
+    tree.topLevelItem(0).setSelected(True)
+    w.subd_panel.scheme.setCurrentText("Off")
+    w.subd_panel.dicing.setText("0.5")
+    w.subd_panel.set_button.click()
+    assert w.backend.calls[-1] == ("set_subd", "/stage/b", ("Geo/Base_grp/**",), "none", 0.5)
+
+
+def test_subd_chip_in_rows(make):
+    w, ui = _subd_window(make)
+    helen = next(r for r in [w.list_view.item(i).data(ui.ROLE_ROW) for i in range(w.list_view.count())]
+                 if r and r.node_path == "/stage/b")
+    assert ui.subd_chip(helen) == "subd 2 · ~6.6 M"
+
+
+def test_subd_empty_state(make):
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/c")  # the camera
+    assert w.subd_panel.tree.topLevelItemCount() == 0 and "No meshes" in w.subd_panel.title.text()
