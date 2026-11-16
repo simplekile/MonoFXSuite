@@ -160,8 +160,7 @@ def main() -> None:
     robot0.parm(config.P_ENABLE["lookdev"]).set(1)
     ad.refresh(robot0)
     st = last.stage()
-    inst.parm("mx_lookdev_viewport").set(0)
-    inst.parm("mx_groom_viewport").set(0)
+    inst.parm(config.P_VIEWPORT).set(0)
     st = last.stage()
     ib = st.GetPrimAtPath(f"/char_Robot_inst02{BODY}")
     full, _ = UsdShade.MaterialBindingAPI(ib).ComputeBoundMaterial(UsdShade.Tokens.full)
@@ -170,8 +169,7 @@ def main() -> None:
     check("render-only lookdev: not bound in the viewport (preview)", not pv)
     check("render-only groom: purpose render", UsdGeom.Imageable(st.GetPrimAtPath(f"/char_Robot_inst02{HAIR}"))
           .ComputePurpose() == UsdGeom.Tokens.render)
-    inst.parm("mx_lookdev_viewport").set(1)
-    inst.parm("mx_groom_viewport").set(1)
+    inst.parm(config.P_VIEWPORT).set(3)
     st = last.stage()
 
     robot = nodes["char_Robot"]
@@ -188,7 +186,11 @@ def main() -> None:
     try:
         ad.refresh(robot)
         check("newer lookdev does not change the path", robot.evalParm(config.P_PATH["lookdev"]) == look_before)
-        check("status names v003", "v003" in robot.evalParm(config.P_STATUS), robot.evalParm(config.P_STATUS))
+        check("comment names v003", "lookdev v003 available" in robot.comment(), robot.comment())
+        check("menu label names v003", any("v003 available" in x for x in robot.parm(config.P_VERSION["lookdev"]).menuLabels()),
+              robot.parm(config.P_VERSION["lookdev"]).menuLabels())
+        check("a newer version is not a problem", "v003" not in robot.evalParm(config.P_STATUS),
+              robot.evalParm(config.P_STATUS))
     finally:
         shutil.rmtree(new.parent)
 

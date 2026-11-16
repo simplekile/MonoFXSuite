@@ -427,3 +427,38 @@ def test_remember_project_puts_it_first_once():
     assert remember_project(recent, "d:/B/") == ["d:/B/", "D:/a"]
     assert remember_project(recent, "") == recent
     assert len(remember_project([f"D:/p{i}" for i in range(8)], "D:/new")) == 8
+
+# --- parm pane: status in the version menus, the node comment, problems only in mx_status ------------
+
+from tools.fx.anim_loader.logic import status_comment, status_problems, version_choices, version_menu  # noqa: E402
+
+
+def test_version_menu_labels():
+    assert version_menu(["v001", "v002", "v003"], "v002", ["v001", "v002", "v003"]) == [
+        ("v001", "v001"), ("v002", "v002  (v003 available)"), ("v003", "v003  newest")]
+    assert version_menu(["v001", "v002"], "v002", ["v001", "v002"])[-1] == ("v002", "v002  latest")
+    # the version on the node is gone: still listed, so the field is not blank
+    assert version_menu(["v001", "v003"], "v002", ["v001", "v003"])[1] == ("v002", "v002  (v003 available)")
+    assert version_menu(["v001"], "v002", ["v001"]) == [("v001", "v001  newest"), ("v002", "v002  missing")]
+    # nothing known about the instance (asset?): plain names
+    assert version_menu(["v001", "v002"], "v001", []) == [("v001", "v001"), ("v002", "v002")]
+
+
+def test_version_choices_follow_the_disk(tmp_path):
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    assert version_choices(st, "lookdev") == [("v001", "v001"), ("v002", "v002  latest")]
+    make(root, [f"{ANIM}/v002/geo_char_Robot.usd"])
+    assert version_choices(st, "anim") == [("v001", "v001  (v002 available)"), ("v002", "v002  newest")]
+    assert version_choices(replace(st, asset=None), "lookdev") == []
+
+
+def test_comment_and_problems():
+    st = {"anim": (STATUS_OK, None), "lookdev": (STATUS_NEWER, "v003"), "groom": (STATUS_MISSING, None),
+          "cloth": (STATUS_NONE, None)}
+    assert status_comment(st) == "lookdev v003 available, groom missing"
+    assert status_problems(st, {"groom": "v002"}) == ["groom v002 missing on disk"]
+    ok = {"anim": (STATUS_OK, None), "lookdev": (STATUS_OFF, None)}
+    assert status_comment(ok) == "up to date" and status_problems(ok, {}) == []
+    unknown = {"anim": (STATUS_OK, None), "lookdev": (STATUS_ASSET, None), "groom": (STATUS_ASSET, None)}
+    assert status_comment(unknown) == "asset?" and len(status_problems(unknown, {})) == 1

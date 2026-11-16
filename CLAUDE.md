@@ -260,6 +260,14 @@
   names. Inspector (`InspectorPanel`, fixed ~360 px, under the list when narrow): name, node and versions, meshes
   read-only; scheme / dicing / clear / apply on the meshes' right-click menu. Result line in the action bar (above
   the buttons when narrow). Style rules for item views carry an objectName: Houdini's sheet painted the tree grey.
+- Parm pane (layout D, the user's pick 2026-11-17, checked in the Houdini 22 GUI down to 420 px; `_parm_templates`):
+  Manager / Refresh, a one-line Status shown only when something needs the artist (missing file, `asset?`, notes),
+  then Source / Parts / Geometry or Camera as plain groups and Advanced (project root, resolved paths) closed. The
+  status of each version is in its menu label (Normal menus: "v002  (v003 available)", "v004  latest"), cached
+  5 s per node and dropped by refresh; the node comment shows it in the network editor ("lookdev v003 available").
+  Show in Viewport is one button strip `mx_viewport` (bit 1 lookdev, 2 groom; it replaced PR #21's two toggles).
+  Measured: `button_icon` draws label + icon (not a button), a one-icon strip does not draw, `script_action` shows
+  on every row, and joined rows wider than checkbox + field overflow a docked pane: none of them is used.
 - Manager window (`ui.py` view, `controller.py` no Qt, `HoudiniBackend` in the adapter): List and Grid (the
   user's pick), Monos asset thumbnails (`thumbnail.user.png`, else `.meta/thumb_lookdev.user.png`, else the
   newest `.meta/thumb_*.user.png`), Load shot finds existing loaders by user data `monofx_anim_loader`
