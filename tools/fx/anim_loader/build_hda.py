@@ -222,7 +222,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                             default_value=(1.0,), min=0, max=10))
     # Base1 names (clippingRange1 / 2), as in 2.1 and as the inner camera reads them; the default XYZW named them
     # clippingRangex / y and the clipping never reached the camera
-    cam.addParmTemplate(T.FloatParmTemplate("clippingRange", "Clipping Range", 2, default_value=(0.01, 1e6),
+    cam.addParmTemplate(T.FloatParmTemplate("clippingRange", "Clipping Range", 2, default_value=(0.001, 1e6),
                                             naming_scheme=T.parmNamingScheme.Base1))
     cam.addParmTemplate(T.FloatParmTemplate("aspectratio", "Aspect Ratio", 2, default_value=(16.0, 9.0),
                                             naming_scheme=T.parmNamingScheme.XYZW))

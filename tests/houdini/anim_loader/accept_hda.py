@@ -115,6 +115,9 @@ def main() -> None:
     check("hair driver hidden", UsdGeom.Imageable(st.GetPrimAtPath(
         "/char_Robot/Geo/Groom_grp/HairDriver_grp")).ComputeVisibility(Usd.TimeCode(12)) == UsdGeom.Tokens.invisible)
     cam_node = nodes["sh900"]
+    check("camera clipping defaults to 0.001 - 1e6", (cam_node.evalParm("clippingRange1"),
+          cam_node.evalParm("clippingRange2")) == (0.001, 1e6), (cam_node.evalParm("clippingRange1"),
+                                                                cam_node.evalParm("clippingRange2")))
     cam_node.parm("clippingRange1").set(0.5)  # 2.1's parm names (clippingRange1/2), kept by Upgrade
     cam_node.parm("clippingRange2").set(500.0)
     cam_prim = next(p for p in last.stage().Traverse() if p.IsA(UsdGeom.Camera))
