@@ -44,8 +44,38 @@ for task in ("groom", "cloth"):
         clips.SetClipTemplateStride(1, task)
 '''
 
+# Heavy parts render only (the user's call, 2026-11-17: Helen's lookdev pulls 956 EXR UDIM tiles, 2.1 GB, and the
+# viewport took 27 GB and hung). Houdini GL reads preview / all-purpose bindings and default / proxy purpose; Karma
+# reads full bindings and render purpose. So, unless "Show in viewport" is on: every material binding of the
+# instance moves to material:binding:full (all-purpose left empty), and groom curves get purpose render.
+# Meshes that author no subdivisionScheme get "none": Blender's anim publish writes none, USD then reads
+# catmullClark, and Houdini GL subdivided whole shots (sh025: >45 GB, crash in GR_OSDSubdSurfaceVK). An authored
+# scheme stays.
+PURPOSE_CODE = '''hda = hou.pwd().parent()
+stage = hou.pwd().editableStage()
+from pxr import Usd, UsdGeom, UsdShade
+inst = hda.evalParm("mx_instance_name")
+root = stage.GetPrimAtPath("/" + inst) if inst else None
+look_vp = hda.evalParm("mx_lookdev_viewport")
+groom_vp = hda.evalParm("mx_groom_viewport")
+if root:
+    # Subdivision per mesh: shot rule > lookdev > anim > none (adapter.author_subd, logic.subd_plan)
+    from apps.houdini import anim_loader_adapter
+    anim_loader_adapter.author_subd(hda, stage)
+    for prim in Usd.PrimRange(root):
+        if not look_vp:
+            rel = prim.GetRelationship("material:binding")
+            targets = rel.GetTargets() if rel else []
+            if targets:
+                prim.CreateRelationship("material:binding:full", False).SetTargets(targets)
+                rel.SetTargets([])
+        if not groom_vp and prim.IsA(UsdGeom.BasisCurves):
+            UsdGeom.Imageable(prim).CreatePurposeAttr().Set(UsdGeom.Tokens.render)
+'''
+
 PYTHON_MODULE = "from apps.houdini.anim_loader_adapter import *\n"
 ON_CREATED = "from apps.houdini import anim_loader_adapter\nanim_loader_adapter.on_created(kwargs['node'])\n"
+ON_LOADED = "from apps.houdini import anim_loader_adapter\nanim_loader_adapter.on_loaded(kwargs['node'])\n"
 
 
 def _node(parent, kind, name, inputs=(), **parms):
@@ -72,7 +102,8 @@ def build_network(sub) -> None:
     graft = _node(sub, "graftstages", "graft", (src, layers), primpath="/" + INST, destpath="")
     new_layer = _node(sub, "configurelayer", "fx_layer", (graft,), startnewlayer=1)
     clips = _node(sub, "pythonscript", "fx_clips", (new_layer,), python=CLIP_CODE)
-    geo_scale = _node(sub, "xform", "geo_scale", (clips,), primpattern="/" + INST, scale='=ch("../scale")')
+    purpose = _node(sub, "pythonscript", "render_only", (clips,), python=PURPOSE_CODE)
+    geo_scale = _node(sub, "xform", "geo_scale", (purpose,), primpattern="/" + INST, scale='=ch("../scale")')
     hide = _node(sub, "configureprimitive", "hide_driver", (geo_scale,),
                  primpattern=f'/{INST}/`chs("../mx_hide_pattern")`', visibility="invisible")
     hide.parm("setvisibility").setExpression('ch("../mx_hide_enable")', hou.exprLanguage.Hscript)
@@ -162,6 +193,10 @@ def _parm_templates() -> hou.ParmTemplateGroup:
         f.addParmTemplate(s(config.P_VERSION[part], "Version",
                             menu=f'hou.phm().menu_versions(hou.pwd(), "{part}")'))
         f.addParmTemplate(s(config.P_PATH[part], "File", callback=False))
+        if part in ("lookdev", "groom"):
+            vp = T.ToggleParmTemplate(f"mx_{part}_viewport", "Show in Viewport", default_value=True)
+            vp.setHelp("Off: loaded for render only (Karma), for a lighter viewport.")
+            f.addParmTemplate(vp)
         g.append(f)
 
     geo = T.FolderParmTemplate("folder1", "Geometry Setting", folder_type=T.folderType.Collapsible)
@@ -179,7 +214,10 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                             min=1, max=100))
     cam.addParmTemplate(T.FloatParmTemplate("xn__houdiniguidescale_s3a", "Scale Guide Geometry", 1,
                                             default_value=(1.0,), min=0, max=10))
-    cam.addParmTemplate(T.FloatParmTemplate("clippingRange", "Clipping Range", 2, default_value=(0.01, 1e6)))
+    # Base1 names (clippingRange1 / 2), as in 2.1 and as the inner camera reads them; the default XYZW named them
+    # clippingRangex / y and the clipping never reached the camera
+    cam.addParmTemplate(T.FloatParmTemplate("clippingRange", "Clipping Range", 2, default_value=(0.001, 1e6),
+                                            naming_scheme=T.parmNamingScheme.Base1))
     cam.addParmTemplate(T.FloatParmTemplate("aspectratio", "Aspect Ratio", 2, default_value=(16.0, 9.0),
                                             naming_scheme=T.parmNamingScheme.XYZW))
     g.append(cam)
@@ -191,6 +229,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
         T.StringParmTemplate("mx_anim_publish_parent", "Anim Publish Folder (2.1)", 1),
         T.StringParmTemplate("mx_groom_asset", "Groom Asset (2.1)", 1),
         T.StringParmTemplate("mx_cloth_asset", "Cloth Asset (2.1)", 1),
+        T.StringParmTemplate(config.P_SUBD_RULES, "Subdivision Rules", 1),
         *[T.StringParmTemplate(n, n, 1) for n in config.P_LAYERS],
         *[T.StringParmTemplate(k, k, 1) for task in config.P_FX.values() for k in
           (task["mode"], task["template"], task["roots"])],
@@ -223,6 +262,8 @@ def build(out_path: str = DEFAULT_OUT) -> str:
     d.setExtraFileOption("PythonModule/IsPython", True)
     d.addSection("OnCreated", ON_CREATED)
     d.setExtraFileOption("OnCreated/IsPython", True)
+    d.addSection("OnLoaded", ON_LOADED)
+    d.setExtraFileOption("OnLoaded/IsPython", True)
     d.save(out_path, hda, create_backup=False)
     hda.destroy()
     for f in set(glob.glob(os.path.join(backup_dir, "*"))) - had_backups:

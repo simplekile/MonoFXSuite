@@ -149,3 +149,40 @@ def test_thumbnails_come_with_the_scan():
     token, infos = c.begin_scan()
     c.finish_scan(token, FakeBackend().scan(infos), {"/stage/b": "t/helen.png"})
     assert next(r for r in c.rows() if r.node_path == "/stage/b").thumb == "t/helen.png"
+
+
+def _subd_backend():
+    from tools.fx.anim_loader.logic import SubdChoice
+
+    b = FakeBackend()
+    plan = {"/Geo/Base_grp/Body_grp/Geo_Body": SubdChoice("catmullClark", "lookdev"),
+            "/Geo/Base_grp/Head_grp/Geo_Head": SubdChoice("none", "shot"),
+            "/Geo/Outfit_grp/Geo_Dress": SubdChoice("catmullClark", "lookdev", 0.5)}
+    faces = {"/Geo/Base_grp/Body_grp/Geo_Body": 400_000, "/Geo/Base_grp/Head_grp/Geo_Head": 1000,
+             "/Geo/Outfit_grp/Geo_Dress": 10_000}
+    b.subd = lambda infos: {"/stage/b": {"plan": plan, "faces": faces}}
+    b.set_subd = lambda path, patterns, scheme, dicing: b.calls.append(("set_subd", path, tuple(patterns), scheme, dicing))
+    b.clear_subd = lambda path, patterns: b.calls.append(("clear_subd", path, patterns))
+    b.subd_to_asset = lambda path: b.calls.append(("subd_to_asset", path)) or 2
+    return b
+
+
+def test_rows_carry_subd_count_and_polygons():
+    c = Controller(_subd_backend())
+    c.refresh()
+    helen = next(r for r in c.rows() if r.node_path == "/stage/b")
+    assert helen.subd == (2, (400_000 + 10_000) * 16)
+    assert next(r for r in c.rows() if r.node_path == "/stage/a").subd is None
+    assert c.subd_detail("/stage/b")["faces"]["/Geo/Outfit_grp/Geo_Dress"] == 10_000
+
+
+def test_subd_commands():
+    c = Controller(_subd_backend())
+    c.refresh()
+    c.set_subd("/stage/b", ["Geo/Base_grp/**"], "none", None)
+    assert c.backend.calls[-1] == ("set_subd", "/stage/b", ("Geo/Base_grp/**",), "none", None)
+    assert "Off" in c.message
+    c.clear_subd("/stage/b", None)
+    assert c.backend.calls[-1] == ("clear_subd", "/stage/b", None)
+    c.subd_to_asset("/stage/b")
+    assert c.backend.calls[-1] == ("subd_to_asset", "/stage/b") and "2" in c.message

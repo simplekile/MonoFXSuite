@@ -412,3 +412,126 @@ def asset_thumbnail(asset_dir: Path) -> Path | None:
     except OSError:
         return None
     return max(others, key=lambda f: f.stat().st_mtime) if others else None
+
+
+# --- subdivision (the user's decision, 2026-11-17) --------------------------------------------------
+# Per mesh of an instance, the first that says something wins: a shot rule on the loader node, the lookdev
+# publish, the anim publish, else none. USD's own fallback (catmullClark) is never used: it made the viewport
+# subdivide whole shots. Opinions are read from the publish files themselves; the grafted stage carries the
+# fallback as a value.
+
+SUBD_NONE, SUBD_CATMULL = "none", "catmullClark"
+SUBD_SCHEMES = (SUBD_NONE, SUBD_CATMULL, "loop", "bilinear")
+SUBD_PUBLISH = "publish"  # a rule that leaves the scheme to lookdev / anim (its dicing still applies)
+
+
+@dataclass(frozen=True)
+class SubdChoice:
+    scheme: str
+    source: str  # "shot" | "lookdev" | "publish" | "default"
+    dicing: float | None = None
+
+
+def parse_subd_rules(text: str) -> list[dict]:
+    """The loader's JSON rules, keeping only well-formed ones: {"pattern", "scheme", optional "dicing"}."""
+    import json
+
+    try:
+        raw = json.loads(text) if text else []
+    except ValueError:
+        return []
+    rules = []
+    for r in raw if isinstance(raw, list) else []:
+        if not isinstance(r, dict) or not isinstance(r.get("pattern"), str) or not r["pattern"].strip():
+            continue
+        if r.get("scheme") not in (SUBD_PUBLISH, *SUBD_SCHEMES):
+            continue
+        rule = {"pattern": r["pattern"].strip().strip("/"), "scheme": r["scheme"]}
+        if isinstance(r.get("dicing"), (int, float)) and r["dicing"] > 0:
+            rule["dicing"] = float(r["dicing"])
+        rules.append(rule)
+    return rules
+
+
+def _pattern_re(pattern: str) -> re.Pattern:
+    out = ""
+    for part in re.split(r"(\*\*|\*|\?)", pattern.strip("/")):
+        out += {"**": ".*", "*": "[^/]*", "?": "[^/]"}.get(part, re.escape(part))
+    return re.compile(rf"^{out}$")
+
+
+def subd_plan(meshes: list[str], lookdev: dict[str, str], anim: dict[str, str],
+              rules: list[dict]) -> dict[str, SubdChoice]:
+    """Scheme, where it comes from and dicing for each mesh (paths as in the publish files, ``/Geo/...``).
+    Rules match the path without its leading ``/``; a later rule overrides an earlier one."""
+    compiled = [(_pattern_re(r["pattern"]), r) for r in rules]
+    plan = {}
+    for mesh in meshes:
+        rel = mesh.strip("/")
+        scheme = source = None
+        dicing = None
+        for rx, r in compiled:
+            if rx.match(rel):
+                if r["scheme"] != SUBD_PUBLISH:
+                    scheme, source = r["scheme"], "shot"
+                elif source == "shot":
+                    scheme = source = None
+                if "dicing" in r:
+                    dicing = r["dicing"]
+        if scheme is None:
+            if mesh in lookdev:
+                scheme, source = lookdev[mesh], "lookdev"
+            elif mesh in anim:
+                scheme, source = anim[mesh], "publish"
+            else:
+                scheme, source = SUBD_NONE, "default"
+        plan[mesh] = SubdChoice(scheme, source, dicing)
+    return plan
+
+
+def subd_polygons(face_counts: dict[str, int], plan: dict[str, SubdChoice], level: int = 2) -> int:
+    """About how many polygons the viewport makes for the subdivided meshes (each level x4)."""
+    return sum(n * 4 ** level for mesh, n in face_counts.items()
+               if plan.get(mesh) and plan[mesh].scheme != SUBD_NONE)
+
+
+HEAVY_SUBD_POLYGONS = 5_000_000  # above this the viewport gets slow: suggest Draw Hulls Only
+
+
+def heavy_shot_message(loads: list[tuple[str, int]], threshold: int = HEAVY_SUBD_POLYGONS) -> str | None:
+    """The heavy-shot line from (instance, estimated subdivision polygons), or None under the threshold."""
+    heavy = sorted([(n, p) for n, p in loads if p > 0], key=lambda x: -x[1])
+    total = sum(p for _, p in heavy)
+    if total <= threshold:
+        return None
+    names = [n for n, _ in heavy[:3]] + ([f"+{len(heavy) - 3}"] if len(heavy) > 3 else [])
+    return f"Heavy shot: ~{total / 1e6:.1f} M subdivision polygons ({', '.join(names)})"
+
+
+def set_subd_rules(rules: list[dict], patterns: list[str], scheme: str, dicing: float | None = None) -> list[dict]:
+    """Rules with one rule per pattern set to ``scheme`` / ``dicing`` (put last, so it wins). ``publish`` without
+    dicing removes the override."""
+    keep = [r for r in rules if r["pattern"] not in patterns]
+    if scheme == SUBD_PUBLISH and dicing is None:
+        return keep
+    for p in patterns:
+        rule = {"pattern": p, "scheme": scheme}
+        if dicing is not None:
+            rule["dicing"] = float(dicing)
+        keep.append(rule)
+    return keep
+
+
+def clear_subd_rules(rules: list[dict], patterns: list[str] | None) -> list[dict]:
+    """Rules without those patterns (None: no rules at all)."""
+    return [] if patterns is None else [r for r in rules if r["pattern"] not in patterns]
+
+
+def mesh_groups(meshes: list[str]) -> dict[str, list[str]]:
+    """Meshes by their first two path levels (``Geo/Base_grp``), as the manager's tree shows them."""
+    groups: dict[str, list[str]] = {}
+    for m in meshes:
+        parts = m.strip("/").split("/")
+        key = "/".join(parts[:2]) if len(parts) > 2 else "/".join(parts[:-1]) or parts[0]
+        groups.setdefault(key, []).append(m)
+    return groups

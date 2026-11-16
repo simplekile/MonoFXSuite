@@ -69,6 +69,8 @@ def write_anim_geo(path: Path, fps: float, frames: range, offset: float, phase: 
     _mesh(st, "/Geo/Base_grp/Body_grp/Geo_Body", body, bc, bi, motion, frames)
     hair, hc, hi = grid(30, 30, 0.4, 1.7)
     _mesh(st, "/Geo/Groom_grp/HairDriver_grp/Geo_HairBase", hair, hc, hi, motion, frames)
+    # one mesh says catmullClark on purpose; the others author nothing, like Blender's anim publish (USD fallback)
+    UsdGeom.Mesh.Get(st, "/Geo/Groom_grp/HairDriver_grp/Geo_HairBase").CreateSubdivisionSchemeAttr("catmullClark")
     dress, dc, di = grid(30, 30, 0.8, 0.6)
     _mesh(st, "/Geo/Outfit_grp/Costume_grp/Geo_Dress", dress, dc, di, motion, frames)
     st.GetRootLayer().Save()
@@ -97,6 +99,8 @@ def write_lookdev(path: Path, asset: str, color: tuple[float, float, float], bod
     mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
     body = st.OverridePrim(body_path)
     UsdShade.MaterialBindingAPI.Apply(body).Bind(mat)
+    # like Helen's lookdev V009 (a Houdini edit layer): an opinion on the geometry's subdivision
+    body.CreateAttribute("subdivisionScheme", Sdf.ValueTypeNames.Token, False).Set("catmullClark")
     st.GetRootLayer().Save()
 
 

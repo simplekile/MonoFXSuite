@@ -114,8 +114,65 @@ def main() -> None:
                                                pts(Usd.Stage.Open(str(cfile)), DRESS, 12), atol=1e-5))
     check("hair driver hidden", UsdGeom.Imageable(st.GetPrimAtPath(
         "/char_Robot/Geo/Groom_grp/HairDriver_grp")).ComputeVisibility(Usd.TimeCode(12)) == UsdGeom.Tokens.invisible)
+    cam_node = nodes["sh900"]
+    check("camera clipping defaults to 0.001 - 1e6", (cam_node.evalParm("clippingRange1"),
+          cam_node.evalParm("clippingRange2")) == (0.001, 1e6), (cam_node.evalParm("clippingRange1"),
+                                                                cam_node.evalParm("clippingRange2")))
+    cam_node.parm("clippingRange1").set(0.5)  # 2.1's parm names (clippingRange1/2), kept by Upgrade
+    cam_node.parm("clippingRange2").set(500.0)
+    cam_prim = next(p for p in last.stage().Traverse() if p.IsA(UsdGeom.Camera))
+    clip = UsdGeom.Camera(cam_prim).GetClippingRangeAttr().Get(Usd.TimeCode(12))
+    check("camera clipping range reaches the camera", clip is not None and abs(clip[0] - 0.5) < 1e-4
+          and abs(clip[1] - 500.0) < 1e-2, str(clip))
+    st = last.stage()
     cams = [p.GetPath().pathString for p in st.Traverse() if p.IsA(UsdGeom.Camera)]
     check("camera kept at its own path", cams == ["/root/sh900_cam_root/cam_sh900"], cams)
+
+    # Lookdev and groom show in the viewport by default; "Show in Viewport" off makes them render only
+    body = st.GetPrimAtPath(f"/char_Robot{BODY}")
+    pv, _ = UsdShade.MaterialBindingAPI(body).ComputeBoundMaterial(UsdShade.Tokens.preview)
+    check("lookdev in the viewport by default", bool(pv))
+    check("groom in the viewport by default", UsdGeom.Imageable(st.GetPrimAtPath(f"/char_Robot_inst02{HAIR}"))
+          .ComputePurpose() == UsdGeom.Tokens.default_)
+    # Subdivision: shot rule > lookdev > anim > none
+    def scheme(path, stage=None):
+        return UsdGeom.Mesh((stage or last.stage()).GetPrimAtPath(path)).GetSubdivisionSchemeAttr().Get()
+
+    look_stage = Usd.Stage.Open(str(ROOT / "01_assets/_characters/char_Robot/05_lookdev/publish/v002/"
+                                       "char_Robot_lookdev_publish.usd"))
+    check("the fake lookdev authors catmullClark on the body (like Helen V009)",
+          look_stage.GetPrimAtPath(BODY).GetAttribute("subdivisionScheme").Get() == "catmullClark")
+    check("lookdev wins: body catmullClark", scheme(f"/char_Robot{BODY}", st) == UsdGeom.Tokens.catmullClark)
+    check("nobody says: dress none (not USD's fallback)", scheme(f"/char_Robot{DRESS}", st) == UsdGeom.Tokens.none)
+    check("anim says: hair driver catmullClark",
+          scheme("/char_Robot/Geo/Groom_grp/HairDriver_grp/Geo_HairBase", st) == UsdGeom.Tokens.catmullClark)
+    robot0 = nodes["char_Robot"]
+    robot0.parm(config.P_SUBD_RULES).set('[{"pattern": "Geo/Base_grp/**", "scheme": "none", "dicing": 0.5}]')
+    st2 = last.stage()
+    body2 = st2.GetPrimAtPath(f"/char_Robot{BODY}")
+    check("shot rule beats lookdev", scheme(f"/char_Robot{BODY}", st2) == UsdGeom.Tokens.none)
+    dq = UsdGeom.PrimvarsAPI(body2).GetPrimvar("karma:object:dicingquality")
+    check("shot rule sets dicing", bool(dq) and abs(dq.Get() - 0.5) < 1e-6)
+    robot0.parm(config.P_SUBD_RULES).set("")
+    robot0.parm(config.P_ENABLE["lookdev"]).set(0)
+    ad.refresh(robot0)
+    check("lookdev off: its subdivision opinion is gone", scheme(f"/char_Robot{BODY}") == UsdGeom.Tokens.none)
+    robot0.parm(config.P_ENABLE["lookdev"]).set(1)
+    ad.refresh(robot0)
+    st = last.stage()
+    inst.parm("mx_lookdev_viewport").set(0)
+    inst.parm("mx_groom_viewport").set(0)
+    st = last.stage()
+    ib = st.GetPrimAtPath(f"/char_Robot_inst02{BODY}")
+    full, _ = UsdShade.MaterialBindingAPI(ib).ComputeBoundMaterial(UsdShade.Tokens.full)
+    pv, _ = UsdShade.MaterialBindingAPI(ib).ComputeBoundMaterial(UsdShade.Tokens.preview)
+    check("render-only lookdev: bound for render (full)", bool(full))
+    check("render-only lookdev: not bound in the viewport (preview)", not pv)
+    check("render-only groom: purpose render", UsdGeom.Imageable(st.GetPrimAtPath(f"/char_Robot_inst02{HAIR}"))
+          .ComputePurpose() == UsdGeom.Tokens.render)
+    inst.parm("mx_lookdev_viewport").set(1)
+    inst.parm("mx_groom_viewport").set(1)
+    st = last.stage()
 
     robot = nodes["char_Robot"]
     look_before = robot.evalParm(config.P_PATH["lookdev"])
