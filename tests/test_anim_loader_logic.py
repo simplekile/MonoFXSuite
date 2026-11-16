@@ -359,3 +359,39 @@ def test_set_subd_rules_replaces_same_pattern_and_appends():
     assert mesh_groups(["/Geo/Base_grp/Body_grp/Geo_Body", "/Geo/Base_grp/Head_grp/Geo_Head", "/Geo/Groom_grp/x",
                         "/Other"]) == {"Geo/Base_grp": ["/Geo/Base_grp/Body_grp/Geo_Body", "/Geo/Base_grp/Head_grp/Geo_Head"],
                                        "Geo/Groom_grp": ["/Geo/Groom_grp/x"], "Other": ["/Other"]}
+
+
+# --- parm pane: status in the version menus, the node comment, problems only in mx_status ------------
+
+from tools.fx.anim_loader.logic import status_comment, status_problems, version_choices, version_menu  # noqa: E402
+
+
+def test_version_menu_labels():
+    assert version_menu(["v001", "v002", "v003"], "v002", ["v001", "v002", "v003"]) == [
+        ("v001", "v001"), ("v002", "v002  (v003 available)"), ("v003", "v003  newest")]
+    assert version_menu(["v001", "v002"], "v002", ["v001", "v002"])[-1] == ("v002", "v002  latest")
+    # the version on the node is gone: still listed, so the field is not blank
+    assert version_menu(["v001", "v003"], "v002", ["v001", "v003"])[1] == ("v002", "v002  (v003 available)")
+    assert version_menu(["v001"], "v002", ["v001"]) == [("v001", "v001  newest"), ("v002", "v002  missing")]
+    # nothing known about the instance (asset?): plain names
+    assert version_menu(["v001", "v002"], "v001", []) == [("v001", "v001"), ("v002", "v002")]
+
+
+def test_version_choices_follow_the_disk(tmp_path):
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    assert version_choices(st, "lookdev") == [("v001", "v001"), ("v002", "v002  latest")]
+    make(root, [f"{ANIM}/v002/geo_char_Robot.usd"])
+    assert version_choices(st, "anim") == [("v001", "v001  (v002 available)"), ("v002", "v002  newest")]
+    assert version_choices(replace(st, asset=None), "lookdev") == []
+
+
+def test_comment_and_problems():
+    st = {"anim": (STATUS_OK, None), "lookdev": (STATUS_NEWER, "v003"), "groom": (STATUS_MISSING, None),
+          "cloth": (STATUS_NONE, None)}
+    assert status_comment(st) == "lookdev v003 available, groom missing"
+    assert status_problems(st, {"groom": "v002"}) == ["groom v002 missing on disk"]
+    ok = {"anim": (STATUS_OK, None), "lookdev": (STATUS_OFF, None)}
+    assert status_comment(ok) == "up to date" and status_problems(ok, {}) == []
+    unknown = {"anim": (STATUS_OK, None), "lookdev": (STATUS_ASSET, None), "groom": (STATUS_ASSET, None)}
+    assert status_comment(unknown) == "asset?" and len(status_problems(unknown, {})) == 1

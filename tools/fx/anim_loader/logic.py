@@ -397,6 +397,72 @@ def list_part_versions(state: LoaderState, part: str) -> list[str]:
     return _part_versions(Path(state.project_root), state, part)
 
 
+# --- the parm pane (layout D, the user's pick, 2026-11-17) -------------------------------------------
+# A version menu says the status in its labels ("v003  (v004 available)"); the node's comment sums up the parts in
+# the network editor; mx_status keeps only what needs the artist (a missing file, an unknown asset) and notes.
+
+def version_menu(versions: list[str], current: str, found: list[str]) -> list[tuple[str, str]]:
+    """(token, label) per version on disk; ``found`` = the versions holding this instance, oldest first."""
+    items = list(versions)
+    if current and current not in items:
+        items = sorted(items + [current], key=_vnum)
+    later = _newer(current, found)
+    out = []
+    for v in items:
+        if v == current:
+            if later:
+                label = f"{v}  ({later} available)"
+            elif v in found:
+                label = f"{v}  latest"
+            else:
+                label = f"{v}  missing" if found or v not in versions else v
+        else:
+            label = f"{v}  newest" if found and v == found[-1] else v
+        out.append((v, label))
+    return out
+
+
+def version_choices(state: LoaderState, part: str) -> list[tuple[str, str]]:
+    """The version menu of ``anim`` or a part, labels carrying its status."""
+    root = Path(state.project_root)
+    if part == "anim":
+        if not (state.project_root and state.shot):
+            return []
+        return version_menu(list_versions(anim_publish_dir(root, state.shot)), state.anim_version,
+                            _anim_versions(root, state) if state.anim_file else [])
+    if not state.project_root or state.asset is None:
+        return []
+    found = _found_versions(root, state, part, _geo_count(root, state)) if state.anim_file else []
+    return version_menu(_part_versions(root, state, part), state.versions.get(part, ""), found)
+
+
+def status_comment(st: dict[str, tuple[str, str | None]]) -> str:
+    """The node's comment in the network editor: what is behind or broken, else "up to date"."""
+    bits = []
+    for part, (s, newer) in st.items():
+        if s == STATUS_MISSING:
+            bits.append(f"{part} missing")
+        elif s == STATUS_ASSET:
+            if "asset?" not in bits:
+                bits.append("asset?")
+        elif newer:
+            bits.append(f"{part} {newer} available")
+    return ", ".join(bits) or "up to date"
+
+
+def status_problems(st: dict[str, tuple[str, str | None]], versions: dict[str, str]) -> list[str]:
+    """Lines for mx_status: only what the artist has to act on (a newer version is in the menu and the comment)."""
+    out = []
+    for part, (s, _newer_v) in st.items():
+        if s == STATUS_MISSING:
+            v = versions.get(part, "")
+            out.append(f"{part} {v} missing on disk" if v else f"{part}: no file for this instance")
+        elif s == STATUS_ASSET and not any(x.startswith("asset?") for x in out):
+            out.append("asset? pick the asset this anim file belongs to")
+    return out
+
+
+
 def asset_thumbnail(asset_dir: Path) -> Path | None:
     """The asset's picture as Monos shows it: ``thumbnail.user.png``, else ``.meta/thumb_lookdev.user.png``,
     else the newest ``.meta/thumb_<department>.user.png``."""

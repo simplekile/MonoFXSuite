@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from pathlib import Path
 from typing import Any
 
@@ -112,7 +113,7 @@ def refresh(node) -> Resolved:
             template = _template(pattern)
             if mode == config.FX_MODE_SUBLAYER:
                 layers.append(pattern)
-                notes.append(f"{task}: no motion blur (cache has no time samples)")
+                notes.append(f"{task}: no motion blur (no time samples)")
             elif task == "groom":
                 layers.append(_frame_file(pattern, first))  # topology for the clips (counts, widths)
         _set(node, keys["mode"], mode)
@@ -124,19 +125,22 @@ def refresh(node) -> Resolved:
     layers = [x for x in layers if x] + [""] * len(config.P_LAYERS)
     for name, value in zip(config.P_LAYERS, layers):
         _set(node, name, value)
-    _set(node, config.P_STATUS, _status_text(state, notes))
+    st = logic.status(state)
+    _set(node, config.P_STATUS, " · ".join(logic.status_problems(st, {"anim": state.anim_version, **state.versions})
+                                            + notes))
+    _show_comment(node, logic.status_comment(st))
+    _MENUS.clear()  # the menus read the disk again
     return r
 
 
-def _status_text(state: LoaderState, notes: list[str]) -> str:
-    parts = []
-    for part, (st, newer) in logic.status(state).items():
-        version = state.anim_version if part == "anim" else state.versions.get(part, "")
-        text = f"{part} {version}".strip() if st in (logic.STATUS_OK, logic.STATUS_NEWER) else f"{part} {st}"
-        if newer:
-            text += f" ({newer} available)"
-        parts.append(text)
-    return " | ".join(parts) + ("\n" + "\n".join(notes) if notes else "")
+def _show_comment(node, text: str) -> None:
+    """The status in the network editor: the node's comment, shown under it."""
+    try:
+        if node.comment() != text:
+            node.setComment(text)
+        node.setGenericFlag(hou.nodeFlag.DisplayComment, True)
+    except (AttributeError, hou.OperationFailed):
+        pass
 
 
 # --- creating ------------------------------------------------------------------------------------
@@ -247,28 +251,50 @@ def _menu(items: list[str]) -> list[str]:
     return out
 
 
+# A Normal menu shows its item's label in the field, so Houdini runs the menu script whenever the parm pane draws.
+# The disk scan behind it is kept a few seconds per node and dropped by refresh (any source parm change).
+_MENUS: dict[tuple, tuple[float, list[str]]] = {}
+MENU_CACHE_S = 5.0
+
+
+def _cached(key: tuple, make) -> list[str]:
+    now = time.monotonic()
+    hit = _MENUS.get(key)
+    if hit is not None and now - hit[0] < MENU_CACHE_S:
+        return hit[1]
+    value = make()
+    _MENUS[key] = (now, value)
+    return value
+
+
+def _labelled(choices: list[tuple[str, str]]) -> list[str]:
+    out: list[str] = []
+    for token, label in choices:
+        out += [token, label]
+    return out
+
+
 def menu_anim_versions(node) -> list[str]:
-    root, shot = _s(node, config.P_ROOT), _s(node, config.P_SHOT)
-    return _menu(logic.list_versions(logic.anim_publish_dir(Path(root), shot))) if root and shot else []
+    state = read_state(node)
+    return _cached((node.sessionId(), "anim", repr(state)), lambda: _labelled(logic.version_choices(state, "anim")))
 
 
 def menu_anim_files(node) -> list[str]:
     root, shot, v = _s(node, config.P_ROOT), _s(node, config.P_SHOT), _s(node, config.P_ANIM_VERSION)
     if not (root and shot and v):
         return []
-    return _menu([o.file for o in logic.read_outputs(logic.anim_publish_dir(Path(root), shot) / v)])
+    return _cached((node.sessionId(), "files", root, shot, v), lambda: _menu(
+        [o.file for o in logic.read_outputs(logic.anim_publish_dir(Path(root), shot) / v)]))
 
 
 def menu_versions(node, part: str) -> list[str]:
     state = read_state(node)
-    if not state.project_root or state.asset is None:
-        return []
-    return _menu(logic.list_part_versions(state, part))
+    return _cached((node.sessionId(), part, repr(state)), lambda: _labelled(logic.version_choices(state, part)))
 
 
 def menu_assets(node) -> list[str]:
     root = _s(node, config.P_ROOT)
-    return _menu(sorted(logic.list_asset_dirs(Path(root)))) if root else []
+    return _cached(("assets", root), lambda: _menu(sorted(logic.list_asset_dirs(Path(root))))) if root else []
 
 
 def _is_loader(node: Any) -> bool:

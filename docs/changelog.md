@@ -7,6 +7,7 @@
 - **Mono Anim Loader** manager: a **Subdivision** column beside the list shows the selected character's meshes by group, where each scheme comes from and its dicing; set Publish / Off / Catmull-Clark and dicing on a selection, clear overrides, or apply them to every instance of the asset. Rows show "subd N · ~X M".
 - **Mono Anim Loader**: a heavy shot (lots of subdivision) shows a small non-modal prompt offering **Draw Hulls Only** for the viewport (lighter to work in; it does not lower memory), with Don't ask again.
 - **Mono Anim Loader**: Lookdev and Groom get **Show in Viewport** (on). Off loads them for render only (Karma).
+- **Mono Anim Loader**: cleaner parameters. Each version menu says its status ("v002  (v003 available)", "v004  latest") and the node shows it under its name in the network editor; the Status line appears only when something needs you (a missing file, an unknown asset). Source, Parts, Geometry or Camera as groups, a checkbox beside each part, **Show in Viewport** as one Lookdev / Groom strip, file paths under Advanced. Show in Viewport is a new parm: a loader saved with it off shows both parts in the viewport again.
 - **Mono Anim Loader**: the camera's **Clipping Range** works again (its parms were named `clippingRangex/y`; the camera read `clippingRange1/2`, as in 2.1), and defaults to 0.001 - 1e6.
 
 ### Blender
