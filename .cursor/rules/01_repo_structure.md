@@ -9,7 +9,6 @@ MonoFX/
 │
 ├── apps/
 │   ├── houdini/
-│   ├── maya/
 │   ├── blender/
 │   └── common/          # backward-compat re-exports → monofx_pipeline_common
 │
@@ -45,7 +44,7 @@ MonoFX/
 
 - No script is allowed at root level.
 - DCC specific code must stay inside `/apps`.
-- Shared pipeline logic lives in `packages/monofx_pipeline_common/` (no `hou` / `maya` / `bpy`).
+- Shared pipeline logic lives in `packages/monofx_pipeline_common/` (no `hou` / `bpy`).
 - `apps/common/` re-exports from `monofx_pipeline_common` for backward compatibility.
 - UI must live in `/core/ui`.
 

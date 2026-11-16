@@ -6,7 +6,7 @@ it must never make the viewport wait, lie about what the viewport shows, or take
 
 ## 1. The host's main thread is sacred
 
-- `hou`, `maya.cmds`, `bpy` are main-thread only, and so is every Qt widget. The panel may **read**
+- `hou`, `bpy` are main-thread only, and so is every Qt widget. The panel may **read**
   files and parse exports on a worker thread (`controller.background`: one at a time, a newer request
   drops the older result) and must **write** to the scene on the main thread.
 - A scene write disables the panel and shows a thin progress line with what is being done and Cancel,

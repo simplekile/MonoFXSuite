@@ -23,7 +23,7 @@ Read the commits (and the diff where a subject is vague). Nothing since the last
 ## 2. Write the notes under `## [Unreleased]` in `docs/changelog.md`
 
 Follow the earlier sections in that file:
-- Grouped by `### Houdini`, `### Blender`, `### Maya`, `### Installer`, `### Shared / tests` (only the groups that have something).
+- Grouped by `### Houdini`, `### Blender`, `### Installer`, `### Shared / tests` (only the groups that have something).
 - One bullet per change a user notices, starting with the tool in bold: `- **Auto Material**: ...`.
   Say what the user can now do or what no longer goes wrong, in their words, not the code's.
   Numbers when they matter ("16 materials ~1 s instead of ~110 s").

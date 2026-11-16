@@ -1,5 +1,5 @@
 """
-Anim geo USD basename helpers — mirrors Maya USD exporter naming (no bpy).
+Anim geo USD basename helpers (no bpy).
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ def sanitize_filename_component(name: str) -> str:
 
 
 def norm_namespace_for_geo_filename(namespace: str) -> str:
-    """Strip rig/publish tokens like Maya ``_norm_namespace``."""
+    """Strip rig/publish tokens (``Rig_``, ``_Publish``, ``_rig``, ``_publish``)."""
     s = (namespace or "").strip()
     for old in ("Rig_", "_Publish", "_rig", "_publish"):
         s = s.replace(old, "")

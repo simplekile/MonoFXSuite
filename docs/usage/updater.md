@@ -4,7 +4,7 @@ MonoFX Suite can be updated from GitHub **from inside a script** (or from any DC
 
 ## Purpose
 
-- Pull latest changes from `origin` (e.g. `https://github.com/simplekile/MonoFXSuite`) when you run a command inside Maya, Houdini, Blender, or a standalone Python script.
+- Pull latest changes from `origin` (e.g. `https://github.com/simplekile/MonoFXSuite`) when you run a command inside Houdini, Blender, or a standalone Python script.
 
 ## Requirements
 
@@ -56,16 +56,17 @@ else:
 
 Use this for a “Check for updates” button; use `pull_latest()` for “Update now”.
 
-### 3. From a DCC (e.g. Maya)
+### 3. From a DCC (e.g. Houdini)
 
 Ensure the MonoFX root is on `sys.path`, then call the same API:
 
 ```python
-# In Maya (or other DCC): add toolkit root to path once, then:
+# In Houdini (or other DCC): add toolkit root to path once, then:
+import hou
 from core.pipeline.updater import pull_latest
 
 result = pull_latest()
-cmds.confirmDialog(title="MonoFX Update", message=result.message + "\n\n" + result.output)
+hou.ui.setStatusMessage(result.message)
 ```
 
 You can wire `pull_latest()` and `has_updates()` to a menu item or shelf button so artists update with one click.
@@ -80,7 +81,6 @@ You can wire `pull_latest()` and `has_updates()` to a menu item or shelf button 
 
 Any. The updater is in `core` and does not import any DCC API. Use it from:
 
-- Maya
 - Houdini  
 - Blender
 - Unreal (Python)

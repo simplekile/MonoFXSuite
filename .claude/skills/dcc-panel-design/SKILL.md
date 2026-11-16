@@ -1,6 +1,6 @@
 ---
 name: dcc-panel-design
-description: Use when designing, building, changing or reviewing a Qt tool panel that lives inside a DCC (Houdini first; Maya, Nuke, Blender later) in MonoFXSuite - a new window or pane, a new section, a layout or colour change, a "the panel feels off / too busy / hard to read" complaint, or before a commit that touches tools/*/ui.py. Also when picking words, keys or states for a panel, or when the viewport and the panel disagree about what is shown.
+description: Use when designing, building, changing or reviewing a Qt tool panel that lives inside a DCC (Houdini first; Blender later) in MonoFXSuite - a new window or pane, a new section, a layout or colour change, a "the panel feels off / too busy / hard to read" complaint, or before a commit that touches tools/*/ui.py. Also when picking words, keys or states for a panel, or when the viewport and the panel disagree about what is shown.
 ---
 
 # DCC panel design

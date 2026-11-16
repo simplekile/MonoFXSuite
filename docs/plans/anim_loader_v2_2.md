@@ -190,7 +190,7 @@ refresh. Một node 2.1 chưa upgrade vẫn ở gốc `/Geo`; cửa sổ báo đ
   `$F4` (không blur) và node báo "groom: no motion blur (cache has no time samples)". Cần kiểm lại trên cache
   thật đầu tiên (mục 8).
 
-## 7. Phía add-on Blender (và exporter Maya đặt tên giống nó)
+## 7. Phía add-on Blender
 
 - `anim_geo_naming.alloc_unique_basename`: clone thành `_instNN` thay cho `_2`.
 - `_write_publish_meta`: thêm `asset` và `instance` cho mỗi output geo (exporter đã biết thư mục asset).

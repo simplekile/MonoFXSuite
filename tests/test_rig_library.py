@@ -1,4 +1,4 @@
-"""Tests for maya_reference_manager.logic (no Maya)."""
+"""Tests for the shared rig_library scan (default paths: Blender .blend)."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from apps.common.project_layout import find_project_root, list_asset_groups, list_publish_version_dirs
-from tools.fx.maya_reference_manager.logic import (
+from apps.common.rig_library import (
     display_name_from_asset_folder,
     library_location_for_file,
     matching_rig_versions_for_scene_path,
@@ -31,12 +31,12 @@ def fake_project(tmp_path: Path) -> Path:
     pub = ch / "02_rigging" / "02_build_rig" / "publish"
     (pub / "V001").mkdir(parents=True)
     (pub / "v002").mkdir(parents=True)
-    (pub / "V001" / "char_Errol_rig_Publish.mb").write_text("x", encoding="utf-8")
-    (pub / "v002" / "char_Errol_rig_Publish.mb").write_text("y", encoding="utf-8")
-    work = ch / "02_rigging" / "02_build_rig" / "maya" / "work"
+    (pub / "V001" / "char_Errol_rig_Publish.blend").write_text("x", encoding="utf-8")
+    (pub / "v002" / "char_Errol_rig_Publish.blend").write_text("y", encoding="utf-8")
+    work = ch / "02_rigging" / "02_build_rig" / "blender" / "work"
     work.mkdir(parents=True)
-    (work / "char_Errol_rig_v003.ma").write_text("z", encoding="utf-8")
-    (work / "char_Errol_rig_v001.ma").write_text("a", encoding="utf-8")
+    (work / "char_Errol_rig_v003.blend").write_text("z", encoding="utf-8")
+    (work / "char_Errol_rig_v001.blend").write_text("a", encoding="utf-8")
     meta = ch / ".meta"
     meta.mkdir(parents=True)
     (meta / "thumb_rig.user.png").write_bytes(b"\x89PNG\r\n")
@@ -81,8 +81,8 @@ def test_scan_rigs_work(fake_project: Path) -> None:
     o = offers[0]
     assert len(o.versions) == 2
     labels = [v.label for v in o.versions]
-    assert "char_Errol_rig_v001.ma" in labels and "char_Errol_rig_v003.ma" in labels
-    assert o.versions[o.default_index].label == "char_Errol_rig_v003.ma"
+    assert "char_Errol_rig_v001.blend" in labels and "char_Errol_rig_v003.blend" in labels
+    assert o.versions[o.default_index].label == "char_Errol_rig_v003.blend"
 
 
 def test_thumb_path(fake_project: Path) -> None:
@@ -106,7 +106,7 @@ def test_library_location_for_file(fake_project: Path) -> None:
         / "02_build_rig"
         / "publish"
         / "V001"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     loc = library_location_for_file(str(f), fake_project)
     assert loc == ("_characters", "char_Errol")
@@ -122,7 +122,7 @@ def test_thumb_path_for_reference_file(fake_project: Path) -> None:
         / "02_build_rig"
         / "publish"
         / "V001"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     tp = thumb_path_for_reference_file(str(f), fake_project)
     assert tp is not None
@@ -130,7 +130,7 @@ def test_thumb_path_for_reference_file(fake_project: Path) -> None:
 
 
 def test_thumb_path_for_reference_file_outside_project(fake_project: Path) -> None:
-    assert thumb_path_for_reference_file(r"C:\outside\file.ma", fake_project) is None
+    assert thumb_path_for_reference_file(r"C:\outside\file.blend", fake_project) is None
 
 
 def test_newer_rig_version_publish(fake_project: Path) -> None:
@@ -143,12 +143,12 @@ def test_newer_rig_version_publish(fake_project: Path) -> None:
         / "02_build_rig"
         / "publish"
         / "V001"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     ent = newer_rig_version_for_scene_path(str(v1), fake_project, "publish")
     assert ent is not None
     assert "v002" in ent.label.lower()
-    assert ent.path.endswith("char_Errol_rig_Publish.mb")
+    assert ent.path.endswith("char_Errol_rig_Publish.blend")
 
     v2 = (
         fake_project
@@ -159,7 +159,7 @@ def test_newer_rig_version_publish(fake_project: Path) -> None:
         / "02_build_rig"
         / "publish"
         / "v002"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     assert newer_rig_version_for_scene_path(str(v2), fake_project, "publish") is None
 
@@ -174,7 +174,7 @@ def test_version_display_token_publish(fake_project: Path) -> None:
         / "02_build_rig"
         / "publish"
         / "V001"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     assert version_display_token_from_path(str(v1), "publish") == "v001"
     v2 = (
@@ -186,7 +186,7 @@ def test_version_display_token_publish(fake_project: Path) -> None:
         / "02_build_rig"
         / "publish"
         / "v002"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     assert version_display_token_from_path(str(v2), "publish") == "v002"
 
@@ -199,9 +199,9 @@ def test_version_display_token_work(fake_project: Path) -> None:
         / "char_Errol"
         / "02_rigging"
         / "02_build_rig"
-        / "maya"
+        / "blender"
         / "work"
-        / "char_Errol_rig_v003.ma"
+        / "char_Errol_rig_v003.blend"
     )
     assert version_display_token_from_path(str(w3), "work") == "v003"
 
@@ -216,7 +216,7 @@ def test_scene_ref_version_display_behind_and_newest(fake_project: Path) -> None
         / "02_build_rig"
         / "publish"
         / "V001"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     v2 = (
         fake_project
@@ -227,7 +227,7 @@ def test_scene_ref_version_display_behind_and_newest(fake_project: Path) -> None
         / "02_build_rig"
         / "publish"
         / "v002"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     d_behind = scene_ref_version_display(str(v1), fake_project, "publish")
     assert d_behind is not None
@@ -252,7 +252,7 @@ def test_matching_rig_versions_publish_lists_all(fake_project: Path) -> None:
         / "02_build_rig"
         / "publish"
         / "V001"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     ents = matching_rig_versions_for_scene_path(str(v1), fake_project, "publish")
     assert len(ents) == 2
@@ -270,7 +270,7 @@ def test_rig_version_index_for_scene_path(fake_project: Path) -> None:
         / "02_build_rig"
         / "publish"
         / "V001"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     v2 = (
         fake_project
@@ -281,7 +281,7 @@ def test_rig_version_index_for_scene_path(fake_project: Path) -> None:
         / "02_build_rig"
         / "publish"
         / "v002"
-        / "char_Errol_rig_Publish.mb"
+        / "char_Errol_rig_Publish.blend"
     )
     ents = matching_rig_versions_for_scene_path(str(v1), fake_project, "publish")
     assert rig_version_index_for_scene_path(str(v1), ents) == 0
@@ -302,9 +302,9 @@ def test_newer_rig_version_work(fake_project: Path) -> None:
         / "char_Errol"
         / "02_rigging"
         / "02_build_rig"
-        / "maya"
+        / "blender"
         / "work"
-        / "char_Errol_rig_v001.ma"
+        / "char_Errol_rig_v001.blend"
     )
     ent = newer_rig_version_for_scene_path(str(w1), fake_project, "work")
     assert ent is not None
@@ -316,8 +316,8 @@ def test_newer_rig_version_work(fake_project: Path) -> None:
         / "char_Errol"
         / "02_rigging"
         / "02_build_rig"
-        / "maya"
+        / "blender"
         / "work"
-        / "char_Errol_rig_v003.ma"
+        / "char_Errol_rig_v003.blend"
     )
     assert newer_rig_version_for_scene_path(str(w3), fake_project, "work") is None

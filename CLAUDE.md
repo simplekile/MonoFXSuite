@@ -1,5 +1,8 @@
 # MonoFXSuite
 
+- Hosts: Houdini and Blender. Maya is no longer supported (the user's decision, 2026-11-17): its
+  tools and `apps/maya` were removed; do not add Maya code back. Shared rig library defaults are Blender's.
+
 ## Auto Material (Houdini, `tools/fx/auto_material/` + `apps/houdini/solaris_adapter.py`)
 
 - Texture names follow Monos Painter publishes: `{set}_{name}_{colorspace}.{UDIM}.{ext}`. The colour

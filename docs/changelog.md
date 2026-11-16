@@ -8,6 +8,12 @@
 ### Houdini
 - **Mono Anim Loader 2.2** (`mono_anim_loader::2.2`, built from code into `otls/`): one node per character, clone or camera of a shot, grafted under `/<asset>` (clones `/<asset>_instNN`) so several characters and clones load together; lookdev, groom and cloth found for that instance only; groom / cloth caches with time samples load as value clips (motion blur); versions never change by themselves. Manager window and shelf tool **Anim Loaders**: every loader in the scene as a list or a grid with Monos thumbnails, what is behind, Update (one undo step), Load shot, Upgrade 2.1 nodes.
 
+### Maya — removed
+- MonoFX no longer supports Maya. Taken out: `apps/maya` and the Maya tools Reference Manager, USD Export, Render Preview, Position / Scale and Scale from Last, with their tests. None of them was in the installer or the Houdini shelf.
+
+### Shared / tests
+- The shared rig library scan (`monofx_pipeline_common.rig_library`) defaults to Blender rigs (`.blend`, `02_build_rig/blender/work`); the Maya defaults are gone. The Blender add-on passed these itself, so it works as before. The shared scan tests moved to `tests/test_rig_library.py`.
+
 
 ## [0.1.28] - 2026-11-17
 
