@@ -641,6 +641,11 @@ predates this model.
   `tests/test_grooming_layers.py`. Not built: mask thumbnails on the rows (icons instead), the row tint of layer
   rows (Houdini's sheet paints item backgrounds), drag to reorder layers, a missing lock's layers shown under
   Missing locks are listed but their owner cannot be picked again from the combo.
+- Checked (t70 `report.md`): pytest 812 passed; offscreen grabs 42 (7 states x 400 / 760 / 1100 x scale 1 / 1.5),
+  0 overflow; contrast 34 of 36, 2 known; GUI Helen through the panel's widgets 30 of 30 (a stroke of D 75: 364
+  automatic roots on the painted core -> 89, asked 91.8; undo 364, redo 89; eyes, D 0 -> 0, opacity 50 % -> 180,
+  reorder, delete; panel and node agree at 13 of 13 points); `accept_v02a.py` 80 of 84 (the three failing by
+  decision with main's rows, `s2` known, `s1` passing), `accept_v02a_gui.py` 19 of 19.
 
 **Done when.**
 - A layer of D painted white gives D: on the eight kinds of skin (whorl, top of the head, a lock start, stacked
