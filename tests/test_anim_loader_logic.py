@@ -246,3 +246,12 @@ def test_with_latest_only_named_parts(tmp_path):
     assert (up.versions["lookdev"], up.versions["groom"], up.anim_version) == ("v003", "v001", "v001")
     up = with_latest(st, ("anim", "groom"))
     assert (up.anim_version, up.versions["groom"], up.versions["lookdev"]) == ("v004", "v002", "v002")
+
+
+def test_list_part_versions(tmp_path):
+    from tools.fx.anim_loader.logic import list_part_versions
+
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    assert list_part_versions(st, "lookdev") == ["v001", "v002"]
+    assert list_part_versions(st, "groom") == ["v001"] and list_part_versions(st, "cloth") == []

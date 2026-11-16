@@ -388,3 +388,8 @@ def with_latest(state: LoaderState, parts: tuple[str, ...]) -> LoaderState:
             if found:
                 st.versions[part] = found[-1]
     return st
+
+
+def list_part_versions(state: LoaderState, part: str) -> list[str]:
+    """Versions of a part (lookdev / groom / cloth) on disk, oldest first, whether or not they hold this instance."""
+    return _part_versions(Path(state.project_root), state, part)
