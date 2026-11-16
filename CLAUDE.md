@@ -168,10 +168,16 @@
 
 ## Blender add-on USD publish (`tools/fx/monofx_pipeline_blender/`)
 
-- Model publish keeps materials inside the asset: after `wm.usd_export` (Blender 5.2 always writes
-  `/_materials` at the stage root and has no option for it), `usd_material_scope.py` moves the scope to
-  `/<defaultPrim>/material` and rewrites every binding and connection (`prepend rel` too). A failure there
-  never fails the export. Its tests need pxr: run them with hython (pytest skips them).
+- Model publish leaves materials where Blender 5.2 writes them, `/_materials` at the stage root (the user's
+  decision, 2026-11-17): a move into `/<defaultPrim>/material` shipped in v0.1.26-v0.1.27 and was taken out.
+  Whoever wants materials inside the root prim adds the root prim in Blender and exports as usual.
+- After `wm.usd_export`, `transform.usd_export` stamps the scene fps (`usd_stage_fps.stamp_fps`: a static
+  export keeps 24, and a Houdini Sublayer LOP copies it over the hip's fps) and, for a model publish
+  (`asset_kind="component"` from `_run_usd_export`), marks the default prim `kind = component`
+  (`usd_asset_kind`; not over a kind already there, not above a grouping kind). Neither ever fails the export.
+  Both open the file with `Sdf.Layer.FindOrOpen` + `Reload(force=True)`: a layer still open in the session
+  is the one from before the export, and a plain `Reload()` skips a file rewritten in the same second.
+  Their tests need pxr: run them with hython (pytest skips them).
 - Publish file names (`publish_paths.collection_publish_usd_basename`): one collection -> the plain
   `<asset>_<task>_publish.usd`; several -> the collection name after `publish`, words joined with a
   capital each (`char_Helen_uv_publish_GeoHelen.usd`).

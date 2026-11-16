@@ -1566,6 +1566,7 @@ class UsdAnimCacheExportSession:
                 UsdGeom.SetStageUpAxis(self._stage, UsdGeom.Tokens.y)
                 UsdGeom.SetStageMetersPerUnit(self._stage, 1.0)
                 self._stage.SetTimeCodesPerSecond(self.fps)
+                self._stage.SetFramesPerSecond(self.fps)
                 self._stage.SetStartTimeCode(float(self.frame_start))
                 self._stage.SetEndTimeCode(float(self.frame_end))
 
