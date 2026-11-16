@@ -131,7 +131,7 @@ def test_fx_exact_folder_only(tmp_path):
     assert m.folder is None and "char_Robot_inst02" in m.reason
     m = fx_match(root, "sh900", "groom", "v001", _inst("char_Robot", "char_Robot"), geo_count=3)
     assert m.folder == root / GROOM / "v001/char_Robot"
-    assert m.pattern == str(root / GROOM / "v001/char_Robot" / "sh900_groom.$F4.usd")
+    assert m.pattern == (root / GROOM / "v001/char_Robot" / "sh900_groom.$F4.usd").as_posix()
     assert (m.first, m.last, m.missing) == (1, 24, ())
 
 
@@ -162,3 +162,87 @@ def test_fx_unknown_asset(tmp_path):
     root = make(tmp_path, frames(f"{GROOM}/v001/char_Robot", "sh900_groom", (1,)))
     m = fx_match(root, "sh900", "groom", "v001", _inst("sh011", None), geo_count=1)
     assert m.folder is None and "asset?" in m.reason
+
+
+# --- Task 3: loader state ------------------------------------------------------------------
+
+from dataclasses import replace  # noqa: E402
+
+from tools.fx.anim_loader.logic import (  # noqa: E402
+    STATUS_ASSET,
+    STATUS_MISSING,
+    STATUS_NEWER,
+    STATUS_OFF,
+    STATUS_OK,
+    initial_state,
+    resolve,
+    status,
+    with_latest,
+)
+
+ROBOT = "01_assets/_characters/char_Robot"
+ANIM = f"{SH}/01_anim/publish"
+
+
+def _shot(tmp_path):
+    files = [f"{ANIM}/v001/geo_char_Robot.usd", f"{ANIM}/v001/geo_sh011.usd", f"{ANIM}/v001/cam_sh900.usd",
+             f"{ROBOT}/05_lookdev/publish/v001/char_Robot_lookdev_publish.usd",
+             f"{ROBOT}/05_lookdev/publish/v002/char_Robot_lookdev_publish.usd"]
+    files += frames(f"{GROOM}/v001/char_Robot", "sh900_groom", (1, 2))
+    return make(tmp_path, files)
+
+
+def test_initial_picks_latest_once(tmp_path):
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    assert (st.asset, st.instance_name, st.versions["lookdev"], st.versions["groom"]) == ("char_Robot", "char_Robot", "v002", "v001")
+    r = resolve(st)
+    assert r.anim == (root / ANIM / "v001/geo_char_Robot.usd").as_posix()
+    assert r.lookdev.endswith("v002/char_Robot_lookdev_publish.usd") and r.groom.endswith("sh900_groom.$F4.usd")
+    assert r.frames["groom"] == (1, 2) and r.cloth == ""
+    make(root, [f"{ROBOT}/05_lookdev/publish/v003/char_Robot_lookdev_publish.usd"])
+    assert resolve(st).lookdev == r.lookdev
+    s = status(st)
+    assert s["lookdev"] == (STATUS_NEWER, "v003") and s["anim"] == (STATUS_OK, None)
+    assert s["groom"] == (STATUS_OK, None) and s["cloth"][0] == STATUS_MISSING
+
+
+def test_newer_anim_version(tmp_path):
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    make(root, [f"{ANIM}/v002/cam_sh900.usd"])
+    assert status(st)["anim"] == (STATUS_OK, None)  # v002 does not hold this instance
+    make(root, [f"{ANIM}/v003/geo_char_Robot.usd"])
+    assert status(st)["anim"] == (STATUS_NEWER, "v003")
+
+
+def test_off_part(tmp_path):
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    st = replace(st, enabled={**st.enabled, "groom": False})
+    assert status(st)["groom"] == (STATUS_OFF, None) and resolve(st).groom == ""
+
+
+def test_asset_unknown_parts(tmp_path):
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_sh011.usd", "geo"))
+    s = status(st)
+    assert s["anim"] == (STATUS_OK, None)
+    assert {s[p][0] for p in ("lookdev", "groom", "cloth")} == {STATUS_ASSET}
+
+
+def test_camera_has_no_parts(tmp_path):
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("cam_sh900.usd", "cam"))
+    assert st.kind == "cam" and {status(st)[p][0] for p in ("lookdev", "groom", "cloth")} == {STATUS_OFF}
+
+
+def test_with_latest_only_named_parts(tmp_path):
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    make(root, [f"{ROBOT}/05_lookdev/publish/v003/char_Robot_lookdev_publish.usd", f"{ANIM}/v004/geo_char_Robot.usd"]
+         + frames(f"{GROOM}/v002/char_Robot", "sh900_groom", (1,)))
+    up = with_latest(st, ("lookdev",))
+    assert (up.versions["lookdev"], up.versions["groom"], up.anim_version) == ("v003", "v001", "v001")
+    up = with_latest(st, ("anim", "groom"))
+    assert (up.anim_version, up.versions["groom"], up.versions["lookdev"]) == ("v004", "v002", "v002")

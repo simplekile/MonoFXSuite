@@ -209,7 +209,7 @@ def _sequence(folder: Path, shot: str, task: str) -> FxMatch | None:
     first_m = hits[0][1]
     numbers = [n for n, _ in hits]
     missing = tuple(sorted(set(range(numbers[0], numbers[-1] + 1)) - set(numbers)))
-    pattern = str(folder / f"{first_m.group(1)}.$F{len(first_m.group(2))}{first_m.group(3)}")
+    pattern = (folder / f"{first_m.group(1)}.$F{len(first_m.group(2))}{first_m.group(3)}").as_posix()
     return FxMatch(folder, pattern, numbers[0], numbers[-1], missing)
 
 
@@ -231,3 +231,160 @@ def fx_match(root: Path, shot: str, task: str, version: str, inst: Instance, geo
         if found:
             return found
     return FxMatch(None, reason=f"No {task} for {inst.name} in {version}")
+
+
+# --- loader state ----------------------------------------------------------------------------
+
+STATUS_OK, STATUS_NEWER, STATUS_MISSING, STATUS_OFF, STATUS_ASSET = "ok", "newer", "missing", "off", "asset?"
+PARTS = ("lookdev", "groom", "cloth")
+FX_TASKS = ("groom", "cloth")
+
+
+@dataclass(frozen=True)
+class LoaderState:
+    """What one loader node holds (its parms). Versions are explicit ``vNNN``; "" = none found."""
+
+    project_root: str
+    shot: str
+    anim_version: str
+    anim_file: str
+    asset: str | None
+    instance_name: str
+    kind: str
+    enabled: dict[str, bool]
+    versions: dict[str, str]
+
+
+@dataclass(frozen=True)
+class Resolved:
+    """Paths a state points at ("" when absent); groom / cloth carry ``$F<pad>``."""
+
+    anim: str
+    lookdev: str
+    groom: str
+    cloth: str
+    frames: dict[str, tuple[int, int]]
+    notes: tuple[str, ...]
+
+
+def _vnum(name: str) -> int:
+    m = _VERSION_RE.match(name or "")
+    return int(m.group(1)) if m else -1
+
+
+def _instance(state: LoaderState) -> Instance:
+    return Instance(state.instance_name, state.anim_file, state.kind, state.asset, 1, False)
+
+
+def _geo_count(root: Path, state: LoaderState) -> int:
+    outs = read_outputs(anim_publish_dir(root, state.shot) / state.anim_version)
+    return sum(1 for o in outs if o.kind == "geo")
+
+
+def _part_path(root: Path, state: LoaderState, part: str, version: str, geo_count: int) -> tuple[str, FxMatch | None]:
+    if part == "lookdev":
+        asset_dir = list_asset_dirs(root).get(state.asset or "")
+        p = lookdev_file(asset_dir, version) if asset_dir and version else None
+        return (p.as_posix() if p else ""), None
+    m = fx_match(root, state.shot, part, version, _instance(state), geo_count) if version else None
+    return (m.pattern if m and m.folder else ""), m
+
+
+def _part_versions(root: Path, state: LoaderState, part: str) -> list[str]:
+    if part == "lookdev":
+        asset_dir = list_asset_dirs(root).get(state.asset or "")
+        return list_versions(asset_dir / "05_lookdev" / "publish") if asset_dir else []
+    return list_versions(fx_publish_dir(root, state.shot, part))
+
+
+def _found_versions(root: Path, state: LoaderState, part: str, geo_count: int) -> list[str]:
+    """Versions of a part that hold this instance's file, oldest first."""
+    return [v for v in _part_versions(root, state, part) if _part_path(root, state, part, v, geo_count)[0]]
+
+
+def _anim_versions(root: Path, state: LoaderState) -> list[str]:
+    pub = anim_publish_dir(root, state.shot)
+    return [v for v in list_versions(pub) if (pub / v / state.anim_file).is_file()]
+
+
+def _applies(state: LoaderState, part: str) -> bool:
+    return state.kind == "geo" and state.enabled.get(part, True)
+
+
+def resolve(state: LoaderState) -> Resolved:
+    """The files a state points at. Reads the disk only; the same state always gives the same paths."""
+    root = Path(state.project_root)
+    anim_p = anim_publish_dir(root, state.shot) / state.anim_version / state.anim_file
+    paths = {"anim": anim_p.as_posix() if anim_p.is_file() else ""}
+    frames: dict[str, tuple[int, int]] = {}
+    notes: list[str] = [] if paths["anim"] else [f"Anim file missing: {anim_p}"]
+    geo_count = _geo_count(root, state)
+    for part in PARTS:
+        paths[part] = ""
+        if not _applies(state, part) or state.asset is None:
+            continue
+        path, m = _part_path(root, state, part, state.versions.get(part, ""), geo_count)
+        paths[part] = path
+        if m is not None and m.folder is not None:
+            frames[part] = (m.first, m.last)  # type: ignore[assignment]
+            if m.missing:
+                notes.append(f"{part} {state.versions[part]}: missing frames {list(m.missing)}")
+        elif m is not None:
+            notes.append(m.reason)
+    return Resolved(paths["anim"], paths["lookdev"], paths["groom"], paths["cloth"], frames, tuple(notes))
+
+
+def _newer(current: str, found: list[str]) -> str | None:
+    later = [v for v in found if _vnum(v) > _vnum(current)]
+    return later[-1] if later else None
+
+
+def status(state: LoaderState) -> dict[str, tuple[str, str | None]]:
+    """Per part (anim, lookdev, groom, cloth): (status, newer version or None)."""
+    root = Path(state.project_root)
+    r = resolve(state)
+    out: dict[str, tuple[str, str | None]] = {}
+    newer = _newer(state.anim_version, _anim_versions(root, state))
+    out["anim"] = (STATUS_MISSING, newer) if not r.anim else ((STATUS_NEWER, newer) if newer else (STATUS_OK, None))
+    geo_count = _geo_count(root, state)
+    for part in PARTS:
+        if not _applies(state, part):
+            out[part] = (STATUS_OFF, None)
+        elif state.asset is None:
+            out[part] = (STATUS_ASSET, None)
+        else:
+            found = _found_versions(root, state, part, geo_count)
+            later = _newer(state.versions.get(part, ""), found)
+            if not getattr(r, part):
+                out[part] = (STATUS_MISSING, later)
+            else:
+                out[part] = (STATUS_NEWER, later) if later else (STATUS_OK, None)
+    return out
+
+
+def initial_state(root: Path, shot: str, anim_version: str, output: Output) -> LoaderState:
+    """A new loader's state: the newest version of each part, picked once."""
+    inst = resolve_instance(output, set(list_asset_dirs(root)))
+    st = LoaderState(str(root), shot, anim_version, output.file, inst.asset, inst.name, inst.kind,
+                     {p: inst.kind == "geo" for p in PARTS}, {p: "" for p in PARTS})
+    return with_latest(st, PARTS)
+
+
+def with_latest(state: LoaderState, parts: tuple[str, ...]) -> LoaderState:
+    """The state with the newest version of each named part ("anim" included) that holds this instance."""
+    root = Path(state.project_root)
+    anim_version = state.anim_version
+    if "anim" in parts:
+        found = _anim_versions(root, state)
+        anim_version = found[-1] if found else anim_version
+    st = LoaderState(state.project_root, state.shot, anim_version, state.anim_file, state.asset,
+                     state.instance_name, state.kind, dict(state.enabled), dict(state.versions))
+    if state.kind != "geo" or state.asset is None:
+        return st
+    geo_count = _geo_count(root, st)
+    for part in PARTS:
+        if part in parts:
+            found = _found_versions(root, st, part, geo_count)
+            if found:
+                st.versions[part] = found[-1]
+    return st
