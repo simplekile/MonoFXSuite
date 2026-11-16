@@ -857,3 +857,16 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     read into a typed variable first. The same family as "type every prim() read".
   - Patch scripts with triple quotes inside a shell heredoc break the shell tool's quoting: write the script
     with the editor into the scratchpad and run the file.
+- Density-layer panel (t70, 2026-11-16, the user's pick "A" of three E2 reworks; the plan's "Panel, built" has the
+  whole list): the lock tree holds each row's density layers and their mask layers (`ui_layers.add_layers`), the eye
+  column moved to the left edge (`header.moveSection`), Automatic last in All locks with a padlock. The controller's
+  part is the mixin `layers.LayersMixin` (selection kind `SEL_LAYER`), the view's part `ui_layers.py`; both are LF
+  files, so `controller.py` / `ui.py` (CRLF) only got hooks. Every layer command is one adapter call (its own undo
+  step) inside `_run`. `GroomingUI._fire` passes keyword arguments (`set_layer(lid, density=...)`,
+  `set_brush(view=...)`): it did not, and the first offscreen test caught it.
+  - Qt ignores `QTreeWidgetItem.setExpanded` before the item is in a view: layer rows are opened after the tree is
+    built (`ui_layers.expand_layers`). An item's BackgroundRole is painted over by the window's sheet
+    (`QTreeWidget::item { background }`), so layer rows are told apart by indentation and icons, not a tint.
+  - "painting" in the status column is TEXT_PRIMARY: ACCENT on SELECTED is 3.95:1 (contrast_check).
+  - Node values from the panel go through `grooming_adapter.node_settings` / `set_node_setting` (a parm set from
+    Python runs no callback: the lookup toggle calls `on_lookup_changed` itself).

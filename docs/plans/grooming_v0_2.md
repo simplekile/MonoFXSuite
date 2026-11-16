@@ -607,6 +607,41 @@ with the density ramp's legend. "Undo cache, GB" (node parm `undo_cache_gb`, def
 `undo_cache_usage(node)` belongs in the panel's settings. Mockups first (dcc-panel-design); the E2 mockup of t59
 predates this model.
 
+**Panel, built (t70, 2026-11-16; minimal: no folders, no workspace, no pie menu).** Mockups in the sandbox
+(`tests/t70_density_panel/mockups/index.html`, three reworks of E2); **the user picked A, "E2 kept"**:
+- The lock tree (heading "Locks") holds each row's density layers as its first children, top first (the upper
+  wins), each with its mask layers under it, top first. Automatic is the last row of All locks' layers, a padlock
+  where the eye is (no eye, cannot be selected for paint, moved, deleted or set; its Properties say so). The eye
+  column sits at the left edge for every row (v0.1 had it at the right). Status column: a density layer's D and
+  opacity under 100 %, a mask layer's blend and opacity, a fill's value, "painting" on the layer being painted.
+- Tree tools in the tree's head: new density layer (owner = the selected row: All locks, a group, ONE lock;
+  several locks selected are refused with a sentence; a selected layer gives its own owner), new paint layer (a
+  fill layer: right click or Properties), up / down (among the layers of the same row, or inside one mask), delete
+  (Del too; a density layer goes with its mask, the selection goes to what held it). Rename: double click or F2.
+  Every command is ONE adapter call (`mask_add`, `mask_remove`, `mask_move`, `mask_set`, `mask_fill` /
+  `mask_clear` / `mask_invert`: one undo step each), cooked in the loading line. Reorder is by the buttons, not by
+  drag (drag stays for locks and groups).
+- The row bar above the tree: a mask layer's blend and opacity, a density layer's D and opacity (mockup A).
+  Properties: a density layer's D (slider, field, quick picks 0 / 75 / 150 / 300), owner (combo: All locks, each
+  group, each lock) and the rule in one sentence; a fill layer's value (picks 0 / 0.5 / 1); a paint layer's Paint,
+  Eraser, Grey (0 / 0.5 / 1), Radius, Softness and Fill white / Invert / Clear (Clear asks on the first click).
+- Paint: the selected paint layer's Paint button (`paint_enter`, `HOOKS["stroke"]` cooks the stroke in the loading
+  line and says "Stroke on <layer>", `HOOKS["exit"]` brings the panel back when Paint ends in the viewport).
+  Selecting another paint layer moves the brush to it; selecting a density layer, a lock row, deleting the layer or
+  Esc in the panel ends Paint. Hair display becomes Hair preview while painting and comes back after. While Paint
+  is on a strip under the view bar shows what the scalp shows (Result / Layer / Roots, `set_brush(view=)`), the
+  scalp's X-ray and the legend (`logic.DENSITY_STOPS` x the Density of All locks, `logic.DENSITY_RAMP`'s colours);
+  Properties can be folded to one line (view state, ends with Paint). Brush values are session state (no undo).
+- Settings: the ⚙ menu keeps Font size and X-ray (per user) and opens a "Node settings and undo cache" page in the
+  Properties column: Fit lookup per lock, Undo cache, GB and Deformed undo, GB with what the cache holds
+  (`undo_cache_usage`). Set through two adapter functions added for the panel, `node_settings(node)` and
+  `set_node_setting(node, key, value)` (one undo step; the lookup toggle also writes the note its own callback
+  writes). Opening a node puts `mask_dropped`, `mask_problem` and the lookup note on the message line.
+- Code: `tools/fx/grooming/layers.py` (the controller's part, a mixin), `ui_layers.py` (the view's part); tests
+  `tests/test_grooming_layers.py`. Not built: mask thumbnails on the rows (icons instead), the row tint of layer
+  rows (Houdini's sheet paints item backgrounds), drag to reorder layers, a missing lock's layers shown under
+  Missing locks are listed but their owner cannot be picked again from the combo.
+
 **Done when.**
 - A layer of D painted white gives D: on the eight kinds of skin (whorl, top of the head, a lock start, stacked
   skin, skin under floating mesh, fringe, ordinary, the sliver band by the ear) D = 0 / 40 / 120 / 300 gives roots
