@@ -77,22 +77,28 @@ def build_axis_conversion_matrix(
 
 
 def matrix_to_gf(mat: "Matrix") -> Gf.Matrix4d:
+    """
+    Blender ``Matrix`` (column vectors, translation in ``mat[i][3]``) → USD matrix.
+
+    USD uses row vectors with translation in the last row, so the Blender matrix is
+    transposed. Pair it with the *un-transposed* axis conversion as ``orient_matrix``.
+    """
     return Gf.Matrix4d(
         float(mat[0][0]),
-        float(mat[0][1]),
-        float(mat[0][2]),
-        float(mat[0][3]),
         float(mat[1][0]),
-        float(mat[1][1]),
-        float(mat[1][2]),
-        float(mat[1][3]),
         float(mat[2][0]),
-        float(mat[2][1]),
-        float(mat[2][2]),
-        float(mat[2][3]),
         float(mat[3][0]),
+        float(mat[0][1]),
+        float(mat[1][1]),
+        float(mat[2][1]),
         float(mat[3][1]),
+        float(mat[0][2]),
+        float(mat[1][2]),
+        float(mat[2][2]),
         float(mat[3][2]),
+        float(mat[0][3]),
+        float(mat[1][3]),
+        float(mat[2][3]),
         float(mat[3][3]),
     )
 
@@ -232,8 +238,14 @@ def author_hierarchy_bind_xforms(
     frame: int,
     orient_matrix: "Matrix",
     unit_scale: float,
+    op_cache: "MatrixXformOpCache | None" = None,
 ) -> None:
-    """Write static bind Xforms once at *frame* (typically ``frame_start``)."""
+    """
+    Write bind Xforms once at *frame* (typically ``frame_start``).
+
+    Pass the same *op_cache* later to ``write_prim_animated_xform`` so each prim keeps
+    a single matrix xform op that carries both the bind value and time samples.
+    """
     scene = context.scene
     scene.frame_set(int(frame))
     try:
@@ -247,7 +259,7 @@ def author_hierarchy_bind_xforms(
         hierarchy,
         depsgraph=depsgraph,
     )
-    bind_cache = MatrixXformOpCache()
+    bind_cache = op_cache if op_cache is not None else MatrixXformOpCache()
     for obj_name, node in hierarchy.items():
         obj = bpy.data.objects.get(obj_name)
         if obj is None:

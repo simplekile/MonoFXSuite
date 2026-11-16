@@ -1170,6 +1170,15 @@ class AutoMaterialUI(QWidget):
         self._undo_btn.clicked.connect(lambda: self._fire("undo"))
         self._undo_btn.setVisible(False)
         lay.addWidget(self._undo_btn)
+        self._fix_colorspace_btn = QPushButton("  Fix colorspace")
+        self._fix_colorspace_btn.setIcon(_lucide_icon("palette", 14, TEXT_LABEL))
+        self._fix_colorspace_btn.setStyleSheet(STYLE_GHOST)
+        self._fix_colorspace_btn.setToolTip(
+            "Select a Material Library LOP. Fills empty image colorspace from the texture file name "
+            "(_ACEScg / _Raw). Images that already have a value are not changed."
+        )
+        self._fix_colorspace_btn.clicked.connect(lambda: self._fire("fix_colorspace"))
+        lay.addWidget(self._fix_colorspace_btn)
         self._auto_assign_btn = QPushButton("  Auto assign")
         self._auto_assign_btn.setIcon(_lucide_icon("target", 14, TEXT_LABEL))
         self._auto_assign_btn.setStyleSheet(STYLE_GHOST)

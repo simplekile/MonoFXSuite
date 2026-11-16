@@ -343,6 +343,38 @@ def _set_filecolorspace_parm(node: Any, token: str) -> bool:
     return False
 
 
+def fix_empty_texture_colorspaces(root: Any) -> dict:
+    """
+    Fill an empty ``filecolorspace`` on every ``mtlximage`` under ``root`` from the filename
+    suffix (``..._ACEScg.<UDIM>.exr``). Houdini's own "materials from USD" conversion leaves it
+    blank. Images that already have a value are never changed.
+    Returns ``{"fixed": int, "already_set": int, "unresolved": [node names]}``.
+    """
+    from tools.fx.auto_material.logic import colorspace_from_filename
+
+    fixed = 0
+    already_set = 0
+    unresolved: list[str] = []
+    if root is None:
+        return {"fixed": fixed, "already_set": already_set, "unresolved": unresolved}
+    for node in root.allSubChildren():
+        if node.type().name() != "mtlximage":
+            continue
+        cs_parm = node.parm("filecolorspace")
+        file_parm = node.parm("file")
+        if cs_parm is None or file_parm is None:
+            continue
+        if str(cs_parm.eval()).strip():
+            already_set += 1
+            continue
+        token = _resolve_filecolorspace_token(colorspace_from_filename(str(file_parm.eval())))
+        if token and _set_filecolorspace_parm(node, token):
+            fixed += 1
+        else:
+            unresolved.append(node.name())
+    return {"fixed": fixed, "already_set": already_set, "unresolved": unresolved}
+
+
 def create_mtlx_image(
     builder: Any,
     slot: str,

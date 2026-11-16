@@ -41,9 +41,17 @@ def _on_anim_usd_export_options_changed(props, context: Context) -> None:
 def draw_anim_usd_version_toggles(layout: UILayout, props) -> None:
     manual_v = max(1, min(999, int(getattr(props, "anim_usd_manual_version", 1) or 1)))
     current_v, next_v = path_ui.cached_version_toggle_numbers()
-    mode = str(getattr(props, "anim_usd_version_mode", "NEXT") or "NEXT")
+    file_v = path_ui.file_anim_version_from_scene()
+    mode = str(getattr(props, "anim_usd_version_mode", "FILE") or "FILE")
 
     row = layout.row(align=True)
+    op = ui_style.operator_row(
+        row,
+        "wm.mono_fx_set_anim_version_mode",
+        text=f"File (v{file_v:03d})" if file_v else "File (no _vNNN)",
+        depress=mode == "FILE",
+    )
+    op.mode = "FILE"
     ui_style.operator_row(
         row,
         "wm.mono_fx_pick_anim_publish_version",

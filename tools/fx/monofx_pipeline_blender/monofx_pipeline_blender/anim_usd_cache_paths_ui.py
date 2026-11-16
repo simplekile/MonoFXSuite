@@ -157,7 +157,16 @@ def resolve_anim_publish_version_number(props) -> int:
         return versions[-1]
     if mode == "CURRENT":
         return current_anim_version_from_scene()
+    if mode == "FILE":
+        file_v = file_anim_version_from_scene()
+        if file_v is not None:
+            return file_v
     return next_anim_version_from_scene()
+
+
+def file_anim_version_from_scene() -> Optional[int]:
+    """Version suffix of the open work file (``sh002_anim_v003.blend`` → 3), if any."""
+    return publish_paths.publish_version_from_scene_file(scene_blend_path())
 
 
 def sync_anim_publish_output(props) -> None:
@@ -234,8 +243,11 @@ def resolve_anim_publish_folder(props) -> tuple[bool, Path, str]:
 
 
 def sync_auto_anim_output(props) -> None:
-    """Keep NEXT mode aligned with the latest publish folder scan."""
-    if str(getattr(props, "anim_usd_version_mode", "NEXT") or "NEXT") != "NEXT":
+    """Keep NEXT / FILE modes aligned with the publish folders and open work file."""
+    if str(getattr(props, "anim_usd_version_mode", "FILE") or "FILE") not in (
+        "NEXT",
+        "FILE",
+    ):
         return
     sync_anim_publish_output(props)
 

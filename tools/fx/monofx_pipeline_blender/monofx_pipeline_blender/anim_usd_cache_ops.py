@@ -483,10 +483,11 @@ class MONOFX_OT_set_anim_version_mode(Operator):
     mode: EnumProperty(
         name="Mode",
         items=[
-            ("CURRENT", "Current", "Use the open .blend version suffix"),
+            ("FILE", "File", "Publish version = version suffix of the open .blend"),
+            ("CURRENT", "Current", "Latest existing publish folder"),
             ("NEXT", "Next", "Use the next publish folder"),
         ],
-        default="NEXT",
+        default="FILE",
     )
 
     def execute(self, context: Context) -> set[str]:

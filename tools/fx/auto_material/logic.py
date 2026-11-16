@@ -21,6 +21,26 @@ from tools.fx.auto_material.config import (
 )
 
 
+_UDIM_TAG_RE = re.compile(r"\.(?:<udim>|%\(udim\)d|\$udim|\d{4})$", re.IGNORECASE)
+
+
+def colorspace_from_filename(filepath: str) -> str | None:
+    """
+    Raw colorspace token from a pipeline texture name, or None.
+    ``M_char_Head_Color_ACEScg.<UDIM>.exr`` -> ``ACEScg``. Accepts ``<UDIM>``, ``%(UDIM)d``
+    and a real tile number. Not validated here; the adapter resolves it to its menu.
+    """
+    if not filepath:
+        return None
+    name = filepath.replace("\\", "/").rsplit("/", 1)[-1]
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    stem = _UDIM_TAG_RE.sub("", stem)
+    parts = stem.split("_")
+    if len(parts) < 2:
+        return None
+    return parts[-1] or None
+
+
 @dataclass
 class ParseResult:
     filepath: str

@@ -114,7 +114,16 @@ def resolve_geo_publish_version_number(props) -> int:
         return versions[-1]
     if mode == "CURRENT":
         return current_geo_version_from_scene()
+    if mode == "FILE":
+        file_v = file_geo_version_from_scene()
+        if file_v is not None:
+            return file_v
     return next_geo_version_from_scene()
+
+
+def file_geo_version_from_scene() -> Optional[int]:
+    """Version suffix of the open work file (``char_Helen_uv_v005.blend`` → 5), if any."""
+    return publish_paths.publish_version_from_scene_file(scene_blend_path())
 
 
 def build_geo_publish_usd_path(
@@ -167,9 +176,17 @@ def picked_manual_version_number(props) -> int | None:
 def draw_geo_usd_version_toggles(layout: UILayout, props) -> None:
     manual_v = max(1, min(999, int(getattr(props, "geo_usd_manual_version", 1) or 1)))
     current_v, next_v = cached_geo_version_toggle_numbers()
-    mode = str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT")
+    file_v = file_geo_version_from_scene()
+    mode = str(getattr(props, "geo_usd_version_mode", "FILE") or "FILE")
 
     row = layout.row(align=True)
+    op = ui_style.operator_row(
+        row,
+        "wm.mono_fx_set_geo_version_mode",
+        text=f"File (v{file_v:03d})" if file_v else "File (no _vNNN)",
+        depress=mode == "FILE",
+    )
+    op.mode = "FILE"
     ui_style.operator_row(
         row,
         "wm.mono_fx_pick_geo_publish_version",
@@ -227,10 +244,11 @@ class MONOFX_OT_set_geo_version_mode(Operator):
     mode: EnumProperty(
         name="Mode",
         items=[
+            ("FILE", "File", "Publish version = version suffix of the open .blend"),
             ("CURRENT", "Current", "Latest existing publish folder"),
             ("NEXT", "Next", "Next publish folder after the latest"),
         ],
-        default="NEXT",
+        default="FILE",
     )
 
     def execute(self, context: Context) -> set[str]:
