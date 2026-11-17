@@ -156,6 +156,46 @@ def main():
               and Gf.IsClose(before.GetMax(), after.GetMax(), 1e-3), (str(before), str(after)))
         ln.destroy()
 
+        # Bake to plain nodes: the same stage with no MonoFX inside; Upgrade restores the loader
+        bn = hou.node("/obj").createNode("lopnet", "bake")
+        for out in logic.read_outputs(version):  # (Load shot would keep the loaders another network has)
+            if out.file in ("geo_char_Robot.usd", "geo_char_Robot_inst02.usd"):
+                ad.create_loader(bn, str(ROOT), "sh900", "v002", out)
+        robot_l, inst2 = bn.node("char_Robot"), bn.node("char_Robot_inst02")
+        robot_l.parm(config.P_SUBD_RULES).set('[{"pattern": "Geo/Base_grp/**", "scheme": "catmullClark", "dicing": 0.7}]')
+        ad.refresh(robot_l)
+        hou.setFrame(10)
+
+        def snap(node, t):
+            st = node.stage()
+            prims = sorted(p.GetPath().pathString for p in st.Traverse())
+            meshes = {p.GetPath().pathString: UsdGeom.Mesh(p).GetSubdivisionSchemeAttr().Get()
+                      for p in st.Traverse() if p.IsA(UsdGeom.Mesh)}
+            hair = [p for p in st.Traverse() if p.IsA(UsdGeom.BasisCurves)]
+            pts = [tuple(x) for x in (UsdGeom.BasisCurves(hair[0]).GetPointsAttr().Get(Usd.TimeCode(t)) or [])[:3]]                 if hair else []
+            return prims, meshes, pts
+        before = {n.name(): snap(n, 10.5) for n in (robot_l, inst2)}
+        done, _notes = ad.bake_loaders([robot_l.path(), inst2.path()])
+        baked = {n: bn.node(n) for n in ("char_Robot", "char_Robot_inst02")}
+        after = {n: snap(b, 10.5) for n, b in baked.items()}
+        check("bake: plain subnets in place, same prims, schemes and hair motion at 10.5",
+              done == ["char_Robot", "char_Robot_inst02"] and all(b.type().name() == "subnet" for b in baked.values())
+              and after == before, [n for n in before if before[n] != after.get(n)])
+        code = " ".join(c.parm("python").eval() for b in baked.values() for c in b.allSubChildren()
+                        if c.parm("python") is not None)
+        calls = [p.name() for b in baked.values() for p in b.parms()
+                 if "hou.phm" in (p.parmTemplate().scriptCallback() if hasattr(p.parmTemplate(), "scriptCallback")
+                                  else "")]
+        check("bake: no MonoFX inside (no apps import, no HDA callback)", "apps." not in code and not calls,
+              calls[:3])
+        infos = [i for i in ad.HoudiniBackend("/obj/bake").loaders() if i.path.startswith("/obj/bake/")]
+        check("bake: the manager lists them to upgrade", sum(1 for i in infos if getattr(i, "baked", False)) == 2)
+        ad.upgrade([baked["char_Robot"]])
+        back = bn.node("char_Robot")
+        check("upgrade restores the MonoFX Loader with its settings", back.type().name() == config.HDA_TYPE
+              and "catmullClark" in back.evalParm(config.P_SUBD_RULES) and snap(back, 10.5) == before["char_Robot"])
+        bn.destroy()
+
         # hand off: one USD with the instance, flattened, textures copied, relative paths
         hand = OUT / "handoff"
         lines = ad.handoff([node.path()], str(hand))

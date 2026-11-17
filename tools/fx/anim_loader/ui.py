@@ -397,7 +397,8 @@ class _ListDelegate(QStyledItemDelegate):
         name_w = min(p.fontMetrics().horizontalAdvance(row.instance) + pt.px(4), name_end - name_x)
         self._text(p, QRect(name_x, line1.top(), name_w, line1.height()), row.instance, TEXT_PRIMARY, FS_META)
         unread = row.legacy and not row.versions  # 2.1 / Character Loader 3.2: no state to show
-        tag = ("camera" if row.kind == "cam" else "" if row.kind == "layer"  # the group says sublayers
+        tag = ("baked" if getattr(row, "baked", False) else "camera" if row.kind == "cam" else ""
+               if row.kind == "layer"  # the group says sublayers
                else ("2.2" if row.legacy and not unread else ("old" if unread else "")))
         if tag:
             self._text(p, QRect(name_x + name_w + pt.px(8), line1.top(), max(0, name_end - name_x - name_w - pt.px(8)),
@@ -824,7 +825,12 @@ class AnimLoaderManager(QWidget):
         self.handoff_button = self._icon_button("package", "Hand off: a self-contained package of the selected "
                                                 "loaders (else every one) for people without MonoFX: one USD each, "
                                                 "textures copied, paths relative")
-        self.handoff_button.clicked.connect(self._handoff)
+        self.handoff_menu = self._menu_for(self.handoff_button)
+        self.handoff_menu.aboutToShow.connect(self._fill_handoff_menu)
+        self.handoff_button.setStyleSheet(self.handoff_button.styleSheet()
+                                          + "QPushButton::menu-indicator { image: none; width: 0px; }")
+        self.handoff_button.setToolTip("Hand off: a USD package for any app, or the loaders baked to plain Houdini "
+                                       "nodes (no MonoFX needed)")
         self.undo_button = self._icon_button("undo", "Undo: Houdini's undo of the last change")
         self.undo_button.clicked.connect(self._undo)
         self.retarget_button = self._button("", STYLE_GHOST)
@@ -1229,6 +1235,20 @@ class AnimLoaderManager(QWidget):
         self._run(lambda: self.ctl.add_assets(names))()
         self.close_drawer()
 
+    def _fill_handoff_menu(self) -> None:
+        m = self.handoff_menu
+        m.clear()
+        sel = [r for r in self.ctl.rows() if r.node_path in self.ctl.selection and not r.legacy
+               and r.kind in ("geo", "cam")]
+        n = f" ({len(sel)})" if sel else " (every loader)"
+        m.addAction(f"Hand off as USD{n}\u2026", self._handoff).setToolTip(
+            "One USD per loader, textures copied, relative paths: any app opens it")
+        m.addSeparator()
+        bake = m.addAction(f"Bake to plain nodes{(' (' + str(len(sel)) + ')') if sel else ''}",
+                           self._run(lambda: self.ctl.bake([r.node_path for r in sel])))
+        bake.setEnabled(bool(sel))
+        bake.setToolTip("Each selected loader becomes a plain subnet anyone with Houdini opens; Upgrade restores it")
+
     def _handoff(self) -> None:
         out = QFileDialog.getExistingDirectory(self, "Hand off to folder", str(Path.home()))
         if out:
@@ -1294,8 +1314,12 @@ class AnimLoaderManager(QWidget):
             if row.kind != "cam":
                 menu.addAction("Open in Monos", lambda: self._link(row.node_path, "monos"))
             menu.addAction("Frame in the viewport", lambda: self._link(row.node_path, "frame"))
-        if row.legacy:  # an old loader: its one action
+        if row.legacy:  # an old loader or a baked one: its one action
             menu.addAction("Upgrade to MonoFX Loader", self._run(lambda: self.ctl.upgrade_paths([row.node_path])))
+        elif row.kind in ("geo", "cam"):
+            paths = self.ctl.selection if row.node_path in self.ctl.selection else [row.node_path]
+            n = f" ({len(paths)})" if len(paths) > 1 else ""
+            menu.addAction(f"Bake to plain nodes{n}", self._run(lambda: self.ctl.bake(list(paths))))
         target = self.ctl.target_shot
         retarget = not row.legacy and row.shot and target and row.shot != target
         if retarget or row.needs_asset or (not row.legacy and row.kind == "geo"):
@@ -1741,6 +1765,9 @@ class InspectorPanel(QWidget):
         if row.kind == "layer":
             rows += [("Kind", "Sublayer", ""), ("Reads", row.layer, ""),
                      ("Upgrade", "a MonoFX Loader in its place, the xforms after it follow", TEXT_LABEL)]
+        elif getattr(row, "baked", False):
+            rows += [("Kind", "Baked loader (plain nodes)", ""),
+                     ("Upgrade", "the MonoFX Loader again, from the settings it kept", TEXT_LABEL)]
         elif row.legacy:
             rows += [("Kind", "Old loader", warn),
                      ("Upgrade", "a MonoFX Loader in its place, keeping its settings", TEXT_LABEL)]

@@ -678,8 +678,11 @@ def upgrade(nodes: list) -> list:
     from apps.houdini.solaris_adapter import undo_group
 
     done = []
-    with undo_group("Upgrade anim loaders to 2.2"):
+    with undo_group("Upgrade to MonoFX Loaders"):
         for node in nodes:
+            if _is_baked(node):  # a baked loader: the MonoFX Loader again
+                done.append(restore_baked(node))
+                continue
             if _is_character_loader(node):
                 new = _upgrade_character_loader(node)
                 if new is not None:
@@ -1173,6 +1176,164 @@ def convert_layers(paths: list[str]) -> tuple[list[str], list[str]]:
     return done, notes
 
 
+# --- Bake to plain nodes, and back (the user's ask, 2026-11-17) -----------------------------------------------
+# A loader becomes a plain subnet anyone with Houdini opens: the loader's own network copied in, its parms as spare
+# parms without callbacks or menus, the subdivision Python LOP holding its plan as data (no MonoFX import). The
+# subnet keeps the loader's parm values and a mark, so Upgrade turns it back into a MonoFX Loader.
+
+BAKED_USER_DATA = "monofx_baked_loader"  # JSON {"type": <loader type>}: a baked loader, Upgrade restores it
+
+BAKED_SUBD_CODE = """hda = hou.pwd().parent()
+stage = hou.pwd().editableStage()
+from pxr import Sdf, Usd, UsdGeom
+inst = hda.evalParm("mx_instance_name")
+root = stage.GetPrimAtPath("/" + inst) if inst else None
+vp = hda.evalParm("mx_viewport")
+look_vp, groom_vp = vp & 1, vp & 2
+# Subdivision per mesh, baked from the MonoFX Loader (shot rule > lookdev > anim > none): mesh -> (scheme, dicing)
+PLAN = %s
+if root:
+    for mesh, (scheme, dicing) in PLAN.items():
+        prim = stage.GetPrimAtPath("/" + inst + mesh)
+        if not prim:
+            continue
+        UsdGeom.Mesh(prim).GetSubdivisionSchemeAttr().Set(scheme)
+        if dicing is not None:
+            UsdGeom.PrimvarsAPI(prim).CreatePrimvar("karma:object:dicingquality", Sdf.ValueTypeNames.Float,
+                                                    UsdGeom.Tokens.constant).Set(dicing)
+    for prim in Usd.PrimRange(root):
+        if not look_vp:
+            rel = prim.GetRelationship("material:binding")
+            targets = rel.GetTargets() if rel else []
+            if targets:
+                prim.CreateRelationship("material:binding:full", False).SetTargets(targets)
+                rel.SetTargets([])
+        if not groom_vp and prim.IsA(UsdGeom.BasisCurves):
+            UsdGeom.Imageable(prim).CreatePurposeAttr().Set(UsdGeom.Tokens.render)
+"""
+
+
+def _plain_templates(group) -> "hou.ParmTemplateGroup":
+    """The loader's parms without what needs MonoFX: buttons go, callbacks and menu scripts are cleared."""
+    out = hou.ParmTemplateGroup()
+
+    def clean(t):
+        if t.type() == hou.parmTemplateType.Button:
+            return None
+        if t.type() == hou.parmTemplateType.Folder:
+            kids = [k for k in (clean(c) for c in t.parmTemplates()) if k is not None]
+            t.setParmTemplates(kids)
+            return t
+        if hasattr(t, "setScriptCallback"):
+            t.setScriptCallback("")
+        if hasattr(t, "itemGeneratorScript") and t.itemGeneratorScript():
+            t.setItemGeneratorScript("")
+            if hasattr(t, "setMenuType"):
+                t.setMenuType(hou.menuType.StringReplace)
+        return t
+
+    for t in group.entries():
+        c = clean(t)
+        if c is not None:
+            out.append(c)
+    return out
+
+
+def _copy_parm_values(src, dst) -> None:
+    for p in src.parms():
+        q = dst.parm(p.name())
+        if q is None or q.isLocked():
+            continue
+        try:
+            if p.parmTemplate().type() == hou.parmTemplateType.String:
+                q.set(p.unexpandedString())  # $F stays a variable
+            elif not p.keyframes():
+                q.set(p.eval())
+        except (hou.OperationFailed, TypeError):
+            continue
+
+
+def _replace(old, new) -> None:
+    """``new`` takes ``old``'s name, place, wires and display flag; ``old`` goes."""
+    parent, name = old.parent(), old.name()
+    ins = [(c.inputIndex(), c.inputNode(), c.outputIndex()) for c in old.inputConnections()]
+    outs = [(c.outputNode(), c.inputIndex()) for c in old.outputConnections()]
+    display, pos = old.isDisplayFlagSet(), old.position()
+    old.setName(_unique_name(parent, name + "_old"))
+    new.setName(name)
+    new.setPosition(pos)
+    for index, src, out_index in ins:
+        new.setInput(index, src, out_index)
+    for dst, index in outs:
+        dst.setInput(index, new)
+    if display:
+        new.setDisplayFlag(True)
+    old.destroy()
+
+
+def bake_loaders(paths: list[str]) -> tuple[list[str], list[str]]:
+    """MonoFX Loaders -> plain subnets that need no MonoFX (see above); one undo step. (baked, notes)"""
+    from apps.houdini.solaris_adapter import manual_update, undo_group
+
+    done, notes = [], []
+    with undo_group("Bake loaders to plain nodes"), manual_update():
+        for path in paths:
+            node = hou.node(path)
+            if node is None or node.type().name() not in (config.HDA_TYPE, config.OLD_TYPE):
+                continue
+            node.cook(force=True)  # a locked LOP HDA makes its inner nodes on first cook
+            plan, _faces = node_subd_plan(node)
+            parent = node.parent()
+            sub = parent.createNode("subnet", _unique_name(parent, node.name() + "_baked"))
+            for child in sub.children():  # its own output0: the loader's comes with the copy
+                child.destroy()
+            group = sub.parmTemplateGroup()
+            for t in _plain_templates(node.parmTemplateGroup()).entries():
+                group.append(t)
+            sub.setParmTemplateGroup(group)
+            _copy_parm_values(node, sub)
+            kids = node.children()
+            copies = hou.copyNodesTo(kids, sub)
+            by_name = {c.name(): c for c in copies}
+            for orig in kids:  # wires from the subnet's input were not copied
+                for i, conn in enumerate(orig.inputConnections()):
+                    if conn.subnetIndirectInput() is not None:
+                        by_name[orig.name()].setInput(conn.inputIndex(), sub.indirectInputs()[conn.subnetIndirectInput().number()])
+                if orig.isDisplayFlagSet():
+                    by_name[orig.name()].setDisplayFlag(True)
+            subd = by_name.get("render_only")
+            if subd is not None:
+                data = {m: (c.scheme, c.dicing) for m, c in plan.items()}
+                subd.parm("python").set(BAKED_SUBD_CODE % repr(data))
+            sub.setUserData(BAKED_USER_DATA, json.dumps({"type": node.type().name()}))
+            sub.setComment("baked MonoFX Loader: no MonoFX needed; Upgrade in the manager restores the loader")
+            name = node.name()
+            _replace(node, sub)
+            done.append(name)
+    return done, notes
+
+
+def _is_baked(node) -> bool:
+    return bool(node.userData(BAKED_USER_DATA)) if node is not None else False
+
+
+def find_baked(root=None) -> list:
+    """Subnets made by bake_loaders, in every LOP network."""
+    prefix = (root.path().rstrip("/") + "/") if root is not None else "/"
+    t = hou.nodeType(hou.lopNodeTypeCategory(), "subnet")
+    return sorted((n for n in (t.instances() if t else ()) if n.path().startswith(prefix) and _is_baked(n)),
+                  key=lambda n: n.path())
+
+
+def restore_baked(node):
+    """A baked subnet -> the MonoFX Loader again, from the loader parms it kept (edits made inside are lost)."""
+    loader = node.parent().createNode(config.HDA_TYPE, _unique_name(node.parent(), node.name() + "_loader"))
+    _copy_parm_values(node, loader)
+    refresh(loader)
+    _replace(node, loader)
+    return loader
+
+
 # --- the manager window's backend --------------------------------------------------------------------
 
 class HoudiniBackend:
@@ -1191,6 +1352,8 @@ class HoudiniBackend:
             readable = kind in (config.HDA_TYPE, config.OLD_TYPE)  # 2.2 has the same parms: its state is real
             out.append(LoaderInfo(n.path(), read_state(n) if readable else None, legacy, n.name(),
                                   _s(n, config.P_SUBD_RULES) if readable else ""))
+        for n in find_baked():  # baked loaders: Upgrade restores them
+            out.append(LoaderInfo(n.path(), None, True, n.name(), "", None, True))
         for node, i, ref in find_publish_layers():  # Sublayer / Reference LOPs reading a publish
             many = (node.parm("num_files").eval() if node.parm("num_files") else 1) > 1
             out.append(LoaderInfo(f"{node.path()}{LAYER_SEP}{i}", None, False,
@@ -1389,6 +1552,10 @@ class HoudiniBackend:
                 and not logic.is_asset(i.state)}
         gaps = logic.shot_gaps(target_root, target_shot, have) if target_root and target_shot else ("", [])
         return {"news": news, "weight": weight, "gaps": gaps}
+
+    @staticmethod
+    def bake(paths):
+        return bake_loaders(list(paths))
 
     @staticmethod
     def update_layers(paths):

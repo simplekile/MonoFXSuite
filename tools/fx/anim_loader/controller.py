@@ -28,6 +28,7 @@ class LoaderInfo:
     legacy_name: str = ""
     subd_rules: str = ""
     layer: Any = None  # a Sublayer / Reference file reading a publish (logic.PublishRef); its node is no loader
+    baked: bool = False  # a loader baked to plain nodes: Upgrade restores it
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,7 @@ class Row:
     asset_source: bool = False  # Source Asset: the asset's model (no shot); Load shot and Retarget leave it
     weight: int = 0  # bytes of the files its lookdev pulls (textures), 0 when unknown
     layer: str = ""  # a Sublayer / Reference reading a publish: what it reads ("lookdev v001 of prop_Cliff01")
+    baked: bool = False  # a loader baked to plain nodes (no MonoFX inside); Upgrade restores it
 
     @property
     def behind(self) -> bool:
@@ -136,7 +138,7 @@ class Controller:
                 continue
             if st is None:
                 rows.append(Row(info.path, "", info.legacy_name or info.path.rsplit("/", 1)[-1], "geo", None,
-                                legacy=True))
+                                legacy=True, baked=getattr(info, "baked", False)))
                 continue
             asset_source = logic.is_asset(st)
             rows.append(Row(info.path, "" if asset_source else st.shot, st.instance_name, st.kind, st.asset,
@@ -310,6 +312,17 @@ class Controller:
     def convert_layers(self, paths: list[str]) -> None:
         """Publish sublayers -> MonoFX Loaders: the same Upgrade as for old loaders."""
         self.upgrade_paths(self.layer_paths(paths))
+
+    def bake(self, paths: list[str]) -> None:
+        """MonoFX Loaders -> plain subnets that need no MonoFX (for people with Houdini only); Upgrade undoes it."""
+        paths = [r.node_path for r in self._rows if r.node_path in paths and not r.legacy and r.kind in ("geo", "cam")]
+        if not paths:
+            self.message = "Pick the loaders to bake."
+            return
+        done, notes = self.backend.bake(paths)
+        self.message = (f"Baked {_plural(len(done), 'loader')} to plain nodes: no MonoFX needed to open them"
+                        if done else (notes[0] if notes else "Nothing baked."))
+        self.details = "\n".join(done + notes)
 
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)

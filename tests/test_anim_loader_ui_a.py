@@ -200,9 +200,14 @@ def test_hand_off_writes_the_selection(win, monkeypatch):
     w, ui = win
     monkeypatch.setattr(ui.QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: "D:/out"))
     _select(w, ui, "/stage/b")
-    w.handoff_button.click()
+    w._fill_handoff_menu()  # the hand-off button is a menu: USD for any app, or plain nodes for Houdini
+    acts = {a.text(): a for a in w.handoff_menu.actions() if not a.isSeparator()}
+    acts["Hand off as USD (1)…"].trigger()
     assert w.backend.calls[-1] == ("handoff", ("/stage/b",), "D:/out")
     assert w.result.text().startswith("Handed off /stage/b: written")
+    w.backend.bake = lambda paths: (w.backend.calls.append(("bake", tuple(paths))) or (list(paths), []))
+    acts["Bake to plain nodes (1)"].trigger()
+    assert w.backend.calls[-1] == ("bake", ("/stage/b",)) and w.result.text().startswith("Baked 1 loader")
 
 
 def test_an_anim_loader_2_2_shows_its_versions_and_offers_upgrade(app, tmp_path, monkeypatch):

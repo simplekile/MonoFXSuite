@@ -259,6 +259,12 @@
   skill solaris-shot-stage-layout) gets them wired there (Load shot: geo -> actors, camera -> cameras; Add: characters
   -> actors, the rest -> environments); any other network gets `<shot>_merge` / `assets_merge`. Adding an asset
   already in the network makes another instance, prim `<asset>_inst02` (set dressing places one asset many times).
+- Bake to plain nodes (Hand off menu, row menu; `bake_loaders`): a MonoFX Loader becomes a plain subnet in place
+  that anyone with Houdini opens: the loader's inner network copied in, its parms as spare parms without callbacks
+  or menu scripts, the subdivision Python LOP holding its plan as data (`BAKED_SUBD_CODE`, no `apps.` import). The
+  subnet keeps the loader's values and user data `monofx_baked_loader`, so the one Upgrade restores the loader
+  (edits made inside are lost). Unlocking the HDA was not enough: its Python LOPs import the adapter and its parms
+  call `hou.phm()`. sh025: 4 loaders baked, 50 meshes and 7 curves the same.
 - Sublayer / Reference LOPs that read a publish (`find_publish_layers`, `logic.parse_publish_path`: an absolute path
   `<project>/01_assets/_<group>/<asset>/<dept>/publish/vNNN/<file>` or `02_shots/<shot>/...`; a path with a
   variable or an expression is not read) show in the manager's "sublayers" group with their status. Update moves
