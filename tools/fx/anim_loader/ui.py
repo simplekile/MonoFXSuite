@@ -279,6 +279,8 @@ class _Painter:
 
 NARROW_ROW_PX = 560  # under this width a list row puts its versions on a second line
 ZEBRA = "#151519"       # every other row, a step over the window (TEXT_LABEL on it 7.2:1)
+MESH_BAND = "#1a1e27"   # the inspector's meshes table: the main list's design in a cooler tint
+MESH_ZEBRA = "#141720"
 BAND = BG_RAISED        # group bands and the column header
 ROLE_ZEBRA = Qt.ItemDataRole.UserRole + 12
 # Monos states (docs/ui_states_rules.md): pressed a step past hover, selected + hover brighter than selected
@@ -1619,25 +1621,36 @@ class InspectorPanel(QWidget):
         self.tree = QTreeWidget()
         self.tree.setObjectName("subdTree")
         self.tree.setColumnCount(5)
-        self.tree.setHeaderLabels(["Mesh", "Faces", "From", "Scheme", "Dice"])
+        self.tree.setHeaderLabels(["MESH", "FACES", "FROM", "SCHEME", "DICE"])
+        for col in range(1, 5):
+            self.tree.headerItem().setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setRootIsDecorated(True)
+        self.tree.setAlternatingRowColors(True)
         self.tree.setStyleSheet(owner.css(
-            f"QTreeWidget#subdTree {{ background: {BG_APP}; alternate-background-color: {BG_APP};"
+            f"QTreeWidget#subdTree {{ background: {BG_APP}; alternate-background-color: {MESH_ZEBRA};"
             f" color: {TEXT_PRIMARY}; border: none; font-size: {FS_SMALL}px; outline: none; }}"
-            f"QTreeWidget#subdTree::item {{ height: 26px; background: {BG_APP}; }}"
+            f"QTreeWidget#subdTree::item {{ height: 28px; border-right: 1px solid {LINE};"
+            f" border-bottom: 1px solid {LINE}; padding: 0 4px; }}"
             f"QTreeWidget#subdTree::item:hover {{ background: {BG_HOVER}; }}"
             f"QTreeWidget#subdTree::item:selected {{ background: {SELECTED}; color: {TEXT_PRIMARY}; }}"
-            f"QTreeWidget#subdTree QHeaderView::section {{ background: {BG_APP}; color: {TEXT_LABEL}; border: none;"
-            f" border-bottom: 1px solid {LINE}; padding: 4px; font-size: {FS_SMALL}px; }}"))
+            f"QTreeWidget#subdTree::item:selected:hover {{ background: #2e3c5f; }}"
+            f"QTreeWidget#subdTree QHeaderView::section {{ background: {MESH_BAND}; color: {TEXT_LABEL};"
+            f" border: none; border-right: 1px solid {LINE}; border-bottom: 1px solid {LINE}; padding: 6px 4px;"
+            f" font-size: {FS_SMALL}px; letter-spacing: 1px; }}"))
         self.tree.viewport().setStyleSheet(f"background: {BG_APP};")
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._context_menu)
         head = self.tree.header()
         head.setStretchLastSection(False)
-        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # the mesh name gets the room
+        head.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)  # drag its edge: the name column's width
         for col in range(1, 5):
             head.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+        head.setMinimumSectionSize(owner.px(48))
+        head.setToolTip("Drag the edge of MESH to widen the name column")
+        self._name_width = 0  # the width the artist dragged the name column to (kept across loaders)
+        head.sectionResized.connect(lambda i, _old, new: setattr(self, "_name_width", new) if i == 0
+                                    and self.tree.isVisible() and not getattr(self, "_filling", False) else None)
         lay.addWidget(self.tree, 100)  # the meshes take the room; without them the stretch below does
         self.hint = owner._label("Right-click meshes to set their scheme or dicing.", FS_SMALL, color=TEXT_LABEL)
         self.hint.setWordWrap(True)
@@ -1732,6 +1745,11 @@ class InspectorPanel(QWidget):
                                  self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "" for m in meshes])])
             g.setData(0, ROLE_PATTERN, key + "/**")
             g.setToolTip(0, key)
+            for col in range(5):  # a group is a band, like the main list's
+                g.setBackground(col, QColor(MESH_BAND))
+                g.setForeground(col, QColor(TEXT_LABEL))
+                if col:
+                    g.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
             self.tree.addTopLevelItem(g)
             for m in meshes:
                 c = plan[m]
@@ -1740,12 +1758,31 @@ class InspectorPanel(QWidget):
                                         f"{c.dicing:g}" if c.dicing else ""])
                 item.setData(0, ROLE_PATTERN, m.strip("/"))
                 item.setToolTip(0, m)
+                for col in range(1, 5):
+                    item.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
                 if c.source == "shot":
                     for col in (2, 3):
                         item.setForeground(col, QColor(ACCENT))
                 g.addChild(item)
         self.tree.setColumnHidden(4, not any_dicing)
         self.tree.expandAll()
+        self._fit_name()
+        QTimer.singleShot(0, self._fit_name)  # again once the tree has its width
+
+    def _fit_name(self) -> None:
+        """The name column: the width the artist dragged it to, else what the other columns leave."""
+        self._filling = True
+        for col in range(1, 5):
+            self.tree.resizeColumnToContents(col)
+        rest = sum(self.tree.columnWidth(c) for c in range(1, 5) if not self.tree.isColumnHidden(c))
+        free = self.tree.viewport().width() - rest - self.owner.px(8)  # no sideways scroll for a few px
+        self.tree.setColumnWidth(0, self._name_width or max(self.owner.px(120), free))
+        self._filling = False
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if not self._name_width and self.tree.topLevelItemCount():
+            self._fit_name()
 
     @staticmethod
     def _common(values: list[str]) -> str:
