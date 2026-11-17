@@ -234,9 +234,13 @@ def test_inspector_slides_out_and_in(win):
     w.show()
     QTest.qWait(50)
     _select(w, ui, "/stage/a")
-    assert not w.subd_panel.isHidden() and w.subd_panel._slide_anim.state() == w.subd_panel._slide_anim.State.Running
+    clip = w.subd_clip
+    assert not w.subd_panel.isHidden() and clip._slide_anim.state() == clip._slide_anim.State.Running
+    QTest.qWait(w.DIALOG_IN_MS // 3)
+    # sliding: the panel keeps its full width, the clip shows its left part (it moves in, never stretches)
+    assert w.subd_panel.width() >= w.px(360) and clip.width() < w.subd_panel.width()
     QTest.qWait(w.DIALOG_IN_MS + 120)
-    assert w.subd_panel.width() >= w.px(300) and w.subd_panel.minimumWidth() == w.px(360)
+    assert clip.width() >= w.px(300) and clip.minimumWidth() == w.px(360) and clip.full == 0
     _select(w, ui, "")
     QTest.qWait(w.DIALOG_OUT_MS + 120)
     assert w.subd_panel.isHidden()

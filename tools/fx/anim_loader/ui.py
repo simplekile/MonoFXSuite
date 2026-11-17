@@ -115,7 +115,15 @@ STYLE_MENU_SQ = STYLE_MENU.replace("border-radius: 10px", "border-radius: 0px").
 
 WINDOW_NAME = "AnimLoaderManager"
 PREFS = Path(os.environ.get("APPDATA", Path.home())) / "MonoFXSuite" / "anim_loader_prefs.json"
-PART_LABEL = {"anim": "Anim", "lookdev": "Lookdev", "groom": "Groom", "cloth": "Cloth"}
+# "Geo": the geometry a row reads, a shot's anim or an asset's model (the user asked why mushroom had "anim v003")
+PART_LABEL = {"anim": "Geo", "lookdev": "Lookdev", "groom": "Groom", "cloth": "Cloth"}
+
+
+def part_word(row, part: str) -> str:
+    """The part's name in a sentence: the Geo column is anim for a shot, model for an asset."""
+    if part == "anim":
+        return "model" if getattr(row, "asset_source", False) or getattr(row, "kind", "") == "layer" else "anim"
+    return part
 ACCENT_ON_SELECTED = "#6f9aff"  # the accent as text on a selected row: #5b8cff there is 3.95:1, this 4.5:1
 SELECTED = "#273352"  # the accent at 24 % over the window, opaque (Houdini paints transparent rows grey)
 ROLE_ROW = Qt.ItemDataRole.UserRole + 10
@@ -217,7 +225,8 @@ class _Painter:
             p.drawPixmap(rect, scaled, src)
         else:
             p.fillRect(rect, QColor("#1f1f26"))
-            icon = "target" if row.kind == "cam" else ("triangle-alert" if row.needs_asset or row.legacy else "user")
+            icon = ("target" if row.kind == "cam" else "layers" if row.kind == "layer"
+                    else ("triangle-alert" if row.needs_asset or row.legacy else "user"))
             size = min(self.px(22), rect.height() // 2)
             p.drawPixmap(QRect(rect.center().x() - size // 2, rect.center().y() - size // 2, size, size),
                          _lucide_pixmap(icon, size, "#4a4a55"))
@@ -279,7 +288,7 @@ STATES_PILL = (f"QPushButton:pressed {{ background: #26262d; }}"
 STATES_GHOST = ("QPushButton:pressed { background: #26262d; color: #ededf0; }"
                 "QPushButton::menu-indicator { image: none; width: 0; }")  # the label carries the arrow
 STATES_PRIMARY = "QPushButton:pressed { background: #2f5bd8; }"
-COLUMNS = (("anim", "Anim", 76), ("lookdev", "Lookdev", 76), ("groom", "Groom", 76), ("cloth", "Cloth", 76),
+COLUMNS = (("anim", "Geo", 76), ("lookdev", "Lookdev", 76), ("groom", "Groom", 76), ("cloth", "Cloth", 76),
            ("subd", "Subd", 92), ("tex", "Textures", 76))
 
 
@@ -384,7 +393,7 @@ class _ListDelegate(QStyledItemDelegate):
         name_w = min(p.fontMetrics().horizontalAdvance(row.instance) + pt.px(4), name_end - name_x)
         self._text(p, QRect(name_x, line1.top(), name_w, line1.height()), row.instance, TEXT_PRIMARY, FS_META)
         unread = row.legacy and not row.versions  # 2.1 / Character Loader 3.2: no state to show
-        tag = ("camera" if row.kind == "cam" else "sublayer" if row.kind == "layer"
+        tag = ("camera" if row.kind == "cam" else "" if row.kind == "layer"  # the group says sublayers
                else ("2.2" if row.legacy and not unread else ("old" if unread else "")))
         if tag:
             self._text(p, QRect(name_x + name_w + pt.px(8), line1.top(), max(0, name_end - name_x - name_w - pt.px(8)),
@@ -424,6 +433,27 @@ class _ListDelegate(QStyledItemDelegate):
         if index.data(ROLE_HEADER):
             return QSize(width, self.pt.px(28))
         return QSize(width, self.pt.px(40 if wide else 62))
+
+
+class _SlideClip(QWidget):
+    """Holds a panel at ``full`` width while it slides: the clip widens from the window's right edge and shows
+    the panel's left part first, so the panel moves in rather than stretching. At rest the panel fills it."""
+
+    def __init__(self, panel: QWidget) -> None:
+        super().__init__()
+        self.panel = panel
+        panel.setParent(self)
+        self.full = 0  # > 0 while sliding: the panel's width then
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.panel.setGeometry(0, 0, max(self.width(), self.full), self.height())
+
+    def sizeHint(self) -> QSize:
+        return self.panel.sizeHint()
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(0, self.panel.minimumSizeHint().height())
 
 
 class _ColumnHeader(QWidget):
@@ -761,9 +791,11 @@ class AnimLoaderManager(QWidget):
         left_lay.addWidget(self.stack, 1)
         self.split.addWidget(self.left)
         self.subd_panel = InspectorPanel(self)
-        self.subd_panel.setMinimumWidth(1)  # set by resizeEvent: 360 beside the list, free when stacked
-        self.subd_panel.hide()  # only while a loader is selected
-        self.split.addWidget(self.subd_panel)
+        self.subd_clip = _SlideClip(self.subd_panel)  # the inspector slides in this from the right edge
+        self.subd_clip.setMinimumWidth(1)  # set by resizeEvent: 360 beside the list, free when stacked
+        self.subd_clip.hide()  # only while a loader is selected
+        self.subd_panel.hide()
+        self.split.addWidget(self.subd_clip)
         self.drawer = AddDrawer(self)
         self.drawer.hide()
         self.split.addWidget(self.drawer)
@@ -944,7 +976,7 @@ class AnimLoaderManager(QWidget):
         lines = [row.node_path, f"prim /{row.instance}" if row.kind == "geo" else "camera"]
         for part in ALL_PARTS:
             st, newer = row.parts.get(part, (logic.STATUS_OFF, None))
-            lines.append(f"{PART_LABEL[part]}: {chip(st, newer, row.versions.get(part, ''))[0]}")
+            lines.append(f"{part_word(row, part).title()}: {chip(st, newer, row.versions.get(part, ''))[0]}")
         return "\n".join(lines)
 
     def _update_bar(self) -> None:
@@ -1015,49 +1047,62 @@ class AnimLoaderManager(QWidget):
         want = row is not None and not getattr(self, "_drawer_open", False)  # for a selection
         if row is not None:
             self.subd_panel.show_row(row)
-        self._slide(self.subd_panel, want)
+        self._slide(self.subd_clip, want)
         if row is None:
             self.subd_panel.show_row(None)
 
-    def _slide(self, panel: QWidget, show: bool) -> None:
-        """The inspector slides in from the right when it appears and out when it goes; stacked under the list
-        (narrow) or offscreen, it just shows."""
-        if show == (not panel.isHidden()) and not getattr(panel, "_sliding_out", False):
+    def _slide(self, clip: "_SlideClip", show: bool) -> None:
+        """The inspector slides in from the window's right edge (in 160 ms OutCubic) and back out (120 ms InCubic):
+        its clip widens or narrows while the panel keeps its full width, so it moves rather than stretches.
+        Stacked under the list (narrow) or offscreen, it just shows."""
+        panel = clip.panel
+        if show == (not clip.isHidden()) and not getattr(clip, "_sliding_out", False):
+            panel.setVisible(show)
             return
-        anim = getattr(panel, "_slide_anim", None)
+        anim = getattr(clip, "_slide_anim", None)
         if anim is not None:
             anim.stop()
         horizontal = self.split.orientation() == Qt.Orientation.Horizontal and self.isVisible()
-        full = self.px(360)
+        full = max(self.px(360), clip.width() if not clip.isHidden() else 0)
         if not horizontal:
-            panel._sliding_out = False
-            panel.setMaximumWidth(16777215)
+            clip._sliding_out = False
+            clip.full = 0
+            clip.setMaximumWidth(16777215)
+            clip.setVisible(show)
             panel.setVisible(show)
             return
-        anim = QPropertyAnimation(panel, b"maximumWidth", self)
-        panel._slide_anim = anim
-        panel.setMinimumWidth(0)  # the 360 px floor would stop the slide; set again when it ends
+        anim = QPropertyAnimation(clip, b"maximumWidth", self)
+        clip._slide_anim = anim
+        clip.setMinimumWidth(0)  # the 360 px floor would stop the slide; set again when it ends
+        clip.full = full
+        panel.setGeometry(0, 0, full, clip.height())
+
+        def rest():
+            clip.full = 0
+            clip.setMaximumWidth(16777215)
+            clip.setMinimumWidth(self.px(360))
         if show:
-            panel._sliding_out = False
-            panel.setMaximumWidth(0)
+            clip._sliding_out = False
+            clip.setMaximumWidth(0)
+            clip.setVisible(True)
             panel.setVisible(True)
             anim.setDuration(self.DIALOG_IN_MS)
             anim.setStartValue(0)
             anim.setEndValue(full)
             anim.setEasingCurve(QEasingCurve.Type.OutCubic)
-            anim.finished.connect(lambda: (panel.setMaximumWidth(16777215), panel.setMinimumWidth(full)))
+            anim.finished.connect(rest)
         else:
-            panel._sliding_out = True
+            clip._sliding_out = True
             anim.setDuration(self.DIALOG_OUT_MS)
-            anim.setStartValue(panel.width())
+            anim.setStartValue(clip.width())
             anim.setEndValue(0)
             anim.setEasingCurve(QEasingCurve.Type.InCubic)
 
             def done():
-                panel._sliding_out = False
+                clip._sliding_out = False
+                clip.setVisible(False)
                 panel.setVisible(False)
-                panel.setMaximumWidth(16777215)
-                panel.setMinimumWidth(full)
+                rest()
             anim.finished.connect(done)
         anim.start()
 
@@ -1112,7 +1157,7 @@ class AnimLoaderManager(QWidget):
         if narrow_split and not was_vertical:  # stacked: the list keeps the larger half
             h = max(self.split.height(), self.px(400))
             self.split.setSizes([int(h * 0.55), int(h * 0.45), int(h * 0.45)])
-        self.subd_panel.setMinimumWidth(1 if narrow_split else self.px(360))
+        self.subd_clip.setMinimumWidth(1 if narrow_split else self.px(360))
 
     # --- commands --------------------------------------------------------------------------------
     def _run(self, fn):
@@ -1150,6 +1195,7 @@ class AnimLoaderManager(QWidget):
     def open_drawer(self) -> None:
         self.ctl.target_root = self._project
         self.drawer.open(self._project)
+        self.subd_clip.hide()
         self.subd_panel.hide()
         self.drawer.show()
         self._drawer_open = True
@@ -1603,7 +1649,7 @@ class InspectorPanel(QWidget):
         if row.kind == "cam":  # a camera has its anim only
             bits += ["camera", f"anim {row.versions.get('anim', '')}"]
         elif not row.legacy:
-            bits += [f"{PART_LABEL[p].lower()} {row.versions[p]}" for p in ALL_PARTS if row.versions.get(p)]
+            bits += [f"{part_word(row, p)} {row.versions[p]}" for p in ALL_PARTS if row.versions.get(p)]
         self.meta.setText(" \u00b7 ".join(bits))
         self.asset = row.asset or ""
         self.row_path = row.node_path
