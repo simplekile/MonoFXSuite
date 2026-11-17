@@ -346,6 +346,8 @@
 - Props and environments publish a complete asset as their lookdev (`def` meshes and materials, root prims at the
   top, e.g. prop_Cliff01: 12 meshes), the UV publish being another mesh (`_uv_publish_Low` / `_zHigh`). Source Asset
   loads such a lookdev alone (`lookdev_defines_geometry`), never with the UV publish (that doubled the geometry);
+  subdivision and the inspector's table read its meshes from that lookdev too (`geometry_file`; read from the model,
+  Cliff01's 12 meshes were listed as none and none got a scheme);
   Helen's lookdev only overrides, so her UV model stays under it. Checked on env_Envi lookdev v005: its 14
   hand-placed props rebuilt with loaders + the same xform nodes give the same 1040 meshes and the same bounds.
 - A locked LOP HDA makes its inner nodes on first cook: `node.children()` is empty before.

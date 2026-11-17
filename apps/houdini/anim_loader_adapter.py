@@ -1442,12 +1442,13 @@ class HoudiniBackend:
                 continue
             r = logic.resolve(st)
             look = r.lookdev if st.enabled.get("lookdev") else ""
-            plan, faces = plan_for(r.anim, look, i.subd_rules)
+            geo = geometry_file(r.anim, look, logic.is_asset(st))
+            plan, faces = plan_for(geo, look, i.subd_rules)
             groom = logic.first_frame_path(r.groom, r.frames.get("groom", (None,))[0]) \
                 if st.enabled.get("groom") and r.groom else ""
             curves = groom_curve_counts(groom)
             out[i.path] = {"plan": plan, "faces": faces, "curves": curves,
-                           "shown": shown_for(list(plan), list(curves), r.anim, look, getattr(i, "show", None))}
+                           "shown": shown_for(list(plan), list(curves), geo, look, getattr(i, "show", None))}
         return out
 
     @staticmethod
@@ -1712,10 +1713,19 @@ def plan_for(anim: str, lookdev: str, rules_text: str) -> tuple[dict, dict[str, 
     return logic.subd_plan(meshes, look_ops, anim_ops, logic.parse_subd_rules(rules_text)), faces
 
 
+def geometry_file(anim: str, lookdev: str, asset_source: bool) -> str:
+    """The file whose meshes the loader puts on the stage: a prop's complete lookdev (it defines the meshes and is
+    loaded alone, `lookdev_defines_geometry`), else the anim / model publish. Subdivision and the inspector's table
+    read their meshes from it: read from the model, Cliff01's 12 lookdev meshes were listed as none and got no
+    subdivisionScheme (USD's catmullClark fallback)."""
+    return lookdev if asset_source and lookdev and lookdev_defines_geometry(lookdev) else anim
+
+
 def node_subd_plan(node) -> tuple[dict, dict[str, int]]:
-    """The subdivision plan of a loader (logic.subd_plan) and the anim meshes' face counts."""
+    """The subdivision plan of a loader (logic.subd_plan) and its meshes' face counts."""
     look = _s(node, config.P_PATH["lookdev"]) if node.evalParm(config.P_ENABLE["lookdev"]) else ""
-    return plan_for(_s(node, config.P_ANIM_PATH), look, _s(node, config.P_SUBD_RULES))
+    asset = _s(node, config.P_SOURCE) == config.SOURCE_ASSET
+    return plan_for(geometry_file(_s(node, config.P_ANIM_PATH), look, asset), look, _s(node, config.P_SUBD_RULES))
 
 
 def author_subd(node, stage) -> None:
