@@ -23,7 +23,7 @@ from tools.fx.anim_loader.logic import LoaderState, Output, Resolved
 __all__ = [
     "read_state", "write_state", "refresh", "create_loader", "cb_parm_changed", "cb_refresh",
     "cb_open_manager", "cb_apply_timeline", "apply_timeline", "menu_versions", "menu_anim_versions",
-    "menu_anim_files", "menu_assets", "menu_shots", "on_created", "find_loaders", "load_shot", "update", "set_asset",
+    "menu_anim_files", "menu_assets", "menu_shots", "menu_model_versions", "menu_model_files", "on_created", "find_loaders", "load_shot", "update", "set_asset",
     "upgrade", "LoadResult", "on_loaded", "check_heavy_shot",
 ]
 
@@ -54,9 +54,11 @@ def read_state(node) -> LoaderState:
     enabled = {part: bool(node.evalParm(config.P_ENABLE[part])) for part in logic.PARTS}
     versions = {part: _version(node, config.P_VERSION[part]) for part in logic.PARTS}
     kind = "cam" if node.evalParm(config.P_GEO_CAM) == 1 else "geo"
+    source = config.SOURCE_ASSET if _s(node, config.P_SOURCE) == config.SOURCE_ASSET else config.SOURCE_SHOT
     return LoaderState(_s(node, config.P_ROOT), _s(node, config.P_SHOT), _version(node, config.P_ANIM_VERSION),
                        _s(node, config.P_ANIM_FILE), _s(node, config.P_ASSET) or None,
-                       _s(node, config.P_INSTANCE), kind, enabled, versions)
+                       _s(node, config.P_INSTANCE), kind, enabled, versions, source,
+                       _version(node, config.P_MODEL_VERSION), _s(node, config.P_MODEL_FILE))
 
 
 def write_state(node, state: LoaderState) -> None:
@@ -71,6 +73,9 @@ def write_state(node, state: LoaderState) -> None:
     for part in logic.PARTS:
         _set(node, config.P_ENABLE[part], int(state.enabled.get(part, True)))
         _set(node, config.P_VERSION[part], state.versions.get(part, ""))
+    _set(node, config.P_SOURCE, state.source)
+    _set(node, config.P_MODEL_VERSION, state.model_version)
+    _set(node, config.P_MODEL_FILE, state.model_file)
 
 
 # --- groom / cloth layout ----------------------------------------------------------------------
@@ -95,6 +100,28 @@ def fx_layout(first_file: str) -> tuple[str, list[str]]:
     return (config.FX_MODE_CLIP if sampled else config.FX_MODE_SUBLAYER), roots
 
 
+_CURVE_TYPES = ("BasisCurves", "NurbsCurves", "HermiteCurves")
+
+
+def groom_curves(first_file: str) -> list[str]:
+    """Curves prims of a groom cache file (their paths in the file), read from its specs."""
+    from pxr import Sdf
+
+    layer = Sdf.Layer.FindOrOpen(first_file)
+    out: list[str] = []
+    if layer is None:
+        return out
+
+    def walk(spec):
+        for child in spec.nameChildren:
+            if child.typeName in _CURVE_TYPES:
+                out.append(child.path.pathString)
+            else:
+                walk(child)
+    walk(layer.pseudoRoot)
+    return out
+
+
 def refresh(node) -> Resolved:
     """Resolves the node's state and writes the paths, layers, clips and status it shows. Never changes a version."""
     state = read_state(node)
@@ -104,24 +131,36 @@ def refresh(node) -> Resolved:
         _set(node, config.P_PATH[part], getattr(r, part))
     notes = list(r.notes)
     layers = [r.lookdev]
+    topo = ""
+    asset_source = logic.is_asset(state)
     for task in logic.FX_TASKS:
         keys = config.P_FX[task]
         pattern = getattr(r, task)
         mode, roots, first, last, template = "", [], 0, 0, ""
-        if pattern:
+        if pattern and asset_source:
+            layers.append(pattern)  # the asset's groom publish: one file, already at /Groom
+        elif pattern:
             first, last = r.frames[task]
             mode, roots = fx_layout(_frame_file(pattern, first))
             template = _template(pattern)
-            if mode == config.FX_MODE_SUBLAYER:
+            if task == "groom":
+                # groom sits outside Geo, at /Groom/<name> (the user's pick): the branch copies its topology there
+                # from the first frame (or from each frame without time samples); the clips read from the cache's
+                # own paths (clip primPath)
+                curves = groom_curves(_frame_file(pattern, first))
+                roots = [f"{src}={dst}" for src, dst in logic.groom_targets(curves)] if curves else roots
+                topo = pattern if mode == config.FX_MODE_SUBLAYER else _frame_file(pattern, first)
+                if mode == config.FX_MODE_SUBLAYER:
+                    notes.append(f"{task}: no motion blur (no time samples)")
+            elif mode == config.FX_MODE_SUBLAYER:
                 layers.append(pattern)
                 notes.append(f"{task}: no motion blur (no time samples)")
-            elif task == "groom":
-                layers.append(_frame_file(pattern, first))  # topology for the clips (counts, widths)
         _set(node, keys["mode"], mode)
         _set(node, keys["template"], template)
         _set(node, keys["first"], first)
         _set(node, keys["last"], last)
         _set(node, keys["roots"], " ".join(roots))
+    _set(node, config.P_GROOM_TOPO, topo)
     layers.append(r.anim)
     layers = [x for x in layers if x] + [""] * len(config.P_LAYERS)
     for name, value in zip(config.P_LAYERS, layers):
@@ -132,8 +171,11 @@ def refresh(node) -> Resolved:
         _show_comment(node, short)
     else:
         st = logic.status(state)
-        _set(node, config.P_STATUS, " · ".join(logic.status_problems(st, {"anim": state.anim_version,
-                                                                          **state.versions}) + notes))
+        versions = {"anim": logic.main_version(state), **state.versions}
+        if asset_source:  # the main file is the model: say so
+            st = {("model" if k == "anim" else k): v for k, v in st.items()}
+            versions["model"] = versions.pop("anim")
+        _set(node, config.P_STATUS, " · ".join(logic.status_problems(st, versions) + notes))
         _show_comment(node, logic.status_comment(st))
     _MENUS.clear()  # the menus read the disk again
     return r
@@ -179,7 +221,10 @@ def on_created(node) -> None:
     except Exception:
         return
     root = logic.find_project_root(hip)
-    if root is not None and not _s(node, config.P_ROOT):
+    asset = logic.detect_asset(root, hip) if root is not None else None
+    if asset and not _s(node, config.P_ROOT):  # a scene in an asset folder (grooming, lookdev): the asset's model
+        write_state(node, logic.initial_asset_state(root, asset))
+    elif root is not None and not _s(node, config.P_ROOT):
         _set(node, config.P_ROOT, root.as_posix())
         shot = logic.detect_shot(hip)
         if shot:
@@ -199,9 +244,42 @@ def cb_parm_changed(kwargs: dict) -> None:
         _new_anim_file(node)
     elif name in (config.P_SHOT, config.P_ROOT):
         _new_shot(node)
+    elif name == config.P_SOURCE:
+        _new_source(node)
+    elif name in (config.P_MODEL_VERSION, config.P_MODEL_FILE):
+        state = read_state(node)
+        if name == config.P_MODEL_VERSION:  # keep the picked file if the version has it, else the standard one
+            asset_dir = logic.list_asset_dirs(Path(state.project_root)).get(state.asset or "")
+            files = logic.usd_files(logic.model_publish_dir(asset_dir) / state.model_version) if asset_dir else []
+            write_state(node, dataclasses.replace(state, model_file=logic.pick_file(files, state.asset or "", "uv",
+                                                                                     state.model_file)))
     elif name == config.P_ASSET:  # the artist named the asset: its parts start at their newest, as in the manager
-        write_state(node, logic.with_latest(read_state(node), logic.PARTS))
+        state = read_state(node)
+        if logic.is_asset(state) and state.asset and state.project_root:
+            write_state(node, logic.initial_asset_state(Path(state.project_root), state.asset,
+                                                        dataclasses.replace(state, asset=None)))
+        else:
+            write_state(node, logic.with_latest(state, logic.PARTS))
     refresh(node)
+
+
+def _new_source(node) -> None:
+    """Source changed. Nothing of the other source is cleared, so switching back restores it; Asset with no model
+    yet picks the asset's newest parts once (the asset from the shot's instance, else from $HIP)."""
+    state = read_state(node)
+    if not logic.is_asset(state):
+        if state.anim_file:  # back to the shot: the anim file's instance name again (/char_X_inst02 for a clone)
+            write_state(node, dataclasses.replace(state, instance_name=logic.instance_name(state.anim_file)))
+        return
+    root = Path(state.project_root) if state.project_root else logic.find_project_root(Path(hou.hipFile.path()))
+    if root is None:
+        return
+    asset = state.asset or logic.detect_asset(root, Path(hou.hipFile.path()))
+    if asset and not state.model_version:
+        write_state(node, logic.initial_asset_state(root, asset, state))
+    elif asset:
+        write_state(node, dataclasses.replace(state, project_root=str(root), asset=asset, instance_name=asset,
+                                              kind="geo"))
 
 
 def _new_anim_file(node) -> None:
@@ -325,13 +403,28 @@ def menu_shots(node) -> list[str]:
     return _cached(("shots", root, shot), lambda: _labelled(logic.shot_menu(root, shot)))
 
 
+def menu_model_versions(node) -> list[str]:
+    state = read_state(node)
+    return _cached((node.sessionId(), "model", repr(state)), lambda: _labelled(logic.version_choices(state, "anim")))
+
+
+def menu_model_files(node) -> list[str]:
+    state = read_state(node)
+    return _cached((node.sessionId(), "model_files", repr(state)), lambda: _labelled(logic.model_file_choices(state)))
+
+
 def menu_assets(node) -> list[str]:
     root = _s(node, config.P_ROOT)
     return _cached(("assets", root), lambda: _menu(sorted(logic.list_asset_dirs(Path(root))))) if root else []
 
 
 def _is_loader(node: Any) -> bool:
-    return node.type().name() in (config.HDA_TYPE, *config.LEGACY_TYPES)
+    name = node.type().name()
+    return name in (config.HDA_TYPE, *config.LEGACY_TYPES) or name.startswith(config.CHARACTER_LOADER_PREFIX)
+
+
+def _is_character_loader(node: Any) -> bool:
+    return node.type().name().startswith(config.CHARACTER_LOADER_PREFIX)
 
 
 # --- commands of the manager window (each one undo step) ------------------------------------------
@@ -353,6 +446,9 @@ def find_loaders(root=None) -> list:
 
 
 def _key(node) -> tuple[str, str]:
+    """(shot, anim file) a loader stands for; ("", "") for Source Asset, which Load shot and Retarget leave alone."""
+    if _s(node, config.P_SOURCE) == config.SOURCE_ASSET:
+        return "", ""
     try:
         data = json.loads(node.userData(config.USER_DATA) or "{}")
     except ValueError:
@@ -409,7 +505,9 @@ def update(nodes: list, parts: tuple[str, ...] = ("anim", "lookdev", "groom", "c
                 continue
             old = read_state(node)
             new = logic.with_latest(old, parts)
-            moved = [f"anim {old.anim_version} -> {new.anim_version}"] if new.anim_version != old.anim_version else []
+            word = "model" if logic.is_asset(old) else "anim"
+            a, b = logic.main_version(old), logic.main_version(new)
+            moved = [f"{word} {a} -> {b}"] if a != b else []
             moved += [f"{p} {old.versions[p] or '-'} -> {new.versions[p]}" for p in logic.PARTS
                       if new.versions[p] != old.versions[p]]
             if moved:
@@ -483,6 +581,11 @@ def upgrade(nodes: list) -> list:
     done = []
     with undo_group("Upgrade anim loaders to 2.2"):
         for node in nodes:
+            if _is_character_loader(node):
+                new = _upgrade_character_loader(node)
+                if new is not None:
+                    done.append(new)
+                continue
             if node.type().name() not in config.LEGACY_TYPES:
                 continue
             anim = _s(node, config.P_ANIM_FILE) or _s(node, config.P_ANIM_PATH)
@@ -507,6 +610,42 @@ def upgrade(nodes: list) -> list:
     return done
 
 
+def _upgrade_character_loader(node):
+    """A Character Loader 3.2 -> a 2.2 node with Source Asset in its place: same name, position, wires and flags
+    (its type has other parms, so changeNodeType cannot keep them). The prims move from /Geo to /<asset>/Geo."""
+    values = {p.name(): p.evalAsString() for p in node.parms()}
+    state, extra, why = logic.from_character_loader(values)
+    if state is None:
+        _set_status_bar(f"{node.name()}: not upgraded ({why})")
+        return None
+    parent, name, pos = node.parent(), node.name(), node.position()
+    ins = [(c.inputIndex(), c.inputNode(), c.outputIndex()) for c in node.inputConnections()]
+    outs = [(c.outputNode(), c.inputIndex()) for c in node.outputConnections()]
+    display = node.isDisplayFlagSet()
+    node.setName(_unique_name(parent, name + "_3_2"))
+    new = parent.createNode(config.HDA_TYPE, name)
+    new.setPosition(pos)
+    for index, src, out_index in ins:
+        new.setInput(index, src, out_index)
+    for dst, index in outs:
+        dst.setInput(index, new)
+    write_state(new, state)
+    for parm, value in extra.items():
+        _set(new, parm, value)
+    refresh(new)
+    if display:
+        new.setDisplayFlag(True)
+    node.destroy()
+    return new
+
+
+def _set_status_bar(text: str) -> None:
+    try:
+        hou.ui.setStatusMessage(text, hou.severityType.Warning)
+    except (AttributeError, hou.OperationFailed):
+        pass
+
+
 # --- the manager window's backend --------------------------------------------------------------------
 
 class HoudiniBackend:
@@ -520,7 +659,7 @@ class HoudiniBackend:
 
         out = []
         for n in find_loaders():
-            legacy = n.type().name() != config.HDA_TYPE
+            legacy = n.type().name() != config.HDA_TYPE  # 2.1, or a Character Loader 3.2
             out.append(LoaderInfo(n.path(), None if legacy else read_state(n), legacy, n.name(),
                                   "" if legacy else _s(n, config.P_SUBD_RULES)))
         return out

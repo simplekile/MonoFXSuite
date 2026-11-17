@@ -29,7 +29,8 @@ from tools.fx.anim_loader import build_hda, config, logic  # noqa: E402
 ROOT = Path(sys.argv[1])
 OUT = Path(sys.argv[2])
 CHECKS: list[dict] = []
-HAIR = "/Geo/Groom_grp/Hair_grp/hair"
+HAIR = "/Groom/hair"  # under the instance: groom outside Geo
+CACHE_HAIR = "/Geo/Groom_grp/Hair_grp/hair"  # in the cache files
 BODY = "/Geo/Base_grp/Body_grp/Geo_Body"
 DRESS = "/Geo/Outfit_grp/Costume_grp/Geo_Dress"
 
@@ -89,7 +90,7 @@ def main() -> None:
         "char_Robot_2": "/char_Robot_2/materials/char_Robot_2_mtl"}, mats)
 
     gfile = ROOT / "02_shots/sh900/02_fx/groom/publish/v002/Robot_inst02/sh900_groom.0012.usd"
-    ref = pts(Usd.Stage.Open(str(gfile)), HAIR, 12)
+    ref = pts(Usd.Stage.Open(str(gfile)), CACHE_HAIR, 12)
     hair = pts(st, f"/char_Robot_inst02{HAIR}", 12)
     check("groom of inst02 present", hair is not None)
     check("groom v002 (no time samples) equals frame 12's file", hair is not None and ref is not None
@@ -106,7 +107,7 @@ def main() -> None:
     h10, h105, h11 = (pts(st, f"/char_Robot_inst02{HAIR}", t) for t in (10, 10.5, 11))
     check("groom blurs (10.5 between 10 and 11)", h10 is not None and np.abs(h105 - h10).max() > 1e-6
           and np.allclose(h105, (h10 + h11) / 2, atol=1e-4))
-    g12 = pts(Usd.Stage.Open(str(gfile).replace("v002", "v001")), HAIR, 12)
+    g12 = pts(Usd.Stage.Open(str(gfile).replace("v002", "v001")), CACHE_HAIR, 12)
     check("groom clip equals file at 12", np.allclose(pts(st, f"/char_Robot_inst02{HAIR}", 12), g12, atol=1e-5))
     check("no groom on char_Robot_2", not st.GetPrimAtPath(f"/char_Robot_2{HAIR}"))
     cfile = ROOT / "02_shots/sh900/02_fx/cloth/publish/v001/char_Robot_2/sh900_cloth.0012.usd"
@@ -232,6 +233,96 @@ def main() -> None:
         hand.destroy()
     finally:
         for d in extra:
+            shutil.rmtree(d, ignore_errors=True)
+
+    # Source Asset (docs/plans/anim_loader_asset_source.md): the asset's UV model, groom and lookdev, same paths
+    robot_dir = ROOT / "01_assets/_characters/char_Robot"
+    made = [robot_dir / "01_modelling", robot_dir / "04_grooming"]
+    hip_before = hou.hipFile.path()
+    try:
+        uv = robot_dir / "01_modelling/03_uv/publish"
+        for v in ("v001", "v002"):
+            (uv / v).mkdir(parents=True)
+            shutil.copy(version / "geo_char_Robot.usd", uv / v / "char_Robot_uv_publish.usd")
+        shutil.copy(version / "geo_char_Robot.usd", uv / "v002" / "char_Robot_uv_publish_Body.usd")
+        gdir = robot_dir / "04_grooming/publish/v001"
+        gdir.mkdir(parents=True)
+        gst = Usd.Stage.CreateNew(str(gdir / "char_Robot_groom_publish.usd"))
+        UsdGeom.Xform.Define(gst, "/Groom")
+        curves = UsdGeom.BasisCurves.Define(gst, "/Groom/strands")
+        curves.CreatePointsAttr([(0, 0, 0), (0, 1, 0), (1, 0, 0), (1, 1, 0)])
+        curves.CreateCurveVertexCountsAttr([2, 2])
+        curves.CreateTypeAttr("linear")
+        gst.SetDefaultPrim(gst.GetPrimAtPath("/Groom"))
+        gst.GetRootLayer().Save()
+
+        hou.hipFile.setName(str(robot_dir / "04_grooming/houdini/work/char_Robot_grooming_v001.hiplc"))
+        rest = net.createNode(config.HDA_TYPE, "rest")
+        st_rest = rest.stage()
+        check("a scene in the asset folder gives Source Asset with the newest model and groom",
+              (rest.evalParm(config.P_SOURCE), rest.evalParm(config.P_ASSET), rest.evalParm(config.P_MODEL_VERSION),
+               rest.evalParm(config.P_MODEL_FILE), rest.evalParm(config.P_VERSION["groom"])) ==
+              ("asset", "char_Robot", "v002", "char_Robot_uv_publish.usd", "v001"),
+              (rest.evalParm(config.P_SOURCE), rest.evalParm(config.P_MODEL_VERSION), rest.evalParm(config.P_STATUS)))
+        check("asset model grafted at the shot's paths", bool(st_rest.GetPrimAtPath(f"/char_Robot{BODY}")))
+        check("asset groom outside Geo", bool(st_rest.GetPrimAtPath("/char_Robot/Groom/strands")))
+        check("asset: lookdev subdivision applies (body catmullClark)",
+              UsdGeom.Mesh(st_rest.GetPrimAtPath(f"/char_Robot{BODY}")).GetSubdivisionSchemeAttr().Get()
+              == UsdGeom.Tokens.catmullClark)
+        labels = list(rest.parm(config.P_MODEL_FILE).menuLabels())
+        check("model file menu marks the standard file", "char_Robot_uv_publish.usd  (standard)" in labels, labels)
+        check("Load shot leaves Source Asset nodes alone", ad._key(rest) == ("", ""))
+
+        def pick(node, parm, value):
+            node.parm(parm).set(value)
+            ad.cb_parm_changed({"node": node, "parm": node.parm(parm), "parm_name": parm})
+
+        robot0 = nodes["char_Robot"]
+        shot_before = (robot0.evalParm(config.P_ANIM_VERSION), robot0.evalParm(config.P_ANIM_FILE))
+        mesh_shot = sorted(p.GetPath().pathString for p in Usd.PrimRange(robot0.stage().GetPrimAtPath("/char_Robot/Geo"))
+                           if p.IsA(UsdGeom.Mesh))
+        pick(robot0, config.P_SOURCE, "asset")
+        mesh_asset = sorted(p.GetPath().pathString for p in Usd.PrimRange(robot0.stage().GetPrimAtPath("/char_Robot/Geo"))
+                            if p.IsA(UsdGeom.Mesh))
+        check("switching to Asset keeps every mesh path", mesh_shot == mesh_asset and bool(mesh_shot),
+              (len(mesh_shot), len(mesh_asset)))
+        check("Asset status clean", robot0.evalParm(config.P_STATUS) == "", robot0.evalParm(config.P_STATUS))
+        pick(robot0, config.P_SOURCE, "shot")
+        check("switching back restores the shot",
+              (robot0.evalParm(config.P_ANIM_VERSION), robot0.evalParm(config.P_ANIM_FILE),
+               robot0.evalParm(config.P_INSTANCE)) == (*shot_before, "char_Robot"),
+              (robot0.evalParm(config.P_ANIM_VERSION), robot0.evalParm(config.P_INSTANCE)))
+        pick(rest, config.P_MODEL_FILE, "char_Robot_uv_publish_Body.usd")
+        pick(rest, config.P_MODEL_VERSION, "v001")
+        check("a version without the picked file goes back to the standard file",
+              rest.evalParm(config.P_MODEL_FILE) == "char_Robot_uv_publish.usd", rest.evalParm(config.P_MODEL_FILE))
+        rest.destroy()
+
+        lib32 = Path("D:/Dropbox/Stock/Plugin/HOU/Mono/hda/lop_mono_character_loader.3.2.hdalc")
+        if lib32.is_file():  # the Dropbox HDA: Upgrade turns it into a 2.2 Source Asset in its place
+            hou.hda.installFile(str(lib32))
+            old = net.createNode("mono_character_loader::3.2", "charload")
+            for k, v in (("folder_path", str(ROOT / "01_assets/_characters")), ("Model_List", "char_Robot"),
+                         ("Version_List", "v001"), ("File_List", "char_Robot_uv_publish.usd")):
+                old.parm(k).set(v)
+            # 3.2 takes no input
+            after = net.createNode("null", "after_charload")
+            after.setInput(0, old)
+            done = ad.upgrade([old])
+            new = done[0] if done else None
+            check("Character Loader 3.2 upgraded in place to Source Asset",
+                  new is not None and new.type().name() == config.HDA_TYPE and new.name() == "charload"
+                  and new.evalParm(config.P_SOURCE) == "asset" and new.evalParm(config.P_MODEL_VERSION) == "v001"
+                  and after.inputs()[0] == new
+                  and bool(new.stage().GetPrimAtPath(f"/char_Robot{BODY}")),
+                  None if new is None else (new.name(), new.evalParm(config.P_MODEL_VERSION),
+                                            new.evalParm(config.P_STATUS)))
+            for n in (new, after):
+                if n is not None:
+                    n.destroy()
+    finally:
+        hou.hipFile.setName(hip_before)
+        for d in made:
             shutil.rmtree(d, ignore_errors=True)
 
     hip = OUT / "accept_hda.hiplc"

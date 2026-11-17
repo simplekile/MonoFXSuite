@@ -1,6 +1,6 @@
 # Mono Anim Loader — nguồn Asset (gộp Character Loader) — thiết kế
 
-Ngày: 2026-11-17. Trạng thái: **đã chốt 4 câu** (mục 8), chờ duyệt cả bản. Nối tiếp `anim_loader_v2_2.md`.
+Ngày: 2026-11-17. Trạng thái: **đã build** (spike S3 đạt: pxr trên cache giả v900 + lookdev V009 của Helen). Nối tiếp `anim_loader_v2_2.md`.
 Tên hiển thị của node: **MonoFX Loader** (type giữ `mono_anim_loader::2.2`).
 
 Bản đang dùng song song: `D:\Dropbox\Stock\Plugin\HOU\Mono\hda\lop_mono_character_loader.3.2.hdalc`

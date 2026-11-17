@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from tools.fx.anim_loader import config
@@ -208,6 +208,49 @@ def lookdev_file(asset_dir: Path, version: str) -> Path | None:
     return None
 
 
+def model_publish_dir(asset_dir: Path) -> Path:
+    return asset_dir / "01_modelling" / "03_uv" / "publish"
+
+
+def groom_publish_dir(asset_dir: Path) -> Path:
+    return asset_dir / "04_grooming" / "publish"
+
+
+def usd_files(folder: Path) -> list[str]:
+    """USD files directly in a folder (no sub folders), by name."""
+    try:
+        return sorted((f.name for f in folder.iterdir() if f.is_file() and f.suffix.lower() in config.USD_EXTS),
+                      key=str.lower)
+    except OSError:
+        return []
+
+
+def standard_file(files: list[str], asset: str, kind: str) -> str:
+    """``<asset>_<kind>_publish.usd*`` among ``files`` (kind ``uv`` or ``groom``), "" when none."""
+    stem = f"{asset}_{kind}_publish".lower()
+    return next((f for f in files if f.rsplit(".", 1)[0].lower() == stem), "")
+
+
+def pick_file(files: list[str], asset: str, kind: str, current: str = "") -> str:
+    """The file a version gives: the one already picked if this version has it, else the standard name, else the
+    only file; "" when several files and none is standard (the artist picks; the user's rule, 2026-11-17)."""
+    if current and current in files:
+        return current
+    return standard_file(files, asset, kind) or (files[0] if len(files) == 1 else "")
+
+
+def detect_asset(project_root: Path, path: Path) -> str | None:
+    """The asset whose folder holds ``path`` (``01_assets/_<group>/<asset>/...``), else None."""
+    try:
+        rel = path.resolve().relative_to((project_root / "01_assets").resolve())
+    except (ValueError, OSError):
+        return None
+    parts = rel.parts
+    if len(parts) >= 2 and parts[0].startswith("_") and (project_root / "01_assets" / parts[0] / parts[1]).is_dir():
+        return parts[1]
+    return None
+
+
 def fx_publish_dir(project_root: Path, shot: str, task: str) -> Path:
     return project_root / "02_shots" / shot / "02_fx" / task / "publish"
 
@@ -273,6 +316,13 @@ class LoaderState:
     kind: str
     enabled: dict[str, bool]
     versions: dict[str, str]
+    source: str = config.SOURCE_SHOT  # SOURCE_ASSET: the asset's model, groom and lookdev, no shot
+    model_version: str = ""
+    model_file: str = ""
+
+
+def is_asset(state: LoaderState) -> bool:
+    return state.source == config.SOURCE_ASSET
 
 
 @dataclass(frozen=True)
@@ -297,11 +347,20 @@ def _instance(state: LoaderState) -> Instance:
 
 
 def _geo_count(root: Path, state: LoaderState) -> int:
+    if is_asset(state):
+        return 1
     outs = read_outputs(anim_publish_dir(root, state.shot) / state.anim_version)
     return sum(1 for o in outs if o.kind == "geo")
 
 
 def _part_path(root: Path, state: LoaderState, part: str, version: str, geo_count: int) -> tuple[str, FxMatch | None]:
+    if is_asset(state) and part == "groom":  # the asset's groom publish: one file, already at /Groom
+        asset_dir = list_asset_dirs(root).get(state.asset or "")
+        if not (asset_dir and version):
+            return "", None
+        folder = groom_publish_dir(asset_dir) / version
+        name = pick_file(usd_files(folder), asset_dir.name, "groom")
+        return ((folder / name).as_posix() if name else ""), None
     if part == "lookdev":
         asset_dir = list_asset_dirs(root).get(state.asset or "")
         p = lookdev_file(asset_dir, version) if asset_dir and version else None
@@ -314,6 +373,9 @@ def _part_versions(root: Path, state: LoaderState, part: str) -> list[str]:
     if part == "lookdev":
         asset_dir = list_asset_dirs(root).get(state.asset or "")
         return list_versions(asset_dir / "05_lookdev" / "publish") if asset_dir else []
+    if is_asset(state):
+        asset_dir = list_asset_dirs(root).get(state.asset or "")
+        return list_versions(groom_publish_dir(asset_dir)) if asset_dir and part == "groom" else []
     return list_versions(fx_publish_dir(root, state.shot, part))
 
 
@@ -322,22 +384,50 @@ def _found_versions(root: Path, state: LoaderState, part: str, geo_count: int) -
     return [v for v in _part_versions(root, state, part) if _part_path(root, state, part, v, geo_count)[0]]
 
 
+def _asset_dir(root: Path, state: LoaderState) -> Path | None:
+    return list_asset_dirs(root).get(state.asset or "") if state.project_root else None
+
+
 def _anim_versions(root: Path, state: LoaderState) -> list[str]:
+    """Versions of the anim file (Source Asset: of the model file; any model when none is picked yet)."""
+    if is_asset(state):
+        asset_dir = _asset_dir(root, state)
+        if asset_dir is None:
+            return []
+        pub = model_publish_dir(asset_dir)
+        if state.model_file:
+            return [v for v in list_versions(pub) if (pub / v / state.model_file).is_file()]
+        return [v for v in list_versions(pub) if pick_file(usd_files(pub / v), asset_dir.name, "uv")]
     pub = anim_publish_dir(root, state.shot)
     return [v for v in list_versions(pub) if (pub / v / state.anim_file).is_file()]
 
 
 def _applies(state: LoaderState, part: str) -> bool:
+    if is_asset(state) and part == "cloth":  # cloth is a shot cache only
+        return False
     return state.kind == "geo" and state.enabled.get(part, True)
+
+
+def main_version(state: LoaderState) -> str:
+    """The anim version, or the model version for Source Asset."""
+    return state.model_version if is_asset(state) else state.anim_version
+
+
+def main_path(root: Path, state: LoaderState) -> Path:
+    if is_asset(state):
+        asset_dir = _asset_dir(root, state) or root / "01_assets" / "_" / (state.asset or "_")
+        return model_publish_dir(asset_dir) / state.model_version / state.model_file
+    return anim_publish_dir(root, state.shot) / state.anim_version / state.anim_file
 
 
 def resolve(state: LoaderState) -> Resolved:
     """The files a state points at. Reads the disk only; the same state always gives the same paths."""
     root = Path(state.project_root)
-    anim_p = anim_publish_dir(root, state.shot) / state.anim_version / state.anim_file
+    anim_p = main_path(root, state)
     paths = {"anim": anim_p.as_posix() if anim_p.is_file() else ""}
     frames: dict[str, tuple[int, int]] = {}
-    notes: list[str] = [] if paths["anim"] else [f"Anim file missing: {anim_p}"]
+    word = "Model" if is_asset(state) else "Anim"
+    notes: list[str] = [] if paths["anim"] else [f"{word} file missing: {anim_p}"]
     geo_count = _geo_count(root, state)
     for part in PARTS:
         paths[part] = ""
@@ -364,7 +454,7 @@ def status(state: LoaderState) -> dict[str, tuple[str, str | None]]:
     root = Path(state.project_root)
     r = resolve(state)
     out: dict[str, tuple[str, str | None]] = {}
-    newer = _newer(state.anim_version, _anim_versions(root, state))
+    newer = _newer(main_version(state), _anim_versions(root, state))
     out["anim"] = (STATUS_MISSING, newer) if not r.anim else ((STATUS_NEWER, newer) if newer else (STATUS_OK, None))
     geo_count = _geo_count(root, state)
     for part in PARTS:
@@ -391,15 +481,32 @@ def initial_state(root: Path, shot: str, anim_version: str, output: Output) -> L
     return with_latest(st, PARTS)
 
 
+def initial_asset_state(root: Path, asset: str, base: LoaderState | None = None) -> LoaderState:
+    """Source Asset for ``asset``: newest model and groom, lookdev kept when ``base`` is on the same asset, else
+    newest; picked once. ``base`` keeps a node's shot fields and settings (switching Source loses nothing)."""
+    if base is None:
+        base = LoaderState(str(root), "", "", "", asset, asset, "geo", {p: p != "cloth" for p in PARTS},
+                           {p: "" for p in PARTS})
+    same = base.asset == asset
+    st = replace(base, project_root=str(root), source=config.SOURCE_ASSET, asset=asset, instance_name=asset,
+                 kind="geo", model_version="", model_file=base.model_file if same else "",
+                 versions={**base.versions, "groom": "", "lookdev": base.versions.get("lookdev", "") if same else ""})
+    return with_latest(st, ("anim", "groom") if st.versions.get("lookdev") else ("anim", "lookdev", "groom"))
+
+
 def with_latest(state: LoaderState, parts: tuple[str, ...]) -> LoaderState:
     """The state with the newest version of each named part ("anim" included) that holds this instance."""
     root = Path(state.project_root)
-    anim_version = state.anim_version
+    st = replace(state, enabled=dict(state.enabled), versions=dict(state.versions))
     if "anim" in parts:
         found = _anim_versions(root, state)
-        anim_version = found[-1] if found else anim_version
-    st = LoaderState(state.project_root, state.shot, anim_version, state.anim_file, state.asset,
-                     state.instance_name, state.kind, dict(state.enabled), dict(state.versions))
+        if is_asset(state) and found:
+            asset_dir = _asset_dir(root, state)
+            files = usd_files(model_publish_dir(asset_dir) / found[-1]) if asset_dir else []
+            st = replace(st, model_version=found[-1],
+                         model_file=pick_file(files, state.asset or "", "uv", state.model_file))
+        elif found:
+            st = replace(st, anim_version=found[-1])
     if state.kind != "geo" or state.asset is None:
         return st
     geo_count = _geo_count(root, st)
@@ -458,6 +565,8 @@ def next_step(state: LoaderState) -> tuple[str, str]:
     root = Path(state.project_root) if state.project_root else None
     if root is None or not (root / "02_shots").is_dir():
         return NO_PROJECT, "no project"
+    if is_asset(state):
+        return _next_step_asset(root, state)
     if not state.shot:
         return "Pick a shot.", "pick a shot"
     if not (root / "02_shots" / state.shot).is_dir():
@@ -470,6 +579,84 @@ def next_step(state: LoaderState) -> tuple[str, str]:
     if not state.anim_file:
         return "Pick an anim file.", "pick an anim file"
     return "", ""
+
+
+def _next_step_asset(root: Path, state: LoaderState) -> tuple[str, str]:
+    if not state.asset:
+        return "Pick an asset.", "pick an asset"
+    asset_dir = list_asset_dirs(root).get(state.asset)
+    if asset_dir is None:
+        return f"No asset {state.asset} in this project: pick an asset.", f"no asset {state.asset}"
+    if not list_versions(model_publish_dir(asset_dir)):
+        return f"{state.asset} has no UV publish yet.", f"{state.asset}: no model"
+    if not state.model_version:
+        return "Pick a model version.", "pick a model version"
+    if not state.model_file:
+        return "Pick a model file.", "pick a model file"
+    return "", ""
+
+
+def model_file_choices(state: LoaderState) -> list[tuple[str, str]]:
+    """(file, label) of the model version's USD files; the standard name says so. The picked file stays listed."""
+    asset_dir = _asset_dir(Path(state.project_root), state) if state.project_root else None
+    files = usd_files(model_publish_dir(asset_dir) / state.model_version) if asset_dir and state.model_version else []
+    if state.model_file and state.model_file not in files:
+        files = sorted(files + [state.model_file], key=str.lower)
+    std = standard_file(files, state.asset or "", "uv")
+    return [(f, f"{f}  (standard)" if f == std else f) for f in files]
+
+
+def from_character_loader(values: dict[str, str]) -> tuple[LoaderState | None, dict[str, object], str]:
+    """A Character Loader 3.2 node's parm values as Source Asset: (state, other parms of the 2.2 node, why not).
+    Its Modify (SOP Modify) is not carried (the user's call, 2026-11-17)."""
+    folder = values.get("folder_path", "")
+    root = find_project_root(Path(folder)) if folder else None
+    asset = values.get("Model_List", "")
+    if root is None or not asset:
+        return None, {}, "no project or asset on the node"
+    on = values.get("Enable_Groom", "0") not in ("0", "", "off")
+    versions = {"lookdev": values.get("Version_Lookdev_List", "") if _VERSION_RE.match(
+                    values.get("Version_Lookdev_List", "")) else "",
+                "groom": values.get("Version_Groom_List", "") if _VERSION_RE.match(
+                    values.get("Version_Groom_List", "")) else "",
+                "cloth": ""}
+    model_v = values.get("Version_List", "")
+    st = LoaderState(str(root), "", "", "", asset, asset, "geo",
+                     {"lookdev": bool(versions["lookdev"]), "groom": on, "cloth": False}, versions,
+                     config.SOURCE_ASSET, model_v if _VERSION_RE.match(model_v) else "", values.get("File_List", ""))
+    empty = tuple(p for p in ("lookdev", "groom") if not versions[p])
+    st = with_latest(st, (("anim",) if not st.model_version else ()) + empty)
+    extra: dict[str, object] = {}
+    if values.get("enableScale", "0") not in ("0", "", "off"):
+        try:
+            extra["scale"] = float(values.get("scale", "1"))
+        except ValueError:
+            pass
+    pattern = values.get("primpattern1", "").strip()
+    if values.get("Enable_Prune", "0") not in ("0", "", "off") and pattern:
+        # 3.2 pruned anywhere in the stage; 2.2 hides under the instance
+        extra["mx_hide_enable"] = 1
+        extra["mx_hide_pattern"] = pattern.lstrip("/") if "/" in pattern else f"**/{pattern}"
+    return st, extra, ""
+
+
+def groom_targets(curves: list[str]) -> list[tuple[str, str]]:
+    """(path in the groom cache, path under the instance) per curves prim: groom sits at /Groom/<name>, outside
+    Geo, where lookdev binds hair (the user's pick, 2026-11-17). A cache already under /Groom stays; two prims
+    with one name keep their parent's name too."""
+    out, used = [], set()
+    root = config.GROOM_ROOT + "/"
+    for src in curves:
+        if src.startswith(root):
+            dst = src
+        else:
+            bits = src.strip("/").split("/")
+            dst = root + bits[-1]
+            if dst in used and len(bits) > 1:
+                dst = root + f"{bits[-2]}_{bits[-1]}"
+        used.add(dst)
+        out.append((src, dst))
+    return out
 
 
 def shot_menu(project_root: str, current: str) -> list[tuple[str, str]]:
@@ -519,6 +706,12 @@ def version_menu(versions: list[str], current: str, found: list[str]) -> list[tu
 def version_choices(state: LoaderState, part: str) -> list[tuple[str, str]]:
     """The version menu of ``anim`` or a part, labels carrying its status."""
     root = Path(state.project_root)
+    if part == "anim" and is_asset(state):
+        asset_dir = _asset_dir(root, state)
+        if asset_dir is None:
+            return []
+        return version_menu(list_versions(model_publish_dir(asset_dir)), state.model_version,
+                            _anim_versions(root, state))
     if part == "anim":
         if not (state.project_root and state.shot):
             return []
@@ -526,7 +719,8 @@ def version_choices(state: LoaderState, part: str) -> list[tuple[str, str]]:
                             _anim_versions(root, state) if state.anim_file else [])
     if not state.project_root or state.asset is None:
         return []
-    found = _found_versions(root, state, part, _geo_count(root, state)) if state.anim_file else []
+    found = (_found_versions(root, state, part, _geo_count(root, state))
+             if (state.anim_file or is_asset(state)) else [])
     return version_menu(_part_versions(root, state, part), state.versions.get(part, ""), found)
 
 

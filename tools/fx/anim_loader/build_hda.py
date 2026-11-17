@@ -34,14 +34,41 @@ inst = hda.evalParm("mx_instance_name")
 for task in ("groom", "cloth"):
     if hda.evalParm("mx_%s_mode" % task) != "clip" or not inst:
         continue
-    for root in hda.evalParm("mx_%s_roots" % task).split():
-        prim = stage.OverridePrim("/" + inst + root)
+    for token in hda.evalParm("mx_%s_roots" % task).split():
+        # "src=dst": the clip reads src in the cache and sits on dst (groom: /Groom/<name>, outside Geo)
+        src, _, dst = token.partition("=")
+        prim = stage.OverridePrim("/" + inst + (dst or src))
         clips = Usd.ClipsAPI(prim)
-        clips.SetClipPrimPath(root, task)
+        clips.SetClipPrimPath(src, task)
         clips.SetClipTemplateAssetPath(hda.parm("mx_%s_template" % task).unexpandedString(), task)
         clips.SetClipTemplateStartTime(hda.evalParm("mx_%s_first" % task), task)
         clips.SetClipTemplateEndTime(hda.evalParm("mx_%s_last" % task), task)
         clips.SetClipTemplateStride(1, task)
+'''
+
+# Groom outside Geo (the user's pick, 2026-11-17): the branch copies each groom curves prim of the cache to
+# /Groom/<name> (mx_groom_roots "src=dst"), where lookdev binds hair. From the first frame when the cache has time
+# samples (the clips after the graft give the motion); from the current frame's file when it has none ($F in
+# mx_groom_topo, which makes this node time dependent). Spike S3: docs/plans/anim_loader_asset_source.md.
+GROOM_TOPO_CODE = '''from pxr import Sdf
+hda = hou.pwd().parent()
+path = hou.pwd().evalParm("groom_file")
+pairs = [t.partition("=") for t in hda.evalParm("mx_groom_roots").split()]
+pairs = [(a, c) for a, b, c in pairs if b]
+if path and pairs:
+    src = Sdf.Layer.FindOrOpen(path)
+    layer = hou.pwd().editableLayer()
+    if src is not None:
+        for a, c in pairs:
+            parent = Sdf.Path(c).GetParentPath()
+            Sdf.CreatePrimInLayer(layer, parent)
+            spec = layer.GetPrimAtPath(parent)
+            while spec is not None and spec.path != Sdf.Path.absoluteRootPath:
+                spec.specifier = Sdf.SpecifierDef
+                if not spec.typeName:
+                    spec.typeName = "Xform"
+                spec = layer.GetPrimAtPath(spec.path.GetParentPath())
+            Sdf.CopySpec(src, a, layer, c)
 '''
 
 # Heavy parts render only (the user's call, 2026-11-17: Helen's lookdev pulls 956 EXR UDIM tiles, 2.1 GB, and the
@@ -99,7 +126,12 @@ def build_network(sub) -> None:
     layers = _node(sub, "sublayer", "branch_layers", num_files=len(config.P_LAYERS))
     for i, name in enumerate(config.P_LAYERS, start=1):
         layers.parm(f"filepath{i}").set(f'`chs("../{name}")`')
-    graft = _node(sub, "graftstages", "graft", (src, layers), primpath="/" + INST, destpath="")
+    topo = _node(sub, "pythonscript", "groom_topology", (layers,), python=GROOM_TOPO_CODE)
+    ptg = topo.parmTemplateGroup()
+    ptg.append(hou.StringParmTemplate("groom_file", "Groom File", 1))
+    topo.setParmTemplateGroup(ptg)
+    topo.parm("groom_file").setExpression(f'chs("../{config.P_GROOM_TOPO}")', hou.exprLanguage.Hscript)
+    graft = _node(sub, "graftstages", "graft", (src, topo), primpath="/" + INST, destpath="")
     new_layer = _node(sub, "configurelayer", "fx_layer", (graft,), startnewlayer=1)
     clips = _node(sub, "pythonscript", "fx_clips", (new_layer,), python=CLIP_CODE)
     purpose = _node(sub, "pythonscript", "render_only", (clips,), python=PURPOSE_CODE)
@@ -143,6 +175,8 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     cb = "hou.phm().cb_parm_changed(kwargs)"
     geo_only = f"{{ {config.P_GEO_CAM} == 1 }}"
     cam_only = f"{{ {config.P_GEO_CAM} == 0 }}"
+    is_asset = f'{{ {config.P_SOURCE} == "{config.SOURCE_ASSET}" }}'
+    is_shot = f'{{ {config.P_SOURCE} != "{config.SOURCE_ASSET}" }}'
 
     def s(name, label, default="", menu=None, callback=True, **kw):
         t = T.StringParmTemplate(name, label, 1, default_value=(default,), **kw)
@@ -189,14 +223,36 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     g.append(status)
 
     src = T.FolderParmTemplate("f_source", "Source", folder_type=T.folderType.Simple)
-    src.addParmTemplate(s(config.P_SHOT, "Shot", menu="hou.phm().menu_shots(hou.pwd())"))
-    src.addParmTemplate(s(config.P_ANIM_VERSION, "Anim Version", menu="hou.phm().menu_anim_versions(hou.pwd())"))
-    src.addParmTemplate(s(config.P_ANIM_FILE, "Anim File", menu="hou.phm().menu_anim_files(hou.pwd())"))
-    src.addParmTemplate(button("apply_mx_timeline", "Apply Timeline", "hou.phm().cb_apply_timeline(kwargs)",
-                               "Frame range and fps of the scene from the anim publish."))
+    source = s(config.P_SOURCE, "Source", default=config.SOURCE_SHOT,
+               menu_items=(config.SOURCE_SHOT, config.SOURCE_ASSET), menu_labels=("Shot", "Asset"),
+               menu_type=T.menuType.Normal)
+    source.setHelp("Shot: the anim of a shot. Asset: the asset's own UV model, groom and lookdev (grooming, "
+                   "lookdev). Same prim paths; switching back keeps the other's settings.")
+    src.addParmTemplate(source)
+
+    def shot_only(t):
+        t.setConditional(T.parmCondType.HideWhen, is_asset)
+        return t
+
+    def asset_only(t):
+        t.setConditional(T.parmCondType.HideWhen, is_shot)
+        return t
+
+    src.addParmTemplate(shot_only(s(config.P_SHOT, "Shot", menu="hou.phm().menu_shots(hou.pwd())")))
+    src.addParmTemplate(shot_only(s(config.P_ANIM_VERSION, "Anim Version",
+                                    menu="hou.phm().menu_anim_versions(hou.pwd())")))
+    src.addParmTemplate(shot_only(s(config.P_ANIM_FILE, "Anim File", menu="hou.phm().menu_anim_files(hou.pwd())")))
+    src.addParmTemplate(shot_only(button("apply_mx_timeline", "Apply Timeline", "hou.phm().cb_apply_timeline(kwargs)",
+                                         "Frame range and fps of the scene from the anim publish.")))
     asset = s(config.P_ASSET, "Asset", menu="hou.phm().menu_assets(hou.pwd())")
-    asset.setConditional(T.parmCondType.HideWhen, geo_only)
+    asset.setConditional(T.parmCondType.HideWhen, f'{{ {config.P_GEO_CAM} == 1 {config.P_SOURCE} != "{config.SOURCE_ASSET}" }}')
     src.addParmTemplate(asset)
+    model_v = asset_only(s(config.P_MODEL_VERSION, "Model Version", menu="hou.phm().menu_model_versions(hou.pwd())"))
+    model_v.setHelp("UV publish of the asset (01_modelling/03_uv/publish).")
+    src.addParmTemplate(model_v)
+    model_f = asset_only(s(config.P_MODEL_FILE, "Model File", menu="hou.phm().menu_model_files(hou.pwd())"))
+    model_f.setHelp("A version may hold several files; the standard <asset>_uv_publish.usd is picked first.")
+    src.addParmTemplate(model_f)
     inst = s(config.P_INSTANCE, "Prim Name")
     inst.setHelp("The prim the instance is grafted under: /<name>/Geo/...")
     inst.setConditional(T.parmCondType.HideWhen, geo_only)
@@ -211,6 +267,9 @@ def _parm_templates() -> hou.ParmTemplateGroup:
         on.setJoinWithNext(True)  # the checkbox sits in the label column
         ver = s(config.P_VERSION[part], label, menu=f'hou.phm().menu_versions(hou.pwd(), "{part}")')
         ver.setConditional(T.parmCondType.DisableWhen, f"{{ {config.P_ENABLE[part]} == 0 }}")
+        if part == "cloth":  # a shot cache: nothing for Source Asset
+            on.setConditional(T.parmCondType.HideWhen, is_asset)
+            ver.setConditional(T.parmCondType.HideWhen, is_asset)
         parts.addParmTemplate(on)
         parts.addParmTemplate(ver)
     vp_parts = tuple(config.VIEWPORT_BITS)
@@ -266,6 +325,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
         T.StringParmTemplate("mx_groom_asset", "Groom Asset (2.1)", 1),
         T.StringParmTemplate("mx_cloth_asset", "Cloth Asset (2.1)", 1),
         T.StringParmTemplate(config.P_SUBD_RULES, "Subdivision Rules", 1),
+        T.StringParmTemplate(config.P_GROOM_TOPO, "Groom Topology File", 1),
         *[T.StringParmTemplate(n, n, 1) for n in config.P_LAYERS],
         *[T.StringParmTemplate(k, k, 1) for task in config.P_FX.values() for k in
           (task["mode"], task["template"], task["roots"])],

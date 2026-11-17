@@ -17,8 +17,10 @@ FX_MODE_CLIP = "clip"
 FX_MODE_SUBLAYER = "sublayer"
 
 HDA_TYPE = "mono_anim_loader::2.2"
-HDA_LABEL = "Mono Anim Loader"
+HDA_LABEL = "MonoFX Loader"  # the user's pick, 2026-11-17; the type name stays (saved scenes)
 LEGACY_TYPES = ("mono_anim_loader::2.1", "mono_anim_loader::2")
+# Character Loader (Dropbox HDA): Upgrade makes a 2.2 node with Source Asset (docs/plans/anim_loader_asset_source.md)
+CHARACTER_LOADER_PREFIX = "mono_character_loader"
 USER_DATA = "monofx_anim_loader"  # JSON {"shot", "anim_file"}: finds a shot's loaders whatever their names
 MERGE_USER_DATA = "monofx_anim_loader_merge"  # the shot's Merge LOP made by Load shot
 
@@ -40,3 +42,12 @@ VIEWPORT_BITS = {"lookdev": 1, "groom": 2}
 
 # Shot rules for subdivision (JSON list of {"pattern", "scheme", "dicing"}), see logic.subd_plan.
 P_SUBD_RULES = "mx_subd_rules"
+
+# Source (docs/plans/anim_loader_asset_source.md): a shot's anim, or the asset's own publishes (UV model, groom,
+# lookdev) for grooming / lookdev scenes. Both graft under /<asset>, so prim paths match.
+P_SOURCE = "mx_source"
+SOURCE_SHOT, SOURCE_ASSET = "shot", "asset"
+P_MODEL_VERSION, P_MODEL_FILE = "mx_model_version", "mx_model_file"
+# Groom sits outside Geo in both sources (the user's pick): /<asset>/Groom/<name>, where lookdev binds hair.
+GROOM_ROOT = "/Groom"
+P_GROOM_TOPO = "mx_groom_topo"  # file the branch copies the groom topology from (first frame, or $F without samples)

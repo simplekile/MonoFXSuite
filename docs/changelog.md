@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Houdini
+- **MonoFX Loader** (the Mono Anim Loader, renamed): a **Source** menu. Shot loads a shot's anim as before; **Asset** loads the asset's own UV model, groom and lookdev, for grooming and lookdev scenes. Both put the character at the same prim paths (`/char_Helen/Geo/...`), so one node replaces the Character Loader + Anim Loader pair and switching Source needs no rewiring; each side keeps its settings. A node put down in an asset's folder starts on Asset with the newest versions. A model version with several files offers a Model File menu, the standard `<asset>_uv_publish.usd` first.
+- **MonoFX Loader**: groom sits outside Geo, at `/char_Helen/Groom/...`, where lookdev binds the hair materials, for the asset's groom and for shot groom caches (motion blur kept).
+- **MonoFX Loader** manager: **Upgrade** also turns Character Loader 3.2 nodes into MonoFX Loader nodes on Source Asset, in place (same name and wires; model, groom, lookdev, scale and hidden prims kept; its SOP Modify is not carried). Their prims move from `/Geo` to `/<asset>/Geo`.
+
 
 ## [0.1.31] - 2026-11-17
 

@@ -509,3 +509,107 @@ def test_shot_menu_marks_shots_without_anim(tmp_path):
     assert shot_menu(str(root), "sh900") == [("sh900", "sh900"), ("sh940", "sh940  (no anim)")]
     assert ("sh777", "sh777  (no anim)") in shot_menu(str(root), "sh777")  # the node's shot stays listed
     assert shot_menu("", "") == []
+
+
+# --- Source Asset (docs/plans/anim_loader_asset_source.md) ------------------------------------------------
+
+UV = f"{ROBOT}/01_modelling/03_uv/publish"
+GRM = f"{ROBOT}/04_grooming/publish"
+
+
+def _asset(tmp_path):
+    root = _shot(tmp_path)
+    make(root, [f"{UV}/v001/char_Robot_uv_publish.usd", f"{UV}/v002/char_Robot_uv_publish.usd",
+                f"{UV}/v002/char_Robot_uv_publish_Body.usd", f"{UV}/v003/a.usd", f"{UV}/v003/b.usd",
+                f"{GRM}/v001/char_Robot_groom_publish.usd", f"{GRM}/v002/char_Robot_groom_publish.usd"])
+    return root
+
+
+def test_asset_source_picks_newest_model_standard_file_groom_and_lookdev(tmp_path):
+    from tools.fx.anim_loader.logic import initial_asset_state, next_step
+
+    root = _asset(tmp_path)
+    st = initial_asset_state(root, "char_Robot")
+    # v003 has two files and no standard name: not a version of the standard model
+    assert (st.source, st.model_version, st.model_file, st.instance_name) == ("asset", "v002",
+                                                                            "char_Robot_uv_publish.usd", "char_Robot")
+    assert st.versions == {"lookdev": "v002", "groom": "v002", "cloth": ""}
+    r = resolve(st)
+    assert r.anim.endswith("03_uv/publish/v002/char_Robot_uv_publish.usd")
+    assert r.groom.endswith("04_grooming/publish/v002/char_Robot_groom_publish.usd") and r.cloth == ""
+    assert next_step(st) == ("", "")
+    assert status(st)["cloth"][0] == "off"
+
+
+def test_asset_source_model_files_and_steps(tmp_path):
+    from tools.fx.anim_loader.logic import initial_asset_state, model_file_choices, next_step, pick_file
+
+    root = _asset(tmp_path)
+    st = initial_asset_state(root, "char_Robot")
+    assert model_file_choices(st) == [("char_Robot_uv_publish.usd", "char_Robot_uv_publish.usd  (standard)"),
+                                      ("char_Robot_uv_publish_Body.usd", "char_Robot_uv_publish_Body.usd")]
+    v3 = replace(st, model_version="v003", model_file="")
+    assert next_step(v3) == ("Pick a model file.", "pick a model file")
+    assert pick_file(["a.usd", "b.usd"], "char_Robot", "uv") == ""
+    assert pick_file(["only.usd"], "char_Robot", "uv") == "only.usd"
+    assert pick_file(["x.usd", "char_Robot_uv_publish.usda"], "char_Robot", "uv", "x.usd") == "x.usd"
+    assert next_step(replace(st, asset=None))[0] == "Pick an asset."
+    assert next_step(replace(st, asset="char_Nobody"))[1] == "no asset char_Nobody"
+    make(root, ["01_assets/_props/prop_Rock/05_lookdev/"])
+    assert next_step(replace(st, asset="prop_Rock"))[0] == "prop_Rock has no UV publish yet."
+
+
+def test_asset_source_keeps_shot_fields_and_lookdev(tmp_path):
+    from tools.fx.anim_loader.logic import initial_asset_state
+
+    root = _asset(tmp_path)
+    shot = replace(initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo")),
+                   versions={"lookdev": "v001", "groom": "v001", "cloth": ""})
+    st = initial_asset_state(root, "char_Robot", shot)
+    assert (st.shot, st.anim_version, st.anim_file) == ("sh900", "v001", "geo_char_Robot.usd")  # kept for Shot
+    assert st.versions["lookdev"] == "v001"                                                      # same asset: kept
+    assert st.versions["groom"] == "v002"                                                        # the asset's groom
+
+
+def test_newer_model_is_reported(tmp_path):
+    from tools.fx.anim_loader.logic import initial_asset_state, version_choices
+
+    root = _asset(tmp_path)
+    st = replace(initial_asset_state(root, "char_Robot"), model_version="v001")
+    assert status(st)["anim"] == ("newer", "v002")
+    assert ("v001", "v001  (v002 available)") in version_choices(st, "anim")
+
+
+def test_detect_asset_from_a_scene_path(tmp_path):
+    from tools.fx.anim_loader.logic import detect_asset
+
+    root = _asset(tmp_path)
+    hip = root / ROBOT / "04_grooming/houdini/work/char_Robot_grooming_v008.hiplc"
+    assert detect_asset(root, hip) == "char_Robot"
+    assert detect_asset(root, root / "02_shots/sh900/work/a.hip") is None
+
+
+def test_groom_targets_outside_geo():
+    from tools.fx.anim_loader.logic import groom_targets
+
+    assert groom_targets(["/Geo/Groom_grp/Hair_grp/hair", "/Groom/Eyelash", "/Geo/A/hair"]) == [
+        ("/Geo/Groom_grp/Hair_grp/hair", "/Groom/hair"), ("/Groom/Eyelash", "/Groom/Eyelash"),
+        ("/Geo/A/hair", "/Groom/A_hair")]
+
+
+def test_character_loader_3_2_becomes_source_asset(tmp_path):
+    from tools.fx.anim_loader.logic import from_character_loader
+
+    root = _asset(tmp_path)
+    values = {"folder_path": str(root / "01_assets/_characters"), "Model_List": "char_Robot", "Version_List": "v001",
+              "File_List": "char_Robot_uv_publish.usd", "Enable_Groom": "off", "Version_Groom_List": "v001",
+              "Version_Lookdev_List": "v001", "enableScale": "on", "scale": "2.5", "Enable_Prune": "on",
+              "primpattern1": "*HairDriver*", "EnableModify": "on"}
+    st, extra, why = from_character_loader(values)
+    assert why == "" and (st.source, st.asset, st.instance_name, st.model_version, st.model_file) == (
+        "asset", "char_Robot", "char_Robot", "v001", "char_Robot_uv_publish.usd")
+    assert st.versions == {"lookdev": "v001", "groom": "v001", "cloth": ""} and st.enabled["groom"] is False
+    assert extra == {"scale": 2.5, "mx_hide_enable": 1, "mx_hide_pattern": "**/*HairDriver*"}
+    st, _, _ = from_character_loader({**values, "Version_List": "select version", "Version_Lookdev_List": ""})
+    assert (st.model_version, st.versions["lookdev"]) == ("v002", "v002")  # nothing picked: newest, once
+    assert from_character_loader({"folder_path": "", "Model_List": ""})[0] is None
