@@ -1,6 +1,8 @@
-# MonoFX Suite — publish GitHub Release
-# Chạy từ repo root. Cần: VERSION đã đúng, đã build installer, đã tag và push tag.
-# Prerequisite: GitHub CLI (gh), đã gh auth login
+# MonoFX Suite - publish GitHub Release
+# Run from the repo root. Needs: VERSION right, installer built, tag created and pushed.
+# Keep this file ASCII: PowerShell 5.1 reads a file without BOM as ANSI, and Vietnamese text inside a string
+# turned into quote marks that swallowed the lines setting the release notes (empty notes v0.1.24-v0.1.31).
+# Prerequisite: GitHub CLI (gh), gh auth login done
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
@@ -18,17 +20,17 @@ function Get-BlenderAddonZipPath {
 }
 
 if (-not (Test-Path $VersionFile)) {
-    Write-Error "Không tìm thấy file VERSION tại: $VersionFile"
+    Write-Error "VERSION file not found: $VersionFile"
     exit 1
 }
 
 $Version = (Get-Content $VersionFile -Raw -Encoding UTF8).Trim()
 $Tag = "v$Version"
 
-# Kiểm tra tag đã tồn tại và đã push
+# The tag must exist (and be pushed)
 $tagExists = git tag -l $Tag 2>$null
 if (-not $tagExists) {
-    Write-Host "Tag $Tag chưa tồn tại. Tạo và push tag trước:"
+    Write-Host "Tag $Tag does not exist. Create and push it first:"
     Write-Host "  git tag -a $Tag -m `"Release $Tag`""
     Write-Host "  git push origin $Tag"
     exit 1

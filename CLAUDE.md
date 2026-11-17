@@ -319,3 +319,6 @@
   first, the build before the tag (a failed build leaves no tag), then tag, push the tag,
   `publish_release.ps1`. `-DryRun` stops after the build. Patch bumps unless asked otherwise.
 - The release commit goes to main through the PR; merging is the user's call.
+- `.ps1` files stay ASCII (`tests/test_release_scripts_ascii.py`): Windows PowerShell 5.1 reads a file without BOM
+  as ANSI, and Vietnamese text in a string swallowed the lines setting `$Notes`, so every GitHub Release up to
+  v0.1.31 came out with empty notes.
