@@ -480,3 +480,13 @@ def test_a_change_keeps_the_scroll_selection_and_folds(make):
     geo = p.tree.topLevelItem(0)
     assert not geo.child(0).isExpanded() and geo.child(1).isExpanded()
     assert [i.data(0, ui.ROLE_PATTERN) for i in p.tree.selectedItems()] == [geo.child(1).child(0).data(0, ui.ROLE_PATTERN)]
+
+
+
+def test_details_of_one_loader_never_stay_under_the_next(make):
+    """The user's report: picking the camera after char_Helen drew both loaders' details over each other."""
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/b")
+    _select(w, ui, "/stage/c")
+    labels = [lab for lab in w.subd_panel.details.findChildren(ui.QLabel) if lab.isVisibleTo(w.subd_panel.details)]
+    assert len(labels) == 2 * len(w.subd_panel.details.rows())

@@ -1651,7 +1651,9 @@ class _Props(QWidget):
         """(label, value, colour) rows; "" colour = TEXT_PRIMARY."""
         while self.grid.count():
             w = self.grid.takeAt(0).widget()
-            if w is not None:
+            if w is not None:  # off at once: taken out of the grid it stayed painted over the new rows until deleted
+                w.hide()
+                w.setParent(None)
                 w.deleteLater()
         for i, (label, value, color) in enumerate(rows):
             k = self.owner._label(label, FS_SMALL, color=TEXT_LABEL)
