@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+
+## [0.1.33] - 2026-11-17
+
 ### Houdini
 - **MonoFX Loaders** manager (layout A, picked from mockups): **+ Add** holds Load shot and **Assets...**, a drawer of the project's assets (type chips, search, thumbnails; pick several, Add N). A **view bar**: Solo selected (Houdini's Solo Geometry, not saved), Lookdev / Groom in the viewport for every loader, Filter. The status line says what the shot has that the scene lacks (**Add it**) and how many GB of textures the lookdevs pull. The selected loader shows **what is new** in a newer version (date, who saved its work file in Monos, outputs, frame range, meshes, size), Source Shot / Asset, and Open folder, Open in Monos, Frame. **Hand off...** writes a self-contained USD per loader with its textures, for people without MonoFX.
 - **MonoFX Loader**: in a lighting scene laid out with merge_actors / merge_cameras / merge_environments, Load shot and Add put the new loaders there (characters with the actors, props and sets with the environments). Adding an asset already placed makes another instance (`prop_Cliff01_inst02`) for set dressing.
