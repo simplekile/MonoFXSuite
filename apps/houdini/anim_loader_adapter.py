@@ -1190,7 +1190,7 @@ inst = hda.evalParm("mx_instance_name")
 # Each prim's own visibility and purpose, baked from the MonoFX Loader
 RULES = %s
 for rule in RULES if inst else []:
-    prim = stage.GetPrimAtPath("/" + inst + "/" + rule["pattern"])
+    prim = stage.GetPrimAtPath("/" + inst + ("" if rule["pattern"] == "." else "/" + rule["pattern"]))
     if not prim or not prim.IsA(UsdGeom.Imageable):
         continue
     img = UsdGeom.Imageable(prim)
@@ -1839,7 +1839,7 @@ def author_show(node, stage) -> None:
     # each prim's own eye and purpose, as Houdini authors them: hiding prunes (the children keep their own
     # visibility for when the parent shows again), purpose inherits where a prim has none of its own
     for rule in logic.parse_show_rules(_s(node, config.P_SHOW_RULES)):
-        prim = stage.GetPrimAtPath(f"/{inst}/{rule['pattern']}")
+        prim = stage.GetPrimAtPath(f"/{inst}" if rule["pattern"] == logic.ROOT else f"/{inst}/{rule['pattern']}")
         if not prim or not prim.IsA(UsdGeom.Imageable):
             continue
         img = UsdGeom.Imageable(prim)

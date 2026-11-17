@@ -2249,37 +2249,10 @@ class InspectorPanel(QWidget):
         def under(prefix: str) -> list[str]:
             return [m for m in plan if m.strip("/").startswith(prefix + "/")]
 
-        where = {"shot": "set for this shot", "loader": "set on the loader (Hide Prims, Show in Viewport)",
-                 "publish": "as published", "": ""}
-
         def shown_cell(item, prefix: str, parent_word: str = "") -> str:
-            """The eye, viewport and render toggles of a row (logic.PrimShow): a shot setting in the accent, a toggle
-            under a hidden parent dimmed (it keeps its own setting for when the parent shows again)."""
             ps = shown.get(prefix)
-            if ps is None:
-                return ""
-            item.setData(0, ROLE_SHOW, ps)
-            # one look per state (the user's report: blue and white for one state); a dot marks the shot's override,
-            # what Remove the shot's overrides takes off (a dot for the publish's or the loader's own value stayed
-            # after it, the user's report); dimmed: under a hidden parent; who set a value is in the tooltip
-            def color(source):
-                return TEXT_LABEL
-
-            pruned = not ps.visible and ps.own_visible
-            item.setData(5, ROLE_TOGGLE, ("eye" if ps.own_visible else "eye-off", color(ps.vis_source),
-                                          ps.vis_source == "shot", pruned))
-            item.setToolTip(5, ("Hidden with its parent; shows again with it" if pruned
-                                else "Shown" if ps.own_visible else "Hidden")
-                            + (f", its own: {where[ps.vis_source]}" if ps.vis_source else ", as its parent")
-                            + ". Click to toggle.")
-            item.setData(6, ROLE_TOGGLE, ("monitor" if ps.viewport else "monitor-off", color(ps.purpose_source),
-                                          ps.purpose_source == "shot", not ps.visible))
-            item.setData(7, ROLE_TOGGLE, ("camera" if ps.render else "camera-off", color(ps.purpose_source),
-                                          ps.purpose_source == "shot", not ps.visible))
-            tip = f"Purpose {ps.purpose}, " + (f"its own: {where[ps.purpose_source]}" if ps.purpose_source
-                                               else "inherited from its parent")
-            item.setToolTip(6, ("Drawn in the viewport. " if ps.viewport else "Not drawn in the viewport. ") + tip)
-            item.setToolTip(7, ("Rendered. " if ps.render else "Not rendered. ") + tip)
+            if ps is not None:
+                self._paint_toggles(item, ps)
             return ""
 
         def add(parent, name: str, prefix: str, kids: dict, parent_from: str, parent_word: str = "") -> None:
@@ -2340,6 +2313,28 @@ class InspectorPanel(QWidget):
             add(None, k, k, sub, "")
         return any_dicing
 
+    def _paint_toggles(self, item, ps) -> None:
+        """The eye, viewport and render toggles of a row (logic.PrimShow): one look per state, a dot for the shot's
+        override, dimmed under a hidden parent (it keeps its own setting for when the parent shows again)."""
+        where = {"shot": "set for this shot", "loader": "set on the loader (Hide Prims, Show in Viewport)",
+                 "publish": "as published", "": ""}
+        item.setData(0, ROLE_SHOW, ps)
+        pruned = not ps.visible and ps.own_visible
+        item.setData(5, ROLE_TOGGLE, ("eye" if ps.own_visible else "eye-off", TEXT_LABEL,
+                                      ps.vis_source == "shot", pruned))
+        item.setToolTip(5, ("Hidden with its parent; shows again with it" if pruned
+                            else "Shown" if ps.own_visible else "Hidden")
+                        + (f", its own: {where[ps.vis_source]}" if ps.vis_source else ", as its parent")
+                        + ". Click to toggle.")
+        item.setData(6, ROLE_TOGGLE, ("monitor" if ps.viewport else "monitor-off", TEXT_LABEL,
+                                      ps.purpose_source == "shot", not ps.visible))
+        item.setData(7, ROLE_TOGGLE, ("camera" if ps.render else "camera-off", TEXT_LABEL,
+                                      ps.purpose_source == "shot", not ps.visible))
+        tip = f"Purpose {ps.purpose}, " + (f"its own: {where[ps.purpose_source]}" if ps.purpose_source
+                                           else "inherited from its parent")
+        item.setToolTip(6, ("Drawn in the viewport. " if ps.viewport else "Not drawn in the viewport. ") + tip)
+        item.setToolTip(7, ("Rendered. " if ps.render else "Not rendered. ") + tip)
+
     def _finish_tree(self, keep: dict | None, any_dicing: bool) -> None:
         self.tree.setColumnHidden(4, not any_dicing)
         if keep is None:
@@ -2388,6 +2383,9 @@ class InspectorPanel(QWidget):
                 top.setForeground(col, QColor(TEXT_PRIMARY))
                 if col:
                     top.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
+            root = detail.get("shown", {}).get(logic.ROOT)
+            if root is not None:  # the instance's root prim: hiding it hides the asset (the user's ask)
+                self._paint_toggles(top, root)
             self.tree.addTopLevelItem(top)
             any_dicing = self._build_tree(r.node_path, detail, top) or any_dicing
         has = self.tree.topLevelItemCount() > 0

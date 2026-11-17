@@ -986,9 +986,15 @@ def parse_show_rules(text: str) -> list[dict]:
     return out
 
 
+ROOT = "."  # the instance's own root prim (/<instance>): a loader's row in the inspector
+
+
 def show_target(pattern: str) -> str:
-    """The prim a row's pattern names (a group's ``X/**`` is the group ``X``)."""
+    """The prim a row's pattern names (a group's ``X/**`` is the group ``X``; a loader's own row, ``**``, is the
+    instance's root, ``.``)."""
     p = pattern.strip("/")
+    if p in ("", "**", ROOT):
+        return ROOT
     return p[:-3] if p.endswith("/**") else p
 
 
@@ -1030,9 +1036,14 @@ def prim_shows(prims: list[str], publish: dict[str, dict], hidden: list[str], re
     for p in prims:
         bits = p.split("/")
         every.update("/".join(bits[:i]) for i in range(1, len(bits)))
-    out: dict[str, PrimShow] = {}
+    # the instance's root first: hiding it hides the asset, its purpose is what the top prims inherit
+    root_rule = rule_at.get(ROOT, {})
+    root_vis = root_rule.get("vis", "inherited") != "invisible"
+    out: dict[str, PrimShow] = {ROOT: PrimShow(root_vis, root_vis, "shot" if "vis" in root_rule else "",
+                                               root_rule.get("purpose", "default"),
+                                               "shot" if "purpose" in root_rule else "", True, "default")}
     for p in sorted(every, key=lambda x: (x.count("/"), x)):
-        parent = out.get(p.rsplit("/", 1)[0]) if "/" in p else None
+        parent = out.get(p.rsplit("/", 1)[0]) if "/" in p else out[ROOT]
         own_vis, vis_src, own_pur, pur_src = True, "", None, ""
         op = publish.get(p, {})
         if op.get("visibility") in ("invisible", "inherited"):

@@ -312,7 +312,8 @@
   (~10,000 stat calls, ~1 s on env_Envi, the user's report of a slow, stuck window); now 0.13-0.23 s on Cliff04's
   780 rows.
 - Inspector with several loaders selected (the user's ask): one tree, a branch per loader (`show_rows`, the loader's
-  own row has the pattern "**" = all its prims); every row carries its loader (`ROLE_LOADER`), so toggles, the
+  own row has the pattern "**" = all its prims, and the toggles of the instance's root prim /<instance>: a show rule
+  on `logic.ROOT` ".", which every prim under it inherits; hiding it hides the asset); every row carries its loader (`ROLE_LOADER`), so toggles, the
   menu's subdivision / dicing / Remove act on each row's own loader, and a toggle over several loaders is one undo
   step (`set_show_many`); Same overrides only for one loader. A filter field above the tree (`_apply_filter`) keeps
   the rows whose name holds the text, everything under a matching group, and the groups above (opened). The header shows no icons

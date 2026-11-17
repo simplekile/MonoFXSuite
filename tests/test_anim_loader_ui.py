@@ -649,3 +649,22 @@ def test_filter_keeps_matches_and_their_groups(make):
     assert set(shown) == {"veh_Spaceship", "Geo", "Hull_grp", "Geo_Hull", "Geo_Wing"}
     p.filter.setText("")
     assert all(not i.isHidden() for i in p._all_items())
+
+
+
+def test_a_loader_row_toggles_its_instance_root(make):
+    """The user's ask: the loader's own row has the toggles of its root prim (/<instance>): hiding it hides the
+    asset, and the prims under it keep their own eye."""
+    from tools.fx.anim_loader import logic as lg
+
+    w, ui, b = _two_loader_window(make)
+    p = w.subd_panel
+    top = next(p.tree.topLevelItem(i) for i in range(p.tree.topLevelItemCount())
+               if p.tree.topLevelItem(i).text(0) == "veh_Spaceship")
+    assert top.data(5, ui.ROLE_TOGGLE)[0] == "eye"
+    p._toggle(top, 5)
+    assert b.calls[-1] == ("set_show_many", {"/stage/a": (("**", "vis", "invisible"),)})
+    rules = lg.set_show_rules([], [("**", "vis", "invisible")])
+    assert rules == [{"pattern": ".", "vis": "invisible"}]
+    st = lg.prim_shows(["Geo/Hull_grp/Geo_Hull"], {}, [], [], rules)
+    assert not st["Geo/Hull_grp/Geo_Hull"].visible and st["Geo/Hull_grp/Geo_Hull"].own_visible
