@@ -1131,3 +1131,102 @@ def asset_catalog(project_root: str, group: str = "", search: str = "", with_mod
 def handoff_name(instance: str) -> str:
     """The package folder of one instance: ``<instance>_handoff``."""
     return f"{instance}_handoff"
+
+
+# --- Sublayer / Reference LOPs that read a publish (the user's ask, 2026-11-17) --------------------------------
+# A scene built by hand (env_Envi lookdev: 10 Sublayers of prop lookdev publishes) shows in the manager: what it
+# reads, whether a newer version exists, Update (the vNNN in the path) and Convert to a MonoFX Loader.
+
+_PUBLISH_RE = re.compile(
+    r"^(?P<root>.*?)[\\/](?:(?P<assets>01_assets)[\\/](?P<group>_[^\\/]+)[\\/](?P<asset>[^\\/]+)"
+    r"|(?P<shots>02_shots)[\\/](?P<shot>[^\\/]+))[\\/](?P<dept>.+?)[\\/]publish[\\/](?P<ver>[vV]\d+)[\\/]"
+    r"(?P<file>.+)$")
+
+
+@dataclass(frozen=True)
+class PublishRef:
+    """A file path read as a publish: project, asset (or shot), department folder, version, file under it."""
+
+    root: str
+    kind: str          # "asset" or "shot"
+    entity: str        # asset or shot name
+    dept: str          # department folder, e.g. "05_lookdev", "01_modelling/03_uv", "01_anim"
+    version: str
+    file: str          # path under the version folder (may hold a sub folder)
+
+    @property
+    def part(self) -> str:
+        """The manager's column for it: lookdev, groom, cloth, else anim (a model or an anim file)."""
+        d = self.dept.replace("\\", "/").lower()
+        if "lookdev" in d:
+            return "lookdev"
+        if "groom" in d:
+            return "groom"
+        if "cloth" in d:
+            return "cloth"
+        return "anim"
+
+    @property
+    def word(self) -> str:
+        d = self.dept.replace("\\", "/").lower()
+        return {"anim": "model" if "modelling" in d else "anim"}.get(self.part, self.part)
+
+    def publish_dir(self) -> Path:
+        base = Path(self.root) / ("01_assets" if self.kind == "asset" else "02_shots")
+        if self.kind == "asset":
+            folder = next((p for p in (base.glob(f"_*/{self.entity}")) if p.is_dir()), None)
+            base = folder if folder is not None else base / "_" / self.entity
+        else:
+            base = base / self.entity
+        return base / self.dept / "publish"
+
+    def file_in(self, version: str) -> str:
+        """The file's name in another version: a vNNN in the file name follows the version (MushroomHuge_uv_v003)."""
+        cur = self.version
+        return re.sub(re.escape(cur), version, self.file, flags=re.IGNORECASE) if re.search(
+            re.escape(cur), self.file, flags=re.IGNORECASE) else self.file
+
+    def path_in(self, version: str) -> str:
+        return (self.publish_dir() / version / self.file_in(version)).as_posix()
+
+
+def parse_publish_path(path: str) -> PublishRef | None:
+    """A publish file path (``<project>/01_assets/_<group>/<asset>/<dept>/publish/vNNN/<file>`` or
+    ``<project>/02_shots/<shot>/<dept>/publish/vNNN/<file>``) read into its parts; None for anything else (a path
+    with a variable or an expression is not read)."""
+    if not path or "$" in path or "`" in path:
+        return None
+    m = _PUBLISH_RE.match(path.strip())
+    if not m:
+        return None
+    if m["assets"]:
+        return PublishRef(m["root"].replace("\\", "/"), "asset", m["asset"], m["dept"].replace("\\", "/"),
+                          m["ver"], m["file"].replace("\\", "/"))
+    return PublishRef(m["root"].replace("\\", "/"), "shot", m["shot"], m["dept"].replace("\\", "/"), m["ver"],
+                      m["file"].replace("\\", "/"))
+
+
+def ref_versions(ref: PublishRef) -> list[str]:
+    """Versions of the publish that hold this file (its name followed to each version), oldest first."""
+    pub = ref.publish_dir()
+    return [v for v in list_versions(pub) if (pub / v / ref.file_in(v)).is_file()]
+
+
+def ref_status(ref: PublishRef) -> tuple[str, str | None]:
+    """(status, newer version or None) of a publish path, as the loaders' parts say it."""
+    found = ref_versions(ref)
+    newer = _newer(ref.version, found)
+    if not (ref.publish_dir() / ref.version / ref.file).is_file():
+        return STATUS_MISSING, newer
+    return (STATUS_NEWER, newer) if newer else (STATUS_OK, None)
+
+
+def root_patterns_moved(pattern: str, roots: list[str], prim: str) -> str:
+    """A prim pattern after its layer moved under ``/<prim>``: every token that names one of the layer's root prims
+    (``/Cliff01_Low``, ``/Cliff01_Low/**``) gets the prefix; other tokens stay."""
+    out = []
+    for tok in pattern.split():
+        body = tok.lstrip("/")
+        head = body.split("/", 1)[0]
+        out.append(f"/{prim}/{body}" if tok.startswith("/") and head in roots else tok)
+    return " ".join(out)

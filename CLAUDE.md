@@ -259,6 +259,19 @@
   skill solaris-shot-stage-layout) gets them wired there (Load shot: geo -> actors, camera -> cameras; Add: characters
   -> actors, the rest -> environments); any other network gets `<shot>_merge` / `assets_merge`. Adding an asset
   already in the network makes another instance, prim `<asset>_inst02` (set dressing places one asset many times).
+- Sublayer / Reference LOPs that read a publish (`find_publish_layers`, `logic.parse_publish_path`: an absolute path
+  `<project>/01_assets/_<group>/<asset>/<dept>/publish/vNNN/<file>` or `02_shots/<shot>/...`; a path with a
+  variable or an expression is not read) show in the manager's "sublayers" group with their status. Update moves
+  the vNNN in the path to the newest version holding the file (a vNNN in the file name follows). Convert makes a
+  MonoFX Loader on Source Asset in its place (same name, place, wires; lookdev or model at the version it read,
+  groom and hide off): the loader puts the asset under /<prim>, so prim patterns of the nodes after it up to the
+  first merge / graft move there, and `lopinputprims('.', 0)` (the env scene's xforms) becomes the explicit list of
+  the layer's root prims under /<prim> (a group-level move acts in another frame); other parms naming those prims
+  are listed, not changed. Checked on env_Envi lookdev v005: its 10 sublayers converted, 1040 meshes, 1040
+  bindings, identical bounds.
+- Manager type: bold only for the inspector's name, the shot crumb and the primary; list names, headers, bands and
+  the status line are regular (the user's ask). Icons are drawn for every device-pixel ratio (`_crisp_icon`):
+  scaling a small pixmap up broke the search icon; icon-only buttons centre their icon.
 - Props and environments publish a complete asset as their lookdev (`def` meshes and materials, root prims at the
   top, e.g. prop_Cliff01: 12 meshes), the UV publish being another mesh (`_uv_publish_Low` / `_zHigh`). Source Asset
   loads such a lookdev alone (`lookdev_defines_geometry`), never with the UV publish (that doubled the geometry);

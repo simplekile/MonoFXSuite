@@ -124,6 +124,38 @@ def main():
         check("viewport parts read 2.2 nodes too", ad.viewport_part_on("lookdev"))
         net22.destroy()
 
+        # Sublayer LOPs reading a publish: found, updated, converted with the xform after them kept in place
+        ln = hou.node("/obj").createNode("lopnet", "layers")
+        sub = ln.createNode("sublayer", "Rock")
+        sub.parm("filepath1").set((rock / "01_modelling/03_uv/publish/v001/prop_Rock_uv_publish.usd").as_posix())
+        (rock / "01_modelling/03_uv/publish/v002").mkdir(parents=True)
+        shutil.copy(version / "geo_char_Robot.usd", rock / "01_modelling/03_uv/publish/v002/prop_Rock_uv_publish.usd")
+        xf = ln.createNode("xform", "move")
+        xf.setInput(0, sub)
+        xf.parm("primpattern").set("`lopinputprims('.', 0)`")
+        xf.parmTuple("t").set((5, 0, 0))
+        xf.parmTuple("r").set((0, 30, 0))
+        xf.parm("scale").set(2)
+        found = ad.find_publish_layers(ln)
+        check("a sublayer of a publish is found, newer version seen",
+              [(n.name(), r.word, r.version) for n, i, r in found] == [("Rock", "model", "v001")]
+              and logic.ref_status(found[0][2]) == (logic.STATUS_NEWER, "v002"), [(n.name(), str(r)) for n, i, r in found])
+        lines = ad.update_layers([f"{sub.path()}#1"])
+        check("update moves the path to v002", "v002" in sub.parm("filepath1").eval(), lines)
+        cache = UsdGeom.BBoxCache(Usd.TimeCode(1), ["default", "render"])  # the fake meshes are sampled per frame
+        before = cache.ComputeWorldBound(xf.stage().GetPseudoRoot()).ComputeAlignedRange()
+        done, notes = ad.convert_layers([f"{sub.path()}#1"])
+        loader = ln.node("Rock")
+        cache = UsdGeom.BBoxCache(Usd.TimeCode(1), ["default", "render"])
+        after = cache.ComputeWorldBound(xf.stage().GetPseudoRoot()).ComputeAlignedRange()
+        check("convert: a MonoFX Loader in its place, wired, the xform names the prims under it",
+              loader is not None and loader.type().name() == config.HDA_TYPE and xf.inputs()[0] == loader
+              and xf.evalParm("primpattern").startswith("/Rock/") and not ad.find_publish_layers(ln), done)
+        from pxr import Gf
+        check("convert keeps the world bounds", not before.IsEmpty() and Gf.IsClose(before.GetMin(), after.GetMin(), 1e-3)
+              and Gf.IsClose(before.GetMax(), after.GetMax(), 1e-3), (str(before), str(after)))
+        ln.destroy()
+
         # hand off: one USD with the instance, flattened, textures copied, relative paths
         hand = OUT / "handoff"
         lines = ad.handoff([node.path()], str(hand))

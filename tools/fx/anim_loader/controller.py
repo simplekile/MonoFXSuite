@@ -27,6 +27,7 @@ class LoaderInfo:
     legacy: bool
     legacy_name: str = ""
     subd_rules: str = ""
+    layer: Any = None  # a Sublayer / Reference file reading a publish (logic.PublishRef); its node is no loader
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,7 @@ class Row:
     subd: tuple[int, int] | None = None  # (subdivided meshes, estimated viewport polygons)
     asset_source: bool = False  # Source Asset: the asset's model (no shot); Load shot and Retarget leave it
     weight: int = 0  # bytes of the files its lookdev pulls (textures), 0 when unknown
+    layer: str = ""  # a Sublayer / Reference reading a publish: what it reads ("lookdev v001 of prop_Cliff01")
 
     @property
     def behind(self) -> bool:
@@ -125,6 +127,12 @@ class Controller:
         rows = []
         for info in self._infos:
             st = info.state
+            ref = getattr(info, "layer", None)
+            if ref is not None:  # a Sublayer / Reference reading a publish: kind "layer"
+                rows.append(Row(info.path, "", info.legacy_name or info.path.rsplit("/", 1)[-1], "layer", ref.entity,
+                                self._status.get(info.path, {}), False, "", {ref.part: ref.version},
+                                layer=f"{ref.word} {ref.version} of {ref.entity}"))
+                continue
             if st is None:
                 rows.append(Row(info.path, "", info.legacy_name or info.path.rsplit("/", 1)[-1], "geo", None,
                                 legacy=True))
@@ -135,7 +143,8 @@ class Controller:
                             (self._thumbs or {}).get(info.path, ""), {"anim": logic.main_version(st), **st.versions},
                             self._subd_summary(info.path), asset_source,
                             self._extras.get("weight", {}).get(info.path, 0)))
-        return sorted(rows, key=lambda r: (r.legacy, r.asset_source, r.shot, r.kind == "cam", r.instance.lower()))
+        return sorted(rows, key=lambda r: (r.legacy, r.kind == "layer", r.asset_source, r.shot, r.kind == "cam",
+                                           r.instance.lower()))
 
     def rows(self) -> list[Row]:
         return list(self._rows)
@@ -223,11 +232,20 @@ class Controller:
         return f"Upgrade {len(self.legacy_paths())} old"
 
     # --- commands ---------------------------------------------------------------------------------
+    def layer_paths(self, only: list[str] | None = None) -> list[str]:
+        return [r.node_path for r in self._rows if r.kind == "layer" and (only is None or r.node_path in only)]
+
     def _update(self, paths: list[str]) -> None:
         if not paths:
             self.message = "Nothing to update."
             return
-        lines = self.backend.update(paths, ALL_PARTS)
+        layers = set(self.layer_paths(paths))
+        lines = []
+        if layers and hasattr(self.backend, "update_layers"):
+            lines += self.backend.update_layers([p for p in paths if p in layers])
+        rest = [p for p in paths if p not in layers]
+        if rest:
+            lines += self.backend.update(rest, ALL_PARTS)
         self.message = "; ".join(lines) if lines else "Already up to date."
 
     def update_all(self) -> None:
@@ -273,6 +291,16 @@ class Controller:
             return
         moved, left = self.backend.retarget(paths, self.target_shot)
         self.message = "; ".join([f"Retargeted {len(moved)} to {self.target_shot}", *left])
+
+    def convert_layers(self, paths: list[str]) -> None:
+        """Sublayers reading an asset publish -> MonoFX Loaders (Source Asset), patterns after them moved."""
+        paths = self.layer_paths(paths)
+        if not paths:
+            self.message = "Pick the sublayers to convert."
+            return
+        done, notes = self.backend.convert_layers(paths)
+        self.message = "; ".join([f"Converted {_plural(len(done), 'sublayer')}: " + ", ".join(done), *notes]) \
+            if done else ("; ".join(notes) or "Nothing converted.")
 
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)

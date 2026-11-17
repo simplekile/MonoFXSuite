@@ -867,7 +867,10 @@ def frame(path: str) -> bool:
 
 
 def publish_folder(path: str) -> str:
-    """The folder of the loader's anim (or model) file, else its asset or shot folder."""
+    """The folder of the loader's anim (or model) file, else its asset or shot folder; a layer row's version folder."""
+    if LAYER_SEP in path:
+        _node, _i, ref = _layer(path)
+        return (ref.publish_dir() / ref.version).as_posix() if ref is not None else ""
     node = hou.node(path)
     if node is None:
         return ""
@@ -1021,6 +1024,155 @@ def handoff(paths: list[str], out_dir: str) -> list[str]:
     return lines
 
 
+# --- Sublayer / Reference LOPs that read a publish (the user's ask, 2026-11-17) --------------------------------
+
+LAYER_TYPES = ("sublayer", "reference::2.0", "reference")
+LAYER_SEP = "#"  # a layer row's path: <node path>#<file index>
+
+
+def find_publish_layers(root=None) -> list[tuple[Any, int, logic.PublishRef]]:
+    """(node, file index, publish) for every Sublayer / Reference LOP file that reads a publish, outside locked
+    HDAs (a loader's own sublayers are its business). Paths with a variable or an expression are not read."""
+    prefix = (root.path().rstrip("/") + "/") if root is not None else "/"
+    out = []
+    for name in LAYER_TYPES:
+        t = hou.nodeType(hou.lopNodeTypeCategory(), name)
+        for node in (t.instances() if t is not None else ()):
+            if not node.path().startswith(prefix) or node.isInsideLockedHDA():
+                continue
+            n = node.parm("num_files")
+            for i in range(1, (n.eval() if n is not None else 1) + 1):
+                p = node.parm(f"filepath{i}")
+                ref = logic.parse_publish_path(p.unexpandedString()) if p is not None else None
+                if ref is not None:
+                    out.append((node, i, ref))
+    return sorted(out, key=lambda x: (x[0].path(), x[1]))
+
+
+def _layer(path: str) -> tuple[Any, int, logic.PublishRef | None]:
+    node_path, _, index = path.partition(LAYER_SEP)
+    node = hou.node(node_path)
+    i = int(index or 1)
+    p = node.parm(f"filepath{i}") if node is not None else None
+    return node, i, (logic.parse_publish_path(p.unexpandedString()) if p is not None else None)
+
+
+def update_layers(paths: list[str]) -> list[str]:
+    """Each layer file to the newest version of its publish that holds the same file; one undo step."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    lines = []
+    with undo_group("Update sublayers"):
+        for path in paths:
+            node, i, ref = _layer(path)
+            if ref is None:
+                continue
+            found = logic.ref_versions(ref)
+            newest = found[-1] if found else ""
+            if newest and logic._vnum(newest) > logic._vnum(ref.version):
+                node.parm(f"filepath{i}").set(ref.path_in(newest))
+                lines.append(f"{node.name()}: {ref.word} {ref.version} -> {newest}")
+    return lines
+
+
+def _layer_roots(path: str) -> list[str]:
+    from pxr import Sdf
+
+    layer = Sdf.Layer.FindOrOpen(path)
+    return [p.name for p in layer.rootPrims] if layer is not None else []
+
+
+def _branch_after(node) -> list:
+    """Nodes downstream of ``node`` up to the first node that joins branches (merge, graft): the ones whose prim
+    patterns still name the layer's root prims."""
+    out, todo, seen = [], list(node.outputs()), set()
+    while todo:
+        n = todo.pop(0)
+        if n.path() in seen:
+            continue
+        seen.add(n.path())
+        out.append(n)
+        if n.type().name().split("::")[0] in ("merge", "graftstages", "graftbranches"):
+            continue
+        todo.extend(n.outputs())
+    return out
+
+
+def convert_layers(paths: list[str]) -> tuple[list[str], list[str]]:
+    """Sublayer / Reference LOPs of one publish file -> MonoFX Loaders on Source Asset (same name, place, wires;
+    lookdev or model at the version the node read, nothing else turned on). The loader puts the asset under
+    /<prim>, so prim patterns of the nodes after it in its branch are moved there (xform and the like); a node
+    further on that names those prims is listed, not changed. One undo step. (what was converted, notes)"""
+    from apps.houdini.solaris_adapter import manual_update, undo_group
+
+    done, notes = [], []
+    with undo_group("Convert sublayers to MonoFX Loaders"), manual_update():
+        for path in paths:
+            node, i, ref = _layer(path)
+            if ref is None or node is None:
+                continue
+            n_files = node.parm("num_files").eval() if node.parm("num_files") else 1
+            if n_files != 1 or ref.kind != "asset":
+                notes.append(f"{node.name()}: not converted ({'several files' if n_files != 1 else 'a shot file'})")
+                continue
+            root = Path(ref.root)
+            state = logic.initial_asset_state(root, ref.entity)
+            if ref.part == "lookdev":
+                state = dataclasses.replace(state, versions={**state.versions, "lookdev": ref.version})
+            else:  # a model publish: that file, no lookdev (the node read none)
+                state = dataclasses.replace(state, model_version=ref.version, model_file=ref.file,
+                                            enabled={**state.enabled, "lookdev": False})
+            state = dataclasses.replace(state, enabled={**state.enabled, "groom": False})
+            parent, name = node.parent(), node.name()
+            prim = re.sub(r"[^0-9A-Za-z_]+", "_", name).strip("_") or ref.entity
+            roots = _layer_roots(ref.publish_dir().joinpath(ref.version, ref.file).as_posix())
+            ins = [(c.inputIndex(), c.inputNode(), c.outputIndex()) for c in node.inputConnections()]
+            outs = [(c.outputNode(), c.inputIndex()) for c in node.outputConnections()]
+            display, pos = node.isDisplayFlagSet(), node.position()
+            branch = _branch_after(node)
+            node.setName(_unique_name(parent, name + "_sublayer"))
+            loader = parent.createNode(config.HDA_TYPE, name)
+            loader.setPosition(pos)
+            write_state(loader, dataclasses.replace(state, instance_name=prim))
+            _set(loader, "mx_hide_enable", 0)  # the sublayer showed every prim: the loader hides none either
+            refresh(loader)
+            for index, src, out_index in ins:
+                loader.setInput(index, src, out_index)
+            for dst, index in outs:
+                dst.setInput(index, loader)
+            if display:
+                loader.setDisplayFlag(True)
+            node.destroy()
+            moved, named = [], []
+            for n in branch:
+                for p in n.parms():
+                    if p.parmTemplate().type() != hou.parmTemplateType.String or p.isLocked():
+                        continue
+                    raw = p.unexpandedString()
+                    if "lopinputprims" in raw and ("primpattern" in p.name() or "primpath" in p.name()):
+                        # "every root prim of my input" meant the layer's root prims; the input's root is now
+                        # /<prim>: name them under it, or the node would move the whole group in another frame
+                        p.set(" ".join(f"/{prim}/{r}" for r in roots))
+                        moved.append(n.name())
+                        continue
+                    if not any(f"/{r}" in raw for r in roots):
+                        continue
+                    if "primpattern" in p.name() or "primpath" in p.name():
+                        new = logic.root_patterns_moved(raw, roots, prim)
+                        if new != raw:
+                            p.set(new)
+                            moved.append(n.name())
+                    else:
+                        named.append(f"{n.name()}.{p.name()}")
+            done.append(f"{name} -> /{prim}" + (f" (moved {', '.join(sorted(set(moved)))})" if moved else ""))
+            if named:
+                notes.append(f"{name}: check {', '.join(named[:4])} (they name the old prim paths)")
+            tail = [n.name() for n in branch if n.type().name().split("::")[0] in ("graftstages", "graftbranches")]
+            if tail:
+                notes.append(f"{name}: after {tail[0]} its prims sit one level deeper, under /{prim}")
+    return done, notes
+
+
 # --- the manager window's backend --------------------------------------------------------------------
 
 class HoudiniBackend:
@@ -1039,11 +1191,19 @@ class HoudiniBackend:
             readable = kind in (config.HDA_TYPE, config.OLD_TYPE)  # 2.2 has the same parms: its state is real
             out.append(LoaderInfo(n.path(), read_state(n) if readable else None, legacy, n.name(),
                                   _s(n, config.P_SUBD_RULES) if readable else ""))
+        for node, i, ref in find_publish_layers():  # Sublayer / Reference LOPs reading a publish
+            many = (node.parm("num_files").eval() if node.parm("num_files") else 1) > 1
+            out.append(LoaderInfo(f"{node.path()}{LAYER_SEP}{i}", None, False,
+                                  f"{node.name()} {i}" if many else node.name(), "", ref))
         return out
 
     @staticmethod
     def scan(infos):
-        return {i.path: logic.status(i.state) for i in infos if i.state is not None}
+        out = {i.path: logic.status(i.state) for i in infos if i.state is not None}
+        for i in infos:
+            if getattr(i, "layer", None) is not None:
+                out[i.path] = {i.layer.part: logic.ref_status(i.layer)}
+        return out
 
     @staticmethod
     def subd(infos):
@@ -1121,7 +1281,7 @@ class HoudiniBackend:
 
     @staticmethod
     def select(path):
-        node = hou.node(path)
+        node = hou.node(path.partition(LAYER_SEP)[0])
         if node is not None:
             node.setSelected(True, clear_all_selected=True)
 
@@ -1210,6 +1370,14 @@ class HoudiniBackend:
                 and not logic.is_asset(i.state)}
         gaps = logic.shot_gaps(target_root, target_shot, have) if target_root and target_shot else ("", [])
         return {"news": news, "weight": weight, "gaps": gaps}
+
+    @staticmethod
+    def update_layers(paths):
+        return update_layers(list(paths))
+
+    @staticmethod
+    def convert_layers(paths):
+        return convert_layers(list(paths))
 
     @staticmethod
     def project_and_shot() -> tuple[str, str]:

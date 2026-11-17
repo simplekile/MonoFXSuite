@@ -98,6 +98,17 @@ LUCIDE.update({
             '<path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
 })
 
+def _crisp_icon(name: str, size: int, color: str) -> "QIcon":
+    """A Lucide icon drawn at ``size`` logical px for every device-pixel ratio Houdini may use: scaling one small
+    pixmap up broke the strokes (the search icon, the user's report 2026-11-17)."""
+    from PySide6.QtGui import QIcon
+
+    icon = QIcon()
+    for ratio in (1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0):
+        icon.addPixmap(_lucide_pixmap(name, size, color, ratio))
+    return icon
+
+
 WINDOW_NAME = "AnimLoaderManager"
 PREFS = Path(os.environ.get("APPDATA", Path.home())) / "MonoFXSuite" / "anim_loader_prefs.json"
 PART_LABEL = {"anim": "Anim", "lookdev": "Lookdev", "groom": "Groom", "cloth": "Cloth"}
@@ -232,7 +243,7 @@ class _Painter:
         return w
 
     def header(self, p: QPainter, rect: QRect, text: str) -> None:
-        f = _font(self.px(FS_SMALL), QFont.Weight.DemiBold)
+        f = _font(self.px(FS_SMALL), QFont.Weight.Normal)
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
         p.setFont(f)
         p.setPen(QColor(TEXT_LABEL))
@@ -245,7 +256,7 @@ class _Painter:
         p.setPen(QColor(LINE))
         p.drawLine(rect.topLeft(), rect.topRight())
         p.drawLine(rect.bottomLeft(), rect.bottomRight())
-        f = _font(self.px(FS_SMALL), QFont.Weight.DemiBold)
+        f = _font(self.px(FS_SMALL), QFont.Weight.Normal)
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
         p.setFont(f)
         p.setPen(QColor(TEXT_LABEL))
@@ -365,11 +376,12 @@ class _ListDelegate(QStyledItemDelegate):
         cols, name_end = self.columns(line1)
         if not wide and "subd" in cols:
             name_end = cols["subd"].left() - pt.px(8)  # narrow: subd sits at the right of the name line
-        p.setFont(_font(pt.px(FS_META), QFont.Weight.DemiBold))
+        p.setFont(_font(pt.px(FS_META), QFont.Weight.Normal))
         name_w = min(p.fontMetrics().horizontalAdvance(row.instance) + pt.px(4), name_end - name_x)
-        self._text(p, QRect(name_x, line1.top(), name_w, line1.height()), row.instance, TEXT_PRIMARY, FS_META, True)
+        self._text(p, QRect(name_x, line1.top(), name_w, line1.height()), row.instance, TEXT_PRIMARY, FS_META)
         unread = row.legacy and not row.versions  # 2.1 / Character Loader 3.2: no state to show
-        tag = "camera" if row.kind == "cam" else ("2.2" if row.legacy and not unread else ("old" if unread else ""))
+        tag = ("camera" if row.kind == "cam" else "sublayer" if row.kind == "layer"
+               else ("2.2" if row.legacy and not unread else ("old" if unread else "")))
         if tag:
             self._text(p, QRect(name_x + name_w + pt.px(8), line1.top(), max(0, name_end - name_x - name_w - pt.px(8)),
                                 line1.height()), tag, TEXT_LABEL, FS_SMALL)
@@ -429,7 +441,7 @@ class _ColumnHeader(QWidget):
         p.fillRect(rect, QColor(BAND))
         p.setPen(QColor(LINE))
         p.drawLine(rect.bottomLeft(), rect.bottomRight())
-        f = _font(pt.px(FS_SMALL), QFont.Weight.DemiBold)
+        f = _font(pt.px(FS_SMALL), QFont.Weight.Normal)
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
         p.setFont(f)
         p.setPen(QColor(TEXT_LABEL))
@@ -582,14 +594,14 @@ class AnimLoaderManager(QWidget):
     def _icon_button(self, icon: str, tip: str, style: str = STYLE_GHOST, text: str = "") -> QPushButton:
         """A button that says it with an icon (text only when a number helps); the tooltip names it."""
         b = self._button(text, style)
-        b.setIcon(_lucide_icon(icon, self.px(16), TEXT_PRIMARY))
+        b.setIcon(_crisp_icon(icon, self.px(16), TEXT_PRIMARY))
         b.setIconSize(QSize(self.px(16), self.px(16)))
         b.setToolTip(tip)
         b.setAccessibleName(tip.split(":")[0])
         b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         if not text:
             b.setFixedSize(self.px(34), self.px(34))
-            b.setStyleSheet(b.styleSheet() + self.css("QPushButton { padding: 0; }"))
+            b.setStyleSheet(b.styleSheet() + self.css("QPushButton { padding: 0px; text-align: center; }"))
         return b
 
     def _bar(self) -> tuple[QWidget, QHBoxLayout]:
@@ -633,7 +645,7 @@ class AnimLoaderManager(QWidget):
         self.filter_edit.setObjectName("filter")
         self.filter_edit.setPlaceholderText("Filter")
         self.filter_edit.setToolTip("Only loaders whose name or asset holds this text")
-        self.filter_edit.addAction(_lucide_icon("search", self.px(14), TEXT_LABEL),
+        self.filter_edit.addAction(_crisp_icon("search", 16, TEXT_LABEL),  # the field's own 16 px icon slot
                                    QLineEdit.ActionPosition.LeadingPosition)
         self.filter_edit.setFixedWidth(self.px(150))
         self.filter_edit.setMinimumHeight(self.px(32))
@@ -672,7 +684,7 @@ class AnimLoaderManager(QWidget):
         status, st = self._bar()
         status.setObjectName("status")
         st.setContentsMargins(self.px(16), self.px(8), self.px(16), self.px(8))
-        self.headline = self._label("", FS_META, QFont.Weight.DemiBold)
+        self.headline = self._label("", FS_META)
         self.status_meta = self._label("", FS_META, color=TEXT_LABEL)
         self.status_meta.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.heavy_label = self._label("", FS_SMALL, color=STATUS_COLORS[AM_WARN])
@@ -886,11 +898,13 @@ class AnimLoaderManager(QWidget):
             shot = None
             n_in_group = 0
             for row in rows:
-                group = row.shot or ("assets" if row.asset_source else "old loaders")
+                group = row.shot or ("assets" if row.asset_source else "sublayers" if row.kind == "layer"
+                                     else "old loaders")
                 if group != shot:
                     shot = group
                     n_in_group = 0
-                    count = sum(1 for r in rows if (r.shot or ("assets" if r.asset_source else "old loaders")) == group)
+                    count = sum(1 for r in rows if (r.shot or ("assets" if r.asset_source else "sublayers"
+                                                              if r.kind == "layer" else "old loaders")) == group)
                     h = QListWidgetItem()
                     h.setData(ROLE_HEADER, f"{group} · {count}")
                     h.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -929,7 +943,7 @@ class AnimLoaderManager(QWidget):
                  else STATUS_COLORS[AM_WARN] if action or any(r.needs_asset for r in rows)
                  else STATUS_COLORS[AM_OK])
         self.headline.setStyleSheet(f"color: {color}; background: transparent; font-size: {self.px(FS_META)}px;"
-                                    f" font-weight: 600;")
+                                    f" font-weight: 400;")
         n = sum(1 for r in rows if not r.legacy)
         self.status_meta.setText(f"\u00b7 {n} loader{'s' if n != 1 else ''}" if rows else "")
         heavy = self.ctl.heavy_polygons()
@@ -1116,6 +1130,17 @@ class AnimLoaderManager(QWidget):
         menu = QMenu(self)
         menu.setStyleSheet(self.css(STYLE_MENU))
         menu.addAction("Select node", lambda: self._select_node(item))
+        if row.kind == "layer":
+            sel = self.ctl.layer_paths(self.ctl.selection) if row.node_path in self.ctl.selection else []
+            paths = sel or [row.node_path]
+            st, newer = row.parts.get(next(iter(row.parts), ""), (logic.STATUS_OFF, None))
+            if newer and st == logic.STATUS_NEWER:
+                menu.addAction(f"Update to {newer}", self._run(lambda: self.ctl._update([row.node_path])))
+            n = f" ({len(paths)})" if len(paths) > 1 else ""
+            menu.addAction(f"Convert to MonoFX Loader{n}", self._run(lambda: self.ctl.convert_layers(list(paths))))
+            menu.addSeparator()
+            menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))
+            return menu
         if not row.legacy and row.behind:
             news = self.ctl.news(row.node_path)
             label = f"Update to {news[0].part} {news[0].new}" if len(news) == 1 else "Update this loader"
@@ -1420,7 +1445,7 @@ class InspectorPanel(QWidget):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(owner.px(14), owner.px(12), owner.px(14), owner.px(10))
         lay.setSpacing(owner.px(4))
-        self.title = owner._label("", 17, QFont.Weight.DemiBold)
+        self.title = owner._label("", 15, QFont.Weight.DemiBold)  # the one bold line of the inspector
         self.title.setWordWrap(True)
         lay.addWidget(self.title)
         self.meta = owner._label("", FS_SMALL, color=TEXT_LABEL)
@@ -1438,7 +1463,7 @@ class InspectorPanel(QWidget):
         nl = QVBoxLayout(self.news_box)
         nl.setContentsMargins(owner.px(12), owner.px(10), owner.px(12), owner.px(10))
         nl.setSpacing(owner.px(3))
-        self.news_title = owner._label("", FS_META, QFont.Weight.DemiBold)
+        self.news_title = owner._label("", FS_SMALL, color=TEXT_PRIMARY)
         self.news_text = owner._label("", FS_SMALL, color=TEXT_PRIMARY)
         self.news_text.setWordWrap(True)
         self.news_meta = owner._label("", FS_SMALL, color=TEXT_LABEL)
@@ -1451,7 +1476,7 @@ class InspectorPanel(QWidget):
         self.actions_hint.setWordWrap(True)
         lay.addWidget(self.actions_hint)
         lay.addSpacing(owner.px(8))
-        self.load = owner._label("", FS_SMALL, QFont.Weight.DemiBold, color=TEXT_LABEL)
+        self.load = owner._label("", FS_SMALL, color=TEXT_LABEL)
         self.load.setWordWrap(True)
         lay.addWidget(self.load)
         self.tree = QTreeWidget()
@@ -1527,6 +1552,17 @@ class InspectorPanel(QWidget):
         self.hint.setVisible(False)
         self.tree.setToolTip("Right-click meshes: scheme, dicing, clear, apply to every instance")
         self.load.setVisible(row.kind != "cam")  # a camera has nothing to subdivide: no line about it
+        if row.kind == "layer":  # a Sublayer / Reference: what it reads, what Convert does
+            self.meta.setText(f"{row.node_path.partition('#')[0]} \u00b7 {row.layer}")
+            self.source.setText("Sublayer \u00b7 Convert (right-click) makes it a MonoFX Loader; the prim patterns "
+                                "after it move with it")
+            self.source.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {self.owner.px(FS_SMALL)}px;"
+                                      f" background: transparent;")
+            self.source.setVisible(True)
+            self.tree.setVisible(False)
+            self.load.setVisible(False)
+            self.path = ""
+            return
         if row.legacy:  # what Upgrade does, on the line under the title (the subdivision lines stay theirs)
             self.source.setText("Old loader \u00b7 Upgrade makes it a MonoFX Loader, keeping its settings")
             self.source.setStyleSheet(f"color: {STATUS_COLORS[AM_WARN]}; font-size: {self.owner.px(FS_SMALL)}px;"
@@ -1547,10 +1583,10 @@ class InspectorPanel(QWidget):
         plan, faces = detail["plan"], detail["faces"]
         polys = subd_polygons(faces, plan)
         n = sum(1 for c in plan.values() if c.scheme != logic.SUBD_NONE)
-        self.load.setText(f"SUBDIVISION \u00b7 {n} of {len(plan)} meshes \u00b7 ~{polys / 1e6:.1f} M viewport polygons")
+        self.load.setText(f"Subdivision \u00b7 {n} of {len(plan)} meshes \u00b7 ~{polys / 1e6:.1f} M polygons")
         warn = polys > HEAVY_SUBD_POLYGONS
         self.load.setStyleSheet(f"color: {STATUS_COLORS[AM_WARN] if warn else TEXT_LABEL}; font-size: "
-                                f"{self.owner.px(FS_SMALL)}px; font-weight: 600; background: transparent;")
+                                f"{self.owner.px(FS_SMALL)}px; background: transparent;")
         any_dicing = any(c.dicing for c in plan.values())
         for key, meshes in mesh_groups(list(plan)).items():
             g_from = self._common([plan[m].source for m in meshes])
@@ -1673,7 +1709,7 @@ class AddDrawer(QWidget):
         lay.setContentsMargins(owner.px(14), owner.px(12), owner.px(14), owner.px(10))
         lay.setSpacing(owner.px(8))
         head = QHBoxLayout()
-        head.addWidget(owner._label("Add assets", 17, QFont.Weight.DemiBold))
+        head.addWidget(owner._label("Add assets", 15, QFont.Weight.DemiBold))
         head.addStretch(1)
         close = QPushButton("Close")
         close.setStyleSheet(owner.css(STYLE_LINK))
