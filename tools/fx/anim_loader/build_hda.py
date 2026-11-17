@@ -242,7 +242,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                                             naming_scheme=T.parmNamingScheme.XYZW))
     # Base1 names (clippingRange1 / 2), as in 2.1 and as the inner camera reads them; the default XYZW named them
     # clippingRangex / y and the clipping never reached the camera
-    cam.addParmTemplate(T.FloatParmTemplate("clippingRange", "Clipping Range", 2, default_value=(0.001, 1e6),
+    cam.addParmTemplate(T.FloatParmTemplate("clippingRange", "Clipping Range", 2, default_value=(0.0001, 1e6),
                                             naming_scheme=T.parmNamingScheme.Base1))
     cam.addParmTemplate(T.FloatParmTemplate("scale2", "Uniform Scale", 1, default_value=(1.0,), min=0, max=10))
     cam.addParmTemplate(T.FloatParmTemplate("xn__houdiniguidescale_s3a", "Guide Scale", 1,
