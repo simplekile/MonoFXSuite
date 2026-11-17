@@ -462,3 +462,50 @@ def test_comment_and_problems():
     assert status_comment(ok) == "up to date" and status_problems(ok, {}) == []
     unknown = {"anim": (STATUS_OK, None), "lookdev": (STATUS_ASSET, None), "groom": (STATUS_ASSET, None)}
     assert status_comment(unknown) == "asset?" and len(status_problems(unknown, {})) == 1
+
+
+# --- parm pane guidance: shot change, next step, shot menu -------------------------------------------------
+
+def test_switch_shot_moves_the_same_instance_else_newest_version_and_no_file(tmp_path):
+    from tools.fx.anim_loader.logic import switch_shot
+
+    root = _shot(tmp_path)
+    make(root, ["02_shots/sh920/01_anim/publish/v001/geo_char_Robot.usd",
+                "02_shots/sh920/01_anim/publish/v002/geo_char_Robot.usd",
+                "02_shots/sh930/01_anim/publish/v004/cam_sh930.usd",
+                "02_shots/sh940/01_anim/publish/"])
+    robot = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    moved = switch_shot(replace(robot, shot=""), "sh920")             # old shot unknown: still moves
+    assert (moved.shot, moved.anim_version, moved.anim_file) == ("sh920", "v002", "geo_char_Robot.usd")
+    other = switch_shot(robot, "sh930")                                 # no robot there
+    assert (other.shot, other.anim_version, other.anim_file, other.asset) == ("sh930", "v004", "", None)
+    assert set(other.versions.values()) == {""}
+    empty = switch_shot(robot, "sh940")                                 # no anim publish at all
+    assert (empty.anim_version, empty.anim_file) == ("", "")
+    assert switch_shot(robot, "sh900") == robot
+
+
+def test_next_step_says_one_thing(tmp_path):
+    from tools.fx.anim_loader.logic import NO_PROJECT, next_step
+
+    root = _shot(tmp_path)
+    make(root, ["02_shots/sh940/01_anim/publish/"])
+    robot = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    assert next_step(robot) == ("", "")
+    assert next_step(replace(robot, project_root="")) == (NO_PROJECT, "no project")
+    assert next_step(replace(robot, project_root=str(tmp_path / "nowhere")))[1] == "no project"
+    assert next_step(replace(robot, shot="")) == ("Pick a shot.", "pick a shot")
+    assert next_step(replace(robot, shot="sh999"))[1] == "no shot sh999"
+    assert next_step(replace(robot, shot="sh940"))[0] == "sh940 has no anim publish yet: pick another shot."
+    assert next_step(replace(robot, anim_version=""))[1] == "pick an anim version"
+    assert next_step(replace(robot, anim_file="")) == ("Pick an anim file.", "pick an anim file")
+
+
+def test_shot_menu_marks_shots_without_anim(tmp_path):
+    from tools.fx.anim_loader.logic import shot_menu
+
+    root = _shot(tmp_path)
+    make(root, ["02_shots/sh940/01_anim/publish/"])
+    assert shot_menu(str(root), "sh900") == [("sh900", "sh900"), ("sh940", "sh940  (no anim)")]
+    assert ("sh777", "sh777  (no anim)") in shot_menu(str(root), "sh777")  # the node's shot stays listed
+    assert shot_menu("", "") == []

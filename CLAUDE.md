@@ -268,6 +268,11 @@
   then Source / Parts / Geometry or Camera as plain groups and Advanced (project root, resolved paths) closed. The
   status of each version is in its menu label (Normal menus: "v002  (v003 available)", "v004  latest"), cached
   5 s per node and dropped by refresh; the node comment shows it in the network editor ("lookdev v003 available").
+  While the source is not set, Status says only the next step (`logic.next_step`: no project -> Project Root or the
+  manager's Project box, pick a shot, "<shot> has no anim publish yet", pick an anim file), never every part missing.
+  Shot is a menu of the project's shots ("sh030  (no anim)"). Changing the shot or project on the node
+  (`logic.switch_shot`) moves the same instance there like Retarget, else the shot's newest anim version and no file:
+  a version or file of the old shot is never kept (it showed "anim v001 missing on disk").
   Show in Viewport is one button strip `mx_viewport` (bit 1 lookdev, 2 groom; it replaced PR #21's two toggles).
   Measured: `button_icon` draws label + icon (not a button), a one-icon strip does not draw, `script_action` shows
   on every row, and joined rows wider than checkbox + field overflow a docked pane: none of them is used.

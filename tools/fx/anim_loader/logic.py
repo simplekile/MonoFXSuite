@@ -433,6 +433,59 @@ def retarget_state(state: LoaderState, shot: str) -> tuple[LoaderState | None, s
     return None, f"{state.instance_name} is not in {shot}"
 
 
+def switch_shot(state: LoaderState, shot: str) -> LoaderState:
+    """The artist changed the shot on the node (``state`` holds the shot it was on, "" when unknown). The same
+    instance there moves as Retarget does; else the shot's newest anim version and no anim file yet (never a
+    version of the old shot, which made "v001 missing on disk")."""
+    if state.shot == shot:
+        return state
+    if state.anim_file and state.project_root and shot:
+        moved, _why = retarget_state(state, shot)
+        if moved is not None:
+            return moved
+    versions = list_versions(anim_publish_dir(Path(state.project_root), shot)) if state.project_root and shot else []
+    return LoaderState(state.project_root, shot, versions[-1] if versions else "", "", None, "", state.kind,
+                       dict(state.enabled), {p: "" for p in PARTS})
+
+
+NO_PROJECT = ("Not in a project: set Project Root under Advanced, or open the Manager and pick one in its "
+              "Project box.")
+
+
+def next_step(state: LoaderState) -> tuple[str, str]:
+    """(status line, node comment) for the one thing the artist does next while the source is not set; ("", "")
+    once it is. One line instead of every part reporting itself missing."""
+    root = Path(state.project_root) if state.project_root else None
+    if root is None or not (root / "02_shots").is_dir():
+        return NO_PROJECT, "no project"
+    if not state.shot:
+        return "Pick a shot.", "pick a shot"
+    if not (root / "02_shots" / state.shot).is_dir():
+        return f"No shot {state.shot} in this project: pick a shot.", f"no shot {state.shot}"
+    versions = list_versions(anim_publish_dir(root, state.shot))
+    if not versions:
+        return f"{state.shot} has no anim publish yet: pick another shot.", f"{state.shot}: no anim"
+    if not state.anim_version:
+        return "Pick an anim version.", "pick an anim version"
+    if not state.anim_file:
+        return "Pick an anim file.", "pick an anim file"
+    return "", ""
+
+
+def shot_menu(project_root: str, current: str) -> list[tuple[str, str]]:
+    """(token, label) per shot of the project; a shot without an anim publish says so. The current shot stays in
+    the menu even when the project does not have it."""
+    root = Path(project_root) if project_root else None
+    shots = list_shots(root) if root is not None and root.is_dir() else []
+    if current and current not in shots:
+        shots = sorted(shots + [current], key=str.lower)
+    out = []
+    for shot in shots:
+        has = root is not None and bool(list_versions(anim_publish_dir(root, shot)))
+        out.append((shot, shot if has else f"{shot}  (no anim)"))
+    return out
+
+
 def list_part_versions(state: LoaderState, part: str) -> list[str]:
     """Versions of a part (lookdev / groom / cloth) on disk, oldest first, whether or not they hold this instance."""
     return _part_versions(Path(state.project_root), state, part)

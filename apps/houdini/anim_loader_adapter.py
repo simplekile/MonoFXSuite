@@ -5,6 +5,7 @@ The HDA's PythonModule is ``from apps.houdini.anim_loader_adapter import *``. Sp
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import time
@@ -22,7 +23,7 @@ from tools.fx.anim_loader.logic import LoaderState, Output, Resolved
 __all__ = [
     "read_state", "write_state", "refresh", "create_loader", "cb_parm_changed", "cb_refresh",
     "cb_open_manager", "cb_apply_timeline", "apply_timeline", "menu_versions", "menu_anim_versions",
-    "menu_anim_files", "menu_assets", "on_created", "find_loaders", "load_shot", "update", "set_asset",
+    "menu_anim_files", "menu_assets", "menu_shots", "on_created", "find_loaders", "load_shot", "update", "set_asset",
     "upgrade", "LoadResult", "on_loaded", "check_heavy_shot",
 ]
 
@@ -125,10 +126,15 @@ def refresh(node) -> Resolved:
     layers = [x for x in layers if x] + [""] * len(config.P_LAYERS)
     for name, value in zip(config.P_LAYERS, layers):
         _set(node, name, value)
-    st = logic.status(state)
-    _set(node, config.P_STATUS, " · ".join(logic.status_problems(st, {"anim": state.anim_version, **state.versions})
-                                            + notes))
-    _show_comment(node, logic.status_comment(st))
+    step, short = logic.next_step(state)
+    if step:  # the source is not set yet: say the next thing to do, not every part missing
+        _set(node, config.P_STATUS, step)
+        _show_comment(node, short)
+    else:
+        st = logic.status(state)
+        _set(node, config.P_STATUS, " · ".join(logic.status_problems(st, {"anim": state.anim_version,
+                                                                          **state.versions}) + notes))
+        _show_comment(node, logic.status_comment(st))
     _MENUS.clear()  # the menus read the disk again
     return r
 
@@ -181,7 +187,7 @@ def on_created(node) -> None:
             versions = logic.list_versions(logic.anim_publish_dir(root, shot))
             if versions:
                 _set(node, config.P_ANIM_VERSION, versions[-1])
-    _set(node, config.P_STATUS, "Pick an anim file.")
+    refresh(node)  # the status says the next step: pick an anim file, another shot, or a project
 
 
 # --- callbacks and menus -------------------------------------------------------------------------
@@ -191,6 +197,8 @@ def cb_parm_changed(kwargs: dict) -> None:
     name = kwargs.get("parm_name") or (kwargs["parm"].name() if kwargs.get("parm") is not None else "")
     if name == config.P_ANIM_FILE:
         _new_anim_file(node)
+    elif name in (config.P_SHOT, config.P_ROOT):
+        _new_shot(node)
     elif name == config.P_ASSET:  # the artist named the asset: its parts start at their newest, as in the manager
         write_state(node, logic.with_latest(read_state(node), logic.PARTS))
     refresh(node)
@@ -206,6 +214,26 @@ def _new_anim_file(node) -> None:
         return
     write_state(node, logic.initial_state(root, state.shot, state.anim_version, out))
     node.setUserData(config.USER_DATA, json.dumps({"shot": state.shot, "anim_file": out.file}))
+
+
+def _new_shot(node) -> None:
+    """The artist changed the shot (or the project): the same instance moves there as Retarget does, else the
+    shot's newest anim version and no anim file yet. A version or file of the old shot is never kept."""
+    state = read_state(node)
+    old_shot, old_file = _key(node)
+    if state.project_root and old_shot == state.shot and state.anim_version in logic.list_versions(
+            logic.anim_publish_dir(Path(state.project_root), state.shot)):
+        return  # the shot it was on, with a version it has (e.g. the project root typed again)
+    before = dataclasses.replace(state, shot="", anim_file=old_file or state.anim_file)  # "": moved from elsewhere
+    new = logic.switch_shot(before, state.shot)
+    write_state(node, new)
+    if new.anim_file:
+        node.setUserData(config.USER_DATA, json.dumps({"shot": new.shot, "anim_file": new.anim_file}))
+    else:
+        try:
+            node.destroyUserData(config.USER_DATA)
+        except hou.OperationFailed:
+            pass
 
 
 def cb_refresh(kwargs: dict) -> None:
@@ -290,6 +318,11 @@ def menu_anim_files(node) -> list[str]:
 def menu_versions(node, part: str) -> list[str]:
     state = read_state(node)
     return _cached((node.sessionId(), part, repr(state)), lambda: _labelled(logic.version_choices(state, part)))
+
+
+def menu_shots(node) -> list[str]:
+    root, shot = _s(node, config.P_ROOT), _s(node, config.P_SHOT)
+    return _cached(("shots", root, shot), lambda: _labelled(logic.shot_menu(root, shot)))
 
 
 def menu_assets(node) -> list[str]:

@@ -189,7 +189,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     g.append(status)
 
     src = T.FolderParmTemplate("f_source", "Source", folder_type=T.folderType.Simple)
-    src.addParmTemplate(s(config.P_SHOT, "Shot"))
+    src.addParmTemplate(s(config.P_SHOT, "Shot", menu="hou.phm().menu_shots(hou.pwd())"))
     src.addParmTemplate(s(config.P_ANIM_VERSION, "Anim Version", menu="hou.phm().menu_anim_versions(hou.pwd())"))
     src.addParmTemplate(s(config.P_ANIM_FILE, "Anim File", menu="hou.phm().menu_anim_files(hou.pwd())"))
     src.addParmTemplate(button("apply_mx_timeline", "Apply Timeline", "hou.phm().cb_apply_timeline(kwargs)",
