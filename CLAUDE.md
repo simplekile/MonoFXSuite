@@ -294,7 +294,8 @@
   One background for every row (the user's "too many colours", 2026-11-17): no zebra, no band per group level; a
   group reads as one by its quieter text and chevron, a selected row by the selection colour.
 - Inspector layout B (the user's pick of three mockups, 2026-11-17), then its toggles (the user's ask the same day):
-  each prim row has three toggles right after its name, as Blender's outliner: the eye (visibility), viewport and
+  each prim row has three toggles first, before its name (narrow, no lines between them; the tree's branches stay
+  in the name column, `setTreePosition(0)`), as Blender's outliner: the eye (visibility), viewport and
   render (purpose: both on default, viewport only proxy, render only render, both off guide). Inheritance is
   Houdini's / USD's: hiding a prim hides everything under it and each child keeps its own eye for when the parent
   shows again (drawn dimmed meanwhile); a prim without its own purpose follows its parent. Colour says who set a

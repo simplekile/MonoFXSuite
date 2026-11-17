@@ -1741,7 +1741,8 @@ def _mesh_tree_class():
             r = option.rect
             painter.fillRect(r, color)
             painter.setPen(QPen(QColor(LINE), 1))
-            painter.drawLine(r.right(), r.top(), r.right(), r.bottom())
+            if index.column() not in TOGGLE_COLS:  # the toggles sit together, no lines between them
+                painter.drawLine(r.right(), r.top(), r.right(), r.bottom())
             painter.drawLine(r.left(), r.bottom(), r.right(), r.bottom())
             fg = index.data(Qt.ItemDataRole.ForegroundRole)
             painter.setPen(fg.color() if fg is not None else QColor(TEXT_PRIMARY))
@@ -1781,8 +1782,25 @@ def _mesh_tree_class():
                 w += self.px(22)
             return QSize(w, self.px(28))
 
+    from PySide6.QtWidgets import QHeaderView
+
+    class _MeshHeader(QHeaderView):
+        def paintSection(self, painter, rect, logical):  # noqa: N802 (Qt)
+            if logical in TOGGLE_COLS:  # the toggles' header: the band and the line under it, nothing between them
+                painter.save()
+                painter.fillRect(rect, QColor(MESH_BAND))
+                painter.setPen(QPen(QColor(LINE), 1))
+                painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+                painter.restore()
+                return
+            super().paintSection(painter, rect, logical)
+
     class _MeshTree(QTreeWidget):
         on_toggle = None  # (item, column): set by the panel
+
+        def __init__(self):
+            super().__init__()
+            self.setHeader(_MeshHeader(Qt.Orientation.Horizontal, self))
 
         def set_px(self, px) -> None:
             self.setItemDelegate(_MeshDelegate(self, px))
@@ -1840,6 +1858,10 @@ def _mesh_tree_class():
 
 COLS = 8  # the inspector's prim table: PRIM, FACES, FROM, SCHEME, DICE, then the eye, viewport, render toggles
 TOGGLE_COLS = {5: "eye", 6: "viewport", 7: "render"}
+
+
+def TOGGLE_W(owner) -> int:  # noqa: N802: a toggle column's width, the icon and a little air
+    return owner.px(24)
 ROLE_TOGGLE = Qt.ItemDataRole.UserRole + 22  # (icon, colour) of a toggle cell
 ROLE_SHOW = Qt.ItemDataRole.UserRole + 23    # the row's logic.PrimShow
 
@@ -1955,6 +1977,7 @@ class InspectorPanel(QWidget):
         self.tree.setObjectName("subdTree")
         self.tree.setColumnCount(COLS)
         self.tree.setHeaderLabels(["PRIM", "FACES", "FROM", "SCHEME", "DICE", "", "", ""])
+        self.tree.headerItem().setTextAlignment(0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         for col in range(1, COLS):
             self.tree.headerItem().setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
         for col, (name, tip) in {5: ("eye", "Show or hide (visibility): hiding a prim hides what is under it"),
@@ -1996,10 +2019,11 @@ class InspectorPanel(QWidget):
             head.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed if col in TOGGLE_COLS
                                       else QHeaderView.ResizeMode.ResizeToContents)
         for col in TOGGLE_COLS:
-            self.tree.setColumnWidth(col, owner.px(32))
-        for i, col in enumerate(sorted(TOGGLE_COLS)):  # shown right after the name: never scrolled out of sight
-            head.moveSection(head.visualIndex(col), 1 + i)
-        head.setMinimumSectionSize(owner.px(48))
+            self.tree.setColumnWidth(col, TOGGLE_W(owner))
+        for i, col in enumerate(sorted(TOGGLE_COLS)):  # first, before the name (the user's ask): never scrolled away
+            head.moveSection(head.visualIndex(col), i)
+        self.tree.setTreePosition(0)  # the branches and indentation stay in the name column
+        head.setMinimumSectionSize(owner.px(20))  # the toggles are narrow; the name keeps its own minimum
         head.setToolTip("Drag the edge of MESH to widen the name column")
         self._name_width = 0  # the width the artist dragged the name column to (kept across loaders)
         head.sectionResized.connect(lambda i, _old, new: setattr(self, "_name_width", new) if i == 0
@@ -2227,7 +2251,7 @@ class InspectorPanel(QWidget):
         self._filling = True
         for col in range(1, COLS):
             if col in TOGGLE_COLS:
-                self.tree.setColumnWidth(col, self.owner.px(32))
+                self.tree.setColumnWidth(col, TOGGLE_W(self.owner))
             else:
                 self.tree.resizeColumnToContents(col)
         rest = sum(self.tree.columnWidth(c) for c in range(1, COLS) if not self.tree.isColumnHidden(c))
