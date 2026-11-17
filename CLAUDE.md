@@ -284,9 +284,13 @@
   separators between groups; a Source Asset whose lookdev holds the geometry reads "–" for its model (scan).
 - The inspector's meshes table runs edge to edge, its name column fills what the others leave (wider only when
   dragged), its scroll bars are thin and inside it, shown when needed (the user's ask). Houdini 22's style paints a
-  tree's rows and branch area grey (#303030 / #3a3a3a) whatever its palette or alternate-background-color says,
-  which offscreen grabs do not show: cells get a solid `::item` background and per-item zebra, and `_MeshTree`
-  paints the branch area and the group chevron itself. Check a tree's colours in the live window, not offscreen.
+  tree's rows and branch area grey (#303030 / #3a3a3a) whatever its palette or alternate-background-color says, a
+  `::item` background beats an item's own and an almost transparent one wiped what was under it; offscreen grabs
+  show none of it. So `_MeshDelegate` paints every cell (row colour, hover, lines, elided text) like the main list,
+  `_MeshTree` the branch area and the group chevron, and no `::item` rule is left. Check a tree's colours in the live
+  window (sample its pixels), not offscreen. The table shows every level of the hierarchy (Geo > Base_grp >
+  Body_grp > Geo_Body, as the scene graph does); a group sums its meshes. The name column's width is kept only
+  when the artist drags it (mouse down), never from Qt's own resizes.
 - Inspector of a shot loader (the user's ask, 2026-11-17): Frames and Fps from the anim publish's `publish_meta.json`
   (`Controller.timeline`; an asset loader has none). A camera adds its lens from the loader's stage at the current
   frame (`adapter.camera_info`): USD lens values are tenths of a scene unit (sh025, 1 m a unit: 35 mm is 0.35), so

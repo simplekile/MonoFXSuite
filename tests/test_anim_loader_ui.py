@@ -154,9 +154,12 @@ def test_subd_detail_shows_groups_and_meshes(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/b")
     tree = w.subd_panel.tree
-    groups = [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+    # every level of the hierarchy, as the scene graph shows it (the user's ask): Geo > Base_grp > Geo_Body
+    assert tree.topLevelItemCount() == 1 and tree.topLevelItem(0).text(0) == "Geo"
+    assert tree.topLevelItem(0).text(1) == "411.0k"
+    groups = [tree.topLevelItem(0).child(i).text(0) for i in range(tree.topLevelItem(0).childCount())]
     assert groups == ["Base_grp", "Outfit_grp"]
-    base = tree.topLevelItem(0)
+    base = tree.topLevelItem(0).child(0)
     assert base.text(2) == "mixed" and base.childCount() == 2 and base.text(3) == "mixed"
     assert w.subd_panel.details.rows()["Viewport polygons"].startswith("~6.6 M")
 
@@ -167,9 +170,9 @@ def test_subd_scheme_from_the_menu_applies_to_the_selection(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/b")
     tree = w.subd_panel.tree
-    _act(w.subd_panel.menu_for(tree.topLevelItem(0)), "Off").trigger()   # one row, not selected: that row only
+    _act(w.subd_panel.menu_for(tree.topLevelItem(0).child(0)), "Off").trigger()   # one row, not selected: that row only
     assert w.backend.calls[-1][:5] == ("set_subd", "/stage/b", ("Geo/Base_grp/**",), "none", KEEP)
-    base, outfit = tree.topLevelItem(0), tree.topLevelItem(1)            # the rescan rebuilt the tree
+    base, outfit = tree.topLevelItem(0).child(0), tree.topLevelItem(0).child(1)            # the rescan rebuilt the tree
     base.setSelected(True)
     outfit.setSelected(True)
     menu = w.subd_panel.menu_for(outfit)                                 # a selected row: the whole selection
@@ -192,10 +195,10 @@ def test_subd_dicing_keeps_the_scheme(make):
 def test_subd_menu_clear_and_apply(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/b")
-    menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(1))
+    menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
     _act(menu, "Clear override").trigger()
     assert w.backend.calls[-1] == ("clear_subd", "/stage/b", ["Geo/Outfit_grp/**"])
-    menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(1))
+    menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
     _act(menu, "Apply overrides to every char_Helen").trigger()
     assert w.backend.calls[-1] == ("subd_to_asset", "/stage/b")
 
@@ -204,9 +207,9 @@ def test_subd_columns_say_only_what_differs(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/b")
     tree = w.subd_panel.tree
-    outfit = tree.topLevelItem(1)
+    outfit = tree.topLevelItem(0).child(1)
     assert outfit.text(2) == "lookdev" and outfit.child(0).text(2) == ""   # same as its group: left blank
-    base = tree.topLevelItem(0)
+    base = tree.topLevelItem(0).child(0)
     assert base.text(2) == "mixed" and {base.child(i).text(2) for i in range(2)} == {"lookdev", "shot"}
     assert not tree.isColumnHidden(4)                                     # Geo_Dress has dicing 0.5
 

@@ -32,6 +32,7 @@ from PySide6.QtCore import QEasingCurve, QEvent, QRect, QRectF, QSize, Qt, QTime
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QApplication,
     QButtonGroup,
     QCheckBox,
     QFileDialog,
@@ -1682,21 +1683,64 @@ class _Section(QPushButton):
 
 
 def _mesh_tree_class():
-    """A tree that paints its own branch area: Houdini 22's style paints a tree's rows grey (#303030 / #3a3a3a)
-    whatever its palette or alternate-background-color says (not offscreen; measured in the live window). The cells
-    get solid colours from the style sheet and the items (band, zebra); the branch area left of them is filled here
-    in the row's colour, with a chevron on a group."""
-    from PySide6.QtWidgets import QTreeWidget
+    """A tree that paints its own rows: Houdini 22's style paints a tree's rows grey (#303030 / #3a3a3a) whatever
+    its palette or alternate-background-color says, a style sheet ``::item`` background beats an item's own, and an
+    all but transparent one wiped what was under it (measured in the live window; offscreen shows none of it). So, as
+    the main list does, a delegate paints every cell (row colour, hover, lines, elided text), the branch area gets the
+    row's colour and a chevron, and no ``::item`` rule is left for Houdini's style to act on."""
+    from PySide6.QtCore import QSize
+    from PySide6.QtWidgets import QStyle, QTreeWidget
+
+    class _MeshDelegate(QStyledItemDelegate):
+        def __init__(self, tree, px):
+            super().__init__(tree)
+            self.tree, self.px = tree, px
+
+        def paint(self, painter, option, index):  # noqa: D102
+            painter.save()
+            color = QColor(self.tree._row_color(index))
+            if option.state & QStyle.StateFlag.State_MouseOver:
+                color = color.lighter(125) if color.name() != BG_APP else QColor(BG_HOVER)
+            r = option.rect
+            painter.fillRect(r, color)
+            painter.setPen(QPen(QColor(LINE), 1))
+            painter.drawLine(r.right(), r.top(), r.right(), r.bottom())
+            painter.drawLine(r.left(), r.bottom(), r.right(), r.bottom())
+            fg = index.data(Qt.ItemDataRole.ForegroundRole)
+            painter.setPen(fg.color() if fg is not None else QColor(TEXT_PRIMARY))
+            painter.setFont(option.font)
+            align = index.data(Qt.ItemDataRole.TextAlignmentRole)
+            align = Qt.AlignmentFlag(align) if align else Qt.AlignmentFlag.AlignLeft
+            text_rect = r.adjusted(self.px(6), 0, -self.px(6), 0)
+            text = option.fontMetrics.elidedText(str(index.data() or ""), Qt.TextElideMode.ElideRight,
+                                                 text_rect.width())
+            painter.drawText(text_rect, align | Qt.AlignmentFlag.AlignVCenter, text)
+            painter.restore()
+
+        def sizeHint(self, option, index):  # noqa: N802 (Qt)
+            w = option.fontMetrics.horizontalAdvance(str(index.data() or "")) + self.px(14)
+            return QSize(w, self.px(28))
 
     class _MeshTree(QTreeWidget):
-        def drawBranches(self, painter, rect, index):  # noqa: N802 (Qt)
+        def set_px(self, px) -> None:
+            self.setItemDelegate(_MeshDelegate(self, px))
+            self.setMouseTracking(True)
+
+        def _row_color(self, index) -> str:
             if self.selectionModel().isSelected(index):
-                color = SELECTED
-            elif index.parent().isValid():
-                color = MESH_ZEBRA if index.row() % 2 else BG_APP
-            else:
-                color = MESH_BAND
-            painter.fillRect(rect, QColor(color))
+                return SELECTED
+            if self.model().hasChildren(index):  # a group, at any depth
+                return MESH_BAND
+            rect = self.visualRect(index)  # zebra by the row on screen (uniform heights), whatever is folded
+            h = max(1, rect.height())
+            return MESH_ZEBRA if ((rect.top() + self.verticalScrollBar().value() * h) // h) % 2 else BG_APP
+
+        def drawRow(self, painter, option, index):  # noqa: N802 (Qt)
+            painter.fillRect(option.rect, QColor(self._row_color(index)))
+            super().drawRow(painter, option, index)
+
+        def drawBranches(self, painter, rect, index):  # noqa: N802 (Qt)
+            painter.fillRect(rect, QColor(self._row_color(index)))
             if not self.model().hasChildren(index):
                 return
             painter.save()
@@ -1736,7 +1780,7 @@ class InspectorPanel(QWidget):
         lay = QVBoxLayout(self)
         # the meshes table runs edge to edge (the user's ask: no strips beside it); the rest keeps its side margins
         side = owner.px(14)
-        lay.setContentsMargins(0, owner.px(12), 0, owner.px(10))
+        lay.setContentsMargins(0, owner.px(12), 0, 0)  # the table runs down to the action bar
         lay.setSpacing(owner.px(4))
         head = QWidget()
         top = QVBoxLayout(head)
@@ -1765,13 +1809,13 @@ class InspectorPanel(QWidget):
             self.tree.headerItem().setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setRootIsDecorated(True)
+        self.tree.setUniformRowHeights(True)
+        self.tree.set_px(owner.px)
         self.tree.setIndentation(owner.px(14))  # the names need the room more than the tree lines
         self.tree.setAlternatingRowColors(False)  # zebra: set on the mesh items (Houdini ignores the palette)
         self.tree.setStyleSheet(owner.css(
             f"QTreeWidget#subdTree {{ background: {BG_APP};"
             f" color: {TEXT_PRIMARY}; border: none; font-size: {FS_SMALL}px; outline: none; }}"
-            f"QTreeWidget#subdTree::item {{ height: 28px; border-right: 1px solid {LINE};"
-            f" border-bottom: 1px solid {LINE}; padding: 0 4px; background: {BG_APP}; }}"
             # the scroll bars sit inside the table, thin, on its own colour, and show only when needed
             f"QTreeWidget#subdTree QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; border: none; }}"
             f"QTreeWidget#subdTree QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 2px;"
@@ -1784,9 +1828,6 @@ class InspectorPanel(QWidget):
             f"QTreeWidget#subdTree QScrollBar::add-page, QTreeWidget#subdTree QScrollBar::sub-page"
             f" {{ background: none; }}"
             f"QTreeWidget#subdTree QAbstractScrollArea::corner {{ background: {BG_APP}; }}"
-            f"QTreeWidget#subdTree::item:hover {{ background: {BG_HOVER}; }}"
-            f"QTreeWidget#subdTree::item:selected {{ background: {SELECTED}; color: {TEXT_PRIMARY}; }}"
-            f"QTreeWidget#subdTree::item:selected:hover {{ background: #2e3c5f; }}"
             f"QTreeWidget#subdTree QHeaderView::section {{ background: {MESH_BAND}; color: {TEXT_LABEL};"
             f" border: none; border-right: 1px solid {LINE}; border-bottom: 1px solid {LINE}; padding: 6px 4px;"
             f" font-size: {FS_SMALL}px; letter-spacing: 1px; }}"))
@@ -1802,15 +1843,16 @@ class InspectorPanel(QWidget):
         head.setToolTip("Drag the edge of MESH to widen the name column")
         self._name_width = 0  # the width the artist dragged the name column to (kept across loaders)
         head.sectionResized.connect(lambda i, _old, new: setattr(self, "_name_width", new) if i == 0
-                                    and self.tree.isVisible() and not getattr(self, "_filling", False) else None)
+                                    and QApplication.mouseButtons() != Qt.MouseButton.NoButton
+                                    and not getattr(self, "_filling", False) else None)
         self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        lay.addWidget(self.tree, 100)  # the meshes take the room; without them the stretch below does
+        lay.addWidget(self.tree, 1)  # the meshes take all the room; without them the stretch below does
         self.hint = owner._label("Right-click meshes to set their scheme or dicing.", FS_SMALL, color=TEXT_LABEL)
         self.hint.setWordWrap(True)
         self.hint.setContentsMargins(side, 0, side, 0)
         lay.addWidget(self.hint)
-        lay.addStretch(1)
+        lay.addStretch(0)
 
     def sizeHint(self) -> QSize:
         return QSize(self.owner.px(360), self.owner.px(400))
@@ -1906,35 +1948,52 @@ class InspectorPanel(QWidget):
             return
         plan, faces = detail["plan"], detail["faces"]
         any_dicing = any(c.dicing for c in plan.values())
-        for key, meshes in mesh_groups(list(plan)).items():
-            g_from = self._common([plan[m].source for m in meshes])
-            g = QTreeWidgetItem([key.rsplit("/", 1)[-1], _faces_word(sum(faces.get(m, 0) for m in meshes)), g_from,
-                                 self._common([SCHEME_WORD.get(plan[m].scheme, plan[m].scheme) for m in meshes]),
-                                 self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "" for m in meshes])])
-            g.setData(0, ROLE_PATTERN, key + "/**")
-            g.setToolTip(0, key)
-            for col in range(5):  # a group is a band, like the main list's
-                g.setBackground(col, QColor(MESH_BAND))
-                g.setForeground(col, QColor(TEXT_LABEL))
-                if col:
-                    g.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
-            self.tree.addTopLevelItem(g)
-            for i, m in enumerate(meshes):
+        # every level of the hierarchy, as the scene graph shows it (the user's ask: Geo > Base_grp > Body_grp >
+        # Geo_Body); a group sums its meshes' faces and shows their source / scheme / dicing when they agree
+        tree: dict = {}
+        for m in plan:
+            node = tree
+            for part in m.strip("/").split("/"):
+                node = node.setdefault(part, {})
+
+        def under(prefix: str) -> list[str]:
+            return [m for m in plan if m.strip("/").startswith(prefix + "/")]
+
+        def add(parent, name: str, prefix: str, kids: dict, parent_from: str) -> None:
+            if not kids and ("/" + prefix in plan or prefix in plan):  # a mesh
+                m = "/" + prefix if "/" + prefix in plan else prefix
                 c = plan[m]
-                item = QTreeWidgetItem([m.rsplit("/", 1)[-1], _faces_word(faces.get(m, 0)),
-                                        "" if c.source == g_from else c.source, SCHEME_WORD.get(c.scheme, c.scheme),
-                                        f"{c.dicing:g}" if c.dicing else ""])
-                item.setData(0, ROLE_PATTERN, m.strip("/"))
+                item = QTreeWidgetItem([name, _faces_word(faces.get(m, 0)),
+                                        "" if c.source == parent_from else c.source,
+                                        SCHEME_WORD.get(c.scheme, c.scheme), f"{c.dicing:g}" if c.dicing else ""])
+                item.setData(0, ROLE_PATTERN, prefix)
                 item.setToolTip(0, m)
                 for col in range(1, 5):
                     item.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
-                if i % 2:  # zebra, the same rows _MeshTree.drawBranches fills
-                    for col in range(5):
-                        item.setBackground(col, QColor(MESH_ZEBRA))
                 if c.source == "shot":
                     for col in (2, 3):
                         item.setForeground(col, QColor(ACCENT))
-                g.addChild(item)
+            else:  # a group, a band like the main list's
+                meshes = under(prefix)
+                g_from = self._common([plan[m].source for m in meshes])
+                item = QTreeWidgetItem([name, _faces_word(sum(faces.get(m, 0) for m in meshes)), g_from,
+                                        self._common([SCHEME_WORD.get(plan[m].scheme, plan[m].scheme) for m in meshes]),
+                                        self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "" for m in meshes])])
+                item.setData(0, ROLE_PATTERN, prefix + "/**")
+                item.setToolTip(0, "/" + prefix)
+                for col in range(5):
+                    item.setForeground(col, QColor(TEXT_LABEL))
+                    if col:
+                        item.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
+                for k, sub in kids.items():
+                    add(item, k, prefix + "/" + k, sub, g_from)
+            if parent is None:
+                self.tree.addTopLevelItem(item)
+            else:
+                parent.addChild(item)
+
+        for k, sub in tree.items():
+            add(None, k, k, sub, "")
         self.tree.setColumnHidden(4, not any_dicing)
         self.tree.expandAll()
         self._fit_name()
