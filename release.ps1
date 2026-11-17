@@ -1,4 +1,4 @@
-# MonoFX Suite — release in two steps (run from the repo root)
+# MonoFX Suite - release in two steps (run from the repo root)
 #
 #   .\release.ps1 prepare [-Bump patch|minor|major]
 #       On the branch that goes to main (or main itself). Checks the tree is clean, the tests pass and

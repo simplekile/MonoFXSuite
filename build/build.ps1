@@ -1,6 +1,6 @@
-# MonoFX Suite — build installer
-# Chạy từ thư mục project root: .\build\build.ps1
-# Hoặc từ build: .\build.ps1
+# MonoFX Suite - build installer
+# Run from the project root: .\build\build.ps1
+# or from build: .\build.ps1
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
@@ -9,12 +9,12 @@ $OutputDir = Join-Path $ProjectRoot "build\output"
 
 $Iscc = "C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
 if (-not (Test-Path $Iscc)) {
-    Write-Error "Không tìm thấy Inno Setup: $Iscc"
+    Write-Error "Inno Setup not found: $Iscc"
     exit 1
 }
 
 if (-not (Test-Path $IssPath)) {
-    Write-Error "Không tìm thấy script: $IssPath"
+    Write-Error "Installer script not found: $IssPath"
     exit 1
 }
 
