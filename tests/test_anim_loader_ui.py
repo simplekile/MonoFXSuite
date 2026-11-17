@@ -452,3 +452,31 @@ def test_camera_settings_on_the_loader(make):
     assert b.calls[-1] == ("cam", "/stage/c", "clippingRange1", 0.01)
     _select(w, ui, "/stage/b")
     assert w.subd_panel.cam_head.isHidden()
+
+
+
+def test_shown_follows_make_visible_under_a_hidden_parent():
+    """The user's report: "Render and viewport" on meshes under the hair driver (hidden by Hide Prims) read hidden.
+    A shown rule opens the way like USD's MakeVisible: the parent shows, its other children are hidden."""
+    from tools.fx.anim_loader import logic as lg
+
+    kids = [f"Geo/Groom_grp/HairDriver_grp/{n}" for n in ("Geo_HairBack", "Geo_HairBang")]
+    plan = lg.shown_plan(kids, {}, ["Geo/Groom_grp/HairDriver_grp"], [], [{"pattern": kids[0], "show": "both"}])
+    assert plan[kids[0]] == ("", "shot") and plan[kids[1]] == ("hidden", "")
+    plan = lg.shown_plan(kids, {}, ["Geo/Groom_grp/HairDriver_grp"], [], [{"pattern": k, "show": "proxy"} for k in kids])
+    assert plan[kids[0]] == ("viewport only", "shot") and plan[kids[1]] == ("viewport only", "shot")
+
+
+def test_a_change_keeps_the_scroll_selection_and_folds(make):
+    """The user's report: changing what a row shows reset the list's place and dropped the selection."""
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/b")
+    p = w.subd_panel
+    geo = p.tree.topLevelItem(0)
+    geo.child(0).setExpanded(False)
+    geo.child(1).child(0).setSelected(True)
+    w.refresh()
+    w.wait()
+    geo = p.tree.topLevelItem(0)
+    assert not geo.child(0).isExpanded() and geo.child(1).isExpanded()
+    assert [i.data(0, ui.ROLE_PATTERN) for i in p.tree.selectedItems()] == [geo.child(1).child(0).data(0, ui.ROLE_PATTERN)]

@@ -1969,6 +1969,7 @@ class InspectorPanel(QWidget):
 
         from tools.fx.anim_loader.logic import HEAVY_SUBD_POLYGONS, mesh_groups, subd_polygons
 
+        keep = self._tree_state() if row is not None and row.node_path == self.path else None
         self.tree.clear()
         if row is None:
             self.path = ""
@@ -2076,7 +2077,7 @@ class InspectorPanel(QWidget):
             """SHOWN says only what differs from the row above it, or what the shot set on this row."""
             word, source = shown.get(prefix, ("", ""))
             if source == "shot" or word != parent_word:
-                item.setText(5, word or "both")
+                item.setText(5, word or "shown")
                 item.setForeground(5, QColor(ACCENT if source == "shot" else TEXT_LABEL))
                 item.setToolTip(5, {"shot": "Set for this shot", "loader": "Set on the loader (Hide Prims, Show in "
                                     "Viewport)", "publish": "As published"}.get(source, "Inherited"))
@@ -2138,7 +2139,12 @@ class InspectorPanel(QWidget):
         self.tree.setColumnHidden(4, not any_dicing)
         any_shown = any(self._items_text(5))
         self.tree.setColumnHidden(5, not any_shown)  # SHOWN only when something is not shown everywhere
-        self.tree.expandAll()
+        if keep is None:
+            self.tree.expandAll()
+        else:
+            for it in self._all_items():
+                it.setExpanded(it.data(0, ROLE_PATTERN) not in keep["folded"])
+            self._restore_tree_state(keep)
         self._fit_name()
         QTimer.singleShot(0, self._fit_name)  # again once the tree has its width
 
@@ -2157,6 +2163,44 @@ class InspectorPanel(QWidget):
         super().resizeEvent(event)
         if self.tree.topLevelItemCount():
             self._fit_name()
+
+    def _all_items(self):
+        stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        while stack:
+            it = stack.pop()
+            yield it
+            stack += [it.child(i) for i in range(it.childCount())]
+
+    def _tree_state(self) -> dict:
+        """What the artist did to the table: folded groups, selected rows, the current row, the scroll."""
+        items = list(self._all_items())
+        current = self.tree.currentItem()
+        return {"folded": {i.data(0, ROLE_PATTERN) for i in items if i.childCount() and not i.isExpanded()},
+                "selected": {i.data(0, ROLE_PATTERN) for i in self.tree.selectedItems()},
+                "current": current.data(0, ROLE_PATTERN) if current is not None else None,
+                "scroll": (self.tree.verticalScrollBar().value(), self.tree.horizontalScrollBar().value())}
+
+    def _restore_tree_state(self, keep: dict) -> None:
+        from PySide6.QtCore import QItemSelectionModel
+
+        self.tree.blockSignals(True)
+        for it in self._all_items():
+            pattern = it.data(0, ROLE_PATTERN)
+            if pattern in keep["folded"]:
+                it.setExpanded(False)
+            if pattern == keep["current"]:
+                self.tree.setCurrentItem(it, 0, QItemSelectionModel.SelectionFlag.NoUpdate)
+            if pattern in keep["selected"]:
+                it.setSelected(True)
+        self.tree.blockSignals(False)
+        v, h = keep["scroll"]
+
+        def scroll():
+            self.tree.verticalScrollBar().setValue(v)
+            self.tree.horizontalScrollBar().setValue(h)
+
+        scroll()
+        QTimer.singleShot(0, scroll)  # again once the rows are laid out
 
     def _items_text(self, col: int):
         stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
@@ -2325,6 +2369,7 @@ class InspectorPanel(QWidget):
                 break
             item = item.parent()
         return {"hidden": "hidden", "render only": "render", "viewport only": "proxy"}.get(word, "both")
+
 
     def set_show(self, pats: list[str], show: str) -> None:
         path = self.path

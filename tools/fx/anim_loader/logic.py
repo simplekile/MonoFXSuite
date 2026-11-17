@@ -974,9 +974,17 @@ def shown_plan(prims: list[str], publish: dict[str, dict], hidden: list[str], re
     (visible, default purpose). Opinions, weakest first: the publish files' own visibility / purpose (``publish``:
     {prim: {"visibility", "purpose"}}), the loader's Hide Prims (``hidden``) and groom shown for render only
     (``render_only``), then the shot's rules. Visibility and purpose inherit down the tree as in USD: a prim under
-    a hidden one stays hidden whatever it says. Source is "shot" where a rule names the prim, "loader" for the
-    loader's own settings, "publish" for the files, "" where it only inherits."""
+    a hidden one stays hidden whatever it says, except that a shot rule showing a prim opens the way to it as USD's
+    MakeVisible does (the user's report: "Render and viewport" under the hidden hair driver still read hidden): its
+    hidden ancestors show, and their other children are hidden instead. Source is "shot" where a rule names the
+    prim, "loader" for the loader's own settings, "publish" for the files, "" where it only inherits."""
     rule_at = {r["pattern"]: r["show"] for r in rules}
+    shown_by_rule = [p for p, s in rule_at.items() if s != "hidden"]
+    on_path = set(shown_by_rule)
+    for p in shown_by_rule:
+        bits = p.split("/")
+        on_path.update("/".join(bits[:i]) for i in range(1, len(bits)))
+    opened: set[str] = set()  # hidden prims a rule opened: their children off the path are hidden
     hidden_set, render_set = set(hidden), set(render_only)
     every = set(prims)
     for p in prims:  # the groups above each prim, so the tree inherits through them
@@ -1005,6 +1013,12 @@ def shown_plan(prims: list[str], publish: dict[str, dict], hidden: list[str], re
                 own_purpose = {"render": "render", "proxy": "proxy", "both": "default"}[rule]
         if own_hidden is not None:
             hid = hid or own_hidden  # "inherited" cannot show what a parent hides
+        if p in on_path:  # MakeVisible: the way to a shown prim is visible
+            if hid:
+                opened.add(p)
+            hid = False
+        elif parent in opened:  # ... and the opened prim's other children hidden
+            hid = True
         if own_purpose is not None:
             purpose = own_purpose
         state[p] = (hid, purpose)

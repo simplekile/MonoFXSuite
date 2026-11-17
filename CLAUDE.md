@@ -298,12 +298,14 @@
   nothing differs. The right-click menu sets it: Hide (visibility invisible), Render only (purpose render), Viewport
   only (purpose proxy: Houdini GL draws it, Karma skips it), Render and viewport (visible, purpose default). Rules
   live in the hidden `mx_show_rules` (JSON pattern = one prim under the instance, show), authored by the HDA's
-  `show_rules` Python LOP after Hide Prims (`adapter.author_show`), so a rule wins over Hide Prims and the
+  `show_rules` Python LOP after Hide Prims (`adapter.author_show`: hidden rules first, then `MakeVisible`, which
+  opens a hidden parent and hides its other children, as Houdini's Make Visible; a plain "inherited" under the hidden
+  hair driver stayed hidden, the user's report), so a rule wins over Hide Prims and the
   groom's render purpose; bake writes them as data (`BAKED_SHOW_CODE`). SHOWN comes from the files on the worker
   thread (`shown_for`: publish visibility / purpose, Hide Prims, Show in Viewport, rules; `logic.shown_plan`).
   The groom's curves are rows under Groom (`groom_curve_counts`, first frame of a cache; not `groom_curves`, the
   cache's own paths that refresh uses: a second function of that name broke every groom loader). Remove the
-  shot's overrides clears subdivision and show rules; Same overrides copies both. A camera has "On the loader":
+  shot's overrides clears subdivision and show rules; a change keeps the table's scroll, selection and folds; Same overrides copies both. A camera has "On the loader":
   clipping, aperture, ratio, guide scale as parm fields (Enter sets the parm, one undo step).
 - hython: `hou.hda.installFile` goes into the open hip's library list, which `hipFile.load` replaces: install
   after the load (and `setIsPreferred`) or the scene runs the installed MonoFX's loader, or no loader at all.

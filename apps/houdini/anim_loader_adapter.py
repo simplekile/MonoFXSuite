@@ -1189,12 +1189,15 @@ from pxr import UsdGeom
 inst = hda.evalParm("mx_instance_name")
 # What the shot shows of each prim, baked from the MonoFX Loader: hidden / render / proxy / both
 RULES = %s
-for rule in RULES if inst else []:
+for rule in sorted(RULES, key=lambda r: r["show"] != "hidden") if inst else []:
     prim = stage.GetPrimAtPath("/" + inst + "/" + rule["pattern"])
     if not prim or not prim.IsA(UsdGeom.Imageable):
         continue
     img = UsdGeom.Imageable(prim)
-    img.CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible if rule["show"] == "hidden" else UsdGeom.Tokens.inherited)
+    if rule["show"] == "hidden":
+        img.CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible)
+    else:
+        img.MakeVisible()
     if rule["show"] != "hidden":
         img.CreatePurposeAttr().Set({"render": UsdGeom.Tokens.render, "proxy": UsdGeom.Tokens.proxy,
                                      "both": UsdGeom.Tokens.default_}[rule["show"]])
@@ -1813,14 +1816,18 @@ def author_show(node, stage) -> None:
     inst = _s(node, config.P_INSTANCE)
     if not inst:
         return
-    for rule in logic.parse_show_rules(_s(node, config.P_SHOW_RULES)):
+    rules = logic.parse_show_rules(_s(node, config.P_SHOW_RULES))
+    # hidden first, shown after: MakeVisible opens the way through a hidden parent (Hide Prims' hair driver) and
+    # hides that parent's other children, as Houdini's own Make Visible does (logic.shown_plan says the same)
+    for rule in sorted(rules, key=lambda r: r["show"] != "hidden"):
         prim = stage.GetPrimAtPath(f"/{inst}/{rule['pattern']}")
         if not prim or not prim.IsA(UsdGeom.Imageable):
             continue
         img = UsdGeom.Imageable(prim)
-        img.CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible if rule["show"] == "hidden"
-                                       else UsdGeom.Tokens.inherited)
-        if rule["show"] != "hidden":
+        if rule["show"] == "hidden":
+            img.CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible)
+        else:
+            img.MakeVisible()
             img.CreatePurposeAttr().Set({"render": UsdGeom.Tokens.render, "proxy": UsdGeom.Tokens.proxy,
                                          "both": UsdGeom.Tokens.default_}[rule["show"]])
 
