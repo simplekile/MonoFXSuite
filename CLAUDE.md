@@ -226,6 +226,16 @@
   `startnewlayer` + Python LOP, no manifest): Graft Stages flattens its branch into one layer, where the first
   frame's samples beat a clip, and a same-layer anim beats a cloth clip. That gives motion blur; a cache without
   time samples falls back to Sublayer `$F` (no blur, said on the node).
+- The node is **MonoFX Loader**, type `monofx::loader::1.0` in `otls/monofx_loader.hdalc` (the user's call, 2026-11-17:
+  it must not read "anim loader"; Tab > MonoFX names it `monofx_loader`). `build_hda.py` with no argument builds it
+  and the same node as `mono_anim_loader::2.2` (`otls/mono_anim_loader.hdalc`) so scenes saved with 2.2 open; the
+  root `OPcustomize` hides 2.2 from Tab (installer ships it). The manager's Upgrade moves 2.2 nodes over with
+  `changeNodeType` (same parms). `find_loaders` reads every instance of the loader types, so loaders inside a LOP
+  network in /obj (grooming scenes: `/obj/Character_Loader`) show in the manager; opened from a node, Load shot
+  builds in that node's network.
+- Source Asset parm pane: Asset Type (`mx_asset_group`, a folder of `01_assets`, "All") shortens the Asset menu,
+  which then lists only assets with a UV publish; Advanced shows Model Path (Anim Path hides). A part with nothing
+  published reads "none published", not Houdini's "(no entries)".
 - A locked LOP HDA makes its inner nodes on first cook: `node.children()` is empty before.
 - Source Asset (the user's decisions, 2026-11-17; design `docs/plans/anim_loader_asset_source.md`): the node (label
   **MonoFX Loader**, type still `mono_anim_loader::2.2`) loads either a shot's anim (`mx_source` shot) or the asset's

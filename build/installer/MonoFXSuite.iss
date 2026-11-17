@@ -52,6 +52,8 @@ Source: "..\..\config\*"; DestDir: "{app}\config"; Flags: ignoreversion recurses
 Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 ; Houdini reads OPmenu.xml from the root of each HOUDINI_PATH folder (MonoFX node menu)
 Source: "..\..\OPmenu.xml"; DestDir: "{app}"; Flags: ignoreversion
+; Houdini reads OPcustomize from each HOUDINI_PATH folder (hides the old Anim Loader 2.2 from Tab)
+Source: "..\..\OPcustomize"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\otls\*"; DestDir: "{app}\otls"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Blender add-on, staged here and copied into each Blender's scripts\addons after install (InstallBlenderAddon).
 Source: "..\..\tools\fx\monofx_pipeline_blender\monofx_pipeline_blender\*"; DestDir: "{app}\blender\monofx_pipeline_blender"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "__pycache__,*.pyc"; Tasks: blenderaddon

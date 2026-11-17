@@ -16,9 +16,15 @@ USD_EXTS = (".usd", ".usda", ".usdc")
 FX_MODE_CLIP = "clip"
 FX_MODE_SUBLAYER = "sublayer"
 
-HDA_TYPE = "mono_anim_loader::2.2"
+# MonoFX Loader (the user's call, 2026-11-17: the node must not read "anim loader"). The 2.2 type is still built,
+# hidden from the Tab menu (OPcustomize), so saved scenes open; the manager's Upgrade moves 2.2 nodes over.
+HDA_TYPE = "monofx::loader::1.0"
+HDA_FILE = "monofx_loader.hdalc"
+HDA_NODE_NAME = "monofx_loader"
+OLD_TYPE = "mono_anim_loader::2.2"
+OLD_FILE = "mono_anim_loader.hdalc"
 HDA_LABEL = "MonoFX Loader"  # the user's pick, 2026-11-17; the type name stays (saved scenes)
-LEGACY_TYPES = ("mono_anim_loader::2.1", "mono_anim_loader::2")
+LEGACY_TYPES = ("mono_anim_loader::2.2", "mono_anim_loader::2.1", "mono_anim_loader::2")
 # Character Loader (Dropbox HDA): Upgrade makes a 2.2 node with Source Asset (docs/plans/anim_loader_asset_source.md)
 CHARACTER_LOADER_PREFIX = "mono_character_loader"
 USER_DATA = "monofx_anim_loader"  # JSON {"shot", "anim_file"}: finds a shot's loaders whatever their names
@@ -48,6 +54,8 @@ P_SUBD_RULES = "mx_subd_rules"
 P_SOURCE = "mx_source"
 SOURCE_SHOT, SOURCE_ASSET = "shot", "asset"
 P_MODEL_VERSION, P_MODEL_FILE = "mx_model_version", "mx_model_file"
+P_MODEL_PATH = "mx_model_path"  # Advanced: the resolved model file (Anim Path is for Source Shot)
+P_ASSET_GROUP = "mx_asset_group"  # Source Asset: filters the Asset menu (01_assets/_characters, _props...)
 # Groom sits outside Geo in both sources (the user's pick): /<asset>/Groom/<name>, where lookdev binds hair.
 GROOM_ROOT = "/Groom"
 P_GROOM_TOPO = "mx_groom_topo"  # file the branch copies the groom topology from (first frame, or $F without samples)

@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Houdini
+- **MonoFX Loader** is its own node now (Tab > MonoFX > MonoFX Loader, named `monofx_loader`), no longer an "anim loader" in name, file or type. Scenes with the 2.2 node still open; the manager's **Upgrade** moves those nodes over, keeping every setting.
+- **MonoFX Loader** manager (shelf **MonoFX Loaders**) finds loaders in every LOP network, also inside /obj (grooming scenes), not only /stage; opened from a node, Load shot builds next to it.
+- **MonoFX Loader**, Source Asset: an **Asset Type** menu (Characters, Props...) shortens the Asset list, which shows only assets that have a UV publish; Advanced shows the **Model Path**; a part with nothing published says "none published".
+
 
 ## [0.1.32] - 2026-11-17
 

@@ -428,7 +428,7 @@ class AnimLoaderManager(QWidget):
         from concurrent.futures import ThreadPoolExecutor
 
         self.setObjectName(WINDOW_NAME)
-        self.setWindowTitle("Anim loaders")
+        self.setWindowTitle("MonoFX Loaders")
         self.s = scale
         self.backend = backend
         self.ctl = Controller(backend)
@@ -483,7 +483,7 @@ class AnimLoaderManager(QWidget):
 
         top, t = self._bar()
         top.setObjectName("top")
-        t.addWidget(self._label("Anim loaders", 17, QFont.Weight.DemiBold))
+        t.addWidget(self._label("MonoFX Loaders", 17, QFont.Weight.DemiBold))
         # Where: project and shot as crumbs with menus (Monos: a one-shot pick is a menu, not a combo box). In the
         # top bar, or in a row of their own when docked narrow (resizeEvent).
         self._project = ""
@@ -553,7 +553,8 @@ class AnimLoaderManager(QWidget):
         self.grid_view = self._view(grid=True)
         self.stack.addWidget(self.list_view)
         self.stack.addWidget(self.grid_view)
-        self.empty = self._label("No anim loaders in the scene yet. Pick a shot and press Load shot.", FS_BODY,
+        self.empty = self._label("No loaders in the scene yet. Pick a shot and press Load shot, or put down a "
+                                 "MonoFX Loader (Tab > MonoFX).", FS_BODY,
                                  color=TEXT_LABEL)
         self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.empty.setWordWrap(True)
@@ -972,8 +973,9 @@ class AnimLoaderManager(QWidget):
 _WINDOW: AnimLoaderManager | None = None
 
 
-def open_manager() -> AnimLoaderManager:
-    """Opens (or brings back) the one manager window in Houdini."""
+def open_manager(parent_path: str = "/stage") -> AnimLoaderManager:
+    """Opens (or brings back) the one manager window in Houdini. ``parent_path``: the LOP network Load shot
+    builds in (the node's own network when opened from a node)."""
     global _WINDOW
     import hou  # noqa: F401
 
@@ -981,6 +983,7 @@ def open_manager() -> AnimLoaderManager:
 
     if _WINDOW is not None:
         try:
+            _WINDOW.ctl.backend.parent_path = parent_path
             _WINDOW.refresh()
             _WINDOW.show()
             _WINDOW.raise_()
@@ -989,7 +992,7 @@ def open_manager() -> AnimLoaderManager:
         except RuntimeError:  # deleted with Houdini's main window
             _WINDOW = None
     parent = hou.qt.mainWindow()
-    _WINDOW = AnimLoaderManager(HoudiniBackend(), parent, scale=max(0.5, min(3.0, hou.ui.scaledSize(1000) / 1000.0)))
+    _WINDOW = AnimLoaderManager(HoudiniBackend(parent_path), parent, scale=max(0.5, min(3.0, hou.ui.scaledSize(1000) / 1000.0)))
     _WINDOW.setWindowFlag(Qt.WindowType.Window, True)
     _WINDOW.resize(int(1000 * _WINDOW.s), int(640 * _WINDOW.s))
     _WINDOW.show()
