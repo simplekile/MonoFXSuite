@@ -93,11 +93,11 @@ def _select(w, ui, path):
 
 def test_status_line_offers_the_shot_gap_and_textures(win):
     w, _ = win
-    assert w.gap_label.text() == "\u00b7 sh025 v006 has 1 output not in the scene: char_Ata"
+    assert w.gap_label.text() == "\u00b7 +1 in sh025 v006: char_Ata"
     assert not w.gap_link.isHidden()
     w.gap_link.click()
     assert w.backend.calls[-1] == ("load_shot", w.ctl.target_root, "sh025", "v006")
-    assert w.weight_label.text() == "textures 2.1 GB"
+    assert w.weight_label.text() == "2.1 GB" and not w.weight_icon.isHidden()
 
 
 def _item(w, ui, path):

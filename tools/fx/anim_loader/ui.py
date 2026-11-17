@@ -75,7 +75,9 @@ from tools.fx.auto_material.ui import (
     TEXT_LABEL,
     TEXT_META,
     TEXT_PRIMARY,
+    LUCIDE,
     _font,
+    _lucide_icon,
     _lucide_pixmap,
     _Thumbnails,
 )
@@ -83,6 +85,18 @@ from tools.fx.auto_material.logic import STATUS_MISSING as AM_MISSING
 from tools.fx.auto_material.logic import STATUS_OK as AM_OK
 from tools.fx.auto_material.logic import STATUS_PINNED as AM_WARN
 from tools.fx.auto_material.logic import STATUS_UPDATE as AM_UPDATE
+
+# Icons the manager adds to the suite's Lucide set (lucide.dev, ISC licence): fewer words, an icon per button
+# (the user's ask, 2026-11-17); every icon-only button keeps a tooltip and an accessible name.
+LUCIDE.update({
+    "list": '<path d="M3 12h.01"/><path d="M3 18h.01"/><path d="M3 6h.01"/><path d="M8 12h13"/>'
+            '<path d="M8 18h13"/><path d="M8 6h13"/>',
+    "layout-grid": '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/>'
+                   '<rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
+    "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+    "scan": '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/>'
+            '<path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
+})
 
 WINDOW_NAME = "AnimLoaderManager"
 PREFS = Path(os.environ.get("APPDATA", Path.home())) / "MonoFXSuite" / "anim_loader_prefs.json"
@@ -93,6 +107,11 @@ ROLE_ROW = Qt.ItemDataRole.UserRole + 10
 ROLE_HEADER = Qt.ItemDataRole.UserRole + 11
 
 
+def _border_px(scale: float) -> int:
+    """Width of a control's border: 2 px at least (1 px breaks on rounded corners), more under a large UI scale."""
+    return max(2, round(1.5 * scale))
+
+
 def scale_css(css: str, scale: float) -> str:
     """Every size in a style sheet times the UI scale (Houdini's x the window's); 1 px lines stay 1 px."""
     import re
@@ -101,7 +120,10 @@ def scale_css(css: str, scale: float) -> str:
         v = float(m.group(1))
         return m.group(0) if v <= 1 else f"{round(v * scale)}px"
 
-    return css if scale == 1 else re.sub(r"(\d+(?:\.\d+)?)px", one, css)
+    css = css if scale == 1 else re.sub(r"(\d+(?:\.\d+)?)px", one, css)
+    # a control's whole border (rounded): at least 2 px, after the scale (no double scaling); dividers
+    # (border-bottom, border-left...) stay hairlines
+    return re.sub(r"border:\s*1px", f"border: {_border_px(scale)}px", css)
 
 
 def chip(state: str, newer: str | None, version: str) -> tuple[str, str]:
@@ -336,7 +358,7 @@ class _ListDelegate(QStyledItemDelegate):
         p.setFont(_font(pt.px(FS_META), QFont.Weight.DemiBold))
         name_w = min(p.fontMetrics().horizontalAdvance(row.instance) + pt.px(4), name_end - name_x)
         self._text(p, QRect(name_x, line1.top(), name_w, line1.height()), row.instance, TEXT_PRIMARY, FS_META, True)
-        tag = "camera" if row.kind == "cam" else ("Anim Loader 2.1" if row.legacy else "")
+        tag = "camera" if row.kind == "cam" else ("old" if row.legacy else "")
         if tag:
             self._text(p, QRect(name_x + name_w + pt.px(8), line1.top(), max(0, name_end - name_x - name_w - pt.px(8)),
                                 line1.height()), tag, TEXT_LABEL, FS_SMALL)
@@ -544,6 +566,19 @@ class AnimLoaderManager(QWidget):
         b.setCursor(Qt.CursorShape.PointingHandCursor)
         return b
 
+    def _icon_button(self, icon: str, tip: str, style: str = STYLE_GHOST, text: str = "") -> QPushButton:
+        """A button that says it with an icon (text only when a number helps); the tooltip names it."""
+        b = self._button(text, style)
+        b.setIcon(_lucide_icon(icon, self.px(16), TEXT_PRIMARY))
+        b.setIconSize(QSize(self.px(16), self.px(16)))
+        b.setToolTip(tip)
+        b.setAccessibleName(tip.split(":")[0])
+        b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        if not text:
+            b.setFixedSize(self.px(34), self.px(34))
+            b.setStyleSheet(b.styleSheet() + self.css("QPushButton { padding: 0; }"))
+        return b
+
     def _bar(self) -> tuple[QWidget, QHBoxLayout]:
         w = QWidget()
         lay = QHBoxLayout(w)
@@ -555,6 +590,10 @@ class AnimLoaderManager(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
+        self.left = QWidget()  # top bar, status line and list; the inspector is the full-height column beside it
+        left_lay = QVBoxLayout(self.left)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(0)
 
         top, t = self._bar()
         top.setObjectName("top")
@@ -577,65 +616,44 @@ class AnimLoaderManager(QWidget):
         self.nav_box.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self._top_layout = t
         t.addWidget(self.nav_box, 1)
-        self.view_buttons = QButtonGroup(self)
-        for key, text in (("list", "List"), ("grid", "Grid")):
-            b = self._button(text, STYLE_PILL)
-            b.setCheckable(True)
-            b.setObjectName(f"view_{key}")
-            b.setToolTip(f"Show the loaders as a {text.lower()}")
-            b.clicked.connect(lambda _=False, k=key: self.set_view(k))
-            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-            self.view_buttons.addButton(b)
-            t.addWidget(b)
-        self.load_button = self._button("+ Add \u25be", STYLE_GHOST)
-        self.load_button.setToolTip("Load a shot (a loader for every anim output that has none yet) or add assets")
-        self.load_menu = self._menu_for(self.load_button)
-        self.load_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        t.addWidget(self.load_button)
-        root.addWidget(top)
-        self.nav_row, self._nav_layout = self._bar()
-        self.nav_row.setObjectName("nav_row")
-        self._nav_layout.setContentsMargins(self.px(10), 0, self.px(16), self.px(6))
-        self.nav_row.hide()
-        root.addWidget(self.nav_row)
-        root.addWidget(self._line())
-
-        # View bar: what the viewport shows (view state and Show in Viewport), apart from the action bar
-        vbar, vb = self._bar()
-        vbar.setObjectName("viewbar")
-        vb.setContentsMargins(self.px(16), self.px(6), self.px(16), self.px(6))
-        self.viewport_button = self._button("Viewport \u25be", STYLE_GHOST)
-        self.viewport_button.setToolTip("Solo, lookdev and groom in the viewport, Draw Hulls Only")
-        self.viewport_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
-        self.viewport_menu = self._menu_for(self.viewport_button)
-        self.viewport_menu.aboutToShow.connect(self._fill_viewport_menu)
-        vb.addWidget(self.viewport_button)
-        # what the viewport shows now, in words (Monos: state is read, not a toggle that hides what it wrote)
-        self.view_state = self._label("", FS_SMALL, color=TEXT_LABEL)
-        vb.addWidget(self.view_state)
-        self.solo_off = QPushButton("Show all")
-        self.solo_off.setStyleSheet(self.css(STYLE_LINK))
-        self.solo_off.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.solo_off.setMinimumHeight(self.px(24))
-        self.solo_off.setToolTip("End the solo: every loader in the viewport again")
-        self.solo_off.clicked.connect(self._run(self.ctl.toggle_solo))
-        vb.addWidget(self.solo_off)
-        vb.addStretch(1)
         self.filter_edit = QLineEdit()
         self.filter_edit.setObjectName("filter")
         self.filter_edit.setPlaceholderText("Filter")
         self.filter_edit.setToolTip("Only loaders whose name or asset holds this text")
-        self.filter_edit.setFixedWidth(self.px(170))
-        self.filter_edit.setMinimumHeight(self.px(24))
+        self.filter_edit.addAction(_lucide_icon("search", self.px(14), TEXT_LABEL),
+                                   QLineEdit.ActionPosition.LeadingPosition)
+        self.filter_edit.setFixedWidth(self.px(150))
+        self.filter_edit.setMinimumHeight(self.px(32))
         self.filter_edit.setStyleSheet(self.css(
             f"QLineEdit#filter {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};"
-            f" border-radius: 7px; padding: 3px 8px; font-size: {FS_SMALL}px; }}"
+            f" border-radius: 8px; padding: 3px 6px; font-size: {FS_SMALL}px; }}"
             f"QLineEdit#filter:focus {{ border: 1px solid {ACCENT}; }}"))
         self.filter_edit.textChanged.connect(lambda _t: self._show_rows())
-        vb.addWidget(self.filter_edit)
-        self.view_bar = vbar
-        root.addWidget(vbar)
-        root.addWidget(self._line())
+        t.addWidget(self.filter_edit)
+        self.viewport_button = self._icon_button("eye", "Viewport: solo, lookdev and groom in the viewport, "
+                                                        "draw hulls only")
+        self.viewport_menu = self._menu_for(self.viewport_button)
+        self.viewport_menu.aboutToShow.connect(self._fill_viewport_menu)
+        t.addWidget(self.viewport_button)
+        self.view_buttons = QButtonGroup(self)
+        for key, icon, text in (("list", "list", "List"), ("grid", "layout-grid", "Grid")):
+            b = self._icon_button(icon, f"{text}: show the loaders as a {text.lower()}", STYLE_PILL)
+            b.setCheckable(True)
+            b.setObjectName(f"view_{key}")
+            b.clicked.connect(lambda _=False, k=key: self.set_view(k))
+            self.view_buttons.addButton(b)
+            t.addWidget(b)
+        self.load_button = self._icon_button("plus", "Add: load a shot, or add assets")
+        self.load_menu = self._menu_for(self.load_button)
+        t.addWidget(self.load_button)
+        left_lay.addWidget(top)
+        self.nav_row, self._nav_layout = self._bar()
+        self.nav_row.setObjectName("nav_row")
+        self._nav_layout.setContentsMargins(self.px(10), 0, self.px(16), self.px(6))
+        self.nav_row.hide()
+        left_lay.addWidget(self.nav_row)
+        left_lay.addWidget(self._line())
+
 
         # Status line: what the primary does, how many loaders; the heavy-shot note on the right
         status, st = self._bar()
@@ -648,30 +666,44 @@ class AnimLoaderManager(QWidget):
         self.heavy_label.setToolTip("Estimated viewport polygons of the subdivided meshes (faces x 16)")
         for lab in (self.headline, self.heavy_label):  # wrapped until resizeEvent knows the width: a label
             lab.setWordWrap(True)                        # that does not wrap sets the window's minimum width
-        self.hulls_link = QPushButton("Draw Hulls Only")
+        self.hulls_link = QPushButton("Hulls only")
         self.hulls_link.setStyleSheet(self.css(STYLE_LINK))
         self.hulls_link.setCursor(Qt.CursorShape.PointingHandCursor)
         self.hulls_link.setToolTip("The /stage viewports draw hulls: lighter to draw and less memory")
         self.hulls_link.clicked.connect(self._hulls)
         self.gap_label = self._label("", FS_META, color=TEXT_LABEL)
         self.gap_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self.gap_link = QPushButton("Add it")
+        self.gap_link = QPushButton("Add")
         self.gap_link.setStyleSheet(self.css(STYLE_LINK))
         self.gap_link.setCursor(Qt.CursorShape.PointingHandCursor)
         self.gap_link.setToolTip("A loader for each output of the shot's newest anim version that the scene lacks")
         self.gap_link.clicked.connect(self._run(self.ctl.add_missing))
         self.gap_link.setMinimumHeight(self.px(24))  # a 24 px target (WCAG 2.5.8)
         self.weight_label = self._label("", FS_SMALL, color=TEXT_LABEL)
-        self.weight_label.setToolTip("Files the lookdevs pull (textures, UDIM tiles), read from the publishes")
+        self.weight_label.setToolTip("Textures: the files the lookdevs pull (UDIM tiles too), read from the publishes")
+        self.weight_icon = QLabel()
+        self.weight_icon.setPixmap(_lucide_pixmap("image", self.px(14), TEXT_LABEL))
+        self.weight_icon.setToolTip(self.weight_label.toolTip())
+        # what the viewport shows now, in words (Monos: state is read, not a toggle that hides what it wrote)
+        self.view_state = self._label("", FS_SMALL, color=TEXT_LABEL)
+        self.solo_off = QPushButton("Show all")
+        self.solo_off.setStyleSheet(self.css(STYLE_LINK))
+        self.solo_off.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.solo_off.setMinimumHeight(self.px(24))
+        self.solo_off.setToolTip("End the solo: every loader in the viewport again")
+        self.solo_off.clicked.connect(self._run(self.ctl.toggle_solo))
         st.addWidget(self.headline)
         st.addWidget(self.status_meta)
         st.addWidget(self.gap_label, 1)
         st.addWidget(self.gap_link)
+        st.addWidget(self.view_state)
+        st.addWidget(self.solo_off)
+        st.addWidget(self.weight_icon)
         st.addWidget(self.weight_label)
         st.addWidget(self.heavy_label)
         st.addWidget(self.hulls_link)
-        root.addWidget(status)
-        root.addWidget(self._line())
+        left_lay.addWidget(status)
+        left_lay.addWidget(self._line())
 
         self.stack = QStackedWidget()
         self.list_view = self._view(grid=False)
@@ -691,7 +723,8 @@ class AnimLoaderManager(QWidget):
         self.split.setHandleWidth(self.px(4))
         self.split.setStyleSheet(f"QSplitter::handle {{ background: {LINE}; }}"
                                  f"QSplitter::handle:hover {{ background: {TEXT_META}; }}")
-        self.split.addWidget(self.stack)
+        left_lay.addWidget(self.stack, 1)
+        self.split.addWidget(self.left)
         self.subd_panel = InspectorPanel(self)
         self.subd_panel.setMinimumWidth(1)  # set by resizeEvent: 360 beside the list, free when stacked
         self.subd_panel.hide()  # only while a loader is selected
@@ -716,19 +749,18 @@ class AnimLoaderManager(QWidget):
         self._actions_layout = b
         b.addWidget(self.result, 1)  # the result line beside the buttons (above them when narrow)
         b.addStretch(0)  # keeps the buttons right when the result line moves above them
-        self.handoff_button = self._button("Hand off\u2026", STYLE_GHOST)
-        self.handoff_button.setToolTip("A self-contained package of the selected loaders (else every one) for people "
-                                       "without MonoFX: one USD each, textures copied, paths relative")
+        self.handoff_button = self._icon_button("package", "Hand off: a self-contained package of the selected "
+                                                "loaders (else every one) for people without MonoFX: one USD each, "
+                                                "textures copied, paths relative")
         self.handoff_button.clicked.connect(self._handoff)
-        self.undo_button = self._button("Undo", STYLE_GHOST)
-        self.undo_button.setToolTip("Houdini's undo of the last change")
+        self.undo_button = self._icon_button("undo", "Undo: Houdini's undo of the last change")
         self.undo_button.clicked.connect(self._undo)
         self.retarget_button = self._button("", STYLE_GHOST)
         self.retarget_button.setToolTip("Move loaders copied from another shot to the shot in the top bar: "
                                         "newest anim there, groom / cloth from there, lookdev and settings kept")
         self.retarget_button.clicked.connect(self._run(lambda: self.ctl.retarget()))
         self.retarget_button.hide()
-        self.upgrade_button = self._button("", STYLE_GHOST)
+        self.upgrade_button = self._icon_button("circle-up", "Upgrade", text=" ")
         self.upgrade_button.setToolTip("Change Anim Loader 2.1 and Character Loader 3.2 nodes to 2.2, keeping "
                                        "their settings")
         self.upgrade_button.clicked.connect(self._run(self.ctl.upgrade_all))
@@ -888,7 +920,7 @@ class AnimLoaderManager(QWidget):
         n = sum(1 for r in rows if not r.legacy)
         self.status_meta.setText(f"\u00b7 {n} loader{'s' if n != 1 else ''}" if rows else "")
         heavy = self.ctl.heavy_polygons()
-        self.heavy_label.setText(f"Heavy shot \u00b7 ~{heavy / 1e6:.1f} M subdivision polygons" if heavy else "")
+        self.heavy_label.setText(f"Heavy \u00b7 ~{heavy / 1e6:.1f} M polygons" if heavy else "")
         self.heavy_label.setVisible(bool(heavy))
         self.hulls_link.setVisible(bool(heavy) and hasattr(self.backend, "set_hulls_only"))
         self.primary.setVisible(action is not None)
@@ -903,7 +935,8 @@ class AnimLoaderManager(QWidget):
                 "hulls": "Draw Hulls Only in the /stage viewports: lighter to draw and less memory",
             }[action[0]])
         n_old = len(self.ctl.legacy_paths())
-        self.upgrade_button.setText(self.ctl.upgrade_label())
+        self.upgrade_button.setText(str(len(self.ctl.legacy_paths())))  # the icon says upgrade, the tip says it all
+        self.upgrade_button.setToolTip(f"{self.ctl.upgrade_label()}: to MonoFX Loader, keeping their settings")
         self.upgrade_button.setVisible(n_old > 0 and (action is None or action[0] != "upgrade"))
         self.retarget_button.setText(self.ctl.retarget_label())
         self.retarget_button.setVisible(bool(self.ctl.retarget_paths()) and (action is None or action[0] != "retarget"))
@@ -911,7 +944,8 @@ class AnimLoaderManager(QWidget):
         self.gap_label.setText(("\u00b7 " + gap) if gap else "")
         self.gap_link.setVisible(bool(gap))
         total = self.ctl.weight_total()
-        self.weight_label.setText(f"textures {total / 1e9:.1f} GB" if total >= 1e8 else "")
+        self.weight_label.setText(logic.size_word(total) if total >= 1e8 else "")
+        self.weight_icon.setVisible(bool(self.weight_label.text()) and self.weight_label.isVisibleTo(self))
         bits = []
         if self.ctl.soloed:
             bits.append(f"Solo \u00b7 {len(self.ctl.soloed)} loader{'s' if len(self.ctl.soloed) != 1 else ''}")
@@ -959,6 +993,7 @@ class AnimLoaderManager(QWidget):
             self._top_layout.insertWidget(1, self.nav_box, 1)
         self.nav_row.setVisible(narrow)
         self.weight_label.setVisible(not narrow and bool(self.weight_label.text()))  # the tooltip-level detail
+        self.weight_icon.setVisible(self.weight_label.isVisible())
         for lab in (self.headline, self.heavy_label, self.gap_label):  # wrap when docked narrow, never widen
             lab.setWordWrap(narrow)
         if narrow and self.result.parentWidget() is not self.result_row:
@@ -1471,11 +1506,12 @@ class InspectorPanel(QWidget):
             self.news_text.setText("\n".join(lines + others) or f"{w.part} {w.old} \u2192 {w.new}")
         self.actions_hint.setText("Right-click the camera: update, open folder, frame." if row.kind == "cam" else
                                   "Right-click the loader: update, source, open folder, open in Monos, frame.")
-        self.actions_hint.setVisible(not row.legacy)
+        self.actions_hint.setVisible(False)  # fewer words: the row's tooltip names the right-click menu
         detail = self.owner.ctl.subd_detail(row.node_path)
         self.path = row.node_path if detail and detail["plan"] else ""
         self.tree.setVisible(bool(self.path))
-        self.hint.setVisible(bool(self.path))
+        self.hint.setVisible(False)
+        self.tree.setToolTip("Right-click meshes: scheme, dicing, clear, apply to every instance")
         self.load.setVisible(row.kind != "cam")  # a camera has nothing to subdivide: no line about it
         if not self.path:
             self.load.setText("No meshes to subdivide.")

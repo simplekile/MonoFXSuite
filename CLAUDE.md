@@ -245,8 +245,15 @@
   source, what is new in a newer version (date, Monos work file author from `.monos/authors.json` of the same vNNN,
   outputs, frames, meshes, size); its actions are on the row's right-click menu (Update to <part> <version>, Switch to
   Source Shot / Asset, Open folder, Open in Monos `monos://open?project&page&e=sha256[:10]`, Frame in the viewport).
-  The list is a table: a sticky column header, group bands, zebra rows, column separators (the user's ask). Every
-  button has pressed and selected + hover looks (Monos states). Hand off... writes `<instance>_handoff/<instance>.usd` (the loader's stage flattened, textures copied,
+  The list is a table: a sticky column header, group bands, zebra rows, column separators, every column but the
+  name centred, Textures a column of its own (the user's asks). Every button has pressed and selected + hover looks
+  (Monos states). Fewer words (the user's ask): the top bar is icons (Filter with a search icon, eye = Viewport
+  menu, list / grid, plus = Add menu), the view bar row is gone (the viewport state sits on the status line), Hand
+  off / Undo / Upgrade are icons (Upgrade with its count), each icon button has a tooltip and an accessible name;
+  only the primary keeps words. The inspector is a full-height column from the window's top to the action bar.
+  A rounded control's border is 2 px at least and follows the UI scale (`scale_css`): Qt does not anti-alias a
+  stylesheet border, and 1 px broke on the corners; dividers stay hairlines. Viewers are found inside Houdini 22's
+  ContextViewer too (`scene_viewers`). Hand off... writes `<instance>_handoff/<instance>.usd` (the loader's stage flattened, textures copied,
   relative paths) for people without MonoFX.
 - Where new loaders go: a network with the shot layout (`merge_actors`, `merge_cameras`, `merge_environments`,
   skill solaris-shot-stage-layout) gets them wired there (Load shot: geo -> actors, camera -> cameras; Add: characters

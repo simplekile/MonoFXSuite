@@ -55,7 +55,8 @@ def test_list_shows_every_loader_grouped(make):
     assert headers == ["sh025 · 3", "sh900 · 1", "old loaders · 1"]
     assert w.headline.text() == "2 behind, 1 needs an asset, 1 old loader"
     assert w.primary.text() == "Update 2 behind" and w.primary.isEnabled()
-    assert w.upgrade_button.text() == "Upgrade 1 old" and not w.upgrade_button.isHidden()
+    assert w.upgrade_button.text() == "1" and not w.upgrade_button.isHidden()  # icon + count, the tip says it
+    assert w.upgrade_button.toolTip().startswith("Upgrade 1 old")
 
 
 def test_grid_and_list_hold_the_same_rows_and_the_view_is_remembered(make):
@@ -242,7 +243,11 @@ def test_scale_css():
     from tools.fx.anim_loader.ui import scale_css
 
     assert scale_css("a { padding: 9px 14px; font-size: 15px; border: 1px solid; }", 1.5) == \
-        "a { padding: 14px 21px; font-size: 22px; border: 1px solid; }"
+        "a { padding: 14px 21px; font-size: 22px; border: 2px solid; }"
+    # a rounded control's border is 2 px at least (1 px breaks on its corners); dividers stay hairlines
+    assert scale_css("a { border: 1px solid; border-bottom: 1px solid; }", 1) == \
+        "a { border: 2px solid; border-bottom: 1px solid; }"
+    assert scale_css("a { border: 1px solid; }", 2.5) == "a { border: 4px solid; }"
 
 
 def test_primary_button_follows_the_one_action(make):
@@ -277,7 +282,7 @@ def test_heavy_shot_is_a_note_on_the_status_line(make):
     b.status["/stage/a"]["lookdev"] = (STATUS_OK, None)
     b.status["/stage/c"]["anim"] = (STATUS_OK, None)
     w.refresh(); w.wait()
-    assert "M subdivision polygons" in w.heavy_label.text() and not w.hulls_link.isHidden()
+    assert "M polygons" in w.heavy_label.text() and not w.hulls_link.isHidden()
     assert w.primary.isHidden() and "Heavy" not in w.headline.text()   # a note, not the primary
     w.hulls_link.click()
     assert calls == [1] and "memory" in w.result.text()

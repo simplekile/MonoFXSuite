@@ -293,8 +293,7 @@ class Controller:
             return ""
         names = ", ".join(o.file.rsplit(".", 1)[0].removeprefix("geo_").removeprefix("cam_") for o in missing[:3])
         more = f" +{len(missing) - 3}" if len(missing) > 3 else ""
-        return (f"{self.target_shot} {version} has {_plural(len(missing), 'output')} not in the scene: "
-                f"{names}{more}")
+        return f"+{len(missing)} in {self.target_shot} {version}: {names}{more}"
 
     def add_missing(self) -> None:
         version, missing = self.gaps()

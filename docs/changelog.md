@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Houdini
+- **MonoFX Loaders** manager, fewer words: the top bar is icons (filter, viewport menu, list / grid, add), the separate viewport row is gone, Hand off / Undo / Upgrade are icons with tooltips. The inspector runs the full height on the right. Rounded borders are 2 px and follow Houdini's UI scale (1 px looked broken on the corners).
 - **MonoFX Loader**: Draw Hulls Only and Frame find the Scene Viewer inside Houdini 22's Context Viewer pane; before, they said "No viewer shows /stage" while one did.
 - **MonoFX Loaders** manager: a part that had nothing published when the loader was made, and has a version now, shows as newer ("– → V001") with Update, not as missing. Textures get their own column (Subd was cut off); small files read in KB, not "0.0 MB"; shots are listed before assets. A camera's inspector shows only what a camera has (its anim), and what is new in its anim.
 
