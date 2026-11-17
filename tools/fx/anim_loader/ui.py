@@ -1681,6 +1681,45 @@ class _Section(QPushButton):
         self.body.setVisible(has and self.isChecked())
 
 
+def _mesh_tree_class():
+    """A tree that paints its own branch area: Houdini 22's style paints a tree's rows grey (#303030 / #3a3a3a)
+    whatever its palette or alternate-background-color says (not offscreen; measured in the live window). The cells
+    get solid colours from the style sheet and the items (band, zebra); the branch area left of them is filled here
+    in the row's colour, with a chevron on a group."""
+    from PySide6.QtWidgets import QTreeWidget
+
+    class _MeshTree(QTreeWidget):
+        def drawBranches(self, painter, rect, index):  # noqa: N802 (Qt)
+            if self.selectionModel().isSelected(index):
+                color = SELECTED
+            elif index.parent().isValid():
+                color = MESH_ZEBRA if index.row() % 2 else BG_APP
+            else:
+                color = MESH_BAND
+            painter.fillRect(rect, QColor(color))
+            if not self.model().hasChildren(index):
+                return
+            painter.save()
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QPen(QColor(TEXT_LABEL), max(1.2, self.indentation() / 10)))
+            c = rect.center()
+            cx = rect.right() - self.indentation() / 2 + 1
+            s = self.indentation() / 5
+            path = QPainterPath()
+            if self.isExpanded(index):  # v
+                path.moveTo(cx - s, c.y() - s / 2)
+                path.lineTo(cx, c.y() + s / 2)
+                path.lineTo(cx + s, c.y() - s / 2)
+            else:  # >
+                path.moveTo(cx - s / 2, c.y() - s)
+                path.lineTo(cx + s / 2, c.y())
+                path.lineTo(cx - s / 2, c.y() + s)
+            painter.drawPath(path)
+            painter.restore()
+
+    return _MeshTree
+
+
 class InspectorPanel(QWidget):
     """The selected loader (shown only while one is selected): name, node and versions, then its meshes by group
     with faces, where the scheme comes from (only where it differs from the group), scheme and dicing (that column
@@ -1695,23 +1734,30 @@ class InspectorPanel(QWidget):
         self.path = ""
         self.asset = ""
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(owner.px(14), owner.px(12), owner.px(14), owner.px(10))
+        # the meshes table runs edge to edge (the user's ask: no strips beside it); the rest keeps its side margins
+        side = owner.px(14)
+        lay.setContentsMargins(0, owner.px(12), 0, owner.px(10))
         lay.setSpacing(owner.px(4))
+        head = QWidget()
+        top = QVBoxLayout(head)
+        top.setContentsMargins(side, 0, side, 0)
+        top.setSpacing(owner.px(4))
+        lay.addWidget(head)
         self.title = owner._label("", 15, QFont.Weight.DemiBold)  # the one bold line of the inspector
         self.title.setWordWrap(True)
-        lay.addWidget(self.title)
-        lay.addSpacing(owner.px(6))
+        top.addWidget(self.title)
+        top.addSpacing(owner.px(6))
         self.details = _Props(owner)  # node, kind, shot / asset, versions, textures, subdivision
         self.details_head = _Section(owner, "Details", "details", self.details)
-        lay.addWidget(self.details_head)
-        lay.addWidget(self.details)
-        lay.addSpacing(owner.px(6))
+        top.addWidget(self.details_head)
+        top.addWidget(self.details)
+        top.addSpacing(owner.px(6))
         self.news = _Props(owner)  # which part, version, published, by, what changed
         self.news_head = _Section(owner, "Newer version", "news", self.news)
-        lay.addWidget(self.news_head)
-        lay.addWidget(self.news)
+        top.addWidget(self.news_head)
+        top.addWidget(self.news)
         lay.addSpacing(owner.px(6))
-        self.tree = QTreeWidget()
+        self.tree = _mesh_tree_class()()
         self.tree.setObjectName("subdTree")
         self.tree.setColumnCount(5)
         self.tree.setHeaderLabels(["MESH", "FACES", "FROM", "SCHEME", "DICE"])
@@ -1719,12 +1765,25 @@ class InspectorPanel(QWidget):
             self.tree.headerItem().setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setRootIsDecorated(True)
-        self.tree.setAlternatingRowColors(True)
+        self.tree.setIndentation(owner.px(14))  # the names need the room more than the tree lines
+        self.tree.setAlternatingRowColors(False)  # zebra: set on the mesh items (Houdini ignores the palette)
         self.tree.setStyleSheet(owner.css(
-            f"QTreeWidget#subdTree {{ background: {BG_APP}; alternate-background-color: {MESH_ZEBRA};"
+            f"QTreeWidget#subdTree {{ background: {BG_APP};"
             f" color: {TEXT_PRIMARY}; border: none; font-size: {FS_SMALL}px; outline: none; }}"
             f"QTreeWidget#subdTree::item {{ height: 28px; border-right: 1px solid {LINE};"
-            f" border-bottom: 1px solid {LINE}; padding: 0 4px; }}"
+            f" border-bottom: 1px solid {LINE}; padding: 0 4px; background: {BG_APP}; }}"
+            # the scroll bars sit inside the table, thin, on its own colour, and show only when needed
+            f"QTreeWidget#subdTree QScrollBar:vertical {{ background: transparent; width: 8px; margin: 2px; border: none; }}"
+            f"QTreeWidget#subdTree QScrollBar:horizontal {{ background: transparent; height: 8px; margin: 2px;"
+            f" border: none; }}"
+            f"QTreeWidget#subdTree QScrollBar::handle {{ background: {LINE}; border-radius: 2px; min-height: 24px;"
+            f" min-width: 24px; }}"
+            f"QTreeWidget#subdTree QScrollBar::handle:hover {{ background: {TEXT_META}; }}"
+            f"QTreeWidget#subdTree QScrollBar::add-line, QTreeWidget#subdTree QScrollBar::sub-line"
+            f" {{ width: 0; height: 0; border: none; background: none; }}"
+            f"QTreeWidget#subdTree QScrollBar::add-page, QTreeWidget#subdTree QScrollBar::sub-page"
+            f" {{ background: none; }}"
+            f"QTreeWidget#subdTree QAbstractScrollArea::corner {{ background: {BG_APP}; }}"
             f"QTreeWidget#subdTree::item:hover {{ background: {BG_HOVER}; }}"
             f"QTreeWidget#subdTree::item:selected {{ background: {SELECTED}; color: {TEXT_PRIMARY}; }}"
             f"QTreeWidget#subdTree::item:selected:hover {{ background: #2e3c5f; }}"
@@ -1744,9 +1803,12 @@ class InspectorPanel(QWidget):
         self._name_width = 0  # the width the artist dragged the name column to (kept across loaders)
         head.sectionResized.connect(lambda i, _old, new: setattr(self, "_name_width", new) if i == 0
                                     and self.tree.isVisible() and not getattr(self, "_filling", False) else None)
+        self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         lay.addWidget(self.tree, 100)  # the meshes take the room; without them the stretch below does
         self.hint = owner._label("Right-click meshes to set their scheme or dicing.", FS_SMALL, color=TEXT_LABEL)
         self.hint.setWordWrap(True)
+        self.hint.setContentsMargins(side, 0, side, 0)
         lay.addWidget(self.hint)
         lay.addStretch(1)
 
@@ -1857,7 +1919,7 @@ class InspectorPanel(QWidget):
                 if col:
                     g.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
             self.tree.addTopLevelItem(g)
-            for m in meshes:
+            for i, m in enumerate(meshes):
                 c = plan[m]
                 item = QTreeWidgetItem([m.rsplit("/", 1)[-1], _faces_word(faces.get(m, 0)),
                                         "" if c.source == g_from else c.source, SCHEME_WORD.get(c.scheme, c.scheme),
@@ -1866,6 +1928,9 @@ class InspectorPanel(QWidget):
                 item.setToolTip(0, m)
                 for col in range(1, 5):
                     item.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
+                if i % 2:  # zebra, the same rows _MeshTree.drawBranches fills
+                    for col in range(5):
+                        item.setBackground(col, QColor(MESH_ZEBRA))
                 if c.source == "shot":
                     for col in (2, 3):
                         item.setForeground(col, QColor(ACCENT))
@@ -1876,18 +1941,19 @@ class InspectorPanel(QWidget):
         QTimer.singleShot(0, self._fit_name)  # again once the tree has its width
 
     def _fit_name(self) -> None:
-        """The name column: the width the artist dragged it to, else what the other columns leave."""
+        """The name column fills what the other columns leave (never a strip of nothing on the right, never a name
+        column squeezed to nothing); dragging its edge wider keeps that width, with a sideways scroll."""
         self._filling = True
         for col in range(1, 5):
             self.tree.resizeColumnToContents(col)
         rest = sum(self.tree.columnWidth(c) for c in range(1, 5) if not self.tree.isColumnHidden(c))
-        free = self.tree.viewport().width() - rest - self.owner.px(8)  # no sideways scroll for a few px
-        self.tree.setColumnWidth(0, self._name_width or max(self.owner.px(120), free))
+        free = self.tree.viewport().width() - rest  # exactly the width: no strip, no sideways scroll
+        self.tree.setColumnWidth(0, max(self.owner.px(90), free, self._name_width))
         self._filling = False
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if not self._name_width and self.tree.topLevelItemCount():
+        if self.tree.topLevelItemCount():
             self._fit_name()
 
     @staticmethod
