@@ -205,8 +205,12 @@ def test_subd_menu_clear_and_apply(make):
     menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
     _act(menu, ui.InspectorPanel.MENU_CLEAR).trigger()
     assert w.backend.calls[-1] == ("clear_subd", "/stage/b", ["Geo/Outfit_grp/**"])
+    # only one char_Helen loader in the scene: nothing to copy to, no item
     menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
-    _act(menu, "Copy these overrides to every char_Helen").trigger()
+    assert not any(a.text().startswith("Same subdivision") for a in menu.actions())
+    w.subd_panel.other_instances = lambda: ["char_Helen_inst02"]
+    menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
+    _act(menu, "Same subdivision on the other 1 char_Helen loader").trigger()
     assert w.backend.calls[-1] == ("subd_to_asset", "/stage/b")
 
 
@@ -382,9 +386,18 @@ def test_subd_menu_says_what_it_does_and_every_row_has_an_icon(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/b")
     menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
-    acts = [a for a in menu.actions() if not a.isSeparator()]
+    acts = [a for a in menu.actions() if not a.isSeparator()][1:]  # the first is the head band (a widget)
     assert all(not a.icon().isNull() for a in acts)
     assert not any(a.isCheckable() for a in acts)  # no check column pushing some rows in
     dicing = next(a.menu() for a in acts if a.text() == ui.InspectorPanel.MENU_DICING)
     _act(dicing, "0.5").trigger()
     assert w.backend.calls[-1][2:] == (("Geo/Outfit_grp/**",), None, 0.5)
+
+
+def test_subd_menu_marks_the_current_choice(make):
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/b")
+    geo = w.subd_panel.tree.topLevelItem(0)
+    for item in (geo.child(1), geo.child(1).child(0)):  # Outfit_grp and its mesh: from the lookdev, no override
+        menu = w.subd_panel.menu_for(item)
+        assert [a.text() for a in menu.actions() if a.data() == "current"] == [ui.InspectorPanel.MENU_PUBLISH]

@@ -2081,15 +2081,15 @@ class InspectorPanel(QWidget):
         def icon(name, color=TEXT_LABEL):
             return _crisp_icon(name, size, color)
 
+        # what the menu acts on: a band of its own, not a greyed-out item (the user's ask)
         if len(pats) > 1:
-            head = menu.addAction(icon("layers"), f"{len(pats)} rows selected")
+            pix, name, note = icon("layers").pixmap(size), f"{len(pats)} rows selected", ""
         else:
             n = sum(1 for _ in self._leaves(item))
             kind = item.data(0, ROLE_PRIM) or "mesh"
-            head = menu.addAction(QIcon(_prim_icon(kind, size)),
-                                  item.text(0) + (f", {n} mesh{'es' if n != 1 else ''}" if kind != "mesh" else ""))
-        head.setEnabled(False)
-        menu.addSeparator()
+            pix, name = _prim_icon(kind, size), item.text(0)
+            note = f"{n} mesh{'es' if n != 1 else ''}" if kind != "mesh" else ""
+        menu.addAction(self._menu_head(menu, pix, name, note))
         overridden = self._source_of(item) == "shot"
         current = item.text(3) if overridden else ""
         for label, scheme, name, on in ((self.MENU_PUBLISH, "publish", "file-box", not overridden),
@@ -2097,6 +2097,7 @@ class InspectorPanel(QWidget):
                                         (self.MENU_CATMULL, "catmullClark", "sparkles",
                                          current == SCHEME_WORD["catmullClark"])):
             act = menu.addAction(icon("check", ACCENT) if on else icon(name), label)
+            act.setData("current" if on else "")
             act.triggered.connect(lambda _=False, sc=scheme: self.set_scheme(pats, sc))
         dicing = QMenu(self.MENU_DICING, menu)  # parented: addMenu's own submenu was deleted with its wrapper
         dicing.setIcon(icon("sliders"))
@@ -2113,10 +2114,50 @@ class InspectorPanel(QWidget):
             act.triggered.connect(lambda _=False, v=value: self.set_dicing(pats, v))
         menu.addSeparator()
         menu.addAction(icon("undo"), self.MENU_CLEAR).triggered.connect(lambda _=False: self.clear(pats))
-        what = f"every {self.asset}" if self.asset else "every instance"
-        menu.addAction(icon("link"), f"Copy these overrides to {what}").triggered.connect(
-            lambda _=False: self.to_asset())
+        # this loader's whole subdivision setup onto the asset's other loaders (its instances in the scene); only when
+        # there are some (the user asked what "Copy these overrides" did)
+        others = self.other_instances()
+        if others:
+            act = menu.addAction(icon("link"), f"Same subdivision on the other {len(others)} {self.asset} "
+                                               f"loader{'s' if len(others) != 1 else ''}")
+            act.setToolTip("Every mesh's scheme and dicing of this loader, set on " + ", ".join(others))
+            act.triggered.connect(lambda _=False: self.to_asset())
+        menu.setToolTipsVisible(True)
         return menu
+
+    def other_instances(self) -> list[str]:
+        """The other MonoFX Loaders of this loader's asset in the scene (what the subdivision can be copied to)."""
+        if not self.asset:
+            return []
+        return [r.instance for r in self.owner.ctl.rows() if r.asset == self.asset and r.node_path != self.path
+                and r.kind == "geo" and not r.legacy and not getattr(r, "baked", False)]
+
+    def _menu_head(self, menu, pix, name: str, note: str):
+        """The menu's first row: the prim's icon and name on a lighter band, a firm line under it."""
+        from PySide6.QtWidgets import QWidgetAction
+
+        px = self.owner.px
+        box = QWidget()
+        box.setObjectName("menuHead")
+        box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        box.setStyleSheet(self.owner.css(f"QWidget#menuHead {{ background: {BG_HOVER};"
+                                         f" border-bottom: 2px solid {LINE}; }}"))
+        row = QHBoxLayout(box)
+        row.setContentsMargins(px(6), px(9), px(16), px(9))  # icon and name over the items' own
+        row.setSpacing(px(14))
+        ic = QLabel()
+        ic.setPixmap(pix)
+        ic.setStyleSheet("background: transparent;")
+        row.addWidget(ic)
+        row.addWidget(self.owner._label(name, FS_SMALL + 1, QFont.Weight.DemiBold))
+        row.addStretch(1)
+        if note:
+            row.addWidget(self.owner._label(note, FS_SMALL, color=TEXT_LABEL))
+        wa = QWidgetAction(menu)
+        wa.setDefaultWidget(box)
+        wa.setEnabled(False)
+        menu._head = box  # noqa: SLF001 (keep the wrapper alive with the menu)
+        return wa
 
     @staticmethod
     def _leaves(item):
