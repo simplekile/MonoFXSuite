@@ -73,18 +73,30 @@ try {
     Write-Host "Assets: MonoFXSuite_Setup.exe, $(Split-Path $BlenderZipPath -Leaf)"
     # --notes-file must be absolute path on Windows for gh to read correctly
     $NotesPathFull = [System.IO.Path]::GetFullPath($NotesPath)
-    gh release create $Tag --notes-file $NotesPathFull $ExePath $BlenderZipPath
+    # Create with the notes only, then upload the assets: created together, gh left the body empty
+    # (v0.1.24, v0.1.25, v0.1.29, v0.1.30), and an edit straight after did not stick either.
+    gh release create $Tag --title $Tag --notes-file $NotesPathFull
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Release may already exist. Try: gh release delete $Tag then run again."
         exit 1
     }
-    # gh has left the body empty after creating with assets (v0.1.24, v0.1.25): check, and set it again
-    $bodyLength = gh release view $Tag --json body --jq ".body | length"
-    if ($LASTEXITCODE -ne 0 -or [int]$bodyLength -eq 0) {
-        gh release edit $Tag --notes-file $NotesPathFull | Out-Null
-        $bodyLength = gh release view $Tag --json body --jq ".body | length"
-        if ([int]$bodyLength -eq 0) { Write-Host "Release notes are still empty: gh release edit $Tag --notes-file RELEASE_NOTES.md" }
+    gh release upload $Tag $ExePath $BlenderZipPath
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Asset upload failed: gh release upload $Tag `"$ExePath`" `"$BlenderZipPath`" --clobber"
+        exit 1
     }
+    # Check the body; set it again (a few tries, GitHub can lag) if it came out empty
+    $bodyLength = 0
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($i -gt 0) {
+            Start-Sleep -Seconds 3
+            gh release edit $Tag --notes-file $NotesPathFull | Out-Null
+            Start-Sleep -Seconds 2
+        }
+        $bodyLength = gh release view $Tag --json body --jq ".body | length"
+        if ($LASTEXITCODE -eq 0 -and [int]$bodyLength -gt 0) { break }
+    }
+    if ([int]$bodyLength -eq 0) { Write-Host "Release notes are still empty: gh release edit $Tag --notes-file RELEASE_NOTES.md" }
     $url = "https://github.com/simplekile/MonoFXSuite/releases/tag/" + $Tag
     Write-Host "Done. Release: $url"
 }
