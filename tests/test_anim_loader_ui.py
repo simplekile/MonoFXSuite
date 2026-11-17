@@ -157,6 +157,13 @@ def test_subd_detail_shows_groups_and_meshes(make):
     # every level of the hierarchy, as the scene graph shows it (the user's ask): Geo > Base_grp > Geo_Body
     assert tree.topLevelItemCount() == 1 and tree.topLevelItem(0).text(0) == "Geo"
     assert tree.topLevelItem(0).text(1) == "411.0k"
+    # each row draws its prim type's icon, as Houdini's Scene Graph Tree does (the user's ask)
+    assert tree.topLevelItem(0).data(0, ui.ROLE_PRIM) == "xform"
+    leaf = tree.topLevelItem(0)
+    while leaf.childCount():
+        leaf = leaf.child(0)
+    assert leaf.data(0, ui.ROLE_PRIM) == "mesh" and leaf.parent().data(0, ui.ROLE_PRIM) == "xform"
+    assert not ui._prim_icon("mesh", 16).isNull()
     groups = [tree.topLevelItem(0).child(i).text(0) for i in range(tree.topLevelItem(0).childCount())]
     assert groups == ["Base_grp", "Outfit_grp"]
     base = tree.topLevelItem(0).child(0)

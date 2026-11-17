@@ -111,6 +111,29 @@ def _crisp_icon(name: str, size: int, color: str) -> "QIcon":
     return icon
 
 
+_prim_icon_cache: dict = {}
+_PRIM_LUCIDE = {"xform": "layers", "mesh": "box"}  # outside Houdini
+
+
+def _prim_icon(kind: str, size: int) -> "QPixmap":
+    """The scene graph's own icon of a prim type (Houdini's ``SCENEGRAPH_primtype_<kind>``: xform, mesh), as the
+    Scene Graph Tree shows it (the user's ask, 2026-11-17); a Lucide icon outside Houdini."""
+    key = (kind, size)
+    if key not in _prim_icon_cache:
+        pm = None
+        try:
+            import hou
+
+            pm = hou.qt.Icon(f"SCENEGRAPH_primtype_{kind}", size * 2, size * 2).pixmap(size * 2, size * 2)
+            pm.setDevicePixelRatio(2.0)
+            if pm.isNull():
+                pm = None
+        except Exception:  # no hou, or no such icon
+            pm = None
+        _prim_icon_cache[key] = pm or _crisp_icon(_PRIM_LUCIDE.get(kind, "box"), size, TEXT_LABEL).pixmap(size)
+    return _prim_icon_cache[key]
+
+
 # Menus with square corners (the user's ask, 2026-11-17): the suite's menu style without its radii
 STYLE_MENU_SQ = STYLE_MENU.replace("border-radius: 10px", "border-radius: 0px").replace(
     "border-radius: 6px", "border-radius: 0px")
@@ -1586,6 +1609,7 @@ def show_heavy_shot_prompt(text: str, on_hulls) -> None:
 SCHEME_WORD = {"publish": "Publish", "none": "Off", "catmullClark": "Catmull-Clark"}
 WORD_SCHEME = {v: k for k, v in SCHEME_WORD.items()}
 ROLE_PATTERN = Qt.ItemDataRole.UserRole + 20
+ROLE_PRIM = Qt.ItemDataRole.UserRole + 21  # the prim type of a meshes-table row: "xform" (a group) or "mesh"
 
 
 def subd_chip(row: Row) -> str:
@@ -1711,6 +1735,11 @@ def _mesh_tree_class():
             align = index.data(Qt.ItemDataRole.TextAlignmentRole)
             align = Qt.AlignmentFlag(align) if align else Qt.AlignmentFlag.AlignLeft
             text_rect = r.adjusted(self.px(6), 0, -self.px(6), 0)
+            kind = index.data(ROLE_PRIM) if index.column() == 0 else None
+            if kind:  # the prim's icon before its name, as in Houdini's Scene Graph Tree
+                size = self.px(16)
+                painter.drawPixmap(text_rect.left(), r.center().y() - size // 2 + 1, _prim_icon(kind, size))
+                text_rect.setLeft(text_rect.left() + size + self.px(6))
             text = option.fontMetrics.elidedText(str(index.data() or ""), Qt.TextElideMode.ElideRight,
                                                  text_rect.width())
             painter.drawText(text_rect, align | Qt.AlignmentFlag.AlignVCenter, text)
@@ -1718,6 +1747,8 @@ def _mesh_tree_class():
 
         def sizeHint(self, option, index):  # noqa: N802 (Qt)
             w = option.fontMetrics.horizontalAdvance(str(index.data() or "")) + self.px(14)
+            if index.column() == 0 and index.data(ROLE_PRIM):
+                w += self.px(22)
             return QSize(w, self.px(28))
 
     class _MeshTree(QTreeWidget):
@@ -1962,6 +1993,7 @@ class InspectorPanel(QWidget):
                                         "" if c.source == parent_from else c.source,
                                         SCHEME_WORD.get(c.scheme, c.scheme), f"{c.dicing:g}" if c.dicing else ""])
                 item.setData(0, ROLE_PATTERN, prefix)
+                item.setData(0, ROLE_PRIM, "mesh")
                 item.setToolTip(0, m)
                 for col in range(1, 5):
                     item.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
@@ -1975,6 +2007,7 @@ class InspectorPanel(QWidget):
                                         self._common([SCHEME_WORD.get(plan[m].scheme, plan[m].scheme) for m in meshes]),
                                         self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "" for m in meshes])])
                 item.setData(0, ROLE_PATTERN, prefix + "/**")
+                item.setData(0, ROLE_PRIM, "xform")
                 item.setToolTip(0, "/" + prefix)
                 for col in range(5):
                     item.setForeground(col, QColor(TEXT_LABEL))
