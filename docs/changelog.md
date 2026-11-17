@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+
+## [0.1.34] - 2026-11-17
+
 ### Houdini
 - **MonoFX Loaders** manager, inspector: each prim has three toggles, as in Blender's outliner: show / hide, drawn in the viewport, rendered. Hiding a group hides what is under it and each child keeps its own setting for when the group shows again; viewport and render follow the parent unless a child has its own. A dot marks what this shot overrides, which **Remove the shot's overrides** takes off (who set a value is in the tooltip). A click takes ~0.2 s and reads only that loader again (it used to rescan the project, ~1 s). The right-click menu's **Display** says the same toggles in words.
 - **MonoFX Loaders** manager, inspector: the prims show every level of the hierarchy as the scene graph does (Geo, Base_grp, Body_grp, Geo_Body), with Houdini's Xform / Mesh / Curves icons, the groom's curves under Groom; with several loaders selected their prims share one tree, a branch each (the loader's own row hides or shows the whole asset). A filter field narrows the tree by prim name; right-click the column titles to choose the columns (Faces and From are off by default).
@@ -13,6 +16,7 @@
 - **MonoFX Loaders** manager: fewer words and lighter type: the top bar is flat icon buttons, Hand off / Undo / Upgrade are icons with tooltips, the inspector runs the full height and slides in and out, the list scrolls sideways instead of dropping columns, double-click selects the node and shows it in the Network Editor, the result line keeps to two lines.
 - **MonoFX Loader**: Draw Hulls Only and Frame find the Scene Viewer inside Houdini 22's Context Viewer pane; before, they said "No viewer shows /stage" while one did.
 - **MonoFX Loaders** manager: a part with nothing published when the loader was made and a version now shows as newer ("+V001") with Update, not as missing; a prop whose lookdev holds the whole asset shows "–" for its model; Textures has its own column.
+
 
 ## [0.1.33] - 2026-11-17
 
