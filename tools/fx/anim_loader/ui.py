@@ -2140,7 +2140,7 @@ class InspectorPanel(QWidget):
         box = QWidget()
         box.setObjectName("menuHead")
         box.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        box.setStyleSheet(self.owner.css(f"QWidget#menuHead {{ background: {BG_HOVER};"
+        box.setStyleSheet(self.owner.css(f"QWidget#menuHead {{ background: #26262e;"
                                          f" border-bottom: 2px solid {LINE}; }}"))
         row = QHBoxLayout(box)
         row.setContentsMargins(px(6), px(9), px(16), px(9))  # icon and name over the items' own
@@ -2149,7 +2149,9 @@ class InspectorPanel(QWidget):
         ic.setPixmap(pix)
         ic.setStyleSheet("background: transparent;")
         row.addWidget(ic)
-        row.addWidget(self.owner._label(name, FS_SMALL + 1, QFont.Weight.DemiBold))
+        title = self.owner._label(name, FS_META, color=TEXT_LABEL)  # the items' size, regular, quieter, italic
+        title.setStyleSheet(title.styleSheet() + " font-style: italic;")
+        row.addWidget(title)
         row.addStretch(1)
         if note:
             row.addWidget(self.owner._label(note, FS_SMALL, color=TEXT_LABEL))

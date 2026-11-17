@@ -300,8 +300,8 @@
   icon on every row and no checkable actions (their check column pushed rows in): the current choice shows a check icon.
   Dicing is a submenu of steps (publish's, 0.25 to 4), not a field. A submenu is made as `QMenu(title, menu)`:
   `addMenu(icon, title)`'s submenu was deleted with its Python wrapper.
-  Its first row is what it acts on, a band (`_menu_head`: lighter background, firm line under it), not a greyed-out
-  item. "Same subdivision on the other N <asset> loaders" (`subd_to_asset`: this loader's whole rule set onto the
+  Its first row is what it acts on, a band (`_menu_head`: lighter background, firm line under it, the name at the
+  items' size, regular, italic, in the label colour: bold and bright stood out too much), not a greyed-out item. "Same subdivision on the other N <asset> loaders" (`subd_to_asset`: this loader's whole rule set onto the
   asset's other loaders) shows only when the scene has other loaders of that asset.
 - Inspector of a shot loader (the user's ask, 2026-11-17): Frames and Fps from the anim publish's `publish_meta.json`
   (`Controller.timeline`; an asset loader has none). A camera adds its lens from the loader's stage at the current
