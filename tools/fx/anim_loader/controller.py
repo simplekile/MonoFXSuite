@@ -147,7 +147,7 @@ class Controller:
         asset = sum(1 for r in self._rows if r.needs_asset)
         legacy = len(self.legacy_paths())
         if not self._rows:
-            return "No anim loaders in the scene"
+            return "No loaders in the scene"
         parts = [f"{behind} behind"] if behind else []
         if legacy and not behind:
             parts.append(_plural(legacy, "old loader") + " to upgrade")

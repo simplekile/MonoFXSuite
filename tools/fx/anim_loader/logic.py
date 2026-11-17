@@ -143,6 +143,38 @@ def list_asset_dirs(project_root: Path) -> dict[str, Path]:
     return out
 
 
+def asset_groups(project_root: Path) -> list[str]:
+    """The asset group folders of a project (``_characters``, ``_props``...), by name."""
+    return sorted((g.name for g in _subdirs(project_root / "01_assets") if g.name.startswith("_")), key=str.lower)
+
+
+def group_label(group: str) -> str:
+    return group.lstrip("_").replace("_", " ").title() or group
+
+
+def asset_menu(project_root: str, group: str, current: str, with_model: bool) -> list[tuple[str, str]]:
+    """(asset, label) of one group ("" = every group); ``with_model``: only assets with a UV publish (Source
+    Asset). The current asset stays listed. Long lists were the user's complaint, 2026-11-17."""
+    root = Path(project_root) if project_root else None
+    if root is None:
+        return []
+    out = []
+    for name, folder in sorted(list_asset_dirs(root).items(), key=lambda kv: kv[0].lower()):
+        if group and folder.parent.name != group:
+            continue
+        if with_model and not list_versions(model_publish_dir(folder)):
+            continue
+        out.append((name, name))
+    if current and all(a != current for a, _ in out):
+        out.insert(0, (current, current))
+    return out
+
+
+def asset_group_of(project_root: str, asset: str | None) -> str:
+    folder = list_asset_dirs(Path(project_root)).get(asset or "") if project_root else None
+    return folder.parent.name if folder is not None else ""
+
+
 def list_versions(publish_dir: Path) -> list[str]:
     """Version folders (``v001``, ``V002``) as named on disk, by number; other folders are left out."""
     named = [(int(m.group(1)), d.name) for d in _subdirs(publish_dir) if (m := _VERSION_RE.match(d.name))]
@@ -721,7 +753,8 @@ def version_choices(state: LoaderState, part: str) -> list[tuple[str, str]]:
         return []
     found = (_found_versions(root, state, part, _geo_count(root, state))
              if (state.anim_file or is_asset(state)) else [])
-    return version_menu(_part_versions(root, state, part), state.versions.get(part, ""), found)
+    menu = version_menu(_part_versions(root, state, part), state.versions.get(part, ""), found)
+    return menu or [("", "none published")]  # not Houdini's "(no entries)"
 
 
 def status_comment(st: dict[str, tuple[str, str | None]]) -> str:

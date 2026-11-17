@@ -431,7 +431,7 @@ else:
 ]]></script>
   </tool>
 
-  <tool name="monofx_anim_loader_manager" label="Anim Loaders" icon="LOP_valueclip">
+  <tool name="monofx_anim_loader_manager" label="MonoFX Loaders" icon="LOP_valueclip">
     <helpText><![CDATA[Every Mono Anim Loader in the scene: what is behind, Update in one undo step, Load shot, Upgrade 2.1 loaders.]]></helpText>
     <script scriptType="python"><![CDATA[
 import os, sys
@@ -485,7 +485,7 @@ else:
         open_manager()
     except Exception as e:
         import hou
-        hou.ui.setStatusMessage("Anim Loaders: %s" % e, severity=hou.severityType.Error)
+        hou.ui.setStatusMessage("MonoFX Loaders: %s" % e, severity=hou.severityType.Error)
 ]]></script>
   </tool>
 

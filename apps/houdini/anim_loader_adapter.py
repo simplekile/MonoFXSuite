@@ -23,7 +23,7 @@ from tools.fx.anim_loader.logic import LoaderState, Output, Resolved
 __all__ = [
     "read_state", "write_state", "refresh", "create_loader", "cb_parm_changed", "cb_refresh",
     "cb_open_manager", "cb_apply_timeline", "apply_timeline", "menu_versions", "menu_anim_versions",
-    "menu_anim_files", "menu_assets", "menu_shots", "menu_model_versions", "menu_model_files", "on_created", "find_loaders", "load_shot", "update", "set_asset",
+    "menu_anim_files", "menu_assets", "menu_shots", "menu_model_versions", "menu_model_files", "menu_asset_groups", "on_created", "find_loaders", "load_shot", "update", "set_asset",
     "upgrade", "LoadResult", "on_loaded", "check_heavy_shot",
 ]
 
@@ -127,6 +127,11 @@ def refresh(node) -> Resolved:
     state = read_state(node)
     r = logic.resolve(state)
     _set(node, config.P_ANIM_PATH, r.anim)
+    _set(node, config.P_MODEL_PATH, r.anim if logic.is_asset(state) else "")
+    if logic.is_asset(state) and state.asset:
+        group = logic.asset_group_of(state.project_root, state.asset)
+        if group:
+            _set(node, config.P_ASSET_GROUP, group)
     for part in logic.PARTS:
         _set(node, config.P_PATH[part], getattr(r, part))
     notes = list(r.notes)
@@ -324,7 +329,7 @@ def cb_open_manager(kwargs: dict) -> None:
     except ImportError:
         _set(kwargs["node"], config.P_STATUS, "The manager window is not installed yet.")
         return
-    ui.open_manager()
+    ui.open_manager(kwargs["node"].parent().path())  # Load shot builds next to the node it was opened from
 
 
 def apply_timeline(node) -> str:
@@ -414,8 +419,22 @@ def menu_model_files(node) -> list[str]:
 
 
 def menu_assets(node) -> list[str]:
+    """Source Asset: the assets of the picked group that have a UV publish; Source Shot: every asset."""
+    root, cur = _s(node, config.P_ROOT), _s(node, config.P_ASSET)
+    if not root:
+        return []
+    asset_src = _s(node, config.P_SOURCE) == config.SOURCE_ASSET
+    group = _s(node, config.P_ASSET_GROUP) if asset_src else ""
+    return _cached(("assets", root, group, cur, asset_src),
+                   lambda: _labelled(logic.asset_menu(root, group, cur, asset_src)))
+
+
+def menu_asset_groups(node) -> list[str]:
     root = _s(node, config.P_ROOT)
-    return _cached(("assets", root), lambda: _menu(sorted(logic.list_asset_dirs(Path(root))))) if root else []
+    if not root:
+        return []
+    return _cached(("groups", root), lambda: _labelled([("", "All")] + [(g, logic.group_label(g))
+                                                                       for g in logic.asset_groups(Path(root))]))
 
 
 def _is_loader(node: Any) -> bool:
@@ -439,10 +458,21 @@ class LoadResult:
     notes: list[str] = field(default_factory=list)
 
 
+def _loader_types() -> list:
+    names = (config.HDA_TYPE, *config.LEGACY_TYPES)
+    out = [t for t in (hou.nodeType(hou.lopNodeTypeCategory(), n) for n in names) if t is not None]
+    out += [t for name, t in hou.lopNodeTypeCategory().nodeTypes().items()
+            if name.startswith(config.CHARACTER_LOADER_PREFIX)]
+    return out
+
+
 def find_loaders(root=None) -> list:
-    """Every Mono Anim Loader (2.2 and 2.1) under /stage, in subnets too."""
-    root = root or hou.node("/stage")
-    return [n for n in root.allSubChildren() if _is_loader(n)]
+    """Every loader in the scene (MonoFX Loader, Anim Loader 2.2 / 2.1, Character Loader 3.2), in every LOP
+    network: /stage and LOP networks inside /obj (the grooming scenes keep theirs in /obj/Character_Loader).
+    ``root``: only those under that node."""
+    prefix = (root.path().rstrip("/") + "/") if root is not None else "/"
+    nodes = [n for t in _loader_types() for n in t.instances() if n.path().startswith(prefix)]
+    return sorted(nodes, key=lambda n: n.path())
 
 
 def _key(node) -> tuple[str, str]:
@@ -585,6 +615,11 @@ def upgrade(nodes: list) -> list:
                 new = _upgrade_character_loader(node)
                 if new is not None:
                     done.append(new)
+                continue
+            if node.type().name() == config.OLD_TYPE:  # Anim Loader 2.2: same parms, the type is renamed
+                new = node.changeNodeType(config.HDA_TYPE, keep_parms=True, keep_network_contents=False)
+                refresh(new)
+                done.append(new)
                 continue
             if node.type().name() not in config.LEGACY_TYPES:
                 continue

@@ -22,7 +22,7 @@ if SUITE not in sys.path:
 
 from tools.fx.anim_loader import config  # noqa: E402
 
-DEFAULT_OUT = os.path.join(SUITE, "otls", "mono_anim_loader.hdalc")
+DEFAULT_OUT = os.path.join(SUITE, "otls", config.HDA_FILE)
 INST = '`chs("../mx_instance_name")`'
 
 # Value clips authored after the graft (spike S2b): on /<instance><root> with clipPrimPath <root>, one clip set
@@ -244,7 +244,12 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     src.addParmTemplate(shot_only(s(config.P_ANIM_FILE, "Anim File", menu="hou.phm().menu_anim_files(hou.pwd())")))
     src.addParmTemplate(shot_only(button("apply_mx_timeline", "Apply Timeline", "hou.phm().cb_apply_timeline(kwargs)",
                                          "Frame range and fps of the scene from the anim publish.")))
+    group = s(config.P_ASSET_GROUP, "Asset Type", menu="hou.phm().menu_asset_groups(hou.pwd())", callback=False)
+    group.setHelp("Shortens the Asset menu: one folder of 01_assets (Characters, Props...).")
+    group.setConditional(T.parmCondType.HideWhen, is_shot)
+    src.addParmTemplate(group)
     asset = s(config.P_ASSET, "Asset", menu="hou.phm().menu_assets(hou.pwd())")
+    asset.setHelp("Source Asset: the assets of the type above that have a UV publish.")
     asset.setConditional(T.parmCondType.HideWhen, f'{{ {config.P_GEO_CAM} == 1 {config.P_SOURCE} != "{config.SOURCE_ASSET}" }}')
     src.addParmTemplate(asset)
     model_v = asset_only(s(config.P_MODEL_VERSION, "Model Version", menu="hou.phm().menu_model_versions(hou.pwd())"))
@@ -311,10 +316,16 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     adv = T.FolderParmTemplate("f_advanced", "Advanced", folder_type=T.folderType.Collapsible)
     adv.addParmTemplate(s(config.P_ROOT, "Project Root", string_type=T.stringParmType.FileReference,
                           file_type=T.fileType.Directory))
-    adv.addParmTemplate(read_only(T.StringParmTemplate(config.P_ANIM_PATH, "Anim Path", 1)))
+    anim_path = read_only(T.StringParmTemplate(config.P_ANIM_PATH, "Anim Path", 1))
+    anim_path.setConditional(T.parmCondType.HideWhen, is_asset)
+    adv.addParmTemplate(anim_path)
+    model_path = read_only(T.StringParmTemplate(config.P_MODEL_PATH, "Model Path", 1))
+    model_path.setConditional(T.parmCondType.HideWhen, is_shot)
+    adv.addParmTemplate(model_path)
     for part in ("lookdev", "groom", "cloth"):
         p = read_only(T.StringParmTemplate(config.P_PATH[part], f"{part.title()} Path", 1))
-        p.setConditional(T.parmCondType.HideWhen, geo_only)
+        p.setConditional(T.parmCondType.HideWhen, geo_only if part != "cloth" else
+                         f'{{ {config.P_GEO_CAM} == 1 }} {{ {config.P_SOURCE} == "{config.SOURCE_ASSET}" }}')
         adv.addParmTemplate(p)
     g.append(adv)
 
@@ -335,7 +346,27 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     return g
 
 
-def build(out_path: str = DEFAULT_OUT) -> str:
+TAB_TOOL = """<?xml version="1.0" encoding="UTF-8"?>
+<shelfDocument>
+  <tool name="$HDA_DEFAULT_TOOL" label="$HDA_LABEL" icon="$HDA_ICON">
+    <toolMenuContext name="viewer"><contextNetType>LOP</contextNetType></toolMenuContext>
+    <toolMenuContext name="network"><contextOpType>$HDA_TABLE_AND_NAME</contextOpType></toolMenuContext>
+    <toolSubmenu>MonoFX</toolSubmenu>
+    <script scriptType="python"><![CDATA[import loptoolutils
+loptoolutils.genericTool(kwargs, '$HDA_NAME', '%s')]]></script>
+  </tool>
+</shelfDocument>
+""" % config.HDA_NODE_NAME
+
+
+def build_all(otls_dir: str = os.path.dirname(DEFAULT_OUT)) -> list[str]:
+    """MonoFX Loader, and the same node as Anim Loader 2.2 for scenes saved with it (hidden from Tab)."""
+    return [build(os.path.join(otls_dir, config.HDA_FILE)),
+            build(os.path.join(otls_dir, config.OLD_FILE), config.OLD_TYPE, "Mono Anim Loader 2.2 (old)", "2.2")]
+
+
+def build(out_path: str = DEFAULT_OUT, type_name: str = config.HDA_TYPE, label: str = config.HDA_LABEL,
+          version: str = "1.0") -> str:
     out_path = os.path.abspath(out_path).replace("\\", "/")
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     backup_dir = os.path.join(os.path.dirname(out_path), "backup")
@@ -347,13 +378,15 @@ def build(out_path: str = DEFAULT_OUT) -> str:
     sub = net.createNode("subnet", "mono_anim_loader_build")
     build_network(sub)
     hda = sub.createDigitalAsset(
-        name=config.HDA_TYPE, hda_file_name=out_path, description=config.HDA_LABEL, min_num_inputs=0,
-        max_num_inputs=1, version="2.2", ignore_external_references=True, change_node_type=True,
+        name=type_name, hda_file_name=out_path, description=label, min_num_inputs=0,
+        max_num_inputs=1, version=version, ignore_external_references=True, change_node_type=True,
         create_backup=False)
     d = hda.type().definition()
     d.setParmTemplateGroup(_parm_templates())
     d.setIcon("LOP_valueclip")
-    d.setComment("Mono Anim Loader 2.2, built by tools/fx/anim_loader/build_hda.py")
+    d.setComment(f"{label}, built by tools/fx/anim_loader/build_hda.py")
+    if type_name == config.HDA_TYPE:
+        d.addSection("Tools.shelf", TAB_TOOL)
     d.addSection("PythonModule", PYTHON_MODULE)
     d.setExtraFileOption("PythonModule/IsPython", True)
     d.addSection("OnCreated", ON_CREATED)
@@ -370,4 +403,8 @@ def build(out_path: str = DEFAULT_OUT) -> str:
 
 
 if __name__ == "__main__":
-    print("built", build(sys.argv[1] if len(sys.argv) > 1 else DEFAULT_OUT))
+    if len(sys.argv) > 1:
+        print("built", build(sys.argv[1]))
+    else:
+        for path in build_all():
+            print("built", path)

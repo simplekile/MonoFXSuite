@@ -325,6 +325,26 @@ def main() -> None:
         for d in made:
             shutil.rmtree(d, ignore_errors=True)
 
+    # MonoFX Loader type: Tab tool names the node monofx_loader; the old 2.2 type upgrades in place; loaders inside a
+    # LOP network in /obj are found too
+    d = hou.nodeType(hou.lopNodeTypeCategory(), config.HDA_TYPE).definition()
+    check("Tab tool names the node monofx_loader", "'monofx_loader'" in d.sections()["Tools.shelf"].contents())
+    old_lib = build_hda.build(str(OUT / config.OLD_FILE), config.OLD_TYPE, "Mono Anim Loader 2.2 (old)", "2.2")
+    hou.hda.installFile(old_lib)
+    old22 = net.createNode(config.OLD_TYPE, "old22")
+    ad.write_state(old22, ad.read_state(nodes["char_Robot"]))
+    before22 = ad.read_state(old22)
+    up = ad.upgrade([old22])
+    check("Anim Loader 2.2 upgrades to MonoFX Loader keeping its state",
+          len(up) == 1 and up[0].type().name() == config.HDA_TYPE and ad.read_state(up[0]) == before22
+          and bool(up[0].stage().GetPrimAtPath(f"/char_Robot{BODY}")))
+    up[0].destroy() if up else None
+    lopnet = hou.node("/obj").createNode("lopnet", "Character_Loader")
+    inside = lopnet.createNode(config.HDA_TYPE, "inside")
+    check("loaders in a LOP network inside /obj are found", inside in ad.find_loaders()
+          and inside not in ad.find_loaders(hou.node("/stage")), [n.path() for n in ad.find_loaders()][:8])
+    lopnet.destroy()
+
     hip = OUT / "accept_hda.hiplc"
     saved = {n.name(): {p.name(): p.eval() for p in n.parms()} for n in order}
     hou.hipFile.save(str(hip))

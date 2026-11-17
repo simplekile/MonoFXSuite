@@ -613,3 +613,26 @@ def test_character_loader_3_2_becomes_source_asset(tmp_path):
     st, _, _ = from_character_loader({**values, "Version_List": "select version", "Version_Lookdev_List": ""})
     assert (st.model_version, st.versions["lookdev"]) == ("v002", "v002")  # nothing picked: newest, once
     assert from_character_loader({"folder_path": "", "Model_List": ""})[0] is None
+
+
+def test_asset_menu_by_group_and_with_a_model(tmp_path):
+    from tools.fx.anim_loader.logic import asset_group_of, asset_groups, asset_menu, group_label
+
+    root = _asset(tmp_path)
+    make(root, ["01_assets/_props/prop_Rock/01_modelling/03_uv/publish/v001/prop_Rock_uv_publish.usdc",
+                "01_assets/_props/prop_Empty/05_lookdev/"])
+    assert asset_groups(root) == ["_characters", "_props"] and group_label("_characters") == "Characters"
+    assert [a for a, _ in asset_menu(str(root), "_props", "", True)] == ["prop_Rock"]         # with a model only
+    assert [a for a, _ in asset_menu(str(root), "_props", "", False)] == ["prop_Empty", "prop_Rock"]
+    assert [a for a, _ in asset_menu(str(root), "", "", True)] == ["char_Robot", "prop_Rock"]  # all groups
+    assert asset_menu(str(root), "_props", "char_Robot", True)[0] == ("char_Robot", "char_Robot")  # current kept
+    assert asset_group_of(str(root), "prop_Rock") == "_props"
+
+
+def test_a_part_with_nothing_published_says_so(tmp_path):
+    from tools.fx.anim_loader.logic import initial_asset_state, version_choices
+
+    root = _asset(tmp_path)
+    make(root, ["01_assets/_props/prop_Rock/01_modelling/03_uv/publish/v001/prop_Rock_uv_publish.usdc"])
+    st = initial_asset_state(root, "prop_Rock")
+    assert version_choices(st, "groom") == [("", "none published")]

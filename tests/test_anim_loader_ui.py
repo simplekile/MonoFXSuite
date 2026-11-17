@@ -105,7 +105,7 @@ def test_empty_scene(make):
     b.infos = []
     w = mk(b)
     assert w.stack.currentWidget() is w.empty
-    assert w.headline.text() == "No anim loaders in the scene" and w.status_meta.text() == ""
+    assert w.headline.text() == "No loaders in the scene" and w.status_meta.text() == ""
     assert w.primary.isHidden() and w.upgrade_button.isHidden()  # nothing to do: no primary button
     assert w.subd_panel.isHidden()                                # no selection: no inspector
 
