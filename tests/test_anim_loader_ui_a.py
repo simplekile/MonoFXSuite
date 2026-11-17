@@ -22,7 +22,7 @@ class BackendA(FakeBackend):
 
     def extras(self, infos, root, shot):
         return {"news": {"/stage/a": [WhatsNew("lookdev", "v002", "v003", "2026-11-16 10:00", "Mai",
-                                               ("+ 2 meshes: Fin_L, Fin_R", "1.0 MB -> 2.0 MB"))]},
+                                               (("Meshes added", "Fin_L, Fin_R"),))]},
                 "weight": {"/stage/b": 2_100_000_000},
                 "gaps": ("v006", [Output("geo_char_Ata.usd", "geo")])}
 
@@ -93,7 +93,7 @@ def _select(w, ui, path):
 
 def test_status_line_offers_the_shot_gap_and_textures(win):
     w, _ = win
-    assert w.gap_label.text() == "\u00b7 +1 in sh025 v006: char_Ata"
+    assert w.gap_label.text() == "+1 in sh025 v006: char_Ata"
     assert not w.gap_link.isHidden()
     w.gap_link.click()
     assert w.backend.calls[-1] == ("load_shot", w.ctl.target_root, "sh025", "v006")
@@ -113,11 +113,11 @@ def test_inspector_is_information_and_actions_are_on_the_row_menu(win):
     w, ui = win
     _select(w, ui, "/stage/a")
     p = w.subd_panel
-    assert not p.news_box.isHidden()
-    assert p.news_title.text() == "What is new in lookdev v003"
-    assert p.news_meta.text() == "2026-11-16 10:00 · work file by Mai"
-    assert "+ 2 meshes: Fin_L, Fin_R" in p.news_text.text() and "1.0 MB → 2.0 MB" in p.news_text.text()
-    assert p.source.text() == "Source Shot · sh025"
+    news = p.news.rows()
+    assert not p.news.isHidden() and news["Lookdev"] == "v002 \u2192 v003"
+    assert news["Published"] == "2026-11-16 10:00" and news["Work file by"] == "Mai"
+    assert news["Meshes added"] == "Fin_L, Fin_R"
+    assert p.details.rows()["Kind"] == "Shot loader" and p.details.rows()["Shot"] == "sh025"
     assert not p.findChildren(ui.QPushButton)  # Monos: the inspector shows, it does not act
     menu = w.row_menu(_item(w, ui, "/stage/a"))
     texts = [a.text() for a in menu.actions() if not a.isSeparator()]
@@ -128,7 +128,7 @@ def test_inspector_is_information_and_actions_are_on_the_row_menu(win):
         _act(w.row_menu(_item(w, ui, "/stage/a")), text).trigger()
         assert w.backend.calls[-1] == (call, "/stage/a")
     _select(w, ui, "/stage/b")
-    assert p.news_box.isHidden()  # nothing newer: no box
+    assert p.news.isHidden() and p.news_head.isHidden()  # nothing newer: no section
 
 
 def test_viewport_menu_is_explicit_actions(win):
@@ -142,7 +142,7 @@ def test_viewport_menu_is_explicit_actions(win):
     w._fill_viewport_menu()
     _act(w.viewport_menu, "Solo the selected loaders").trigger()
     assert w.backend.calls[-1] == ("solo", ("/stage/b",))
-    assert w.view_state.text() == "Solo · 1 loader" and not w.solo_off.isHidden()
+    assert w.view_state.text() == "Solo: 1 loader" and not w.solo_off.isHidden()
     w.solo_off.click()
     assert w.backend.calls[-1] == ("solo", ()) and w.solo_off.isHidden()
     w._fill_viewport_menu()
@@ -223,7 +223,7 @@ def test_an_anim_loader_2_2_shows_its_versions_and_offers_upgrade(app, tmp_path,
     assert row.legacy and row.versions["anim"] == "v001" and row.shot == "sh025"
     assert w.primary.text() == "Upgrade 1 old"
     w.list_view.item(1).setSelected(True)
-    assert w.subd_panel.source.text().startswith("Old loader")
+    assert w.subd_panel.details.rows()["Kind"] == "Old loader"
     w.close()
 
 

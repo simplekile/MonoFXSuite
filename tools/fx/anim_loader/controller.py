@@ -287,7 +287,7 @@ class Controller:
     def upgrade_all(self) -> None:
         paths = self.legacy_paths()
         n = self.backend.upgrade(paths) if paths else 0
-        self.message = f"Upgraded {_plural(n, 'loader')} to 2.2." if n else "No old loaders."
+        self.message = f"Upgraded {_plural(n, 'loader')} to MonoFX Loader." if n else "No old loaders."
 
     def retarget(self, paths: list[str] | None = None) -> None:
         paths = paths if paths is not None else self.retarget_paths()
@@ -306,8 +306,8 @@ class Controller:
         done, notes = self.backend.convert_layers(paths)
         moved = sum(1 for d in done if "(moved " in d)
         self.message = (f"Converted {_plural(len(done), 'sublayer')} to MonoFX Loaders"
-                        + (f" \u00b7 {moved} with their xforms" if moved else "")
-                        + (f" \u00b7 {_plural(len(notes), 'note')} (hover)" if notes else "")) if done \
+                        + (f", {moved} with their xforms" if moved else "")
+                        + (f", {_plural(len(notes), 'note')} (hover)" if notes else "")) if done \
             else (notes[0] if notes else "Nothing converted.")
         self.details = "\n".join(done + notes)
 

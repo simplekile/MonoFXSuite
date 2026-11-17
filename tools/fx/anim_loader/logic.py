@@ -994,7 +994,7 @@ class WhatsNew:
     new: str
     date: str = ""            # date of the version folder
     author: str = ""          # Monos work file author of the new version, "" when unknown
-    lines: tuple[str, ...] = ()
+    lines: tuple[tuple[str, str], ...] = ()  # (what, how): ("Frames", "1-48 → 1-60"); sizes are not news
     old_path: str = ""        # the files a mesh comparison reads (adapter, pxr)
     new_path: str = ""
 
@@ -1047,12 +1047,16 @@ def whats_new(state: LoaderState, part: str) -> WhatsNew | None:
         author = work_author(root / "02_shots" / state.shot, PART_DEPARTMENT["anim"], newer)
         old_out = {o.file for o in read_outputs(pub / current)}
         new_out = {o.file for o in read_outputs(pub / newer)}
-        lines += [f"+ {f}" for f in sorted(new_out - old_out)] + [f"- {f}" for f in sorted(old_out - new_out)]
+        added, removed = sorted(new_out - old_out), sorted(old_out - new_out)
+        if added:
+            lines.append(("Outputs added", ", ".join(added)))
+        if removed:
+            lines.append(("Outputs removed", ", ".join(removed)))
         a, b = read_timeline(pub / current), read_timeline(pub / newer)
         if a and b and (a[1], a[2]) != (b[1], b[2]):
-            lines.append(f"Frames {a[1]}-{a[2]} -> {b[1]}-{b[2]}")
+            lines.append(("Frames", f"{a[1]}-{a[2]} \u2192 {b[1]}-{b[2]}"))
         if a and b and a[0] != b[0]:
-            lines.append(f"fps {a[0]:g} -> {b[0]:g}")
+            lines.append(("Fps", f"{a[0]:g} \u2192 {b[0]:g}"))
     else:
         geo = _geo_count(root, state)
         old_p, new_p = _part_path(root, state, part, current, geo)[0], _part_path(root, state, part, newer, geo)[0]
@@ -1061,26 +1065,19 @@ def whats_new(state: LoaderState, part: str) -> WhatsNew | None:
         asset_dir = _asset_dir(root, state)
         if asset_dir is not None and (part == "lookdev" or is_asset(state)):
             author = work_author(asset_dir, PART_DEPARTMENT[part], newer)
-    try:
-        if "$F" not in str(new_f):
-            a_size, b_size = old_f.stat().st_size, new_f.stat().st_size
-            if a_size != b_size:
-                lines.append(f"{size_word(a_size)} -> {size_word(b_size)}")
-    except OSError:
-        pass
     mesh_files = part == "anim" and "$F" not in str(new_f)
     return WhatsNew(word, current, newer, _folder_date(folder), author[0] if author else "", tuple(lines),
                     old_f.as_posix() if mesh_files else "", new_f.as_posix() if mesh_files else "")
 
 
-def mesh_change_lines(old: list[str], new: list[str], limit: int = 4) -> list[str]:
-    """"+ 2 meshes: Fin_L, Fin_R" / "- 1 mesh: Tail" from two mesh path lists."""
+def mesh_change_lines(old: list[str], new: list[str], limit: int = 4) -> list[tuple[str, str]]:
+    """("Meshes added", "Fin_L, Fin_R") / ("Meshes removed", "Tail") from two mesh path lists."""
     out = []
-    for sign, names in (("+", sorted(set(new) - set(old))), ("-", sorted(set(old) - set(new)))):
+    for what, names in (("Meshes added", sorted(set(new) - set(old))), ("Meshes removed", sorted(set(old) - set(new)))):
         if names:
             leaf = [n.rsplit("/", 1)[-1] for n in names]
-            more = f", +{len(leaf) - limit} more" if len(leaf) > limit else ""
-            out.append(f"{sign} {len(leaf)} mesh{'es' if len(leaf) != 1 else ''}: {', '.join(leaf[:limit])}{more}")
+            more = f" and {len(leaf) - limit} more" if len(leaf) > limit else ""
+            out.append((what, ", ".join(leaf[:limit]) + more))
     return out
 
 

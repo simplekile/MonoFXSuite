@@ -53,8 +53,8 @@ def test_whats_new_anim_lists_outputs_frames_and_size(tmp_path):
     st = replace(st, anim_version="v001")
     w = whats_new(st, "anim")
     assert (w.part, w.old, w.new) == ("anim", "v001", "v002")
-    assert "+ geo_char_Ata.usd" in w.lines and "Frames 1-48 -> 1-60" in w.lines
-    assert any(line.endswith("-> 2.0 MB") for line in w.lines)
+    assert ("Outputs added", "geo_char_Ata.usd") in w.lines and ("Frames", "1-48 \u2192 1-60") in w.lines
+    assert not any("MB" in v for _, v in w.lines)  # a file size is not news (the user's call)
     assert w.new_path.endswith("v002/geo_char_Robot.usd") and w.date
     assert whats_new(replace(st, anim_version="v002"), "anim") is None  # nothing newer
 
@@ -74,8 +74,8 @@ def test_work_author_matches_department_and_version(tmp_path):
 
 
 def test_mesh_change_lines():
-    assert mesh_change_lines(["/Geo/a"], ["/Geo/a", "/Geo/Fin_L", "/Geo/Fin_R"]) == ["+ 2 meshes: Fin_L, Fin_R"]
-    assert mesh_change_lines(["/Geo/a", "/Geo/Tail"], ["/Geo/a"]) == ["- 1 mesh: Tail"]
+    assert mesh_change_lines(["/Geo/a"], ["/Geo/a", "/Geo/Fin_L", "/Geo/Fin_R"]) == [("Meshes added", "Fin_L, Fin_R")]
+    assert mesh_change_lines(["/Geo/a", "/Geo/Tail"], ["/Geo/a"]) == [("Meshes removed", "Tail")]
     assert mesh_change_lines(["/a"], ["/a"]) == []
 
 

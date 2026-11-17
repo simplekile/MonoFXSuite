@@ -156,7 +156,7 @@ def chip(state: str, newer: str | None, version: str) -> tuple[str, str]:
     if state == logic.STATUS_NEWER:
         return (f"{version} → {newer}" if version else f"+{newer}"), STATUS_COLORS[AM_UPDATE]
     if state == logic.STATUS_MISSING:
-        return (f"missing · {newer} out" if newer else "missing"), STATUS_COLORS[AM_MISSING]
+        return (f"missing ({newer} out)" if newer else "missing"), STATUS_COLORS[AM_MISSING]
     if state in (logic.STATUS_NONE, logic.STATUS_OFF):
         return "\u2013", TEXT_META
     if state == logic.STATUS_ASSET:
@@ -167,9 +167,9 @@ def chip(state: str, newer: str | None, version: str) -> tuple[str, str]:
 def row_summary(row: Row) -> tuple[str, str]:
     """The one-line status of a card (text, colour)."""
     if row.legacy:
-        return "Anim Loader 2.1 · upgrade", STATUS_COLORS[AM_WARN]
+        return "old loader, upgrade", STATUS_COLORS[AM_WARN]
     if row.needs_asset:
-        return "asset? · right click", STATUS_COLORS[AM_WARN]
+        return "asset? right-click", STATUS_COLORS[AM_WARN]
     behind = [p for p, (s, _) in row.parts.items() if s == logic.STATUS_NEWER]
     if behind:
         return f"{len(behind)} behind", STATUS_COLORS[AM_UPDATE]
@@ -260,7 +260,7 @@ class _Painter:
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
         p.setFont(f)
         p.setPen(QColor(TEXT_LABEL))
-        p.drawText(rect.adjusted(self.px(16), 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
+        p.drawText(rect.adjusted(self.px(LIST_PAD), 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
                    text.upper())
 
     def band(self, p: QPainter, rect: QRect, text: str) -> None:
@@ -273,11 +273,12 @@ class _Painter:
         f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
         p.setFont(f)
         p.setPen(QColor(TEXT_LABEL))
-        p.drawText(rect.adjusted(self.px(16), 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+        p.drawText(rect.adjusted(self.px(LIST_PAD), 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                    text.upper())
 
 
 NARROW_ROW_PX = 560  # under this width a list row puts its versions on a second line
+LIST_PAD = 6  # the list's side margins: tight to the edges (the user's ask, 2026-11-17)
 ZEBRA = "#151519"       # every other row, a step over the window (TEXT_LABEL on it 7.2:1)
 MESH_BAND = "#1a1e27"   # the inspector's meshes table: the main list's design in a cooler tint
 MESH_ZEBRA = "#141720"
@@ -299,7 +300,7 @@ def subd_cell(row: Row) -> tuple[str, str]:
     if not row.subd:
         return "\u2013", TEXT_META
     n, polys = row.subd
-    return f"{n} \u00b7 ~{polys / 1e6:.1f} M", (STATUS_COLORS[AM_WARN] if polys > logic.HEAVY_SUBD_POLYGONS
+    return f"~{polys / 1e6:.1f} M", (STATUS_COLORS[AM_WARN] if polys > logic.HEAVY_SUBD_POLYGONS
                                                  else TEXT_LABEL)
 
 
@@ -333,12 +334,12 @@ class _ListDelegate(QStyledItemDelegate):
     def table_width(self) -> int:
         """The narrowest the table gets: a 160 px name column and every column beside it."""
         pt = self.pt
-        return pt.px(16 + 28 + 10 + 160) + sum(pt.px(w) + pt.px(8) for _, _, w in COLUMNS) + pt.px(16)
+        return pt.px(LIST_PAD + 28 + 10 + 160) + sum(pt.px(w) + pt.px(8) for _, _, w in COLUMNS) + pt.px(LIST_PAD)
 
     def columns(self, rect: QRect) -> tuple[dict[str, QRect], int]:
         """Each visible column's rect from the right edge, and where the name column ends."""
         pt = self.pt
-        x = rect.right() - pt.px(16)
+        x = rect.right() - pt.px(LIST_PAD)
         out = {}
         for key, _, w in reversed(self.visible_columns(rect.width())):
             w = pt.px(w)
@@ -348,7 +349,7 @@ class _ListDelegate(QStyledItemDelegate):
 
     def cells(self, rect: QRect) -> list[tuple[QRect, str]]:
         """Narrow rows: the four versions' cells across the row."""
-        pad = self.pt.px(16)
+        pad = self.pt.px(LIST_PAD)
         w = (rect.width() - 2 * pad) // 4
         return [(QRect(rect.left() + pad + i * w, rect.top(), w - self.pt.px(6), rect.height()), part)
                 for i, part in enumerate(ALL_PARTS)]
@@ -384,7 +385,7 @@ class _ListDelegate(QStyledItemDelegate):
             for x in [name_sep + pt.px(4)] + [cols_sep[k].left() - pt.px(4)
                                               for k, _, _ in self.visible_columns(rect.width())[1:]]:
                 p.drawLine(x, rect.top(), x, rect.bottom())
-        pad, th = pt.px(16), pt.px(28)
+        pad, th = pt.px(LIST_PAD), pt.px(28)
         line1 = QRect(rect.left(), rect.top(), rect.width(), pt.px(40))
         pt.thumb(p, QRect(rect.left() + pad, line1.center().y() - th // 2, th, th), row)
         name_x = rect.left() + pad + th + pt.px(10)
@@ -490,7 +491,7 @@ class _ColumnHeader(QWidget):
         centre = Qt.AlignmentFlag.AlignCenter  # every column but the name, like the cells under it
         if rect.width() >= pt.px(NARROW_ROW_PX):
             cols, name_end = self.delegate.columns(rect)
-            p.drawText(QRect(pt.px(16), 0, name_end - pt.px(16), rect.height()), mid, "NAME")
+            p.drawText(QRect(pt.px(LIST_PAD), 0, name_end - pt.px(LIST_PAD), rect.height()), mid, "NAME")
             shown = self.delegate.visible_columns(rect.width())
             for key, label, _ in shown:
                 p.drawText(cols[key], centre, label.upper())
@@ -555,7 +556,7 @@ class _GridDelegate(QStyledItemDelegate):
         if row.subd:
             p.setPen(QColor(STATUS_COLORS[AM_WARN] if row.subd[1] > logic.HEAVY_SUBD_POLYGONS else TEXT_LABEL))
             p.drawText(QRect(x, y, w, pt.px(18)), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       subd_chip(row).split(" · ")[0])
+                       subd_chip(row).split(", ")[0])
         y += pt.px(24)
         if not row.legacy:
             parts = ALL_PARTS[:1] if row.kind == "cam" else ALL_PARTS
@@ -954,7 +955,7 @@ class AnimLoaderManager(QWidget):
                     count = sum(1 for r in rows if (r.shot or ("assets" if r.asset_source else "sublayers"
                                                               if r.kind == "layer" else "old loaders")) == group)
                     h = QListWidgetItem()
-                    h.setData(ROLE_HEADER, f"{group} · {count}")
+                    h.setData(ROLE_HEADER, f"{group}   {count}")
                     h.setFlags(Qt.ItemFlag.NoItemFlags)
                     view.addItem(h)
                 item = QListWidgetItem()
@@ -993,9 +994,9 @@ class AnimLoaderManager(QWidget):
         self.headline.setStyleSheet(f"color: {color}; background: transparent; font-size: {self.px(FS_META)}px;"
                                     f" font-weight: 400;")
         n = sum(1 for r in rows if not r.legacy)
-        self.status_meta.setText(f"\u00b7 {n} loader{'s' if n != 1 else ''}" if rows else "")
+        self.status_meta.setText(f"   {n} loader{'s' if n != 1 else ''}" if rows else "")
         heavy = self.ctl.heavy_polygons()
-        self.heavy_label.setText(f"Heavy \u00b7 ~{heavy / 1e6:.1f} M polygons" if heavy else "")
+        self.heavy_label.setText(f"~{heavy / 1e6:.1f} M polygons, heavy" if heavy else "")
         self.heavy_label.setVisible(bool(heavy))
         self.hulls_link.setVisible(bool(heavy) and hasattr(self.backend, "set_hulls_only"))
         self.primary.setVisible(action is not None)
@@ -1016,18 +1017,18 @@ class AnimLoaderManager(QWidget):
         self.retarget_button.setText(self.ctl.retarget_label())
         self.retarget_button.setVisible(bool(self.ctl.retarget_paths()) and (action is None or action[0] != "retarget"))
         gap = self.ctl.gap_line()
-        self.gap_label.setText(("\u00b7 " + gap) if gap else "")
+        self.gap_label.setText(gap)
         self.gap_link.setVisible(bool(gap))
         total = self.ctl.weight_total()
         self.weight_label.setText(logic.size_word(total) if total >= 1e8 else "")
         self.weight_icon.setVisible(bool(self.weight_label.text()) and self.weight_label.isVisibleTo(self))
         bits = []
         if self.ctl.soloed:
-            bits.append(f"Solo \u00b7 {len(self.ctl.soloed)} loader{'s' if len(self.ctl.soloed) != 1 else ''}")
+            bits.append(f"Solo: {len(self.ctl.soloed)} loader{'s' if len(self.ctl.soloed) != 1 else ''}")
         hidden = [p.title() for p in ("lookdev", "groom") if rows and not self.ctl.viewport_part_on(p)]
         if hidden:
             bits.append(" and ".join(hidden) + " render only")
-        self.view_state.setText(" \u00b7 ".join(bits))
+        self.view_state.setText(", ".join(bits))
         self.solo_off.setVisible(bool(self.ctl.soloed))
         if getattr(self, "_drawer_open", False):  # one primary: the drawer's Add while it is open
             self.primary.setVisible(False)
@@ -1368,7 +1369,7 @@ class AnimLoaderManager(QWidget):
         if not self.versions:
             self.load_menu.addAction(f"No anim publish in {shot}" if shot else "Pick a project first").setEnabled(False)
         for i, version in enumerate(self.versions):
-            act = self.load_menu.addAction(f"Load {shot} {version}" + (" \u00b7 newest" if i == 0 else ""))
+            act = self.load_menu.addAction(f"Load {shot} {version}" + (" (newest)" if i == 0 else ""))
             act.triggered.connect(lambda _=False, v=version: self.load_version(v))
         self.load_menu.addSeparator()
         assets = self.load_menu.addAction("Add assets\u2026")
@@ -1561,11 +1562,52 @@ def subd_chip(row: Row) -> str:
     if not row.subd:
         return ""
     n, polys = row.subd
-    return f"subd {n} · ~{polys / 1e6:.1f} M"
+    return f"subd {n}, ~{polys / 1e6:.1f} M"
 
 
 def _faces_word(n: int) -> str:
     return f"{n / 1000:.1f}k" if n < 1_000_000 else f"{n / 1e6:.2f} M"
+
+
+class _Props(QWidget):
+    """Rows of label and value, the label column in TEXT_LABEL, the value in TEXT_PRIMARY (or a status colour);
+    the user's ask, 2026-11-17: details as a list, never joined by dots."""
+
+    def __init__(self, owner) -> None:
+        from PySide6.QtWidgets import QGridLayout
+
+        super().__init__()
+        self.owner = owner
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setHorizontalSpacing(owner.px(12))
+        self.grid.setVerticalSpacing(owner.px(4))
+        self.grid.setColumnStretch(1, 1)
+
+    def set_rows(self, rows: list[tuple[str, str, str]]) -> None:
+        """(label, value, colour) rows; "" colour = TEXT_PRIMARY."""
+        while self.grid.count():
+            w = self.grid.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        for i, (label, value, color) in enumerate(rows):
+            k = self.owner._label(label, FS_SMALL, color=TEXT_LABEL)
+            k.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            v = self.owner._label(value, FS_SMALL, color=color or TEXT_PRIMARY)
+            v.setWordWrap(True)
+            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            self.grid.addWidget(k, i, 0)
+            self.grid.addWidget(v, i, 1)
+        self.setVisible(bool(rows))
+
+    def rows(self) -> dict[str, str]:
+        """{label: value} as shown (tests)."""
+        out = {}
+        for i in range(self.grid.rowCount()):
+            k, v = self.grid.itemAtPosition(i, 0), self.grid.itemAtPosition(i, 1)
+            if k and v and k.widget() and v.widget():
+                out[k.widget().text()] = v.widget().text()
+        return out
 
 
 class InspectorPanel(QWidget):
@@ -1587,37 +1629,15 @@ class InspectorPanel(QWidget):
         self.title = owner._label("", 15, QFont.Weight.DemiBold)  # the one bold line of the inspector
         self.title.setWordWrap(True)
         lay.addWidget(self.title)
-        self.meta = owner._label("", FS_SMALL, color=TEXT_LABEL)
-        self.meta.setWordWrap(True)
-        lay.addWidget(self.meta)
         lay.addSpacing(owner.px(6))
-        self.source = owner._label("", FS_SMALL, color=TEXT_LABEL)
-        self.source.setWordWrap(True)
-        lay.addWidget(self.source)
-        # What a newer version brings (date, who saved its work file, what changed), with its Update
-        self.news_box = QWidget()
-        self.news_box.setObjectName("newsBox")
-        self.news_box.setStyleSheet(owner.css(f"QWidget#newsBox {{ background: {BG_RAISED}; border: 1px solid {LINE};"
-                                              f" border-radius: 10px; }}"))
-        nl = QVBoxLayout(self.news_box)
-        nl.setContentsMargins(owner.px(12), owner.px(10), owner.px(12), owner.px(10))
-        nl.setSpacing(owner.px(3))
-        self.news_title = owner._label("", FS_SMALL, color=TEXT_PRIMARY)
-        self.news_text = owner._label("", FS_SMALL, color=TEXT_PRIMARY)
-        self.news_text.setWordWrap(True)
-        self.news_meta = owner._label("", FS_SMALL, color=TEXT_LABEL)
-        self.news_meta.setWordWrap(True)
-        for w in (self.news_title, self.news_meta, self.news_text):
-            nl.addWidget(w)
-        lay.addWidget(self.news_box)
-        self.actions_hint = owner._label("Right-click the loader: update, source, open folder, open in Monos, frame.",
-                                         FS_SMALL, color=TEXT_LABEL)
-        self.actions_hint.setWordWrap(True)
-        lay.addWidget(self.actions_hint)
-        lay.addSpacing(owner.px(8))
-        self.load = owner._label("", FS_SMALL, color=TEXT_LABEL)
-        self.load.setWordWrap(True)
-        lay.addWidget(self.load)
+        self.details = _Props(owner)  # node, kind, shot / asset, versions, textures, subdivision
+        lay.addWidget(self.details)
+        lay.addSpacing(owner.px(10))
+        self.news_head = owner._label("NEWER VERSION", FS_SMALL, color=TEXT_LABEL)
+        lay.addWidget(self.news_head)
+        self.news = _Props(owner)  # which part, version, published, by, what changed
+        lay.addWidget(self.news)
+        lay.addSpacing(owner.px(10))
         self.tree = QTreeWidget()
         self.tree.setObjectName("subdTree")
         self.tree.setColumnCount(5)
@@ -1670,73 +1690,62 @@ class InspectorPanel(QWidget):
             self.path = ""
             return
         self.title.setText(row.instance)
-        bits = [row.node_path]
-        if row.kind == "cam":  # a camera has its anim only
-            bits += ["camera", f"anim {row.versions.get('anim', '')}"]
-        elif not row.legacy:
-            bits += [f"{part_word(row, p)} {row.versions[p]}" for p in ALL_PARTS if row.versions.get(p)]
-        self.meta.setText(" \u00b7 ".join(bits))
         self.asset = row.asset or ""
         self.row_path = row.node_path
-        self.source.setText("" if row.legacy or row.kind != "geo" else
-                            ("Source Asset \u00b7 the asset's own publishes" if row.asset_source
-                             else f"Source Shot \u00b7 {row.shot}"))
-        self.source.setVisible(bool(self.source.text()))
-        news = self.owner.ctl.news(row.node_path) if not row.legacy else []
-        self.news_box.setVisible(bool(news))
-        if news:
-            self.news_title.setText(" \u00b7 ".join(f"What is new in {w.part} {w.new}" for w in news[:1])
-                                    + (f" (+{len(news) - 1} more)" if len(news) > 1 else ""))
-            w = news[0]
-            self.news_meta.setText(" \u00b7 ".join(x for x in (w.date, f"work file by {w.author}" if w.author else "")
-                                                    if x))
-            lines = [line.replace(" -> ", " \u2192 ") for x in news for line in x.lines[:4]]
-            others = [f"{x.part} {x.old} \u2192 {x.new}" for x in news[1:]]
-            self.news_text.setText("\n".join(lines + others) or f"{w.part} {w.old} \u2192 {w.new}")
-        self.actions_hint.setText("Right-click the camera: update, open folder, frame." if row.kind == "cam" else
-                                  "Right-click the loader: update, source, open folder, open in Monos, frame.")
-        self.actions_hint.setVisible(False)  # fewer words: the row's tooltip names the right-click menu
+        warn, upd, miss = STATUS_COLORS[AM_WARN], STATUS_COLORS[AM_UPDATE], STATUS_COLORS[AM_MISSING]
+        rows: list[tuple[str, str, str]] = [("Node", row.node_path.partition("#")[0], "")]
+        if row.kind == "layer":
+            rows += [("Kind", "Sublayer", ""), ("Reads", row.layer, ""),
+                     ("Convert", "right-click: a MonoFX Loader in its place, the xforms after it follow", TEXT_LABEL)]
+        elif row.legacy:
+            rows += [("Kind", "Old loader", warn),
+                     ("Upgrade", "right-click or the Upgrade button: keeps its settings", TEXT_LABEL)]
+        elif row.kind == "cam":
+            rows += [("Kind", "Camera", ""), ("Shot", row.shot, "")]
+        elif row.asset_source:
+            rows += [("Kind", "Asset loader", ""), ("Asset", row.asset or "", "")]
+        else:
+            rows += [("Kind", "Shot loader", ""), ("Shot", row.shot, ""), ("Asset", row.asset or "asset?",
+                                                                            "" if row.asset else warn)]
+        for p in (("anim",) if row.kind == "cam" else ALL_PARTS):
+            if p not in row.versions and p not in row.parts:
+                continue
+            st, newer = row.parts.get(p, (logic.STATUS_OFF, None))
+            if st == logic.STATUS_OFF and not row.versions.get(p):
+                continue
+            text, color = chip(st, newer, row.versions.get(p, ""))
+            rows.append((part_word(row, p).title(), text.replace("\u2013", "none"),
+                         "" if st == logic.STATUS_OK else color))
+        if row.weight >= 1e6:
+            rows.append(("Textures", logic.size_word(row.weight), ""))
         detail = self.owner.ctl.subd_detail(row.node_path)
-        self.path = row.node_path if detail and detail["plan"] else ""
+        self.path = row.node_path if detail and detail["plan"] and row.kind not in ("layer", "cam") else ""
+        if self.path:
+            plan, faces = detail["plan"], detail["faces"]
+            polys = subd_polygons(faces, plan)
+            n = sum(1 for c in plan.values() if c.scheme != logic.SUBD_NONE)
+            rows.append(("Subdivision", f"{n} of {len(plan)} meshes", ""))
+            rows.append(("Viewport polygons", f"~{polys / 1e6:.1f} M" + (", heavy" if polys > HEAVY_SUBD_POLYGONS
+                                                                        else ""),
+                         warn if polys > HEAVY_SUBD_POLYGONS else ""))
+        self.details.set_rows(rows)
+        news = self.owner.ctl.news(row.node_path) if not row.legacy else []
+        news_rows: list[tuple[str, str, str]] = []
+        for w in news:
+            news_rows.append((w.part.title(), f"{w.old} \u2192 {w.new}" if w.old else f"{w.new}, first version", upd))
+            if w.date:
+                news_rows.append(("Published", w.date, ""))
+            if w.author:
+                news_rows.append(("Work file by", w.author, ""))
+            news_rows += [(k, v, "") for k, v in w.lines]
+        self.news.set_rows(news_rows)
+        self.news_head.setVisible(bool(news_rows))
         self.tree.setVisible(bool(self.path))
         self.hint.setVisible(False)
         self.tree.setToolTip("Right-click meshes: scheme, dicing, clear, apply to every instance")
-        self.load.setVisible(row.kind != "cam")  # a camera has nothing to subdivide: no line about it
-        if row.kind == "layer":  # a Sublayer / Reference: what it reads, what Convert does
-            self.meta.setText(f"{row.node_path.partition('#')[0]} \u00b7 {row.layer}")
-            self.source.setText("Sublayer \u00b7 Convert (right-click) makes it a MonoFX Loader; the prim patterns "
-                                "after it move with it")
-            self.source.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {self.owner.px(FS_SMALL)}px;"
-                                      f" background: transparent;")
-            self.source.setVisible(True)
-            self.tree.setVisible(False)
-            self.load.setVisible(False)
-            self.path = ""
-            return
-        if row.legacy:  # what Upgrade does, on the line under the title (the subdivision lines stay theirs)
-            self.source.setText("Old loader \u00b7 Upgrade makes it a MonoFX Loader, keeping its settings")
-            self.source.setStyleSheet(f"color: {STATUS_COLORS[AM_WARN]}; font-size: {self.owner.px(FS_SMALL)}px;"
-                                      f" background: transparent;")
-            self.source.setVisible(True)
-            if not row.versions:  # 2.1 / 3.2: nothing more to show before the upgrade
-                self.tree.setVisible(False)
-                self.load.setVisible(False)
-                self.path = ""
-                return
-        else:
-            self.source.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {self.owner.px(FS_SMALL)}px;"
-                                      f" background: transparent;")
         if not self.path:
-            self.load.setText("No meshes to subdivide.")
-            self.load.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {self.owner.px(FS_SMALL)}px; background: transparent;")
             return
         plan, faces = detail["plan"], detail["faces"]
-        polys = subd_polygons(faces, plan)
-        n = sum(1 for c in plan.values() if c.scheme != logic.SUBD_NONE)
-        self.load.setText(f"Subdivision \u00b7 {n} of {len(plan)} meshes \u00b7 ~{polys / 1e6:.1f} M polygons")
-        warn = polys > HEAVY_SUBD_POLYGONS
-        self.load.setStyleSheet(f"color: {STATUS_COLORS[AM_WARN] if warn else TEXT_LABEL}; font-size: "
-                                f"{self.owner.px(FS_SMALL)}px; background: transparent;")
         any_dicing = any(c.dicing for c in plan.values())
         for key, meshes in mesh_groups(list(plan)).items():
             g_from = self._common([plan[m].source for m in meshes])
@@ -1995,8 +2004,8 @@ class AddDrawer(QWidget):
         in_scene = {r.asset for r in self.owner.ctl.rows() if r.asset_source}
         w, h = self.owner.px(self.THUMB[0]), self.owner.px(self.THUMB[1])
         for it in logic.asset_catalog(self.root, self.group, self.search.text(), self.model_only.isChecked()):
-            sub = "in the scene · adds another" if it.name in in_scene else (
-                f"UV {it.model or '\u2013'} \u00b7 LD {it.lookdev or '\u2013'}")
+            sub = "in the scene, adds another" if it.name in in_scene else (
+                f"UV {it.model or '\u2013'}, LD {it.lookdev or '\u2013'}")
             item = QListWidgetItem(f"{it.name}\n{sub}")
             pix = QPixmap(it.thumb) if it.thumb else QPixmap()
             if pix.isNull():
@@ -2005,7 +2014,7 @@ class AddDrawer(QWidget):
             item.setIcon(QIcon(pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio,
                                           Qt.TransformationMode.SmoothTransformation)))
             item.setData(ROLE_ROW, it.name)
-            item.setToolTip(f"{it.name} \u00b7 {logic.group_label(it.group)}")
+            item.setToolTip(f"{it.name} ({logic.group_label(it.group)})")
             self.list.addItem(item)
             if it.name in keep:
                 item.setSelected(True)
@@ -2021,5 +2030,5 @@ class AddDrawer(QWidget):
         self.add_button.setText(f"Add {n}" if n else "Add")
         self.add_button.setEnabled(n > 0)
         if self.list.count():
-            self.count.setText(f"{n} picked \u00b7 Source Asset, newest versions" if n
-                               else f"{self.list.count()} assets \u00b7 click to pick")
+            self.count.setText(f"{n} picked, Source Asset, newest versions" if n
+                               else f"{self.list.count()} assets, click to pick")

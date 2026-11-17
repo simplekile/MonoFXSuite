@@ -52,7 +52,7 @@ def test_list_shows_every_loader_grouped(make):
     assert [r.instance for r in rows] == ["char_Helen", "veh_Spaceship", "sh025", "char_Robot_2", "old_robot"]
     headers = [w.list_view.item(i).data(ui.ROLE_HEADER) for i in range(w.list_view.count())
                if w.list_view.item(i).data(ui.ROLE_HEADER)]
-    assert headers == ["sh025 · 3", "sh900 · 1", "old loaders · 1"]
+    assert headers == ["sh025   3", "sh900   1", "old loaders   1"]
     assert w.headline.text() == "2 behind, 1 needs an asset, 1 old loader"
     assert w.primary.text() == "Update 2 behind" and w.primary.isEnabled()
     assert w.upgrade_button.text() == "1" and not w.upgrade_button.isHidden()  # icon + count, the tip says it
@@ -145,7 +145,7 @@ def test_inspector_shows_only_for_a_selection(make):
     assert w.subd_panel.isHidden()
     _select(w, ui, "/stage/b")
     assert not w.subd_panel.isHidden() and w.subd_panel.title.text() == "char_Helen"
-    assert w.subd_panel.meta.text().startswith("/stage/b \u00b7 anim v001")
+    assert w.subd_panel.details.rows()["Node"] == "/stage/b" and w.subd_panel.details.rows()["Anim"] == "v001"
     _select(w, ui, "")
     assert w.subd_panel.isHidden()
 
@@ -158,7 +158,7 @@ def test_subd_detail_shows_groups_and_meshes(make):
     assert groups == ["Base_grp", "Outfit_grp"]
     base = tree.topLevelItem(0)
     assert base.text(2) == "mixed" and base.childCount() == 2 and base.text(3) == "mixed"
-    assert "~6.6 M" in w.subd_panel.load.text()
+    assert w.subd_panel.details.rows()["Viewport polygons"].startswith("~6.6 M")
 
 
 def test_subd_scheme_from_the_menu_applies_to_the_selection(make):
@@ -214,17 +214,17 @@ def test_subd_columns_say_only_what_differs(make):
 def test_subd_cell_in_rows(make):
     w, ui = _subd_window(make)
     helen = next(r for r in _rows(w.list_view) if r.node_path == "/stage/b")
-    assert ui.subd_cell(helen) == ("2 \u00b7 ~6.6 M", ui.STATUS_COLORS[ui.AM_WARN])
-    assert ui.subd_chip(helen) == "subd 2 \u00b7 ~6.6 M"
+    assert ui.subd_cell(helen) == ("~6.6 M", ui.STATUS_COLORS[ui.AM_WARN])
+    assert ui.subd_chip(helen) == "subd 2, ~6.6 M"
 
 
 def test_camera_inspector_shows_only_what_a_camera_has(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/c")  # the camera
     p = w.subd_panel
-    assert p.tree.isHidden() and p.load.isHidden()          # no subdivision line at all
-    assert "camera" in p.meta.text() and "lookdev" not in p.meta.text()
-    assert p.source.isHidden() and "source" not in p.actions_hint.text()
+    rows = p.details.rows()
+    assert p.tree.isHidden() and "Subdivision" not in rows       # no subdivision at all
+    assert rows["Kind"] == "Camera" and "Lookdev" not in rows and rows["Anim"]
 
 
 def test_every_style_follows_the_ui_scale(make):
@@ -327,7 +327,7 @@ def test_project_menu_loads_a_shot_in_an_unsaved_scene(make, tmp_path, monkeypat
     _act(w.shot_menu, "sh020").trigger()
     assert w.versions == ["v003", "v002"]
     acts = [a for a in w.load_menu.actions() if not a.isSeparator()]  # sections and separators are separators
-    assert [a.text() for a in acts] == ["Load sh020 v003 · newest", "Load sh020 v002", "Add assets…"]
+    assert [a.text() for a in acts] == ["Load sh020 v003 (newest)", "Load sh020 v002", "Add assets…"]
     acts[1].trigger()
     assert b.calls[-1] == ("load_shot", proj.as_posix(), "sh020", "v002")
     monkeypatch.setattr(ui.QFileDialog, "getExistingDirectory", lambda *a, **k: str(other / "02_shots"))
