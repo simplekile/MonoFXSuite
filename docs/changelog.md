@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+
+## [0.1.29] - 2026-11-17
+
 ### Houdini
 - **Mono Anim Loader 2.2** (`mono_anim_loader::2.2`, built from code into `otls/`): one node per character, clone or camera of a shot, grafted under `/<asset>` (clones `/<asset>_instNN`) so several characters and clones load together; lookdev, groom and cloth found for that instance only; groom / cloth caches with time samples load as value clips (motion blur); versions never change by themselves. Manager window and shelf tool **Anim Loaders**: every loader in the scene as a list or a grid with Monos thumbnails, what is behind, Update (one undo step), Load shot, Upgrade 2.1 nodes.
 - **Mono Anim Loader**: subdivision per mesh comes from a shot rule on the loader, else the lookdev publish, else the anim publish, else none. USD reads a missing scheme as Catmull-Clark, so the viewport subdivided whole shots (sh025: over 45 GB, then a crash). Rules can also set Karma dicing quality.
