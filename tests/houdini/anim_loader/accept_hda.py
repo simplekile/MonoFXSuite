@@ -194,6 +194,46 @@ def main() -> None:
     finally:
         shutil.rmtree(new.parent)
 
+    # a node put down by hand in a scene outside any project, then moved between shots from the parm pane
+    extra = [ROOT / "02_shots" / "sh950", ROOT / "02_shots" / "sh960"]
+    try:
+        (extra[0] / "01_anim/publish/v001").mkdir(parents=True)
+        shutil.copy(version / "geo_char_Robot.usd", extra[0] / "01_anim/publish/v001/geo_char_Robot.usd")
+        (extra[1] / "01_anim/publish").mkdir(parents=True)
+        hand = net.createNode(config.HDA_TYPE, "by_hand")
+
+        def pick(parm, value):
+            hand.parm(parm).set(value)
+            ad.cb_parm_changed({"node": hand, "parm": hand.parm(parm), "parm_name": parm})
+            return hand.evalParm(config.P_STATUS)
+
+        check("outside a project the status says where to set one",
+              hand.evalParm(config.P_STATUS) == logic.NO_PROJECT and hand.comment() == "no project",
+              (hand.evalParm(config.P_STATUS), hand.comment()))
+        check("project set: pick a shot", pick(config.P_ROOT, str(ROOT)) == "Pick a shot.",
+              hand.evalParm(config.P_STATUS))
+        labels = list(hand.parm(config.P_SHOT).menuLabels())
+        check("shot menu lists the shots, no-anim marked", "sh900" in labels and "sh960  (no anim)" in labels,
+              labels)
+        status = pick(config.P_SHOT, "sh900")
+        check("shot picked: newest anim version, then pick a file",
+              hand.evalParm(config.P_ANIM_VERSION) == "v002" and status == "Pick an anim file.",
+              (hand.evalParm(config.P_ANIM_VERSION), status))
+        pick(config.P_ANIM_FILE, "geo_char_Robot.usd")
+        status = pick(config.P_SHOT, "sh950")
+        check("shot change moves the same character there",
+              (hand.evalParm(config.P_ANIM_VERSION), hand.evalParm(config.P_ANIM_FILE)) == ("v001", "geo_char_Robot.usd")
+              and "missing" not in status, (hand.evalParm(config.P_ANIM_VERSION), status))
+        status = pick(config.P_SHOT, "sh960")
+        check("a shot with no anim says so, keeps nothing of the old shot",
+              status == "sh960 has no anim publish yet: pick another shot."
+              and (hand.evalParm(config.P_ANIM_VERSION), hand.evalParm(config.P_ANIM_FILE)) == ("", ""),
+              (status, hand.evalParm(config.P_ANIM_VERSION), hand.evalParm(config.P_ANIM_FILE)))
+        hand.destroy()
+    finally:
+        for d in extra:
+            shutil.rmtree(d, ignore_errors=True)
+
     hip = OUT / "accept_hda.hiplc"
     saved = {n.name(): {p.name(): p.eval() for p in n.parms()} for n in order}
     hou.hipFile.save(str(hip))
