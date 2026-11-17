@@ -298,11 +298,13 @@
   in the name column, `setTreePosition(0)`), as Blender's outliner: the eye (visibility), viewport and
   render (purpose: both on default, viewport only proxy, render only render, both off guide). Inheritance is
   Houdini's / USD's: hiding a prim hides everything under it and each child keeps its own eye for when the parent
-  shows again (drawn dimmed meanwhile); a prim without its own purpose follows its parent. Colour says who set a
-  value (accent: this shot; bright: the publish or the loader's Hide Prims / Show in Viewport; grey: inherited), a
-  dot under the icon says the row has its own value, i.e. overrides its parent (colour is not the only cue). A
-  click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the selection, one
-  undo step (`logic.toggle_edits`; a value equal to the inherited one takes the rule off). The header shows no icons
+  shows again (drawn dimmed meanwhile); a prim without its own purpose follows its parent. One look per state (the
+  user's report: blue and white for one state read as two): a dot under the icon says the row has its own value,
+  i.e. overrides its parent; who set it (this shot, the publish, the loader's Hide Prims / Show in Viewport) is in the
+  tooltip. A click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the
+  selection, one undo step; every click changes the state (`logic.toggle_edits`: the rule comes off only when the
+  wanted value is the one the row has without it, `PrimShow.base_visible` / `base_purpose`; taking it off whenever
+  the value was "on" left a prim the loader hides hidden, two clicks to show it). The header shows no icons
   (the user's ask); the right-click menu's Display submenu says each toggle as a verb (Hide / Show, Stop drawing
   in the viewport, Stop rendering) and runs the same toggle. Rules live in the hidden
   `mx_show_rules` (JSON {pattern = one prim under the instance, "vis": invisible | inherited, "purpose"}; the first

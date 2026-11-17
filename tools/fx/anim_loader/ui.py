@@ -2160,10 +2160,10 @@ class InspectorPanel(QWidget):
             if ps is None:
                 return ""
             item.setData(0, ROLE_SHOW, ps)
-            # colour says who set it (accent: this shot; bright: the publish or the loader; grey: inherited from the
-            # parent), a dot says the row has its own value (it overrides its parent), dimmed: under a hidden parent
+            # one look per state (the user's report: blue and white for the same state); a dot says the row has its
+            # own value (it overrides its parent), dimmed: under a hidden parent; who set it is in the tooltip
             def color(source):
-                return ACCENT if source == "shot" else TEXT_PRIMARY if source else TEXT_LABEL
+                return TEXT_LABEL
 
             pruned = not ps.visible and ps.own_visible
             item.setData(5, ROLE_TOGGLE, ("eye" if ps.own_visible else "eye-off", color(ps.vis_source),

@@ -422,13 +422,17 @@ def test_toggles_groom_curves_and_inheritance(make):
     tree = w.subd_panel.tree
     tops = {tree.topLevelItem(i).text(0): tree.topLevelItem(i) for i in range(tree.topLevelItemCount())}
     assert set(tops) == {"Geo", "Groom"}
+
+    def mesh_color(it):
+        return it.data(6, ui.ROLE_TOGGLE)[1]
     hair = tops["Groom"].child(0)
     assert hair.data(0, ui.ROLE_PRIM) == "basiscurves"
     assert hair.data(6, ui.ROLE_TOGGLE)[0] == "monitor-off" and hair.data(7, ui.ROLE_TOGGLE)[0] == "camera"
     assert hair.data(6, ui.ROLE_TOGGLE)[2] is True  # its own purpose (the loader's): a dot
     geo = tops["Geo"]
     base, outfit = geo.child(0), geo.child(1)
-    assert base.data(6, ui.ROLE_TOGGLE)[1] == ui.ACCENT and base.data(6, ui.ROLE_TOGGLE)[2]  # the shot's: accent, dot
+    assert base.data(6, ui.ROLE_TOGGLE)[2]  # the shot's own value: a dot
+    assert base.data(6, ui.ROLE_TOGGLE)[1] == mesh_color(base.child(0))  # one look per state, whoever set it
     mesh = base.child(0)
     assert mesh.data(6, ui.ROLE_TOGGLE)[0] == "monitor" and not mesh.data(6, ui.ROLE_TOGGLE)[2]  # inherited: no dot
     assert outfit.data(5, ui.ROLE_TOGGLE)[0] == "eye-off"
@@ -537,3 +541,25 @@ def test_display_submenu_says_what_a_click_does(make):
     b.set_show = lambda path, edits: b.calls.append(("set_show", path, tuple(edits)))
     _act(display, "Show").trigger()
     assert b.calls[-1] == ("set_show", "/stage/b", ((pattern, "vis", "inherited"),))
+
+
+
+def test_every_click_changes_the_state():
+    """The user's report: a prim the loader hides needed two clicks (the shot's rule came off and the loader's
+    hiding came back). Each click flips what the row shows; the rule is off whenever the loader's value is wanted."""
+    from tools.fx.anim_loader import logic as lg
+
+    prims, hidden = ["Geo/Drv/A"], ["Geo/Drv"]
+    rules: list[dict] = []
+    seen = []
+    for _ in range(4):
+        st = lg.prim_shows(prims, {}, hidden, [], rules)
+        seen.append(st["Geo/Drv"].own_visible)
+        rules = lg.set_show_rules(rules, lg.toggle_edits([("Geo/Drv/**", st["Geo/Drv"], st["Geo"])], "eye"))
+    assert seen == [False, True, False, True]
+    purpose_seen, rules = [], []
+    for _ in range(4):  # Eyebrows: proxy as published; render on, off, on...
+        st = lg.prim_shows(["Geo/E"], {"Geo/E": {"purpose": "proxy"}}, [], [], rules)
+        purpose_seen.append(st["Geo/E"].render)
+        rules = lg.set_show_rules(rules, lg.toggle_edits([("Geo/E", st["Geo/E"], st["Geo"])], "render"))
+    assert purpose_seen == [False, True, False, True]

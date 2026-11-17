@@ -951,6 +951,8 @@ class PrimShow:
     vis_source: str          # where its own eye comes from: "shot" | "loader" | "publish" | "" (not authored)
     purpose: str             # the purpose it ends up with (its own, else its parent's)
     purpose_source: str      # "shot" | "loader" | "publish" | "" (inherited)
+    base_visible: bool = True        # its own eye without the shot's rule (the publish's or the loader's, else on)
+    base_purpose: str = "default"    # its purpose without the shot's rule on it (own, else its parent's)
 
     @property
     def viewport(self) -> bool:
@@ -1041,21 +1043,24 @@ def prim_shows(prims: list[str], publish: dict[str, dict], hidden: list[str], re
             own_vis, vis_src = False, "loader"
         if p in render_set:
             own_pur, pur_src = "render", "loader"
+        inherited_pur = parent.purpose if parent else "default"
+        base_vis, base_pur = own_vis, own_pur if own_pur is not None else inherited_pur
         rule = rule_at.get(p, {})
         if "vis" in rule:
             own_vis, vis_src = rule["vis"] != "invisible", "shot"
         if "purpose" in rule:
             own_pur, pur_src = rule["purpose"], "shot"
         out[p] = PrimShow(own_vis, own_vis and (parent.visible if parent else True), vis_src,
-                          own_pur if own_pur is not None else (parent.purpose if parent else "default"), pur_src)
+                          own_pur if own_pur is not None else inherited_pur, pur_src, base_vis, base_pur)
     return out
 
 
 def toggle_edits(rows: list[tuple[str, PrimShow, PrimShow | None]], which: str) -> list[tuple[str, str, object]]:
     """Rule edits for one click on a toggle ("eye", "viewport" or "render") over rows (pattern, the row, its
-    parent). The clicked row, first, decides the new value for all, as in Blender. A value the row would have
-    anyway without the shot's rule (visible; its parent's purpose) takes the rule off, so the row inherits again;
-    a value against the publish or the loader stays as a rule."""
+    parent). The clicked row, first, decides the new value for all, as in Blender, and every click changes what the
+    row shows: a value the row has anyway without the shot's rule (``base_visible`` / ``base_purpose``: the publish,
+    the loader, else its parent) takes the rule off, so it inherits again; any other value is the shot's rule.
+    (Taking the rule off whenever the value was "on" left a prim the loader hides hidden: two clicks to show it.)"""
     if not rows:
         return []
     first = rows[0][1]
@@ -1063,17 +1068,15 @@ def toggle_edits(rows: list[tuple[str, PrimShow, PrimShow | None]], which: str) 
     if which == "eye":
         on = not first.own_visible
         for pattern, row, _parent in rows:
-            needs_rule = row.vis_source in ("publish", "loader") or not on
-            edits.append((pattern, "vis", ("inherited" if on else "invisible") if needs_rule else None))
+            value = "inherited" if on else "invisible"
+            edits.append((pattern, "vis", None if on == row.base_visible else value))
         return edits
     flip_view = which == "viewport"
     on = not (first.viewport if flip_view else first.render)
-    for pattern, row, parent in rows:
+    for pattern, row, _parent in rows:
         pair = (on, row.render) if flip_view else (row.viewport, on)
         purpose = TOGGLES_PURPOSE[pair]
-        inherited = parent.purpose if parent else "default"
-        keep = purpose != inherited or row.purpose_source in ("publish", "loader")
-        edits.append((pattern, "purpose", purpose if keep else None))
+        edits.append((pattern, "purpose", None if purpose == row.base_purpose else purpose))
     return edits
 
 
