@@ -2305,6 +2305,7 @@ class InspectorPanel(QWidget):
     MENU_DICING = "Dicing quality (Karma)"
     MENU_DICING_PUBLISH = "Use the publish's dicing"
     MENU_CLEAR = "Remove the shot's overrides"
+    MENU_DISPLAY = "Display"
     DICING_STEPS = ("0.25", "0.5", "1", "2", "4")
 
     @staticmethod
@@ -2360,6 +2361,20 @@ class InspectorPanel(QWidget):
                                    value or self.MENU_DICING_PUBLISH)
             act.setToolTip("How finely Karma dices the subdivided surface at render time (1 is Karma's default)")
             act.triggered.connect(lambda _=False, v=value: self.set_dicing(pats, v))
+        # Display (the user's ask): the row's three toggles as verbs that say what a click does
+        ps = item.data(0, ROLE_SHOW)
+        if ps is not None:
+            display = QMenu(self.MENU_DISPLAY, menu)  # parented, as the dicing submenu
+            display.setIcon(icon("eye"))
+            display.setStyleSheet(self.owner.css(STYLE_MENU_SQ))
+            menu.addMenu(display)
+            menu._keep_display = display  # noqa: SLF001
+            for col, on, off_label, on_label, on_icon, off_icon in (
+                    (5, ps.own_visible, "Hide", "Show", "eye", "eye-off"),
+                    (6, ps.viewport, "Stop drawing in the viewport", "Draw in the viewport", "monitor", "monitor-off"),
+                    (7, ps.render, "Stop rendering", "Render", "camera", "camera-off")):
+                act = display.addAction(icon(off_icon if on else on_icon), off_label if on else on_label)
+                act.triggered.connect(lambda _=False, c=col: self._toggle(item, c))
         menu.addSeparator()
         menu.addAction(icon("undo"), self.MENU_CLEAR).triggered.connect(lambda _=False: self.clear(pats))
         # this loader's whole subdivision setup onto the asset's other loaders (its instances in the scene); only when

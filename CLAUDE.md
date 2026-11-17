@@ -301,7 +301,9 @@
   value (accent: this shot; bright: the publish or the loader's Hide Prims / Show in Viewport; grey: inherited), a
   dot under the icon says the row has its own value, i.e. overrides its parent (colour is not the only cue). A
   click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the selection, one
-  undo step (`logic.toggle_edits`; a value equal to the inherited one takes the rule off). Rules live in the hidden
+  undo step (`logic.toggle_edits`; a value equal to the inherited one takes the rule off). The header shows no icons
+  (the user's ask); the right-click menu's Display submenu says each toggle as a verb (Hide / Show, Stop drawing
+  in the viewport, Stop rendering) and runs the same toggle. Rules live in the hidden
   `mx_show_rules` (JSON {pattern = one prim under the instance, "vis": invisible | inherited, "purpose"}; the first
   form {"show": ...} still reads), authored by the HDA's `show_rules` Python LOP after Hide Prims
   (`adapter.author_show`; no MakeVisible: hiding prunes, the user's rule), so a rule wins over Hide Prims and the

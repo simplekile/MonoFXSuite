@@ -513,3 +513,27 @@ def test_details_of_one_loader_never_stay_under_the_next(make):
     _select(w, ui, "/stage/c")
     labels = [lab for lab in w.subd_panel.details.findChildren(ui.QLabel) if lab.isVisibleTo(w.subd_panel.details)]
     assert len(labels) == 2 * len(w.subd_panel.details.rows())
+
+
+
+def test_display_submenu_says_what_a_click_does(make):
+    """The user's ask: Display in the right-click menu, the three toggles as verbs."""
+    from tools.fx.anim_loader import logic as lg
+
+    w, ui = _subd_window(make)
+    b = w.backend
+    _select(w, ui, "/stage/b")
+    detail = w.ctl.subd_detail("/stage/b")
+    detail["shown"] = lg.prim_shows([m.strip("/") for m in detail["plan"]], {}, ["Geo/Outfit_grp"], [], [])
+    _select(w, ui, "/stage/a")
+    _select(w, ui, "/stage/b")
+    outfit = w.subd_panel.tree.topLevelItem(0).child(1)
+    pattern = outfit.data(0, ui.ROLE_PATTERN)
+    menu = w.subd_panel.menu_for(outfit)
+    display = next(a.menu() for a in menu.actions() if a.text() == ui.InspectorPanel.MENU_DISPLAY)
+    texts = [a.text() for a in display.actions()]
+    assert texts == ["Show", "Stop drawing in the viewport", "Stop rendering"]
+    assert all(not a.icon().isNull() for a in display.actions())
+    b.set_show = lambda path, edits: b.calls.append(("set_show", path, tuple(edits)))
+    _act(display, "Show").trigger()
+    assert b.calls[-1] == ("set_show", "/stage/b", ((pattern, "vis", "inherited"),))
