@@ -1,6 +1,7 @@
 # Mono Anim Loader — nguồn Asset (gộp Character Loader) — thiết kế
 
-Ngày: 2026-11-17. Trạng thái: **chờ người dùng duyệt** (mục 8). Nối tiếp `anim_loader_v2_2.md`.
+Ngày: 2026-11-17. Trạng thái: **đã chốt 4 câu** (mục 8), chờ duyệt cả bản. Nối tiếp `anim_loader_v2_2.md`.
+Tên hiển thị của node: **MonoFX Loader** (type giữ `mono_anim_loader::2.2`).
 
 Bản đang dùng song song: `D:\Dropbox\Stock\Plugin\HOU\Mono\hda\lop_mono_character_loader.3.2.hdalc`
 (type `mono_character_loader::3.2`, Python trong HDA, không ở repo, không test, không theo installer).
@@ -47,15 +48,19 @@ lý và test. Phần lookdev, scale, ẩn `HairDriver_grp` và graft là chung; 
 
 - Model UV và anim cùng gốc `/Geo` và cùng các nhóm (`Base_grp`, `Groom_grp`, `Outfit_grp`), nên graft
   dưới `/char_Helen` cho ra cùng đường dẫn ở hai Source. Lookdev là `over` trên `/Geo`, áp được lên cả hai.
-- Groom của asset ở gốc `/Groom` → `/char_Helen/Groom/...`. Groom của shot (cache của grooming department)
-  nằm trong `/Geo/Groom_grp/...`. **Hai Source khác nhau ở đường dẫn groom**; mục 8, câu 4.
+- Groom của asset ở gốc `/Groom` → `/char_Helen/Groom/...`, **ngoài `/Geo`**. Lookdev V009 của Helen đã gắn
+  material cho tóc đúng ở đó: `/Groom/Hair_Back` → `M_Grm_Hair_Back`, cùng `Hair_Side`, `Hair_Bang`,
+  `Hair_Back_Upper`, `Eyelash`, `Eyebrow`. Trong `/Geo/Groom_grp` chỉ có mesh `HairDriver_grp` (bị ẩn) và
+  `HairProxy_grp`, không có sợi tóc.
+- Một `vNNN` có thể chứa nhiều file (publish theo collection: `char_Helen_uv_publish_GeoHelen.usd`, quy ước
+  của add-on Blender). Mục 5.1.
 - Version: `vNNN` (UV, groom), lookdev có lúc viết hoa `VNNN` (đã xử lý ở 2.2).
 
 ## 4. Các cách đã cân nhắc
 
 1. **Hai node riêng như hiện tại** (đưa 3.2 vào repo). Bỏ: vẫn hai đầu ra, vẫn đổi display, subdivision
    và status phải làm hai lần.
-2. **Node mới "Mono Loader" thay cả hai.** Bỏ: phải chuyển mọi scene 2.2 vừa phát hành, không thêm gì so
+2. **Một node type mới thay cả hai.** Bỏ: phải chuyển mọi scene 2.2 vừa phát hành, không thêm gì so
    với cách 3.
 3. **Thêm Source vào 2.2 (chọn).** Node 2.2 cũ không đổi (Source mặc định Shot); thêm parm là tương thích
    với scene đã lưu; dùng lại toàn bộ graft, lookdev, subdivision, status, manager.
@@ -66,8 +71,13 @@ lý và test. Phần lookdev, scale, ẩn `HairDriver_grp` và graft là chung; 
 
 - `mx_source` (menu `Shot` / `Asset`) đứng đầu nhóm Source.
 - **Shot**: như layout D hiện tại (Shot, Anim Version, Anim File, Asset; Parts: Lookdev, Groom, Cloth).
-- **Asset**: Asset (menu các asset của project), **Model** version (UV publish), Parts: Lookdev, Groom
-  (của asset). Cloth ẩn. Shot / Anim ẩn nhưng giá trị giữ nguyên trên node.
+- **Asset**: Asset (menu các asset của project), **Model** version (UV publish), **Model File**, Parts:
+  Lookdev, Groom (của asset). Cloth ẩn. Shot / Anim ẩn nhưng giá trị giữ nguyên trên node.
+- **Model File** (người dùng chốt 2026-11-17): menu các file USD trong `03_uv/publish/<ver>/` (`.usd`,
+  `.usda`, `.usdc`, không vào thư mục con). Mặc định là **tên chuẩn** `<asset>_uv_publish.usd*`; không có
+  tên chuẩn mà chỉ có một file thì file đó; nhiều file mà không có tên chuẩn thì chưa chọn, Status: "Pick a
+  model file." Đổi version giữ tên file đang chọn nếu bản mới có, không thì về tên chuẩn. Label của menu
+  đánh dấu file tên chuẩn ("char_Helen_uv_publish.usd  (standard)").
 - Mỗi menu version ghi trạng thái như hiện nay (`v019  latest`, `v018  (v019 available)`); comment của
   node nói cùng điều; Status chỉ hiện khi cần làm gì (`logic.next_step`: chưa có project → chọn asset →
   "char_X chưa có UV publish").
@@ -83,8 +93,14 @@ lý và test. Phần lookdev, scale, ẩn `HairDriver_grp` và graft là chung; 
 ### 5.3 Giải đường dẫn và mạng bên trong
 
 - `logic.resolve(state)` thêm nhánh Asset: `anim` được thay bằng model
-  (`01_modelling/03_uv/publish/<ver>/<asset>_uv_publish.usd*`), groom từ `04_grooming/publish/<ver>`,
-  lookdev như cũ, cloth không có. `LoaderState` thêm `source` và `model_version`; các trường Shot giữ.
+  (`01_modelling/03_uv/publish/<ver>/<model file>`), groom từ `04_grooming/publish/<ver>`, lookdev như cũ,
+  cloth không có. `LoaderState` thêm `source`, `model_version`, `model_file`; các trường Shot giữ.
+- **Groom ở ngoài Geo, cả hai Source** (người dùng chốt 2026-11-17): `/<asset>/Groom/...`, chỗ lookdev gắn
+  material tóc. Source Asset: groom publish đã ở `/Groom`, chỉ graft. Source Shot: cache groom của shot cũng
+  phải nằm ở `/<asset>/Groom/<tên sợi>`; nếu cache ghi ở chỗ khác (bản giả `v900` ghi
+  `/Geo/Groom_grp/Hair_grp/hair`), value clip dùng `primPath` của Clips API để đọc từ đường dẫn trong file
+  mà đặt lên `/<asset>/Groom/...`. Cần spike S3 (mục 6) trước khi build. Đây là thay đổi cho Source Shot:
+  hiện chỉ có cache giả, chưa scene nào dùng groom shot thật.
 - Mạng bên trong không đổi: các layer đi vào cùng sublayer → graft `/<asset>` → render_only (subdivision,
   Show in Viewport) → scale → ẩn → output. Groom asset không có time sample: là một layer thường, không
   value clip.
@@ -124,6 +140,9 @@ cùng input / output, chép giá trị, rồi xoá node 3.2; một bước undo.
 ## 6. Kiểm tra
 
 - pytest: resolve nhánh Asset, `next_step` cho Asset, chọn Source từ `$HIP`, bảng chép 3.2.
+- **Spike S3** (trước khi build): value clip groom đặt ở `/<asset>/Groom/...` đọc từ đường dẫn khác trong
+  cache (`primPath`), vẫn có motion blur (time sample frame lân cận) và lookdev gắn được material; làm trên
+  cache giả `v900` của sh025 và lookdev V009 của Helen. Không đạt: báo người dùng trước khi đổi Source Shot.
 - hython (`accept_hda`): trên `fake_project` thêm `01_assets/_characters/char_Robot/{01_modelling/03_uv,
   04_grooming,05_lookdev}/publish`; đổi Source Shot ↔ Asset giữ đường dẫn mesh và luật subdivision; Upgrade
   một node 3.2 dựng giả; mở lại scene giữ mọi parm.
@@ -132,17 +151,17 @@ cùng input / output, chép giá trị, rồi xoá node 3.2; một bước undo.
 
 ## 7. Thứ tự làm
 
-1. `logic.py` + test (Source, resolve Asset, next_step, chọn từ `$HIP`).
-2. `build_hda.py` (parm Source, ẩn/hiện) + adapter + hython.
-3. Manager: hàng Asset, Upgrade 3.2.
-4. Ghi quyết định vào `CLAUDE.md` (mục Anim Loader) và changelog.
+1. Spike S3 (groom ngoài Geo cho Source Shot).
+2. `logic.py` + test (Source, resolve Asset, Model File, next_step, chọn từ `$HIP`).
+3. `build_hda.py` (parm Source, ẩn/hiện, label MonoFX Loader) + adapter + hython.
+4. Manager: hàng Asset, Upgrade 3.2.
+5. Ghi quyết định vào `CLAUDE.md` (mục Anim Loader) và changelog.
 
-## 8. Còn chờ người dùng
+## 8. Người dùng đã chốt (2026-11-17)
 
-1. **Model lấy từ đâu?** Đề xuất: chỉ UV publish (`01_modelling/03_uv`), như 3.2 đang dùng. Có thể thêm
-   menu bước (sculpt / retopo / uv / rig clean_geo) nếu cần.
-2. **Enable Modify (SOP Modify) của 3.2** có ai dùng không? Đề xuất: bỏ; ai cần thì đặt SOP Modify sau node.
-3. **Tên hiển thị**: giữ type `mono_anim_loader::2.2`, đổi label thành "Mono Loader"? Đề xuất: đổi label,
-   giữ type (scene đã lưu không đổi).
-4. **Groom khác đường dẫn giữa hai Source** (`/char_Helen/Groom/...` của asset, `/char_Helen/Geo/Groom_grp/...`
-   của shot). Chấp nhận, hay cần đặt groom asset vào cùng chỗ với groom shot?
+1. **Model**: UV publish. Một version có thể có nhiều file → menu Model File, ưu tiên file tên chuẩn
+   `<asset>_uv_publish.usd*` (mục 5.1).
+2. **Enable Modify (SOP Modify) của 3.2**: bỏ; ai cần thì đặt SOP Modify sau node.
+3. **Tên**: label **MonoFX Loader**, type giữ `mono_anim_loader::2.2` (scene đã lưu không đổi).
+4. **Groom ra ngoài Geo** ở cả hai Source: `/<asset>/Groom/...`, khớp chỗ lookdev gắn material tóc
+   (mục 3, 5.3; spike S3).
