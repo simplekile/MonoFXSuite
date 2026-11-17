@@ -282,8 +282,7 @@ class _Painter:
 NARROW_ROW_PX = 560  # under this width a list row puts its versions on a second line
 LIST_PAD = 6  # the list's side margins: tight to the edges (the user's ask, 2026-11-17)
 ZEBRA = "#151519"       # every other row, a step over the window (TEXT_LABEL on it 7.2:1)
-MESH_BAND = "#1a1e27"   # the inspector's meshes table: the main list's design in a cooler tint
-MESH_ZEBRA = "#141720"
+MESH_BAND = "#1a1e27"   # the inspector's meshes table header
 BAND = BG_RAISED        # group bands and the column header
 ROLE_ZEBRA = Qt.ItemDataRole.UserRole + 12
 # Monos states (docs/ui_states_rules.md): pressed a step past hover, selected + hover brighter than selected
@@ -1727,13 +1726,9 @@ def _mesh_tree_class():
             self.setMouseTracking(True)
 
         def _row_color(self, index) -> str:
-            if self.selectionModel().isSelected(index):
-                return SELECTED
-            if self.model().hasChildren(index):  # a group, at any depth
-                return MESH_BAND
-            rect = self.visualRect(index)  # zebra by the row on screen (uniform heights), whatever is folded
-            h = max(1, rect.height())
-            return MESH_ZEBRA if ((rect.top() + self.verticalScrollBar().value() * h) // h) % 2 else BG_APP
+            # one background (the user's ask, "too many colours"): no zebra, no band per group level; a group reads
+            # as one by its quieter text and chevron, a selected row by the selection colour
+            return SELECTED if self.selectionModel().isSelected(index) else BG_APP
 
         def drawRow(self, painter, option, index):  # noqa: N802 (Qt)
             painter.fillRect(option.rect, QColor(self._row_color(index)))

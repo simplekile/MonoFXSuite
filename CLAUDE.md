@@ -291,6 +291,8 @@
   window (sample its pixels), not offscreen. The table shows every level of the hierarchy (Geo > Base_grp >
   Body_grp > Geo_Body, as the scene graph does); a group sums its meshes. The name column's width is kept only
   when the artist drags it (mouse down), never from Qt's own resizes.
+  One background for every row (the user's "too many colours", 2026-11-17): no zebra, no band per group level; a
+  group reads as one by its quieter text and chevron, a selected row by the selection colour.
 - Inspector of a shot loader (the user's ask, 2026-11-17): Frames and Fps from the anim publish's `publish_meta.json`
   (`Controller.timeline`; an asset loader has none). A camera adds its lens from the loader's stage at the current
   frame (`adapter.camera_info`): USD lens values are tenths of a scene unit (sh025, 1 m a unit: 35 mm is 0.35), so
