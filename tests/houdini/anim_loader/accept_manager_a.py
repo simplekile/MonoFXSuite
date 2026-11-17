@@ -109,6 +109,21 @@ def main():
         check("what is new: anim v002 for a loader on v001", bool(news) and news[0].part == "anim"
               and news[0].new == "v002", [(w.part, w.old, w.new, w.lines) for w in news])
 
+        # Anim Loader 2.2 nodes: their state is read, so the shot is not reported as missing them
+        old_lib = build_hda.build(str(OUT / config.OLD_FILE), config.OLD_TYPE, "Mono Anim Loader 2.2 (old)", "2.2")
+        hou.hda.installFile(old_lib)
+        net22 = hou.node("/obj").createNode("lopnet", "old22")
+        for out in logic.read_outputs(version):
+            n = net22.createNode(config.OLD_TYPE, logic.instance_name(out.file))
+            ad.write_state(n, logic.initial_state(ROOT, "sh900", "v002", out))
+        infos22 = [i for i in ad.HoudiniBackend("/obj/old22").loaders() if i.path.startswith("/obj/old22/")]
+        gaps = ad.HoudiniBackend.extras(infos22, str(ROOT), "sh900")["gaps"][1]
+        check("2.2 loaders are read: state, legacy, and no false shot gap",
+              infos22 and all(i.state is not None and i.legacy for i in infos22) and not gaps,
+              [o.file for o in gaps])
+        check("viewport parts read 2.2 nodes too", ad.viewport_part_on("lookdev"))
+        net22.destroy()
+
         # hand off: one USD with the instance, flattened, textures copied, relative paths
         hand = OUT / "handoff"
         lines = ad.handoff([node.path()], str(hand))

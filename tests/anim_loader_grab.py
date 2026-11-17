@@ -93,3 +93,25 @@ def make_cam(scale: float):
         r = w.list_view.item(i).data(role)
         w.list_view.item(i).setSelected(bool(r) and r.node_path == "/stage/c")
     return w
+
+
+def make_old22(scale: float):
+    """Four Anim Loader 2.2 nodes, as in the user's sh025 copy: versions shown, tag 2.2, Upgrade the primary."""
+    from tests.test_anim_loader_controller import FakeBackend, LoaderInfo, _state
+    from tools.fx.anim_loader import logic
+    from tools.fx.anim_loader.ui import ROLE_ROW, AnimLoaderManager
+
+    b = FakeBackend()
+    names = ("char_Helen", "char_HelenWhale", "sh025", "veh_Spaceship")
+    b.infos = [LoaderInfo(f"/stage/{n}", _state("sh025", n, None if n == "sh025" else n,
+                                                "cam" if n == "sh025" else "geo"), True, n) for n in names]
+    ok, off = (logic.STATUS_OK, None), (logic.STATUS_OFF, None)
+    b.status = {f"/stage/{n}": {"anim": ok, "lookdev": ok if n == "char_Helen" else (logic.STATUS_NEWER, "V001"),
+                                "groom": off, "cloth": off} for n in names}
+    b.thumbnail = GrabBackend().thumbnail
+    w = AnimLoaderManager(b, scale=scale)
+    w.wait()
+    for i in range(w.list_view.count()):
+        r = w.list_view.item(i).data(ROLE_ROW)
+        w.list_view.item(i).setSelected(bool(r) and r.node_path == "/stage/char_Helen")
+    return w

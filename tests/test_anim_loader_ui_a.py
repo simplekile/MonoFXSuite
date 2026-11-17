@@ -202,3 +202,26 @@ def test_hand_off_writes_the_selection(win, monkeypatch):
     w.handoff_button.click()
     assert w.backend.calls[-1] == ("handoff", ("/stage/b",), "D:/out")
     assert w.result.text().startswith("Handed off /stage/b: written")
+
+
+def test_an_anim_loader_2_2_shows_its_versions_and_offers_upgrade(app, tmp_path, monkeypatch):
+    """A 2.2 node has the MonoFX Loader's parms: its row shows its versions (tag 2.2), it still counts for Upgrade,
+    and its inspector says what Upgrade does (testing v0.1.33 on sh025: rows said only "Upgrade...")."""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from tests.test_anim_loader_controller import FakeBackend, LoaderInfo, _state
+    from tools.fx.anim_loader import ui
+
+    b = FakeBackend()
+    b.infos = [LoaderInfo("/stage/h", _state("sh025", "char_Helen", "char_Helen"), True, "char_Helen")]
+    b.status = {"/stage/h": {"anim": (ui.logic.STATUS_OK, None), "lookdev": (ui.logic.STATUS_OK, None),
+                             "groom": (ui.logic.STATUS_OFF, None), "cloth": (ui.logic.STATUS_OFF, None)}}
+    w = ui.AnimLoaderManager(b)
+    w.resize(1100, 700)
+    w.wait()
+    row = next(w.list_view.item(i).data(ui.ROLE_ROW) for i in range(w.list_view.count())
+               if w.list_view.item(i).data(ui.ROLE_ROW))
+    assert row.legacy and row.versions["anim"] == "v001" and row.shot == "sh025"
+    assert w.primary.text() == "Upgrade 1 old"
+    w.list_view.item(1).setSelected(True)
+    assert w.subd_panel.source.text().startswith("Old loader")
+    w.close()

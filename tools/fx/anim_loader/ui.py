@@ -300,12 +300,21 @@ class _ListDelegate(QStyledItemDelegate):
         self.pt = painter
         self.view = view
 
+    def visible_columns(self, width: int) -> tuple:
+        """The columns that fit with a name column of 160 px at least: Textures goes first, then Subd."""
+        pt = self.pt
+        cols = list(COLUMNS)
+        name_min = pt.px(16 + 28 + 10 + 160)
+        while len(cols) > 4 and width - sum(pt.px(w) + pt.px(8) for _, _, w in cols) - pt.px(16) < name_min:
+            cols.pop()
+        return tuple(cols)
+
     def columns(self, rect: QRect) -> tuple[dict[str, QRect], int]:
-        """Each column's rect from the right edge, and where the name column ends."""
+        """Each visible column's rect from the right edge, and where the name column ends."""
         pt = self.pt
         x = rect.right() - pt.px(16)
         out = {}
-        for key, _, w in reversed(COLUMNS):
+        for key, _, w in reversed(self.visible_columns(rect.width())):
             w = pt.px(w)
             out[key] = QRect(x - w, rect.top(), w, rect.height())
             x -= w + pt.px(8)
@@ -344,29 +353,32 @@ class _ListDelegate(QStyledItemDelegate):
         p.fillRect(rect, QColor(fill))
         p.setPen(QColor(LINE))
         p.drawLine(rect.bottomLeft(), rect.bottomRight())
-        if wide and not row.legacy:  # column separators (an old loader's line spans the columns)
+        if wide and not (row.legacy and not row.versions):  # separators (an old loader's line spans them)
             cols_sep, name_sep = self.columns(rect)
-            for x in [name_sep + pt.px(4)] + [cols_sep[k].left() - pt.px(4) for k, _, _ in COLUMNS[1:]]:
+            for x in [name_sep + pt.px(4)] + [cols_sep[k].left() - pt.px(4)
+                                              for k, _, _ in self.visible_columns(rect.width())[1:]]:
                 p.drawLine(x, rect.top(), x, rect.bottom())
         pad, th = pt.px(16), pt.px(28)
         line1 = QRect(rect.left(), rect.top(), rect.width(), pt.px(40))
         pt.thumb(p, QRect(rect.left() + pad, line1.center().y() - th // 2, th, th), row)
         name_x = rect.left() + pad + th + pt.px(10)
         cols, name_end = self.columns(line1)
-        if not wide:
+        if not wide and "subd" in cols:
             name_end = cols["subd"].left() - pt.px(8)  # narrow: subd sits at the right of the name line
         p.setFont(_font(pt.px(FS_META), QFont.Weight.DemiBold))
         name_w = min(p.fontMetrics().horizontalAdvance(row.instance) + pt.px(4), name_end - name_x)
         self._text(p, QRect(name_x, line1.top(), name_w, line1.height()), row.instance, TEXT_PRIMARY, FS_META, True)
-        tag = "camera" if row.kind == "cam" else ("old" if row.legacy else "")
+        unread = row.legacy and not row.versions  # 2.1 / Character Loader 3.2: no state to show
+        tag = "camera" if row.kind == "cam" else ("2.2" if row.legacy and not unread else ("old" if unread else ""))
         if tag:
             self._text(p, QRect(name_x + name_w + pt.px(8), line1.top(), max(0, name_end - name_x - name_w - pt.px(8)),
                                 line1.height()), tag, TEXT_LABEL, FS_SMALL)
         text, color = subd_cell(row)
-        if row.kind != "cam" and not row.legacy:
-            self._text(p, cols["subd"], text if wide or row.subd else "", color, FS_SMALL,
-                       align=Qt.AlignmentFlag.AlignHCenter)  # every column but the name is centred
-            if wide:
+        if row.kind != "cam" and not (row.legacy and not row.versions):
+            if "subd" in cols:
+                self._text(p, cols["subd"], text if wide or row.subd else "", color, FS_SMALL,
+                           align=Qt.AlignmentFlag.AlignHCenter)  # every column but the name is centred
+            if wide and "tex" in cols:
                 t_text, t_color = tex_cell(row)
                 self._text(p, cols["tex"], t_text, t_color, FS_SMALL, align=Qt.AlignmentFlag.AlignHCenter)
         if wide:
@@ -374,7 +386,7 @@ class _ListDelegate(QStyledItemDelegate):
         else:  # the versions on a second line, under the column names of the first header
             cells = [(QRect(c.left(), rect.top() + pt.px(36), c.width(), pt.px(20)), part)
                      for c, part in self.cells(rect)]
-        if row.legacy:
+        if unread:
             first = cells[0][0]
             self._text(p, QRect(first.left(), first.top(), rect.right() - pad - first.left(), first.height()),
                        "Upgrade to MonoFX Loader keeps its settings", STATUS_COLORS[AM_WARN], FS_SMALL)
@@ -426,10 +438,11 @@ class _ColumnHeader(QWidget):
         if rect.width() >= pt.px(NARROW_ROW_PX):
             cols, name_end = self.delegate.columns(rect)
             p.drawText(QRect(pt.px(16), 0, name_end - pt.px(16), rect.height()), mid, "NAME")
-            for key, label, _ in COLUMNS:
+            shown = self.delegate.visible_columns(rect.width())
+            for key, label, _ in shown:
                 p.drawText(cols[key], centre, label.upper())
             p.setPen(QColor(LINE))
-            for x in [name_end + pt.px(4)] + [cols[k].left() - pt.px(4) for k, _, _ in COLUMNS[1:]]:
+            for x in [name_end + pt.px(4)] + [cols[k].left() - pt.px(4) for k, _, _ in shown[1:]]:
                 p.drawLine(x, 0, x, rect.bottom())
         else:
             for cell, part in self.delegate.cells(rect):
@@ -597,7 +610,7 @@ class AnimLoaderManager(QWidget):
 
         top, t = self._bar()
         top.setObjectName("top")
-        t.addWidget(self._label("MonoFX Loaders", 17, QFont.Weight.DemiBold))
+        # no title label: the window's title bar says MonoFX Loaders, the crumbs get the room
         # Where: project and shot as crumbs with menus (Monos: a one-shot pick is a menu, not a combo box). In the
         # top bar, or in a row of their own when docked narrow (resizeEvent).
         self._project = ""
@@ -1415,6 +1428,7 @@ class InspectorPanel(QWidget):
         lay.addWidget(self.meta)
         lay.addSpacing(owner.px(6))
         self.source = owner._label("", FS_SMALL, color=TEXT_LABEL)
+        self.source.setWordWrap(True)
         lay.addWidget(self.source)
         # What a newer version brings (date, who saved its work file, what changed), with its Update
         self.news_box = QWidget()
@@ -1513,6 +1527,19 @@ class InspectorPanel(QWidget):
         self.hint.setVisible(False)
         self.tree.setToolTip("Right-click meshes: scheme, dicing, clear, apply to every instance")
         self.load.setVisible(row.kind != "cam")  # a camera has nothing to subdivide: no line about it
+        if row.legacy:  # what Upgrade does, on the line under the title (the subdivision lines stay theirs)
+            self.source.setText("Old loader \u00b7 Upgrade makes it a MonoFX Loader, keeping its settings")
+            self.source.setStyleSheet(f"color: {STATUS_COLORS[AM_WARN]}; font-size: {self.owner.px(FS_SMALL)}px;"
+                                      f" background: transparent;")
+            self.source.setVisible(True)
+            if not row.versions:  # 2.1 / 3.2: nothing more to show before the upgrade
+                self.tree.setVisible(False)
+                self.load.setVisible(False)
+                self.path = ""
+                return
+        else:
+            self.source.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {self.owner.px(FS_SMALL)}px;"
+                                      f" background: transparent;")
         if not self.path:
             self.load.setText("No meshes to subdivide.")
             self.load.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {self.owner.px(FS_SMALL)}px; background: transparent;")

@@ -832,7 +832,7 @@ def set_viewport_part(part: str, on: bool) -> int:
     n = 0
     with undo_group(f"{part.title()} in viewport {'on' if on else 'off'}"):
         for node in find_loaders():
-            if node.type().name() != config.HDA_TYPE:
+            if node.type().name() not in (config.HDA_TYPE, config.OLD_TYPE):
                 continue
             value = int(node.evalParm(config.P_VIEWPORT))
             new = (value | bit) if on else (value & ~bit)
@@ -844,8 +844,8 @@ def set_viewport_part(part: str, on: bool) -> int:
 
 def viewport_part_on(part: str) -> bool:
     bit = config.VIEWPORT_BITS[part]
-    nodes = [n for n in find_loaders() if n.type().name() == config.HDA_TYPE]
-    return bool(nodes) and all(int(n.evalParm(config.P_VIEWPORT)) & bit for n in nodes)
+    nodes = [n for n in find_loaders() if n.type().name() in (config.HDA_TYPE, config.OLD_TYPE)]
+    return all(int(n.evalParm(config.P_VIEWPORT)) & bit for n in nodes)  # no loader: nothing is hidden
 
 
 def frame(path: str) -> bool:
@@ -1034,9 +1034,11 @@ class HoudiniBackend:
 
         out = []
         for n in find_loaders():
-            legacy = n.type().name() != config.HDA_TYPE  # 2.1, or a Character Loader 3.2
-            out.append(LoaderInfo(n.path(), None if legacy else read_state(n), legacy, n.name(),
-                                  "" if legacy else _s(n, config.P_SUBD_RULES)))
+            kind = n.type().name()
+            legacy = kind != config.HDA_TYPE  # 2.2, 2.1, or a Character Loader 3.2: offered for Upgrade
+            readable = kind in (config.HDA_TYPE, config.OLD_TYPE)  # 2.2 has the same parms: its state is real
+            out.append(LoaderInfo(n.path(), read_state(n) if readable else None, legacy, n.name(),
+                                  _s(n, config.P_SUBD_RULES) if readable else ""))
         return out
 
     @staticmethod
