@@ -29,6 +29,7 @@ class LoaderInfo:
     subd_rules: str = ""
     layer: Any = None  # a Sublayer / Reference file reading a publish (logic.PublishRef); its node is no loader
     baked: bool = False  # a loader baked to plain nodes: Upgrade restores it
+    show: Any = None  # {"rules", "hide_on", "hide", "viewport"}: what the worker needs for the SHOWN column
 
 
 @dataclass(frozen=True)
@@ -455,9 +456,29 @@ class Controller:
         self.message = f"{path.rsplit('/', 1)[-1]}: {', '.join(parts)} on {what} (shot override)."
 
     def clear_subd(self, path: str, patterns: list[str] | None) -> None:
-        self.backend.clear_subd(path, patterns)
-        self.message = f"{path.rsplit('/', 1)[-1]}: overrides cleared, lookdev / publish decide again."
+        """The shot's overrides of those rows, subdivision and what they show alike."""
+        clear = getattr(self.backend, "clear_overrides", None)
+        (clear or self.backend.clear_subd)(path, patterns)
+        self.message = f"{path.rsplit('/', 1)[-1]}: the shot's overrides removed, the publish decides again."
+
+    SHOW_DONE = {"hidden": "hidden", "render": "render only", "proxy": "viewport only",
+                 "both": "shown in render and viewport"}
+
+    def set_show(self, path: str, patterns: list[str], show: str | None) -> None:
+        """What the shot shows of those rows (logic.SHOW_STATES; None removes their rules)."""
+        self.backend.set_show(path, patterns, show)
+        names = ", ".join(p.removesuffix("/**").rsplit("/", 1)[-1] for p in patterns[:3])
+        more = f" +{len(patterns) - 3}" if len(patterns) > 3 else ""
+        self.message = f"{names}{more}: {self.SHOW_DONE.get(show, 'as published')} (shot override)."
+
+    def camera_parms(self, path: str) -> dict:
+        fn = getattr(self.backend, "cam_parms", None)
+        return fn(path) if fn else {}
+
+    def set_camera_parm(self, path: str, name: str, label: str, value: float) -> None:
+        ok = self.backend.set_cam_parm(path, name, value)
+        self.message = f"{path.rsplit('/', 1)[-1]}: {label} {value:g}." if ok else "That setting is not on the node."
 
     def subd_to_asset(self, path: str) -> None:
         n = self.backend.subd_to_asset(path)
-        self.message = f"Subdivision overrides copied to {n} other instance{'s' if n != 1 else ''} of the asset."
+        self.message = f"Overrides copied to {n} other loader{'s' if n != 1 else ''} of the asset."

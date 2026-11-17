@@ -927,6 +927,107 @@ def clear_subd_rules(rules: list[dict], patterns: list[str] | None) -> list[dict
     return [] if patterns is None else [r for r in rules if r["pattern"] not in patterns]
 
 
+# --- what each prim shows: visibility and purpose (the user's pick, layout B, 2026-11-17) -----------------------
+# A rule names one prim (a group or a mesh / curves) and what the shot shows of it:
+#   hidden  - visibility invisible (neither the viewport nor the render)
+#   render  - purpose render: Karma renders it, Houdini GL does not draw it
+#   proxy   - purpose proxy: Houdini GL draws it, Karma does not render it ("viewport only")
+#   both    - visible, purpose default (undoes the publish's or the loader's own hiding)
+SHOW_STATES = ("hidden", "render", "proxy", "both")
+SHOW_WORD = {"hidden": "hidden", "render": "render only", "proxy": "viewport only", "guide": "guide"}
+
+
+def parse_show_rules(text: str) -> list[dict]:
+    """The loader's JSON show rules, keeping only well-formed ones."""
+    import json
+
+    try:
+        raw = json.loads(text) if text else []
+    except ValueError:
+        return []
+    out = []
+    for r in raw if isinstance(raw, list) else []:
+        if isinstance(r, dict) and isinstance(r.get("pattern"), str) and r["pattern"].strip("/ ") \
+                and r.get("show") in SHOW_STATES:
+            out.append({"pattern": r["pattern"].strip("/ "), "show": r["show"]})
+    return out
+
+
+def show_target(pattern: str) -> str:
+    """The prim a row's pattern names (a group's ``X/**`` is the group ``X``)."""
+    p = pattern.strip("/")
+    return p[:-3] if p.endswith("/**") else p
+
+
+def set_show_rules(rules: list[dict], patterns: list[str], show: str | None) -> list[dict]:
+    """One rule per prim, put last; ``show`` None removes the prims' rules."""
+    targets = [show_target(p) for p in patterns]
+    keep = [r for r in rules if r["pattern"] not in targets]
+    if show is not None:
+        keep += [{"pattern": t, "show": show} for t in targets]
+    return keep
+
+
+def shown_plan(prims: list[str], publish: dict[str, dict], hidden: list[str], render_only: list[str],
+               rules: list[dict]) -> dict[str, tuple[str, str]]:
+    """(word, source) per prim (paths under the instance, no leading "/"): what it ends up showing, "" for normal
+    (visible, default purpose). Opinions, weakest first: the publish files' own visibility / purpose (``publish``:
+    {prim: {"visibility", "purpose"}}), the loader's Hide Prims (``hidden``) and groom shown for render only
+    (``render_only``), then the shot's rules. Visibility and purpose inherit down the tree as in USD: a prim under
+    a hidden one stays hidden whatever it says. Source is "shot" where a rule names the prim, "loader" for the
+    loader's own settings, "publish" for the files, "" where it only inherits."""
+    rule_at = {r["pattern"]: r["show"] for r in rules}
+    hidden_set, render_set = set(hidden), set(render_only)
+    every = set(prims)
+    for p in prims:  # the groups above each prim, so the tree inherits through them
+        bits = p.split("/")
+        every.update("/".join(bits[:i]) for i in range(1, len(bits)))
+    state: dict[str, tuple[bool, str]] = {}
+    out: dict[str, tuple[str, str]] = {}
+    for p in sorted(every, key=lambda x: (x.count("/"), x)):
+        parent = p.rsplit("/", 1)[0] if "/" in p else ""
+        hid, purpose = state.get(parent, (False, "default"))
+        own_hidden, own_purpose, source = None, None, ""
+        op = publish.get(p, {})
+        if op.get("visibility") in ("invisible", "inherited"):
+            own_hidden, source = op["visibility"] == "invisible", "publish"
+        if op.get("purpose") in ("default", "render", "proxy", "guide"):
+            own_purpose, source = op["purpose"], "publish"
+        if p in hidden_set:
+            own_hidden, source = True, "loader"
+        if p in render_set:
+            own_purpose, source = "render", "loader"
+        rule = rule_at.get(p)
+        if rule is not None:
+            source = "shot"
+            own_hidden = rule == "hidden"
+            if rule != "hidden":
+                own_purpose = {"render": "render", "proxy": "proxy", "both": "default"}[rule]
+        if own_hidden is not None:
+            hid = hid or own_hidden  # "inherited" cannot show what a parent hides
+        if own_purpose is not None:
+            purpose = own_purpose
+        state[p] = (hid, purpose)
+        out[p] = ("hidden" if hid else SHOW_WORD.get(purpose, ""), source)
+    return out
+
+
+def hide_targets(pattern: str, prims: list[str]) -> list[str]:
+    """The prims the loader's Hide Prims pattern names (space-separated, wildcards as Houdini reads them)."""
+    out = []
+    for part in (pattern or "").split():
+        rx = _pattern_re(part.strip("/"))
+        out += [p for p in prims if rx.match(p)]
+    return out
+
+
+def first_frame_path(path: str, first: int | None) -> str:
+    """A ``$F<pad>`` sequence path at its first frame (the file whose prims stand for the sequence)."""
+    if "$F" not in path or first is None:
+        return path
+    return re.sub(r"\$F(\d*)", lambda m: str(first).zfill(int(m.group(1) or 1)), path)
+
+
 def mesh_groups(meshes: list[str]) -> dict[str, list[str]]:
     """Meshes by their first two path levels (``Geo/Base_grp``), as the manager's tree shows them."""
     groups: dict[str, list[str]] = {}

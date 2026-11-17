@@ -96,6 +96,14 @@ LUCIDE.update({
                    '<rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
     "chevron-right": '<path d="m9 18 6-6-6-6"/>',
+    # what a prim shows (the inspector's menu): hide, render only, viewport only
+    "eye-off": '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444'
+               ' 2.49"/><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"/><path d="M17.479 17.499a10.75 10.75 0 0 1'
+               '-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"/><path d="m2 2 20 20"/>',
+    "camera": '<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>'
+              '<circle cx="12" cy="13" r="3"/>',
+    "monitor": '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/>'
+               '<line x1="12" x2="12" y1="17" y2="21"/>',
     "scan": '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/>'
             '<path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
 })
@@ -112,7 +120,7 @@ def _crisp_icon(name: str, size: int, color: str) -> "QIcon":
 
 
 _prim_icon_cache: dict = {}
-_PRIM_LUCIDE = {"xform": "layers", "mesh": "box"}  # outside Houdini
+_PRIM_LUCIDE = {"xform": "layers", "mesh": "box", "basiscurves": "droplet"}  # outside Houdini
 
 
 def _prim_icon(kind: str, size: int) -> "QPixmap":
@@ -1790,6 +1798,73 @@ def _mesh_tree_class():
     return _MeshTree
 
 
+COLS = 6  # the inspector's prim table: PRIM, FACES, FROM, SCHEME, DICE, SHOWN
+
+
+class _CamEdit(QWidget):
+    """The camera's settings the loader holds (layout B, the user's pick 2026-11-17): parm rows, label left, fields
+    right; Enter or leaving a field sets the node's parm, one undo step each."""
+
+    ROWS = (("Clipping", ("clippingRange1", "clippingRange2"), "to", "m"),
+            ("Aperture", ("horizontalAperture",), "", "mm"),
+            ("Ratio", ("aspectratiox", "aspectratioy"), ":", ""),
+            ("Guide scale", ("xn__houdiniguidescale_s3a",), "", ""))
+
+    def __init__(self, owner) -> None:
+        from PySide6.QtWidgets import QGridLayout, QLineEdit
+
+        super().__init__()
+        self.owner, self.path, self.fields = owner, "", {}
+        grid = QGridLayout(self)
+        grid.setContentsMargins(0, owner.px(2), 0, owner.px(4))
+        grid.setHorizontalSpacing(owner.px(12))
+        grid.setVerticalSpacing(owner.px(6))
+        grid.setColumnStretch(1, 1)
+        style = owner.css(f"QLineEdit {{ background: {BG_APP}; color: {TEXT_PRIMARY}; border: 2px solid #2c2c33;"
+                          f" border-radius: 6px; padding: 2px 6px; font-size: {FS_SMALL}px; }}"
+                          f"QLineEdit:focus {{ border-color: {ACCENT}; }}")
+        for i, (label, names, joint, unit) in enumerate(self.ROWS):
+            grid.addWidget(owner._label(label, FS_SMALL, color=TEXT_LABEL), i, 0)
+            row = QHBoxLayout()
+            row.setSpacing(owner.px(6))
+            for j, name in enumerate(names):
+                if j:
+                    row.addWidget(owner._label(joint, FS_SMALL, color=TEXT_LABEL))
+                edit = QLineEdit()
+                edit.setObjectName(name)
+                edit.setStyleSheet(style)
+                edit.setFixedWidth(owner.px(84))
+                edit.setAlignment(Qt.AlignmentFlag.AlignRight)
+                edit.setAccessibleName(f"{label} {j + 1}" if len(names) > 1 else label)
+                edit.editingFinished.connect(lambda n=name, lab=label, e=edit: self._set(n, lab, e))
+                self.fields[name] = edit
+                row.addWidget(edit)
+            if unit:
+                row.addWidget(owner._label(unit, FS_SMALL, color=TEXT_LABEL))
+            row.addStretch(1)
+            grid.addLayout(row, i, 1)
+
+    def load(self, path: str, values: dict) -> None:
+        self.path = path
+        for name, edit in self.fields.items():
+            edit.blockSignals(True)
+            edit.setText(_num(values[name]).replace(",", "") if name in values else "")
+            edit.setEnabled(name in values)
+            edit.blockSignals(False)
+        self._values = dict(values)
+
+    def _set(self, name: str, label: str, edit) -> None:
+        try:
+            value = float(edit.text().replace(",", ""))
+        except ValueError:
+            edit.setText(_num(self._values.get(name, 0)).replace(",", ""))
+            return
+        if self.path and abs(value - self._values.get(name, value + 1)) > 1e-12:
+            self._values[name] = value
+            path = self.path
+            self.owner._run(lambda: self.owner.ctl.set_camera_parm(path, name, label.lower(), value))()
+
+
 class InspectorPanel(QWidget):
     """The selected loader (shown only while one is selected): name, node and versions, then its meshes by group
     with faces, where the scheme comes from (only where it differs from the group), scheme and dicing (that column
@@ -1826,12 +1901,18 @@ class InspectorPanel(QWidget):
         self.news_head = _Section(owner, "Newer version", "news", self.news)
         top.addWidget(self.news_head)
         top.addWidget(self.news)
+        top.addSpacing(owner.px(6))
+        self.cam_edit = _CamEdit(owner)  # clipping, aperture, ratio, guide scale: the loader's own camera settings
+        self.cam_head = _Section(owner, "On the loader", "camera", self.cam_edit)
+        top.addWidget(self.cam_head)
+        top.addWidget(self.cam_edit)
+        self.cam_head.apply(False)
         lay.addSpacing(owner.px(6))
         self.tree = _mesh_tree_class()()
         self.tree.setObjectName("subdTree")
-        self.tree.setColumnCount(5)
-        self.tree.setHeaderLabels(["MESH", "FACES", "FROM", "SCHEME", "DICE"])
-        for col in range(1, 5):
+        self.tree.setColumnCount(COLS)
+        self.tree.setHeaderLabels(["PRIM", "FACES", "FROM", "SCHEME", "DICE", "SHOWN"])
+        for col in range(1, COLS):
             self.tree.headerItem().setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setRootIsDecorated(True)
@@ -1863,7 +1944,7 @@ class InspectorPanel(QWidget):
         head = self.tree.header()
         head.setStretchLastSection(False)
         head.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)  # drag its edge: the name column's width
-        for col in range(1, 5):
+        for col in range(1, COLS):
             head.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
         head.setMinimumSectionSize(owner.px(48))
         head.setToolTip("Drag the edge of MESH to widen the name column")
@@ -1967,17 +2048,23 @@ class InspectorPanel(QWidget):
             news_rows += [(k, v, "") for k, v in w.lines]
         self.news.set_rows(news_rows)
         self.news_head.apply(bool(news_rows))
+        cam_parms = self.owner.ctl.camera_parms(row.node_path) if row.kind == "cam" and not row.legacy else {}
+        self.cam_edit.load(row.node_path, cam_parms)
+        self.cam_head.apply(bool(cam_parms))
         self.tree.setVisible(bool(self.path))
         self.hint.setVisible(False)
-        self.tree.setToolTip("Right-click meshes: scheme, dicing, clear, apply to every instance")
+        self.tree.setToolTip("Right-click a row: subdivision, dicing, hide, render only, viewport only")
         if not self.path:
             return
         plan, faces = detail["plan"], detail["faces"]
+        curves = detail.get("curves", {})
+        shown = detail.get("shown", {})
         any_dicing = any(c.dicing for c in plan.values())
         # every level of the hierarchy, as the scene graph shows it (the user's ask: Geo > Base_grp > Body_grp >
-        # Geo_Body); a group sums its meshes' faces and shows their source / scheme / dicing when they agree
+        # Geo_Body); a group sums its meshes' faces and shows their source / scheme / dicing when they agree.
+        # The groom's curves sit under /Groom (the user's ask: "no groom in here")
         tree: dict = {}
-        for m in plan:
+        for m in list(plan) + list(curves):
             node = tree
             for part in m.strip("/").split("/"):
                 node = node.setdefault(part, {})
@@ -1985,8 +2072,26 @@ class InspectorPanel(QWidget):
         def under(prefix: str) -> list[str]:
             return [m for m in plan if m.strip("/").startswith(prefix + "/")]
 
-        def add(parent, name: str, prefix: str, kids: dict, parent_from: str) -> None:
-            if not kids and ("/" + prefix in plan or prefix in plan):  # a mesh
+        def shown_cell(item, prefix: str, parent_word: str) -> str:
+            """SHOWN says only what differs from the row above it, or what the shot set on this row."""
+            word, source = shown.get(prefix, ("", ""))
+            if source == "shot" or word != parent_word:
+                item.setText(5, word or "both")
+                item.setForeground(5, QColor(ACCENT if source == "shot" else TEXT_LABEL))
+                item.setToolTip(5, {"shot": "Set for this shot", "loader": "Set on the loader (Hide Prims, Show in "
+                                    "Viewport)", "publish": "As published"}.get(source, "Inherited"))
+            return word
+
+        def add(parent, name: str, prefix: str, kids: dict, parent_from: str, parent_word: str = "") -> None:
+            if not kids and "/" + prefix in curves:  # groom curves: no subdivision
+                item = QTreeWidgetItem([name, f"{_faces_word(curves['/' + prefix])} cv", "", "\u2013", "", ""])
+                item.setData(0, ROLE_PATTERN, prefix)
+                item.setData(0, ROLE_PRIM, "basiscurves")
+                item.setToolTip(0, "/" + prefix)
+                for col in range(1, COLS):
+                    item.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
+                shown_cell(item, prefix, parent_word)
+            elif not kids and ("/" + prefix in plan or prefix in plan):  # a mesh
                 m = "/" + prefix if "/" + prefix in plan else prefix
                 c = plan[m]
                 item = QTreeWidgetItem([name, _faces_word(faces.get(m, 0)),
@@ -1995,26 +2100,34 @@ class InspectorPanel(QWidget):
                 item.setData(0, ROLE_PATTERN, prefix)
                 item.setData(0, ROLE_PRIM, "mesh")
                 item.setToolTip(0, m)
-                for col in range(1, 5):
+                for col in range(1, COLS):
                     item.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
                 if c.source == "shot":
                     for col in (2, 3):
                         item.setForeground(col, QColor(ACCENT))
-            else:  # a group, a band like the main list's
+                shown_cell(item, prefix, parent_word)
+            else:  # a group
                 meshes = under(prefix)
-                g_from = self._common([plan[m].source for m in meshes])
-                item = QTreeWidgetItem([name, _faces_word(sum(faces.get(m, 0) for m in meshes)), g_from,
-                                        self._common([SCHEME_WORD.get(plan[m].scheme, plan[m].scheme) for m in meshes]),
-                                        self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "" for m in meshes])])
+                if meshes:
+                    g_from = self._common([plan[m].source for m in meshes])
+                    cells = [_faces_word(sum(faces.get(m, 0) for m in meshes)), g_from,
+                             self._common([SCHEME_WORD.get(plan[m].scheme, plan[m].scheme) for m in meshes]),
+                             self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "" for m in meshes])]
+                else:  # curves only (Groom)
+                    g_from = ""
+                    cvs = sum(n for c, n in curves.items() if c.strip("/").startswith(prefix + "/"))
+                    cells = [f"{_faces_word(cvs)} cv", "", "\u2013", ""]
+                item = QTreeWidgetItem([name, *cells, ""])
                 item.setData(0, ROLE_PATTERN, prefix + "/**")
                 item.setData(0, ROLE_PRIM, "xform")
                 item.setToolTip(0, "/" + prefix)
-                for col in range(5):
+                for col in range(COLS):
                     item.setForeground(col, QColor(TEXT_LABEL))
                     if col:
                         item.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
+                word = shown_cell(item, prefix, parent_word)
                 for k, sub in kids.items():
-                    add(item, k, prefix + "/" + k, sub, g_from)
+                    add(item, k, prefix + "/" + k, sub, g_from, word)
             if parent is None:
                 self.tree.addTopLevelItem(item)
             else:
@@ -2023,6 +2136,8 @@ class InspectorPanel(QWidget):
         for k, sub in tree.items():
             add(None, k, k, sub, "")
         self.tree.setColumnHidden(4, not any_dicing)
+        any_shown = any(self._items_text(5))
+        self.tree.setColumnHidden(5, not any_shown)  # SHOWN only when something is not shown everywhere
         self.tree.expandAll()
         self._fit_name()
         QTimer.singleShot(0, self._fit_name)  # again once the tree has its width
@@ -2031,9 +2146,9 @@ class InspectorPanel(QWidget):
         """The name column fills what the other columns leave (never a strip of nothing on the right, never a name
         column squeezed to nothing); dragging its edge wider keeps that width, with a sideways scroll."""
         self._filling = True
-        for col in range(1, 5):
+        for col in range(1, COLS):
             self.tree.resizeColumnToContents(col)
-        rest = sum(self.tree.columnWidth(c) for c in range(1, 5) if not self.tree.isColumnHidden(c))
+        rest = sum(self.tree.columnWidth(c) for c in range(1, COLS) if not self.tree.isColumnHidden(c))
         free = self.tree.viewport().width() - rest  # exactly the width: no strip, no sideways scroll
         self.tree.setColumnWidth(0, max(self.owner.px(90), free, self._name_width))
         self._filling = False
@@ -2042,6 +2157,14 @@ class InspectorPanel(QWidget):
         super().resizeEvent(event)
         if self.tree.topLevelItemCount():
             self._fit_name()
+
+    def _items_text(self, col: int):
+        stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
+        while stack:
+            it = stack.pop()
+            if it.text(col):
+                yield it.text(col)
+            stack += [it.child(i) for i in range(it.childCount())]
 
     @staticmethod
     def _common(values: list[str]) -> str:
@@ -2061,6 +2184,8 @@ class InspectorPanel(QWidget):
     MENU_DICING = "Dicing quality (Karma)"
     MENU_DICING_PUBLISH = "Use the publish's dicing"
     MENU_CLEAR = "Remove the shot's overrides"
+    MENU_SHOW = (("hidden", "Hide", "eye-off"), ("render", "Render only", "camera"),
+                 ("proxy", "Viewport only", "monitor"), ("both", "Render and viewport", "eye"))
     DICING_STEPS = ("0.25", "0.5", "1", "2", "4")
 
     @staticmethod
@@ -2090,9 +2215,12 @@ class InspectorPanel(QWidget):
             pix, name = _prim_icon(kind, size), item.text(0)
             note = f"{n} mesh{'es' if n != 1 else ''}" if kind != "mesh" else ""
         menu.addAction(self._menu_head(menu, pix, name, note))
+        has_mesh = item.data(0, ROLE_PRIM) == "mesh" or any(
+            leaf.data(0, ROLE_PRIM) == "mesh" for leaf in self._leaves(item))
         overridden = self._source_of(item) == "shot"
         current = item.text(3) if overridden else ""
-        for label, scheme, name, on in ((self.MENU_PUBLISH, "publish", "file-box", not overridden),
+        for label, scheme, name, on in () if not has_mesh else ((self.MENU_PUBLISH, "publish", "file-box",
+                                                                 not overridden),
                                         (self.MENU_OFF, "none", "x", current == SCHEME_WORD["none"]),
                                         (self.MENU_CATMULL, "catmullClark", "sparkles",
                                          current == SCHEME_WORD["catmullClark"])):
@@ -2100,6 +2228,7 @@ class InspectorPanel(QWidget):
             act.setData("current" if on else "")
             act.triggered.connect(lambda _=False, sc=scheme: self.set_scheme(pats, sc))
         dicing = QMenu(self.MENU_DICING, menu)  # parented: addMenu's own submenu was deleted with its wrapper
+        dicing.menuAction().setVisible(has_mesh)
         dicing.setIcon(icon("sliders"))
         menu.addMenu(dicing)
         menu._keep = dicing  # noqa: SLF001 (the Python wrapper lives as long as the menu)
@@ -2112,15 +2241,28 @@ class InspectorPanel(QWidget):
                                    value or self.MENU_DICING_PUBLISH)
             act.setToolTip("How finely Karma dices the subdivided surface at render time (1 is Karma's default)")
             act.triggered.connect(lambda _=False, v=value: self.set_dicing(pats, v))
+        # what the shot shows of the rows (visibility, purpose); the current state has the check
+        if has_mesh:
+            menu.addSeparator()
+        now = self._shown_now(item)
+        for show, label, name in self.MENU_SHOW:
+            on = now == show
+            act = menu.addAction(icon("check", ACCENT) if on else icon(name), label)
+            act.setData("current" if on else "")
+            act.setToolTip({"hidden": "Invisible in the viewport and the render",
+                            "render": "Karma renders it; the viewport does not draw it (purpose render)",
+                            "proxy": "The viewport draws it; Karma does not render it (purpose proxy)",
+                            "both": "Drawn and rendered (visible, purpose default)"}[show])
+            act.triggered.connect(lambda _=False, s=show: self.set_show(pats, s))
         menu.addSeparator()
         menu.addAction(icon("undo"), self.MENU_CLEAR).triggered.connect(lambda _=False: self.clear(pats))
         # this loader's whole subdivision setup onto the asset's other loaders (its instances in the scene); only when
         # there are some (the user asked what "Copy these overrides" did)
         others = self.other_instances()
         if others:
-            act = menu.addAction(icon("link"), f"Same subdivision on the other {len(others)} {self.asset} "
+            act = menu.addAction(icon("link"), f"Same overrides on the other {len(others)} {self.asset} "
                                                f"loader{'s' if len(others) != 1 else ''}")
-            act.setToolTip("Every mesh's scheme and dicing of this loader, set on " + ", ".join(others))
+            act.setToolTip("This loader's subdivision, dicing and what it shows, set on " + ", ".join(others))
             act.triggered.connect(lambda _=False: self.to_asset())
         menu.setToolTipsVisible(True)
         return menu
@@ -2172,6 +2314,22 @@ class InspectorPanel(QWidget):
         item = self.tree.itemAt(pos)
         if item is not None and self.path:
             self.menu_for(item).exec(self.tree.viewport().mapToGlobal(pos))
+
+    @staticmethod
+    def _shown_now(item) -> str:
+        """The row's state as SHOWN says it (inherited from above when its cell is empty)."""
+        word = ""
+        while item is not None:
+            if item.text(5):
+                word = item.text(5)
+                break
+            item = item.parent()
+        return {"hidden": "hidden", "render only": "render", "viewport only": "proxy"}.get(word, "both")
+
+    def set_show(self, pats: list[str], show: str) -> None:
+        path = self.path
+        if path:
+            self.owner._run(lambda: self.owner.ctl.set_show(path, pats, show))()
 
     def set_scheme(self, pats: list[str], scheme: str) -> None:
         path = self.path

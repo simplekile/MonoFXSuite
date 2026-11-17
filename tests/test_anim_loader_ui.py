@@ -207,10 +207,10 @@ def test_subd_menu_clear_and_apply(make):
     assert w.backend.calls[-1] == ("clear_subd", "/stage/b", ["Geo/Outfit_grp/**"])
     # only one char_Helen loader in the scene: nothing to copy to, no item
     menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
-    assert not any(a.text().startswith("Same subdivision") for a in menu.actions())
+    assert not any(a.text().startswith("Same overrides") for a in menu.actions())
     w.subd_panel.other_instances = lambda: ["char_Helen_inst02"]
     menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
-    _act(menu, "Same subdivision on the other 1 char_Helen loader").trigger()
+    _act(menu, "Same overrides on the other 1 char_Helen loader").trigger()
     assert w.backend.calls[-1] == ("subd_to_asset", "/stage/b")
 
 
@@ -400,4 +400,55 @@ def test_subd_menu_marks_the_current_choice(make):
     geo = w.subd_panel.tree.topLevelItem(0)
     for item in (geo.child(1), geo.child(1).child(0)):  # Outfit_grp and its mesh: from the lookdev, no override
         menu = w.subd_panel.menu_for(item)
-        assert [a.text() for a in menu.actions() if a.data() == "current"] == [ui.InspectorPanel.MENU_PUBLISH]
+        assert [a.text() for a in menu.actions() if a.data() == "current"] == [ui.InspectorPanel.MENU_PUBLISH,
+                                                                        "Render and viewport"]
+
+
+
+def test_shown_column_groom_curves_and_show_menu(make):
+    """Layout B (the user's pick): SHOWN says only what differs, groom curves are rows, the menu sets visibility /
+    purpose; a camera has its loader settings as fields."""
+    w, ui = _subd_window(make)
+    b = w.backend
+    b.subd_detail_extra = True
+    _select(w, ui, "/stage/b")
+    detail = w.ctl.subd_detail("/stage/b")
+    detail["curves"] = {"/Groom/Hair_Back": 21000, "/Groom/Eyebrows": 1200}
+    detail["shown"] = {"Groom": ("render only", ""), "Groom/Hair_Back": ("render only", "loader"),
+                       "Groom/Eyebrows": ("render only", "loader"), "Geo/Outfit_grp": ("hidden", "shot")}
+    _select(w, ui, "/stage/a")
+    _select(w, ui, "/stage/b")
+    tree = w.subd_panel.tree
+    tops = {tree.topLevelItem(i).text(0): tree.topLevelItem(i) for i in range(tree.topLevelItemCount())}
+    assert set(tops) == {"Geo", "Groom"} and not tree.isColumnHidden(5)
+    groom = tops["Groom"]
+    assert groom.text(1) == "22.2k cv" and groom.text(5) == "render only"
+    assert groom.child(0).text(5) == ""  # the same as its group: left blank
+    assert groom.child(0).data(0, ui.ROLE_PRIM) == "basiscurves"
+    outfit = tops["Geo"].child(1)
+    assert outfit.text(5) == "hidden"
+    menu = w.subd_panel.menu_for(groom.child(0))
+    texts = [a.text() for a in menu.actions() if a.isVisible() and not a.isSeparator()]
+    assert ui.InspectorPanel.MENU_OFF not in texts  # curves: no subdivision
+    assert [a.text() for a in menu.actions() if a.data() == "current"] == ["Render only"]
+    b.calls.clear()
+    b.set_show = lambda path, pats, show: b.calls.append(("set_show", path, tuple(pats), show))
+    _act(menu, "Viewport only").trigger()
+    assert b.calls[0] == ("set_show", "/stage/b", ("Groom/Hair_Back",), "proxy")
+
+
+def test_camera_settings_on_the_loader(make):
+    w, ui = _subd_window(make)
+    b = w.backend
+    b.cam_parms = lambda path: {"clippingRange1": 0.0001, "clippingRange2": 1e6, "horizontalAperture": 36.0,
+                                "aspectratiox": 16.0, "aspectratioy": 9.0, "xn__houdiniguidescale_s3a": 1.0}
+    b.set_cam_parm = lambda path, name, value: b.calls.append(("cam", path, name, value)) or True
+    _select(w, ui, "/stage/c")
+    edit = w.subd_panel.cam_edit
+    assert not w.subd_panel.cam_head.isHidden()
+    assert edit.fields["clippingRange2"].text() == "1000000" and edit.fields["horizontalAperture"].text() == "36"
+    edit.fields["clippingRange1"].setText("0.01")
+    edit.fields["clippingRange1"].editingFinished.emit()
+    assert b.calls[-1] == ("cam", "/stage/c", "clippingRange1", 0.01)
+    _select(w, ui, "/stage/b")
+    assert w.subd_panel.cam_head.isHidden()

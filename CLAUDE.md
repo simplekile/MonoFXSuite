@@ -293,6 +293,20 @@
   when the artist drags it (mouse down), never from Qt's own resizes.
   One background for every row (the user's "too many colours", 2026-11-17): no zebra, no band per group level; a
   group reads as one by its quieter text and chevron, a selected row by the selection colour.
+- Inspector layout B (the user's pick of three mockups, 2026-11-17): what each prim shows. A SHOWN column says only
+  what differs from the row above (hidden, render only, viewport only) or what the shot set (accent); hidden when
+  nothing differs. The right-click menu sets it: Hide (visibility invisible), Render only (purpose render), Viewport
+  only (purpose proxy: Houdini GL draws it, Karma skips it), Render and viewport (visible, purpose default). Rules
+  live in the hidden `mx_show_rules` (JSON pattern = one prim under the instance, show), authored by the HDA's
+  `show_rules` Python LOP after Hide Prims (`adapter.author_show`), so a rule wins over Hide Prims and the
+  groom's render purpose; bake writes them as data (`BAKED_SHOW_CODE`). SHOWN comes from the files on the worker
+  thread (`shown_for`: publish visibility / purpose, Hide Prims, Show in Viewport, rules; `logic.shown_plan`).
+  The groom's curves are rows under Groom (`groom_curve_counts`, first frame of a cache; not `groom_curves`, the
+  cache's own paths that refresh uses: a second function of that name broke every groom loader). Remove the
+  shot's overrides clears subdivision and show rules; Same overrides copies both. A camera has "On the loader":
+  clipping, aperture, ratio, guide scale as parm fields (Enter sets the parm, one undo step).
+- hython: `hou.hda.installFile` goes into the open hip's library list, which `hipFile.load` replaces: install
+  after the load (and `setIsPreferred`) or the scene runs the installed MonoFX's loader, or no loader at all.
   Each row starts with its prim type's icon from Houdini's Scene Graph Tree (`SCENEGRAPH_primtype_xform` for a group,
   `_mesh` for a mesh; `_prim_icon`, Lucide outside Houdini); groups are drawn as Xforms, their real type is not read.
   The meshes' right-click menu (the user's "cryptic", 2026-11-17): verbs (Use the publish's subdivision, Turn

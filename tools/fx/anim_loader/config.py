@@ -48,6 +48,11 @@ VIEWPORT_BITS = {"lookdev": 1, "groom": 2}
 
 # Shot rules for subdivision (JSON list of {"pattern", "scheme", "dicing"}), see logic.subd_plan.
 P_SUBD_RULES = "mx_subd_rules"
+# Hidden: what the shot shows of each prim (the user's pick, layout B, 2026-11-17): JSON [{"pattern": <prim under the
+# instance, no leading "/">, "show": hidden | render | proxy | both}], authored by the show_rules Python LOP last
+P_SHOW_RULES = "mx_show_rules"
+P_HIDE_ENABLE = "mx_hide_enable"
+P_HIDE_PATTERN = "mx_hide_pattern"
 
 # Source (docs/plans/anim_loader_asset_source.md): a shot's anim, or the asset's own publishes (UV model, groom,
 # lookdev) for grooming / lookdev scenes. Both graft under /<asset>, so prim paths match.

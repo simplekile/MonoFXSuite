@@ -94,6 +94,8 @@ def make_cam(scale: float):
         "prim": "/root/cam_sh025_root/cam_sh025_mount/cam_sh025_boom/cam_sh025_head/cam_sh025", "focal": 35.0,
         "focal_animated": False, "h_aperture": 36.0, "v_aperture": 20.25, "clip": (0.0001, 1e6), "fstop": 0.0,
         "focus": 0.0}
+    w.backend.cam_parms = lambda path: {"clippingRange1": 0.0001, "clippingRange2": 1e6, "horizontalAperture": 36.0,
+                                        "aspectratiox": 16.0, "aspectratioy": 9.0, "xn__houdiniguidescale_s3a": 1.0}
     for i in range(w.list_view.count()):
         r = w.list_view.item(i).data(role)
         w.list_view.item(i).setSelected(bool(r) and r.node_path == "/stage/c")

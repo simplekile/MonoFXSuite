@@ -100,6 +100,14 @@ if root:
             UsdGeom.Imageable(prim).CreatePurposeAttr().Set(UsdGeom.Tokens.render)
 '''
 
+# What the shot shows of each prim (hidden / render only / viewport only / both): last, after Hide Prims and the
+# groom's render purpose, so a rule wins over both (adapter.author_show, logic.parse_show_rules)
+SHOW_CODE = '''hda = hou.pwd().parent()
+stage = hou.pwd().editableStage()
+from apps.houdini import anim_loader_adapter
+anim_loader_adapter.author_show(hda, stage)
+'''
+
 PYTHON_MODULE = "from apps.houdini.anim_loader_adapter import *\n"
 ON_CREATED = "from apps.houdini import anim_loader_adapter\nanim_loader_adapter.on_created(kwargs['node'])\n"
 ON_LOADED = "from apps.houdini import anim_loader_adapter\nanim_loader_adapter.on_loaded(kwargs['node'])\n"
@@ -157,7 +165,8 @@ def build_network(sub) -> None:
         edit.parm(name).setExpression(f'ch("../{name}")', hou.exprLanguage.Hscript)
     cam_x100 = _node(sub, "xform", "cam_x100", (edit,), xforminworldspace=0, usexformcommonapi=0, scale=100.0)
 
-    switch = _node(sub, "switch", "geo_or_cam", (hide, cam_x100))
+    show = _node(sub, "pythonscript", "show_rules", (hide,), python=SHOW_CODE)
+    switch = _node(sub, "switch", "geo_or_cam", (show, cam_x100))
     switch.parm("input").setExpression(f'ch("../{config.P_GEO_CAM}")', hou.exprLanguage.Hscript)
     out = sub.node("output0") or sub.createNode("output", "output0")  # a LOP subnet comes with output0
     out.setInput(0, switch)
@@ -336,6 +345,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
         T.StringParmTemplate("mx_groom_asset", "Groom Asset (2.1)", 1),
         T.StringParmTemplate("mx_cloth_asset", "Cloth Asset (2.1)", 1),
         T.StringParmTemplate(config.P_SUBD_RULES, "Subdivision Rules", 1),
+        T.StringParmTemplate(config.P_SHOW_RULES, "Show Rules", 1),
         T.StringParmTemplate(config.P_GROOM_TOPO, "Groom Topology File", 1),
         *[T.StringParmTemplate(n, n, 1) for n in config.P_LAYERS],
         *[T.StringParmTemplate(k, k, 1) for task in config.P_FX.values() for k in
