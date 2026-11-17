@@ -162,7 +162,8 @@ def asset_menu(project_root: str, group: str, current: str, with_model: bool) ->
     for name, folder in sorted(list_asset_dirs(root).items(), key=lambda kv: kv[0].lower()):
         if group and folder.parent.name != group:
             continue
-        if with_model and not list_versions(model_publish_dir(folder)):
+        if with_model and not (list_versions(model_publish_dir(folder))
+                               or list_versions(folder / "05_lookdev" / "publish")):
             continue
         out.append((name, name))
     if current and all(a != current for a, _ in out):
@@ -619,8 +620,8 @@ def _next_step_asset(root: Path, state: LoaderState) -> tuple[str, str]:
     asset_dir = list_asset_dirs(root).get(state.asset)
     if asset_dir is None:
         return f"No asset {state.asset} in this project: pick an asset.", f"no asset {state.asset}"
-    if not list_versions(model_publish_dir(asset_dir)):
-        return f"{state.asset} has no UV publish yet.", f"{state.asset}: no model"
+    if not list_versions(model_publish_dir(asset_dir)) and not list_versions(asset_dir / "05_lookdev" / "publish"):
+        return f"{state.asset} has no UV or lookdev publish yet.", f"{state.asset}: no publish"
     if not state.model_version:
         return "Pick a model version.", "pick a model version"
     if not state.model_file:
@@ -931,3 +932,197 @@ def mesh_groups(meshes: list[str]) -> dict[str, list[str]]:
         key = "/".join(parts[:2]) if len(parts) > 2 else "/".join(parts[:-1]) or parts[0]
         groups.setdefault(key, []).append(m)
     return groups
+
+
+# --- manager A (the user's pick, 2026-11-17): add assets, what is new, shot gaps, links ----------------------
+
+def monos_link(project_root: Path, folder: Path, page: str = "assets") -> str:
+    """``monos://open?project=<project>&page=<page>&e=<id>``, the link Monos opens on an asset or shot (its id is
+    the first 10 hex of sha256 of the folder's path in the project, as Monos's deep_link builds it)."""
+    import hashlib
+    from urllib.parse import quote, urlencode
+
+    try:
+        rel = folder.resolve().relative_to(project_root.resolve()).as_posix()
+    except (OSError, ValueError):
+        return ""
+    short = hashlib.sha256(rel.strip("/").encode("utf-8")).hexdigest()[:10]
+    return "monos://open?" + urlencode({"project": project_root.name, "page": page, "e": short}, quote_via=quote)
+
+
+PART_DEPARTMENT = {"model": "01_modelling/03_uv", "lookdev": "05_lookdev", "groom": "04_grooming",
+                   "anim": "01_anim"}
+
+
+def work_author(entity_dir: Path, department: str, version: str) -> tuple[str, str] | None:
+    """(name, ISO time) of who last saved the work file of ``version`` in ``department``, from Monos's
+    ``.monos/authors.json`` and ``.monos/authors/*.json`` (Monos records work files, not publishes; a publish
+    vNNN comes from the work file vNNN in File mode)."""
+    import json
+
+    tag = f"_{version.lower()}."
+    best: tuple[str, str] | None = None
+    files = [entity_dir / ".monos" / "authors.json"]
+    try:
+        files += sorted((entity_dir / ".monos" / "authors").glob("*.json"))
+    except OSError:
+        pass
+    for f in files:
+        try:
+            data = json.loads(f.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for path, rec in (data.get("files") or {}).items():
+            p = path.replace("\\", "/").lower()
+            if not p.startswith(department.lower() + "/") or tag not in p or not isinstance(rec, dict):
+                continue
+            at = str(rec.get("at", ""))
+            if best is None or at > best[1]:
+                best = (str(rec.get("name", "")), at)
+    return best
+
+
+@dataclass(frozen=True)
+class WhatsNew:
+    """What a newer version of a part brings, from the disk: when, who saved its work file, what changed."""
+
+    part: str
+    old: str
+    new: str
+    date: str = ""            # date of the version folder
+    author: str = ""          # Monos work file author of the new version, "" when unknown
+    lines: tuple[str, ...] = ()
+    old_path: str = ""        # the files a mesh comparison reads (adapter, pxr)
+    new_path: str = ""
+
+
+def _folder_date(folder: Path) -> str:
+    from datetime import datetime
+
+    try:
+        return datetime.fromtimestamp(folder.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+    except OSError:
+        return ""
+
+
+def size_word(n: int) -> str:
+    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.1f} MB"
+
+
+def whats_new(state: LoaderState, part: str) -> WhatsNew | None:
+    """For ``part`` ("anim" = the anim or the model) the newest version holding this instance, if newer than the
+    node's: its date, its work file's author and what changed on disk (outputs, frame range, file size). Mesh
+    changes need pxr: the adapter adds them from old_path / new_path."""
+    root = Path(state.project_root)
+    if not state.project_root:
+        return None
+    if part == "anim":
+        current, found = main_version(state), _anim_versions(root, state)
+    else:
+        if not _applies(state, part) or state.asset is None:
+            return None
+        current, found = state.versions.get(part, ""), _found_versions(root, state, part, _geo_count(root, state))
+    newer = _newer(current, found)
+    if newer is None:
+        return None
+    lines: list[str] = []
+    author = None
+    word = part
+    if part == "anim" and is_asset(state):
+        asset_dir = _asset_dir(root, state)
+        if asset_dir is None:
+            return None
+        old_f = model_publish_dir(asset_dir) / current / state.model_file
+        new_name = pick_file(usd_files(model_publish_dir(asset_dir) / newer), asset_dir.name, "uv", state.model_file)
+        new_f = model_publish_dir(asset_dir) / newer / new_name
+        folder, author, word = new_f.parent, work_author(asset_dir, PART_DEPARTMENT["model"], newer), "model"
+    elif part == "anim":
+        pub = anim_publish_dir(root, state.shot)
+        old_f, new_f, folder = pub / current / state.anim_file, pub / newer / state.anim_file, pub / newer
+        author = work_author(root / "02_shots" / state.shot, PART_DEPARTMENT["anim"], newer)
+        old_out = {o.file for o in read_outputs(pub / current)}
+        new_out = {o.file for o in read_outputs(pub / newer)}
+        lines += [f"+ {f}" for f in sorted(new_out - old_out)] + [f"- {f}" for f in sorted(old_out - new_out)]
+        a, b = read_timeline(pub / current), read_timeline(pub / newer)
+        if a and b and (a[1], a[2]) != (b[1], b[2]):
+            lines.append(f"Frames {a[1]}-{a[2]} -> {b[1]}-{b[2]}")
+        if a and b and a[0] != b[0]:
+            lines.append(f"fps {a[0]:g} -> {b[0]:g}")
+    else:
+        geo = _geo_count(root, state)
+        old_p, new_p = _part_path(root, state, part, current, geo)[0], _part_path(root, state, part, newer, geo)[0]
+        old_f, new_f = Path(old_p), Path(new_p)
+        folder = new_f.parent
+        asset_dir = _asset_dir(root, state)
+        if asset_dir is not None and (part == "lookdev" or is_asset(state)):
+            author = work_author(asset_dir, PART_DEPARTMENT[part], newer)
+    try:
+        if "$F" not in str(new_f):
+            a_size, b_size = old_f.stat().st_size, new_f.stat().st_size
+            if a_size != b_size:
+                lines.append(f"{size_word(a_size)} -> {size_word(b_size)}")
+    except OSError:
+        pass
+    mesh_files = part == "anim" and "$F" not in str(new_f)
+    return WhatsNew(word, current, newer, _folder_date(folder), author[0] if author else "", tuple(lines),
+                    old_f.as_posix() if mesh_files else "", new_f.as_posix() if mesh_files else "")
+
+
+def mesh_change_lines(old: list[str], new: list[str], limit: int = 4) -> list[str]:
+    """"+ 2 meshes: Fin_L, Fin_R" / "- 1 mesh: Tail" from two mesh path lists."""
+    out = []
+    for sign, names in (("+", sorted(set(new) - set(old))), ("-", sorted(set(old) - set(new)))):
+        if names:
+            leaf = [n.rsplit("/", 1)[-1] for n in names]
+            more = f", +{len(leaf) - limit} more" if len(leaf) > limit else ""
+            out.append(f"{sign} {len(leaf)} mesh{'es' if len(leaf) != 1 else ''}: {', '.join(leaf[:limit])}{more}")
+    return out
+
+
+def shot_gaps(project_root: str, shot: str, have_files: set[str]) -> tuple[str, list[Output]]:
+    """(newest anim version, its outputs no loader stands for) of a shot: characters the scene does not have yet."""
+    if not (project_root and shot):
+        return "", []
+    pub = anim_publish_dir(Path(project_root), shot)
+    versions = list_versions(pub)
+    if not versions:
+        return "", []
+    return versions[-1], [o for o in read_outputs(pub / versions[-1]) if o.file not in have_files]
+
+
+@dataclass(frozen=True)
+class CatalogItem:
+    """An asset as the Add drawer shows it."""
+
+    name: str
+    group: str
+    model: str           # newest UV publish version, "" when none
+    lookdev: str         # newest lookdev version, "" when none
+    thumb: str           # Monos thumbnail, "" when none
+
+
+def asset_catalog(project_root: str, group: str = "", search: str = "", with_model: bool = True) -> list[CatalogItem]:
+    """Assets of a project for the Add drawer: one group ("" = all), names holding ``search`` (case-blind),
+    only those with a UV publish when ``with_model``."""
+    if not project_root:
+        return []
+    out = []
+    needle = search.strip().lower()
+    for name, folder in sorted(list_asset_dirs(Path(project_root)).items(), key=lambda kv: kv[0].lower()):
+        if group and folder.parent.name != group:
+            continue
+        if needle and needle not in name.lower():
+            continue
+        models = list_versions(model_publish_dir(folder))
+        looks = list_versions(folder / "05_lookdev" / "publish")
+        if with_model and not (models or looks):  # a prop's lookdev publish is the whole asset
+            continue
+        thumb = asset_thumbnail(folder)
+        out.append(CatalogItem(name, folder.parent.name, models[-1] if models else "", looks[-1] if looks else "",
+                               thumb.as_posix() if thumb else ""))
+    return out
+
+
+def handoff_name(instance: str) -> str:
+    """The package folder of one instance: ``<instance>_handoff``."""
+    return f"{instance}_handoff"

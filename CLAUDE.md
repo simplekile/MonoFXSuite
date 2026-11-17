@@ -236,6 +236,27 @@
 - Source Asset parm pane: Asset Type (`mx_asset_group`, a folder of `01_assets`, "All") shortens the Asset menu,
   which then lists only assets with a UV publish; Advanced shows Model Path (Anim Path hides). A part with nothing
   published reads "none published", not Houdini's "(no entries)".
+- Manager layout A (the user's pick, 2026-11-17, mockups in the module docstring): "+ Add" = Load shot (versions)
+  and Add assets... (a drawer: type chips, search, thumbnails, pick several, Add N); a view bar (Viewport menu of
+  explicit actions: solo the selected / show all through Houdini's Solo Geometry, view state; show or hide lookdev /
+  groom in the viewport on every loader, one undo step; draw hulls only; what the viewport shows now in words, with
+  Show all while soloed; Filter); the status line adds the shot's outputs the scene lacks (Add it) and the textures
+  the lookdevs pull; the inspector is information only (Monos rules, reviewed 2026-11-17 with the monos-qml-ui skill):
+  source, what is new in a newer version (date, Monos work file author from `.monos/authors.json` of the same vNNN,
+  outputs, frames, meshes, size); its actions are on the row's right-click menu (Update to <part> <version>, Switch to
+  Source Shot / Asset, Open folder, Open in Monos `monos://open?project&page&e=sha256[:10]`, Frame in the viewport).
+  The list is a table: a sticky column header, group bands, zebra rows, column separators (the user's ask). Every
+  button has pressed and selected + hover looks (Monos states). Hand off... writes `<instance>_handoff/<instance>.usd` (the loader's stage flattened, textures copied,
+  relative paths) for people without MonoFX.
+- Where new loaders go: a network with the shot layout (`merge_actors`, `merge_cameras`, `merge_environments`,
+  skill solaris-shot-stage-layout) gets them wired there (Load shot: geo -> actors, camera -> cameras; Add: characters
+  -> actors, the rest -> environments); any other network gets `<shot>_merge` / `assets_merge`. Adding an asset
+  already in the network makes another instance, prim `<asset>_inst02` (set dressing places one asset many times).
+- Props and environments publish a complete asset as their lookdev (`def` meshes and materials, root prims at the
+  top, e.g. prop_Cliff01: 12 meshes), the UV publish being another mesh (`_uv_publish_Low` / `_zHigh`). Source Asset
+  loads such a lookdev alone (`lookdev_defines_geometry`), never with the UV publish (that doubled the geometry);
+  Helen's lookdev only overrides, so her UV model stays under it. Checked on env_Envi lookdev v005: its 14
+  hand-placed props rebuilt with loaders + the same xform nodes give the same 1040 meshes and the same bounds.
 - A locked LOP HDA makes its inner nodes on first cook: `node.children()` is empty before.
 - Source Asset (the user's decisions, 2026-11-17; design `docs/plans/anim_loader_asset_source.md`): the node (label
   **MonoFX Loader**, type still `mono_anim_loader::2.2`) loads either a shot's anim (`mx_source` shot) or the asset's

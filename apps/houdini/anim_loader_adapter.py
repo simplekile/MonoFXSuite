@@ -126,6 +126,12 @@ def refresh(node) -> Resolved:
     """Resolves the node's state and writes the paths, layers, clips and status it shows. Never changes a version."""
     state = read_state(node)
     r = logic.resolve(state)
+    # Props and environments publish a complete asset as their lookdev (meshes and materials, defined there); the UV
+    # publish is another mesh (Low / zHigh). Such a lookdev is the asset: the UV publish is not loaded (both would
+    # double the geometry). Helen's lookdev only overrides: the UV model stays under it.
+    complete = logic.is_asset(state) and bool(r.lookdev) and lookdev_defines_geometry(r.lookdev)
+    if complete:
+        r = dataclasses.replace(r, anim=r.lookdev, notes=tuple(n for n in r.notes if not n.startswith("Model file")))
     _set(node, config.P_ANIM_PATH, r.anim)
     _set(node, config.P_MODEL_PATH, r.anim if logic.is_asset(state) else "")
     if logic.is_asset(state) and state.asset:
@@ -135,7 +141,7 @@ def refresh(node) -> Resolved:
     for part in logic.PARTS:
         _set(node, config.P_PATH[part], getattr(r, part))
     notes = list(r.notes)
-    layers = [r.lookdev]
+    layers = [] if complete else [r.lookdev]  # complete: r.anim is the lookdev, added last
     topo = ""
     asset_source = logic.is_asset(state)
     for task in logic.FX_TASKS:
@@ -171,6 +177,8 @@ def refresh(node) -> Resolved:
     for name, value in zip(config.P_LAYERS, layers):
         _set(node, name, value)
     step, short = logic.next_step(state)
+    if complete and "model" in short:  # the lookdev is the asset: no model file to pick
+        step, short = "", ""
     if step:  # the source is not set yet: say the next thing to do, not every part missing
         _set(node, config.P_STATUS, step)
         _show_comment(node, short)
@@ -180,10 +188,56 @@ def refresh(node) -> Resolved:
         if asset_source:  # the main file is the model: say so
             st = {("model" if k == "anim" else k): v for k, v in st.items()}
             versions["model"] = versions.pop("anim")
+            if complete:  # the lookdev is the asset: the UV publish is not loaded, its state does not matter
+                st.pop("model", None)
+                notes.insert(0, "Model: the lookdev publish (it holds the geometry)")
         _set(node, config.P_STATUS, " · ".join(logic.status_problems(st, versions) + notes))
         _show_comment(node, logic.status_comment(st))
     _MENUS.clear()  # the menus read the disk again
     return r
+
+
+_COMPLETE_CACHE: dict[tuple[str, float], bool] = {}
+
+
+def lookdev_defines_geometry(path: str) -> bool:
+    """True when a lookdev publish defines meshes itself (a prop's or environment's complete asset), not only
+    overrides on the UV model (Helen). Read from its layers' specs, cached by modification time."""
+    import os
+
+    from pxr import Sdf
+
+    if not path or not os.path.isfile(path):
+        return False
+    key = (path, os.path.getmtime(path))
+    if key in _COMPLETE_CACHE:
+        return _COMPLETE_CACHE[key]
+    found = False
+    seen: set[str] = set()
+
+    def layer_has_mesh(layer) -> bool:
+        if layer is None or layer.identifier in seen:
+            return False
+        seen.add(layer.identifier)
+        hit = []
+
+        def visit(p):
+            if hit:
+                return
+            spec = layer.GetPrimAtPath(p) if p.IsPrimPath() else None
+            if spec is not None and spec.specifier == Sdf.SpecifierDef and spec.typeName == "Mesh":
+                hit.append(p)
+        layer.Traverse(Sdf.Path.absoluteRootPath, visit)
+        if hit:
+            return True
+        return any(layer_has_mesh(Sdf.Layer.FindOrOpen(layer.ComputeAbsolutePath(sub))) for sub in layer.subLayerPaths)
+
+    try:
+        found = layer_has_mesh(Sdf.Layer.FindOrOpen(path))
+    except Exception:
+        found = False
+    _COMPLETE_CACHE[key] = found
+    return found
 
 
 def _show_comment(node, text: str) -> None:
@@ -486,6 +540,18 @@ def _key(node) -> tuple[str, str]:
     return data.get("shot", ""), data.get("anim_file", "")
 
 
+# The shot layout of the lighting scenes (skill solaris-shot-stage-layout): merge_actors -> actors, merge_cameras ->
+# cameras, merge_environments -> environments, then graft_anim / graft_world. A network that has these merges gets
+# its new loaders wired into them; any other network gets <shot>_merge / assets_merge as before.
+LAYOUT_MERGES = {"actors": "merge_actors", "cameras": "merge_cameras", "environments": "merge_environments"}
+
+
+def layout_merge(parent, area: str):
+    """The shot layout's merge for ``area`` (actors / cameras / environments) in this network, else None."""
+    node = parent.node(LAYOUT_MERGES[area])
+    return node if node is not None and node.type().name() == "merge" else None
+
+
 def _shot_merge(parent, shot: str):
     for n in parent.children():
         if n.userData(config.MERGE_USER_DATA) == shot:
@@ -516,8 +582,11 @@ def load_shot(parent, root: str, shot: str, anim_version: str) -> LoadResult:
                 result.kept.append(existing.name())
                 continue
             node = create_loader(parent, root, shot, anim_version, out)
-            merge = merge or _shot_merge(parent, shot)
-            merge.setNextInput(node)
+            target = layout_merge(parent, "cameras" if out.kind == "cam" else "actors")
+            if target is None:
+                merge = merge or _shot_merge(parent, shot)
+                target = merge
+            target.setNextInput(node)
             result.created.append(node.name())
     if result.created:
         check_heavy_shot()
@@ -681,6 +750,279 @@ def _set_status_bar(text: str) -> None:
         pass
 
 
+# --- manager layout A (the user's pick, 2026-11-17): add assets, view, links, what is new, hand off ----------
+
+ASSETS_MERGE = "assets"  # MERGE_USER_DATA of the Merge LOP the Add drawer wires its loaders into
+
+
+def add_assets(parent, root: str, names: list[str]) -> LoadResult:
+    """A MonoFX Loader on Source Asset per asset (newest versions, once), wired into the shot layout's merges, else
+    this network's ``assets_merge`` (made on first use, never wired further). An asset already in this network gets
+    another instance, prim ``<asset>_inst02``... (set dressing places one asset several times). One undo step."""
+    from apps.houdini.solaris_adapter import manual_update, undo_group
+
+    result = LoadResult()
+    taken = {_s(n, config.P_INSTANCE) for n in parent.children() if n.type().name() == config.HDA_TYPE}
+    with undo_group(f"Add {len(names)} asset{'s' if len(names) != 1 else ''}"), manual_update():
+        merge = None
+        for name in names:
+            prim, i = name, 1
+            while prim in taken:  # another instance of an asset already placed here
+                i += 1
+                prim = f"{name}_inst{i:02d}"
+            state = dataclasses.replace(logic.initial_asset_state(Path(root), name), instance_name=prim)
+            node = parent.createNode(config.HDA_TYPE, _unique_name(parent, prim))
+            write_state(node, state)
+            refresh(node)
+            _place_new_node(node)
+            # the shot layout: characters with the actors, everything else in the environments
+            group = logic.asset_group_of(root, name)
+            target = layout_merge(parent, "actors" if group == "_characters" else "environments")
+            if target is None:
+                merge = merge or _shot_merge(parent, ASSETS_MERGE)
+                target = merge
+            target.setNextInput(node)
+            taken.add(prim)
+            result.created.append(node.name())
+    return result
+
+
+def _place_new_node(node) -> None:
+    try:
+        from apps.houdini.solaris_adapter import _place_new
+
+        _place_new(node)
+    except Exception:  # placement is cosmetic
+        pass
+
+
+def _networks_of(nodes: list) -> list:
+    out = []
+    for n in nodes:
+        if n.parent() not in out:
+            out.append(n.parent())
+    return out
+
+
+def solo(paths: list[str]) -> int:
+    """Solo the instances of these loaders in the viewport of their LOP networks (Houdini's Solo Geometry, view
+    state: not saved, not undoable); an empty list clears the solo. Returns the prims soloed."""
+    nodes = [hou.node(p) for p in paths if hou.node(p)]
+    nets = _networks_of(nodes) or _networks_of(find_loaders())
+    count = 0
+    for net in nets:
+        display = net.displayNode() if hasattr(net, "displayNode") else None
+        if display is None:
+            continue
+        mine = [n for n in nodes if n.parent() == net]
+        prims = [f"/{_s(n, config.P_INSTANCE)}" for n in mine if _s(n, config.P_INSTANCE)]
+        rule = hou.LopSelectionRule()
+        rule.setPathPattern(" ".join(prims))  # empty: no solo
+        with net.viewportOverrides(display) as overrides:  # Houdini edits overrides only inside a with block
+            overrides.setSoloGeometry(rule)
+        count += len(prims)
+    return count
+
+
+def set_viewport_part(part: str, on: bool) -> int:
+    """Show in Viewport for lookdev or groom on every MonoFX Loader (a node parm: one undo step)."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    bit = config.VIEWPORT_BITS[part]
+    n = 0
+    with undo_group(f"{part.title()} in viewport {'on' if on else 'off'}"):
+        for node in find_loaders():
+            if node.type().name() != config.HDA_TYPE:
+                continue
+            value = int(node.evalParm(config.P_VIEWPORT))
+            new = (value | bit) if on else (value & ~bit)
+            if new != value:
+                node.parm(config.P_VIEWPORT).set(new)
+                n += 1
+    return n
+
+
+def viewport_part_on(part: str) -> bool:
+    bit = config.VIEWPORT_BITS[part]
+    nodes = [n for n in find_loaders() if n.type().name() == config.HDA_TYPE]
+    return bool(nodes) and all(int(n.evalParm(config.P_VIEWPORT)) & bit for n in nodes)
+
+
+def frame(path: str) -> bool:
+    """Selects the loader's instance prim in a Scene Viewer showing its network and frames it (F)."""
+    node = hou.node(path)
+    inst = _s(node, config.P_INSTANCE) if node else ""
+    if not inst:
+        return False
+    for pane in hou.ui.paneTabs():
+        if pane.type() != hou.paneTabType.SceneViewer:
+            continue
+        try:
+            if pane.pwd() != node.parent():
+                pane.setPwd(node.parent())
+            pane.setCurrentSceneGraphSelection([f"/{inst}"])
+            pane.curViewport().frameSelected()
+            return True
+        except (AttributeError, hou.OperationFailed):
+            continue
+    return False
+
+
+def publish_folder(path: str) -> str:
+    """The folder of the loader's anim (or model) file, else its asset or shot folder."""
+    node = hou.node(path)
+    if node is None:
+        return ""
+    state = read_state(node)
+    main = _s(node, config.P_ANIM_PATH)
+    if main:
+        return str(Path(main).parent)
+    root = Path(state.project_root) if state.project_root else None
+    if root is None:
+        return ""
+    folder = logic.list_asset_dirs(root).get(state.asset or "")
+    return str(folder) if folder else str(root / "02_shots" / state.shot)
+
+
+def monos_link_for(path: str) -> str:
+    node = hou.node(path)
+    if node is None:
+        return ""
+    state = read_state(node)
+    if not state.project_root:
+        return ""
+    root = Path(state.project_root)
+    folder = logic.list_asset_dirs(root).get(state.asset or "")
+    if logic.is_asset(state) or (folder is not None and not state.shot):
+        return logic.monos_link(root, folder) if folder else ""
+    return logic.monos_link(root, root / "02_shots" / state.shot, "shots") if state.shot else ""
+
+
+def open_external(target: str) -> bool:
+    """A folder in Explorer or a monos:// link in Monos."""
+    import os
+
+    if not target:
+        return False
+    try:
+        os.startfile(target)  # type: ignore[attr-defined]  # Windows: the registered handler
+        return True
+    except OSError:
+        return False
+
+
+def set_source(paths: list[str], source: str) -> int:
+    """Source Shot / Asset on these loaders (each keeps the other side's parms); one undo step."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    n = 0
+    with undo_group(f"Source {source}"):
+        for p in paths:
+            node = hou.node(p)
+            if node is None or node.type().name() != config.HDA_TYPE or _s(node, config.P_SOURCE) == source:
+                continue
+            node.parm(config.P_SOURCE).set(source)
+            cb_parm_changed({"node": node, "parm": node.parm(config.P_SOURCE), "parm_name": config.P_SOURCE})
+            n += 1
+    return n
+
+
+_WEIGHT_CACHE: dict[tuple[str, float], int] = {}
+
+
+def texture_bytes(lookdev_path: str) -> int:
+    """Bytes of every file a lookdev publish pulls (textures, UDIM tiles included), cached by modification time
+    (no hou: the manager's worker thread)."""
+    import glob
+    import os
+
+    from pxr import Sdf, UsdUtils
+
+    if not lookdev_path or not os.path.isfile(lookdev_path):
+        return 0
+    key = (lookdev_path, os.path.getmtime(lookdev_path))
+    if key in _WEIGHT_CACHE:
+        return _WEIGHT_CACHE[key]
+    try:
+        layers, assets, unresolved = UsdUtils.ComputeAllDependencies(Sdf.AssetPath(lookdev_path))
+    except Exception:
+        return 0
+    files = {a for a in assets}
+    for u in unresolved:  # <UDIM> patterns come back unresolved: their tiles
+        if "<UDIM>" in u:
+            files.update(glob.glob(u.replace("<UDIM>", "[0-9][0-9][0-9][0-9]")))
+    total = 0
+    for f in files:
+        try:
+            total += os.path.getsize(f)
+        except OSError:
+            pass
+    _WEIGHT_CACHE.clear() if len(_WEIGHT_CACHE) > 256 else None
+    _WEIGHT_CACHE[key] = total
+    return total
+
+
+def mesh_paths(path: str) -> list[str]:
+    """The meshes of a publish file (cached with subdivision's reading of it)."""
+    return subd_opinions(path)[0] if path else []
+
+
+def handoff(paths: list[str], out_dir: str) -> list[str]:
+    """Packages each loader's instance for someone without MonoFX: ``<out_dir>/<instance>_handoff/<instance>.usd``
+    (the loader's stage as it is now, flattened: graft, subdivision, hidden prims, groom outside Geo, clips baked
+    to time samples) plus a copy of every file it points at (textures, UDIM tiles) under ``textures/``, paths made
+    relative. Lines say what was written."""
+    import glob
+    import os
+    import shutil
+
+    from pxr import Sdf, UsdUtils
+
+    lines = []
+    for p in paths:
+        node = hou.node(p)
+        inst = _s(node, config.P_INSTANCE) if node else ""
+        if not inst:
+            continue
+        folder = Path(out_dir) / logic.handoff_name(inst)
+        tex = folder / "textures"
+        tex.mkdir(parents=True, exist_ok=True)
+        flat = node.stage().Flatten()
+        layer = Sdf.Layer.CreateNew(str(folder / f"{inst}.usd"))
+        if not flat.GetPrimAtPath(f"/{inst}"):
+            lines.append(f"{inst}: nothing at /{inst}")
+            continue
+        Sdf.CopySpec(flat, f"/{inst}", layer, f"/{inst}")
+        layer.defaultPrim = inst
+        for key in ("framesPerSecond", "timeCodesPerSecond", "startTimeCode", "endTimeCode", "metersPerUnit",
+                    "upAxis"):
+            if flat.pseudoRoot.GetInfo(key) is not None and flat.pseudoRoot.HasInfo(key):
+                layer.pseudoRoot.SetInfo(key, flat.pseudoRoot.GetInfo(key))
+        copied: dict[str, str] = {}
+        size = 0
+
+        def move(asset: str) -> str:
+            nonlocal size
+            if not asset or asset.startswith("./") or asset in copied:
+                return copied.get(asset, asset)
+            sources = glob.glob(asset.replace("<UDIM>", "[0-9][0-9][0-9][0-9]")) if "<UDIM>" in asset else [asset]
+            sources = [s for s in sources if os.path.isfile(s)]
+            if not sources:
+                return asset
+            for s in sources:
+                dst = tex / os.path.basename(s)
+                if not dst.exists():
+                    shutil.copy2(s, dst)
+                    size += dst.stat().st_size
+            copied[asset] = "./textures/" + os.path.basename(asset)
+            return copied[asset]
+
+        UsdUtils.ModifyAssetPaths(layer, move)
+        layer.Save()
+        lines.append(f"{inst}: {folder} ({len(copied)} textures, {logic.size_word(size)})")
+    return lines
+
+
 # --- the manager window's backend --------------------------------------------------------------------
 
 class HoudiniBackend:
@@ -802,6 +1144,72 @@ class HoudiniBackend:
     @staticmethod
     def assets(root: str) -> list[str]:
         return sorted(logic.list_asset_dirs(Path(root))) if root else []
+
+    def add_assets(self, root, names):
+        r = add_assets(hou.node(self.parent_path), root, list(names))
+        return r.created, r.kept
+
+    @staticmethod
+    def solo(paths):
+        return solo(list(paths))
+
+    @staticmethod
+    def set_viewport_part(part, on):
+        return set_viewport_part(part, on)
+
+    @staticmethod
+    def viewport_part_on(part):
+        return viewport_part_on(part)
+
+    @staticmethod
+    def frame(path):
+        return frame(path)
+
+    @staticmethod
+    def open_folder(path):
+        return open_external(publish_folder(path))
+
+    @staticmethod
+    def open_monos(path):
+        return open_external(monos_link_for(path))
+
+    @staticmethod
+    def set_source(paths, source):
+        return set_source(list(paths), source)
+
+    @staticmethod
+    def handoff(paths, out_dir):
+        return handoff(list(paths), out_dir)
+
+    @staticmethod
+    def extras(infos, target_root, target_shot):
+        """Worker thread: what is new per behind part (with mesh changes), texture weight, shot gaps."""
+        news, weight = {}, {}
+        for i in infos:
+            st = i.state
+            if st is None or st.kind != "geo":
+                continue
+            items = []
+            for part in ("anim", *logic.PARTS):
+                w = logic.whats_new(st, part)
+                if w is None:
+                    continue
+                if w.old_path and w.new_path:
+                    try:
+                        extra = logic.mesh_change_lines(mesh_paths(w.old_path), mesh_paths(w.new_path))
+                    except Exception:
+                        extra = []
+                    w = dataclasses.replace(w, lines=tuple(extra) + w.lines)
+                items.append(w)
+            if items:
+                news[i.path] = items
+            r = logic.resolve(st)
+            if r.lookdev and st.enabled.get("lookdev"):
+                weight[i.path] = texture_bytes(r.lookdev)
+        have = {i.state.anim_file for i in infos if i.state is not None and i.state.shot == target_shot
+                and not logic.is_asset(i.state)}
+        gaps = logic.shot_gaps(target_root, target_shot, have) if target_root and target_shot else ("", [])
+        return {"news": news, "weight": weight, "gaps": gaps}
 
     @staticmethod
     def project_and_shot() -> tuple[str, str]:

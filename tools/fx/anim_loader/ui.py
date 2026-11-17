@@ -1,4 +1,11 @@
-"""Mono Anim Loader manager window (PySide6): every loader in the scene, what is behind, one-step updates.
+"""MonoFX Loaders manager window (PySide6): every loader in the scene, what is behind, one-step updates.
+Layout A, picked by the user (2026-11-17, mockups https://claude.ai/artifact/1uy5omTXrVU2LX4ePHZ2bb): one list and an
+Add drawer. "+ Add" holds Load shot (versions) and Assets... (a drawer beside the list: type chips, search, thumbnails,
+pick several, Add N: Source Asset loaders wired into ``assets_merge``). A view bar under the top bar: Solo selected,
+Lookdev / Groom in the viewport, Filter. The status line adds what the shot has that the scene lacks (Add it) and the
+textures the lookdevs pull. The inspector adds Source Shot / Asset, what is new in a newer version, and Folder, Monos,
+Frame. The action bar adds Hand off... (a self-contained package for people without MonoFX).
+Before that:
 
 Layout R-A, picked by the user (2026-11-17, mockups https://claude.ai/artifact/GEiaL6PUnMXhXukHH2isM1, after the
 Monos UI rules: browse first, act second; the inspector is information and shows only for a selection; actions in
@@ -26,8 +33,10 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
+    QLineEdit,
     QLabel,
     QListView,
     QListWidget,
@@ -208,19 +217,43 @@ class _Painter:
         p.drawText(rect.adjusted(self.px(16), 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom,
                    text.upper())
 
+    def band(self, p: QPainter, rect: QRect, text: str) -> None:
+        """A group band across the list: filled, a line above and below, the group name in caps."""
+        p.fillRect(rect, QColor(BAND))
+        p.setPen(QColor(LINE))
+        p.drawLine(rect.topLeft(), rect.topRight())
+        p.drawLine(rect.bottomLeft(), rect.bottomRight())
+        f = _font(self.px(FS_SMALL), QFont.Weight.DemiBold)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
+        p.setFont(f)
+        p.setPen(QColor(TEXT_LABEL))
+        p.drawText(rect.adjusted(self.px(16), 0, 0, 0), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                   text.upper())
+
 
 NARROW_ROW_PX = 560  # under this width a list row puts its versions on a second line
+ZEBRA = "#151519"       # every other row, a step over the window (TEXT_LABEL on it 7.2:1)
+BAND = BG_RAISED        # group bands and the column header
+ROLE_ZEBRA = Qt.ItemDataRole.UserRole + 12
+# Monos states (docs/ui_states_rules.md): pressed a step past hover, selected + hover brighter than selected
+STATES_PILL = (f"QPushButton:pressed {{ background: #26262d; }}"
+               f"QPushButton:checked:hover {{ background: #22305a; border-color: {ACCENT}; }}"
+               f"QPushButton:checked:pressed {{ background: #1c2850; }}")
+STATES_GHOST = ("QPushButton:pressed { background: #26262d; color: #ededf0; }"
+                "QPushButton::menu-indicator { image: none; width: 0; }")  # the label carries the arrow
+STATES_PRIMARY = "QPushButton:pressed { background: #2f5bd8; }"
 COLUMNS = (("anim", "Anim", 72), ("lookdev", "Lookdev", 72), ("groom", "Groom", 72), ("cloth", "Cloth", 72),
            ("subd", "Subd", 92))
 
 
 def subd_cell(row: Row) -> tuple[str, str]:
     """(text, colour) of a row's subdivision cell: meshes and viewport polygons, amber over the heavy line."""
+    weight = f"{row.weight / 1e9:.1f} GB" if row.weight >= 1e8 else ""
     if not row.subd:
-        return "\u2013", TEXT_META
+        return (weight or "\u2013"), (TEXT_LABEL if weight else TEXT_META)
     n, polys = row.subd
-    return f"{n} \u00b7 ~{polys / 1e6:.1f} M", (STATUS_COLORS[AM_WARN] if polys > logic.HEAVY_SUBD_POLYGONS
-                                                 else TEXT_LABEL)
+    text = f"{n} \u00b7 ~{polys / 1e6:.1f} M" + (f" \u00b7 {weight}" if weight else "")
+    return text, (STATUS_COLORS[AM_WARN] if polys > logic.HEAVY_SUBD_POLYGONS else TEXT_LABEL)
 
 
 def part_cell(row: Row, part: str) -> tuple[str, str]:
@@ -270,33 +303,23 @@ class _ListDelegate(QStyledItemDelegate):
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         rect = option.rect
         wide = rect.width() >= pt.px(NARROW_ROW_PX)
-        if index.data(ROLE_HEADER):
-            names_line = index.row() == 0 and not wide
-            head_rect = QRect(rect.left(), rect.top(), rect.width(), pt.px(34)) if names_line else rect
-            pt.header(p, head_rect.adjusted(0, 0, 0, -pt.px(6)), index.data(ROLE_HEADER))
-            if index.row() == 0:  # the column names once, on the first header
-                f = _font(pt.px(FS_SMALL), QFont.Weight.DemiBold)
-                f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
-                p.setFont(f)
-                p.setPen(QColor(TEXT_LABEL))
-                bottom = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom
-                if wide:
-                    cols, _ = self.columns(rect.adjusted(0, 0, 0, -pt.px(6)))
-                    for key, label, _ in COLUMNS:
-                        p.drawText(cols[key], bottom, label.upper())
-                else:
-                    r = QRect(rect.left(), rect.top() + pt.px(34), rect.width(), pt.px(20))
-                    for cell, part in self.cells(r):
-                        p.drawText(QRect(cell.left(), r.top(), cell.width(), r.height()), bottom,
-                                   PART_LABEL[part].upper())
+        if index.data(ROLE_HEADER):  # a group band (the column names are in the sticky header above)
+            pt.band(p, rect, index.data(ROLE_HEADER))
             p.restore()
             return
         row: Row = index.data(ROLE_ROW)
         selected = bool(option.state & option.state.__class__.State_Selected)
         hover = bool(option.state & option.state.__class__.State_MouseOver)
-        p.fillRect(rect, QColor(SELECTED if selected else (BG_HOVER if hover else BG_APP)))
+        base = ZEBRA if index.data(ROLE_ZEBRA) else BG_APP
+        # Monos states: hover a step lighter, selected its own blue, selected + hover brighter than selected
+        fill = ("#2e3c5f" if hover else SELECTED) if selected else (BG_HOVER if hover else base)
+        p.fillRect(rect, QColor(fill))
         p.setPen(QColor(LINE))
         p.drawLine(rect.bottomLeft(), rect.bottomRight())
+        if wide and not row.legacy:  # column separators (an old loader's line spans the columns)
+            cols_sep, name_sep = self.columns(rect)
+            for x in [name_sep + pt.px(4)] + [cols_sep[k].left() - pt.px(4) for k, _, _ in COLUMNS[1:]]:
+                p.drawLine(x, rect.top(), x, rect.bottom())
         pad, th = pt.px(16), pt.px(28)
         line1 = QRect(rect.left(), rect.top(), rect.width(), pt.px(40))
         pt.thumb(p, QRect(rect.left() + pad, line1.center().y() - th // 2, th, th), row)
@@ -313,7 +336,8 @@ class _ListDelegate(QStyledItemDelegate):
                                 line1.height()), tag, TEXT_LABEL, FS_SMALL)
         text, color = subd_cell(row)
         if row.kind != "cam" and not row.legacy:
-            self._text(p, cols["subd"], text if wide or row.subd else "", color, FS_SMALL)
+            self._text(p, cols["subd"], text if wide or row.subd else "", color, FS_SMALL,
+                       align=Qt.AlignmentFlag.AlignHCenter)  # every column but the name is centred
         if wide:
             cells = [(cols[part], part) for part in ALL_PARTS]
         else:  # the versions on a second line, under the column names of the first header
@@ -322,23 +346,64 @@ class _ListDelegate(QStyledItemDelegate):
         if row.legacy:
             first = cells[0][0]
             self._text(p, QRect(first.left(), first.top(), rect.right() - pad - first.left(), first.height()),
-                       "Upgrade to 2.2 keeps its settings", STATUS_COLORS[AM_WARN], FS_SMALL)
+                       "Upgrade to MonoFX Loader keeps its settings", STATUS_COLORS[AM_WARN], FS_SMALL)
         else:
             for r, part in cells:
                 if row.kind == "cam" and part != "anim":
                     continue
                 text, color = part_cell(row, part)
-                if selected and color == ACCENT:
-                    color = ACCENT_ON_SELECTED
-                self._text(p, r, text, color, FS_SMALL)
+                if selected and color == ACCENT:  # 4.5:1 on the selected fill, and on selected + hover
+                    color = "#86abff" if hover else ACCENT_ON_SELECTED
+                self._text(p, r, text, color, FS_SMALL, align=Qt.AlignmentFlag.AlignHCenter)
         p.restore()
 
     def sizeHint(self, option, index) -> QSize:
         width = self.view.viewport().width() if self.view is not None else 1000
         wide = width >= self.pt.px(NARROW_ROW_PX)
         if index.data(ROLE_HEADER):
-            return QSize(width, self.pt.px(34 if wide or index.row() else 58))
+            return QSize(width, self.pt.px(28))
         return QSize(width, self.pt.px(40 if wide else 62))
+
+
+class _ColumnHeader(QWidget):
+    """The list's column names, fixed above the rows (a table header): filled band, separators at the rows'
+    column lines; narrow, the four part names where the rows put their versions."""
+
+    def __init__(self, view: QListWidget, delegate: _ListDelegate, painter: _Painter) -> None:
+        super().__init__(view)
+        self.view, self.delegate, self.pt = view, delegate, painter
+        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+
+    def place(self) -> None:
+        vp = self.view.viewport()
+        self.setGeometry(vp.x(), vp.y() - self.pt.px(30), vp.width(), self.pt.px(30))
+        self.update()
+
+    def paintEvent(self, _event) -> None:
+        pt = self.pt
+        p = QPainter(self)
+        rect = QRect(0, 0, self.width(), self.height())
+        p.fillRect(rect, QColor(BAND))
+        p.setPen(QColor(LINE))
+        p.drawLine(rect.bottomLeft(), rect.bottomRight())
+        f = _font(pt.px(FS_SMALL), QFont.Weight.DemiBold)
+        f.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1)
+        p.setFont(f)
+        p.setPen(QColor(TEXT_LABEL))
+        mid = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        centre = Qt.AlignmentFlag.AlignCenter  # every column but the name, like the cells under it
+        if rect.width() >= pt.px(NARROW_ROW_PX):
+            cols, name_end = self.delegate.columns(rect)
+            p.drawText(QRect(pt.px(16), 0, name_end - pt.px(16), rect.height()), mid, "NAME")
+            for key, label, _ in COLUMNS:
+                p.drawText(cols[key], centre, label.upper())
+            p.setPen(QColor(LINE))
+            for x in [name_end + pt.px(4)] + [cols[k].left() - pt.px(4) for k, _, _ in COLUMNS[1:]]:
+                p.drawLine(x, 0, x, rect.bottom())
+        else:
+            for cell, part in self.delegate.cells(rect):
+                p.drawText(cell, centre, PART_LABEL[part].upper())
+        p.end()
 
 
 class _GridDelegate(QStyledItemDelegate):
@@ -462,7 +527,8 @@ class AnimLoaderManager(QWidget):
 
     def _button(self, text: str, style: str) -> QPushButton:
         b = QPushButton(text)
-        b.setStyleSheet(self.css(style))
+        states = {id(STYLE_PILL): STATES_PILL, id(STYLE_GHOST): STATES_GHOST, id(STYLE_PRIMARY): STATES_PRIMARY}
+        b.setStyleSheet(self.css(style + states.get(id(style), "")))
         b.setFont(_font(self.px(FS_META if style is not STYLE_PRIMARY else FS_BODY),
                         QFont.Weight.DemiBold if style is STYLE_PRIMARY else QFont.Weight.Normal))
         b.setMinimumHeight(self.px(32))
@@ -512,8 +578,8 @@ class AnimLoaderManager(QWidget):
             b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             self.view_buttons.addButton(b)
             t.addWidget(b)
-        self.load_button = self._button("Load shot \u25be", STYLE_GHOST)
-        self.load_button.setToolTip("A loader for every anim output of a version that has none yet")
+        self.load_button = self._button("+ Add \u25be", STYLE_GHOST)
+        self.load_button.setToolTip("Load a shot (a loader for every anim output that has none yet) or add assets")
         self.load_menu = self._menu_for(self.load_button)
         self.load_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         t.addWidget(self.load_button)
@@ -523,6 +589,43 @@ class AnimLoaderManager(QWidget):
         self._nav_layout.setContentsMargins(self.px(10), 0, self.px(16), self.px(6))
         self.nav_row.hide()
         root.addWidget(self.nav_row)
+        root.addWidget(self._line())
+
+        # View bar: what the viewport shows (view state and Show in Viewport), apart from the action bar
+        vbar, vb = self._bar()
+        vbar.setObjectName("viewbar")
+        vb.setContentsMargins(self.px(16), self.px(6), self.px(16), self.px(6))
+        self.viewport_button = self._button("Viewport \u25be", STYLE_GHOST)
+        self.viewport_button.setToolTip("Solo, lookdev and groom in the viewport, Draw Hulls Only")
+        self.viewport_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+        self.viewport_menu = self._menu_for(self.viewport_button)
+        self.viewport_menu.aboutToShow.connect(self._fill_viewport_menu)
+        vb.addWidget(self.viewport_button)
+        # what the viewport shows now, in words (Monos: state is read, not a toggle that hides what it wrote)
+        self.view_state = self._label("", FS_SMALL, color=TEXT_LABEL)
+        vb.addWidget(self.view_state)
+        self.solo_off = QPushButton("Show all")
+        self.solo_off.setStyleSheet(self.css(STYLE_LINK))
+        self.solo_off.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.solo_off.setMinimumHeight(self.px(24))
+        self.solo_off.setToolTip("End the solo: every loader in the viewport again")
+        self.solo_off.clicked.connect(self._run(self.ctl.toggle_solo))
+        vb.addWidget(self.solo_off)
+        vb.addStretch(1)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setObjectName("filter")
+        self.filter_edit.setPlaceholderText("Filter")
+        self.filter_edit.setToolTip("Only loaders whose name or asset holds this text")
+        self.filter_edit.setFixedWidth(self.px(170))
+        self.filter_edit.setMinimumHeight(self.px(24))
+        self.filter_edit.setStyleSheet(self.css(
+            f"QLineEdit#filter {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};"
+            f" border-radius: 7px; padding: 3px 8px; font-size: {FS_SMALL}px; }}"
+            f"QLineEdit#filter:focus {{ border: 1px solid {ACCENT}; }}"))
+        self.filter_edit.textChanged.connect(lambda _t: self._show_rows())
+        vb.addWidget(self.filter_edit)
+        self.view_bar = vbar
+        root.addWidget(vbar)
         root.addWidget(self._line())
 
         # Status line: what the primary does, how many loaders; the heavy-shot note on the right
@@ -541,8 +644,21 @@ class AnimLoaderManager(QWidget):
         self.hulls_link.setCursor(Qt.CursorShape.PointingHandCursor)
         self.hulls_link.setToolTip("The /stage viewports draw hulls: lighter to draw and less memory")
         self.hulls_link.clicked.connect(self._hulls)
+        self.gap_label = self._label("", FS_META, color=TEXT_LABEL)
+        self.gap_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.gap_link = QPushButton("Add it")
+        self.gap_link.setStyleSheet(self.css(STYLE_LINK))
+        self.gap_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.gap_link.setToolTip("A loader for each output of the shot's newest anim version that the scene lacks")
+        self.gap_link.clicked.connect(self._run(self.ctl.add_missing))
+        self.gap_link.setMinimumHeight(self.px(24))  # a 24 px target (WCAG 2.5.8)
+        self.weight_label = self._label("", FS_SMALL, color=TEXT_LABEL)
+        self.weight_label.setToolTip("Files the lookdevs pull (textures, UDIM tiles), read from the publishes")
         st.addWidget(self.headline)
-        st.addWidget(self.status_meta, 1)
+        st.addWidget(self.status_meta)
+        st.addWidget(self.gap_label, 1)
+        st.addWidget(self.gap_link)
+        st.addWidget(self.weight_label)
         st.addWidget(self.heavy_label)
         st.addWidget(self.hulls_link)
         root.addWidget(status)
@@ -571,6 +687,9 @@ class AnimLoaderManager(QWidget):
         self.subd_panel.setMinimumWidth(1)  # set by resizeEvent: 360 beside the list, free when stacked
         self.subd_panel.hide()  # only while a loader is selected
         self.split.addWidget(self.subd_panel)
+        self.drawer = AddDrawer(self)
+        self.drawer.hide()
+        self.split.addWidget(self.drawer)
         self.split.setStretchFactor(0, 1)
         self.split.setStretchFactor(1, 0)  # the inspector keeps its width; the list takes the rest
         root.addWidget(self.split, 1)
@@ -588,6 +707,10 @@ class AnimLoaderManager(QWidget):
         self._actions_layout = b
         b.addWidget(self.result, 1)  # the result line beside the buttons (above them when narrow)
         b.addStretch(0)  # keeps the buttons right when the result line moves above them
+        self.handoff_button = self._button("Hand off\u2026", STYLE_GHOST)
+        self.handoff_button.setToolTip("A self-contained package of the selected loaders (else every one) for people "
+                                       "without MonoFX: one USD each, textures copied, paths relative")
+        self.handoff_button.clicked.connect(self._handoff)
         self.undo_button = self._button("Undo", STYLE_GHOST)
         self.undo_button.setToolTip("Houdini's undo of the last change")
         self.undo_button.clicked.connect(self._undo)
@@ -603,7 +726,7 @@ class AnimLoaderManager(QWidget):
         self.primary = self._button("", STYLE_PRIMARY)
         self.primary.setToolTip("The one thing worth doing now")
         self.primary.clicked.connect(self._run(self.ctl.primary))
-        for w in (self.undo_button, self.retarget_button, self.upgrade_button, self.primary):
+        for w in (self.handoff_button, self.undo_button, self.retarget_button, self.upgrade_button, self.primary):
             b.addWidget(w)
         root.addWidget(bar)
 
@@ -652,7 +775,10 @@ class AnimLoaderManager(QWidget):
             v.setContentsMargins(self.px(10), 0, self.px(10), 0)
             v.setItemDelegate(_GridDelegate(self._paint, v, v))
         else:
-            v.setItemDelegate(_ListDelegate(self._paint, v, v))
+            delegate = _ListDelegate(self._paint, v, v)
+            v.setItemDelegate(delegate)
+            v.setViewportMargins(0, self.px(30), 0, 0)  # room for the sticky column header
+            self.column_header = _ColumnHeader(v, delegate, self._paint)
         v.viewport().installEventFilter(self)  # rows / cards follow the view's own width (the splitter moves it)
         v.itemSelectionChanged.connect(lambda view=v: self._selection_changed(view))
         v.itemDoubleClicked.connect(self._select_node)
@@ -696,15 +822,20 @@ class AnimLoaderManager(QWidget):
 
     def _show_rows(self) -> None:
         rows = self.ctl.rows()
+        needle = self.filter_edit.text().strip().lower() if hasattr(self, "filter_edit") else ""
+        if needle:
+            rows = [r for r in rows if needle in r.instance.lower() or needle in (r.asset or "").lower()]
         for view in (self.list_view, self.grid_view):
             keep = {i.data(ROLE_ROW).node_path for i in view.selectedItems() if i.data(ROLE_ROW)}
             view.blockSignals(True)
             view.clear()
             shot = None
+            n_in_group = 0
             for row in rows:
                 group = row.shot or ("assets" if row.asset_source else "old loaders")
                 if group != shot:
                     shot = group
+                    n_in_group = 0
                     count = sum(1 for r in rows if (r.shot or ("assets" if r.asset_source else "old loaders")) == group)
                     h = QListWidgetItem()
                     h.setData(ROLE_HEADER, f"{group} · {count}")
@@ -712,6 +843,8 @@ class AnimLoaderManager(QWidget):
                     view.addItem(h)
                 item = QListWidgetItem()
                 item.setData(ROLE_ROW, row)
+                item.setData(ROLE_ZEBRA, n_in_group % 2 == 1)
+                n_in_group += 1
                 item.setToolTip(self._tooltip(row))
                 view.addItem(item)
                 item.setSelected(row.node_path in keep)
@@ -765,6 +898,21 @@ class AnimLoaderManager(QWidget):
         self.upgrade_button.setVisible(n_old > 0 and (action is None or action[0] != "upgrade"))
         self.retarget_button.setText(self.ctl.retarget_label())
         self.retarget_button.setVisible(bool(self.ctl.retarget_paths()) and (action is None or action[0] != "retarget"))
+        gap = self.ctl.gap_line()
+        self.gap_label.setText(("\u00b7 " + gap) if gap else "")
+        self.gap_link.setVisible(bool(gap))
+        total = self.ctl.weight_total()
+        self.weight_label.setText(f"textures {total / 1e9:.1f} GB" if total >= 1e8 else "")
+        bits = []
+        if self.ctl.soloed:
+            bits.append(f"Solo \u00b7 {len(self.ctl.soloed)} loader{'s' if len(self.ctl.soloed) != 1 else ''}")
+        hidden = [p.title() for p in ("lookdev", "groom") if rows and not self.ctl.viewport_part_on(p)]
+        if hidden:
+            bits.append(" and ".join(hidden) + " render only")
+        self.view_state.setText(" \u00b7 ".join(bits))
+        self.solo_off.setVisible(bool(self.ctl.soloed))
+        if getattr(self, "_drawer_open", False):  # one primary: the drawer's Add while it is open
+            self.primary.setVisible(False)
         self.result.setText(self.ctl.message)  # results only
 
     def _selection_changed(self, view: QListWidget) -> None:
@@ -775,7 +923,7 @@ class AnimLoaderManager(QWidget):
     def _show_subd(self) -> None:
         sel = self.ctl.selection[-1] if self.ctl.selection else ""
         row = next((r for r in self.ctl.rows() if r.node_path == sel), None)
-        self.subd_panel.setVisible(row is not None)  # the inspector is for a selection (Monos)
+        self.subd_panel.setVisible(row is not None and not getattr(self, "_drawer_open", False))  # for a selection
         self.subd_panel.show_row(row)
 
     def _repaint_views(self) -> None:
@@ -789,6 +937,8 @@ class AnimLoaderManager(QWidget):
             for v in (getattr(self, "list_view", None), getattr(self, "grid_view", None)):
                 if v is not None and obj is v.viewport():
                     QTimer.singleShot(0, v.doItemsLayout)
+                    if v is getattr(self, "list_view", None) and hasattr(self, "column_header"):
+                        self.column_header.place()
         return super().eventFilter(obj, event)
 
     def resizeEvent(self, event) -> None:
@@ -799,7 +949,8 @@ class AnimLoaderManager(QWidget):
         elif not narrow and self.nav_box.parentWidget() is self.nav_row:
             self._top_layout.insertWidget(1, self.nav_box, 1)
         self.nav_row.setVisible(narrow)
-        for lab in (self.headline, self.heavy_label):  # wrap when docked narrow, never widen the window
+        self.weight_label.setVisible(not narrow and bool(self.weight_label.text()))  # the tooltip-level detail
+        for lab in (self.headline, self.heavy_label, self.gap_label):  # wrap when docked narrow, never widen
             lab.setWordWrap(narrow)
         if narrow and self.result.parentWidget() is not self.result_row:
             self._result_layout.addWidget(self.result, 1)
@@ -812,7 +963,11 @@ class AnimLoaderManager(QWidget):
         self.list_view.doItemsLayout()  # list rows change height when narrow
         # the inspector sits beside the list, or under it when docked narrow
         narrow_split = self.width() < self.px(760)
+        was_vertical = self.split.orientation() == Qt.Orientation.Vertical
         self.split.setOrientation(Qt.Orientation.Vertical if narrow_split else Qt.Orientation.Horizontal)
+        if narrow_split and not was_vertical:  # stacked: the list keeps the larger half
+            h = max(self.split.height(), self.px(400))
+            self.split.setSizes([int(h * 0.55), int(h * 0.45), int(h * 0.45)])
         self.subd_panel.setMinimumWidth(1 if narrow_split else self.px(360))
 
     # --- commands --------------------------------------------------------------------------------
@@ -825,6 +980,52 @@ class AnimLoaderManager(QWidget):
             self._show_rows()
             self.refresh()
         return go
+
+    def _fill_viewport_menu(self) -> None:
+        """Explicit actions, each saying what it does (Monos menu rules: actions, never hidden state)."""
+        m = self.viewport_menu
+        m.clear()
+        if self.ctl.soloed:
+            m.addAction("Show all loaders", self._run(self.ctl.toggle_solo))
+        else:
+            act = m.addAction("Solo the selected loaders", self._run(self.ctl.toggle_solo))
+            act.setEnabled(bool(self.ctl.selection))
+        m.addSeparator()
+        for part in ("lookdev", "groom"):
+            on = self.ctl.viewport_part_on(part)
+            m.addAction(f"{'Hide' if on else 'Show'} {part} in the viewport (every loader)",
+                        self._run(lambda p=part: self.ctl.toggle_viewport_part(p)))
+        if hasattr(self.backend, "set_hulls_only"):
+            m.addSeparator()
+            m.addAction("Draw hulls only", self._hulls)
+
+    def _link(self, path: str, key: str) -> None:
+        {"folder": self.ctl.open_folder, "monos": self.ctl.open_monos, "frame": self.ctl.frame}[key](path)
+        self.result.setText(self.ctl.message)
+
+    def open_drawer(self) -> None:
+        self.ctl.target_root = self._project
+        self.drawer.open(self._project)
+        self.subd_panel.hide()
+        self.drawer.show()
+        self._drawer_open = True
+        self._update_bar()
+
+    def close_drawer(self) -> None:
+        self.drawer.hide()
+        self._drawer_open = False
+        self._show_subd()
+        self._update_bar()
+
+    def add_picked(self, names: list[str]) -> None:
+        self.ctl.target_root = self._project
+        self._run(lambda: self.ctl.add_assets(names))()
+        self.close_drawer()
+
+    def _handoff(self) -> None:
+        out = QFileDialog.getExistingDirectory(self, "Hand off to folder", str(Path.home()))
+        if out:
+            self._run(lambda: self.ctl.handoff(out))()
 
     def _hulls(self) -> None:
         self.ctl.draw_hulls()
@@ -846,14 +1047,33 @@ class AnimLoaderManager(QWidget):
 
     def _menu(self, view: QListWidget, pos) -> None:
         item = view.itemAt(pos)
+        menu = self.row_menu(item) if item is not None else None
+        if menu is not None:
+            menu.exec(view.viewport().mapToGlobal(pos))
+
+    def row_menu(self, item) -> QMenu | None:
+        """The right-click menu of a row: its actions (the inspector only shows information)."""
         row: Row | None = item.data(ROLE_ROW) if item else None
         if row is None:
-            return
+            return None
         menu = QMenu(self)
         menu.setStyleSheet(self.css(STYLE_MENU))
         menu.addAction("Select node", lambda: self._select_node(item))
         if not row.legacy and row.behind:
-            menu.addAction("Update this loader", self._run(lambda: self.ctl._update([row.node_path])))
+            news = self.ctl.news(row.node_path)
+            label = f"Update to {news[0].part} {news[0].new}" if len(news) == 1 else "Update this loader"
+            menu.addAction(label, self._run(lambda: self.ctl._update([row.node_path])))
+        if not row.legacy and row.kind == "geo":
+            paths = self.ctl.selection if row.node_path in self.ctl.selection else [row.node_path]
+            other = "shot" if row.asset_source else "asset"
+            n = f" ({len(paths)})" if len(paths) > 1 else ""
+            menu.addAction(f"Switch to Source {other.title()}{n}",
+                           self._run(lambda: self.ctl.set_source(other, list(paths))))
+        if not row.legacy:
+            menu.addSeparator()
+            menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))
+            menu.addAction("Open in Monos", lambda: self._link(row.node_path, "monos"))
+            menu.addAction("Frame in the viewport", lambda: self._link(row.node_path, "frame"))
         target = self.ctl.target_shot
         if not row.legacy and row.shot and target and row.shot != target:
             menu.addAction(f"Retarget to {target}", self._run(lambda: self.ctl.retarget([row.node_path])))
@@ -862,7 +1082,7 @@ class AnimLoaderManager(QWidget):
             root = next((i.state.project_root for i in self.ctl._infos if i.path == row.node_path and i.state), "")
             for asset in getattr(self.backend, "assets", lambda r: [])(root):
                 sub.addAction(asset, self._run(lambda a=asset: self.ctl.set_asset(row.node_path, a)))
-        menu.exec(view.viewport().mapToGlobal(pos))
+        return menu
 
     def _projects(self) -> list[str]:
         """The picked project, the scene's, the loaders', then recent ones (prefs), each once."""
@@ -906,6 +1126,7 @@ class AnimLoaderManager(QWidget):
                 or (loaded[0] if loaded else "") or (self.shots[0] if self.shots else ""))
         self.ctl.scene_shot = guess[1]
         self.ctl.target_shot = shot
+        self.ctl.target_root = root
         self.shot_menu.clear()
         for name in self.shots:
             act = self.shot_menu.addAction(name)
@@ -921,11 +1142,17 @@ class AnimLoaderManager(QWidget):
         self.versions = list(reversed(logic.list_versions(logic.anim_publish_dir(Path(root), shot)))) \
             if root and shot else []
         self.load_menu.clear()
+        self.load_menu.addSection(f"Load shot {shot}" if shot else "Load shot")
         if not self.versions:
             self.load_menu.addAction(f"No anim publish in {shot}" if shot else "Pick a project first").setEnabled(False)
         for i, version in enumerate(self.versions):
-            act = self.load_menu.addAction(f"{shot} {version}" + ("  \u00b7  newest" if i == 0 else ""))
+            act = self.load_menu.addAction(f"Load {shot} {version}" + (" \u00b7 newest" if i == 0 else ""))
             act.triggered.connect(lambda _=False, v=version: self.load_version(v))
+        self.load_menu.addSeparator()
+        assets = self.load_menu.addAction("Add assets\u2026")
+        assets.setToolTip("Pick assets to load on Source Asset (newest model, groom, lookdev)")
+        assets.setEnabled(bool(root))
+        assets.triggered.connect(self.open_drawer)
 
     def pick_project(self, path: str) -> None:
         """A project from the menu, or BROWSE: Qt's folder picker; a folder anywhere inside a project finds its
@@ -1141,6 +1368,29 @@ class InspectorPanel(QWidget):
         self.meta = owner._label("", FS_SMALL, color=TEXT_LABEL)
         self.meta.setWordWrap(True)
         lay.addWidget(self.meta)
+        lay.addSpacing(owner.px(6))
+        self.source = owner._label("", FS_SMALL, color=TEXT_LABEL)
+        lay.addWidget(self.source)
+        # What a newer version brings (date, who saved its work file, what changed), with its Update
+        self.news_box = QWidget()
+        self.news_box.setObjectName("newsBox")
+        self.news_box.setStyleSheet(owner.css(f"QWidget#newsBox {{ background: {BG_RAISED}; border: 1px solid {LINE};"
+                                              f" border-radius: 10px; }}"))
+        nl = QVBoxLayout(self.news_box)
+        nl.setContentsMargins(owner.px(12), owner.px(10), owner.px(12), owner.px(10))
+        nl.setSpacing(owner.px(3))
+        self.news_title = owner._label("", FS_META, QFont.Weight.DemiBold)
+        self.news_text = owner._label("", FS_SMALL, color=TEXT_PRIMARY)
+        self.news_text.setWordWrap(True)
+        self.news_meta = owner._label("", FS_SMALL, color=TEXT_LABEL)
+        self.news_meta.setWordWrap(True)
+        for w in (self.news_title, self.news_meta, self.news_text):
+            nl.addWidget(w)
+        lay.addWidget(self.news_box)
+        self.actions_hint = owner._label("Right-click the loader: update, source, open folder, open in Monos, frame.",
+                                         FS_SMALL, color=TEXT_LABEL)
+        self.actions_hint.setWordWrap(True)
+        lay.addWidget(self.actions_hint)
         lay.addSpacing(owner.px(8))
         self.load = owner._label("", FS_SMALL, QFont.Weight.DemiBold, color=TEXT_LABEL)
         self.load.setWordWrap(True)
@@ -1167,10 +1417,11 @@ class InspectorPanel(QWidget):
         head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # the mesh name gets the room
         for col in range(1, 5):
             head.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-        lay.addWidget(self.tree, 1)
+        lay.addWidget(self.tree, 100)  # the meshes take the room; without them the stretch below does
         self.hint = owner._label("Right-click meshes to set their scheme or dicing.", FS_SMALL, color=TEXT_LABEL)
         self.hint.setWordWrap(True)
         lay.addWidget(self.hint)
+        lay.addStretch(1)
 
     def sizeHint(self) -> QSize:
         return QSize(self.owner.px(360), self.owner.px(400))
@@ -1190,6 +1441,23 @@ class InspectorPanel(QWidget):
             bits += [f"{PART_LABEL[p].lower()} {row.versions[p]}" for p in ALL_PARTS if row.versions.get(p)]
         self.meta.setText(" \u00b7 ".join(bits))
         self.asset = row.asset or ""
+        self.row_path = row.node_path
+        self.source.setText("" if row.legacy or row.kind != "geo" else
+                            ("Source Asset \u00b7 the asset's own publishes" if row.asset_source
+                             else f"Source Shot \u00b7 {row.shot}"))
+        self.source.setVisible(bool(self.source.text()))
+        news = self.owner.ctl.news(row.node_path) if not row.legacy else []
+        self.news_box.setVisible(bool(news))
+        if news:
+            self.news_title.setText(" \u00b7 ".join(f"What is new in {w.part} {w.new}" for w in news[:1])
+                                    + (f" (+{len(news) - 1} more)" if len(news) > 1 else ""))
+            w = news[0]
+            self.news_meta.setText(" \u00b7 ".join(x for x in (w.date, f"work file by {w.author}" if w.author else "")
+                                                    if x))
+            lines = [line.replace(" -> ", " \u2192 ") for x in news for line in x.lines[:4]]
+            others = [f"{x.part} {x.old} \u2192 {x.new}" for x in news[1:]]
+            self.news_text.setText("\n".join(lines + others) or f"{w.part} {w.old} \u2192 {w.new}")
+        self.actions_hint.setVisible(not row.legacy)
         detail = self.owner.ctl.subd_detail(row.node_path)
         self.path = row.node_path if detail and detail["plan"] else ""
         self.tree.setVisible(bool(self.path))
@@ -1306,3 +1574,163 @@ class InspectorPanel(QWidget):
         path = self.path
         if path:
             self.owner._run(lambda: self.owner.ctl.subd_to_asset(path))()
+
+
+# --- Add drawer (layout A, the user's pick, 2026-11-17) ------------------------------------------------------
+
+class AddDrawer(QWidget):
+    """Assets of the project beside the list: type chips with counts, search, "with a model only", thumbnails;
+    pick several (click toggles), Add N makes a MonoFX Loader on Source Asset for each, wired into assets_merge in
+    the manager's network. Its Add is the window's one primary while it is open."""
+
+    THUMB = (118, 80)
+
+    def __init__(self, owner) -> None:
+        super().__init__()
+        self.owner = owner
+        self.root = ""
+        self.group = ""
+        self.setObjectName("addDrawer")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(owner.px(14), owner.px(12), owner.px(14), owner.px(10))
+        lay.setSpacing(owner.px(8))
+        head = QHBoxLayout()
+        head.addWidget(owner._label("Add assets", 17, QFont.Weight.DemiBold))
+        head.addStretch(1)
+        close = QPushButton("Close")
+        close.setStyleSheet(owner.css(STYLE_LINK))
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setToolTip("Back to the selected loader (Esc)")
+        close.clicked.connect(owner.close_drawer)
+        close.setMinimumHeight(owner.px(24))
+        head.addWidget(close)
+        lay.addLayout(head)
+        self.search = QLineEdit()
+        self.search.setObjectName("assetSearch")
+        self.search.setPlaceholderText("Search assets")
+        self.search.setStyleSheet(owner.css(
+            f"QLineEdit#assetSearch {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};"
+            f" border-radius: 8px; padding: 5px 9px; font-size: {FS_META}px; }}"
+            f"QLineEdit#assetSearch:focus {{ border: 1px solid {ACCENT}; }}"))
+        self.search.textChanged.connect(lambda _t: self.fill())
+        lay.addWidget(self.search)
+        self.chips_box = QWidget()
+        self.chips = QHBoxLayout(self.chips_box)
+        self.chips.setContentsMargins(0, 0, 0, 0)
+        self.chips.setSpacing(owner.px(6))
+        lay.addWidget(self.chips_box)
+        self.model_only = QCheckBox("Published only")
+        self.model_only.setChecked(True)
+        self.model_only.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {owner.px(FS_SMALL)}px;")
+        self.model_only.setToolTip("Only assets with a UV or lookdev publish (a prop's lookdev is the whole asset)")
+        self.model_only.toggled.connect(lambda _on: (self.fill_groups(), self.fill()))
+        self.model_only.setMinimumHeight(owner.px(24))
+        lay.addWidget(self.model_only)
+        self.list = QListWidget()
+        self.list.setObjectName("assetGrid")
+        self.list.setViewMode(QListView.ViewMode.IconMode)
+        self.list.setResizeMode(QListView.ResizeMode.Adjust)
+        self.list.setMovement(QListView.Movement.Static)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.list.setIconSize(QSize(owner.px(self.THUMB[0]), owner.px(self.THUMB[1])))
+        self.list.setGridSize(QSize(owner.px(self.THUMB[0] + 24), owner.px(self.THUMB[1] + 58)))
+        self.list.setWordWrap(True)
+        self.list.setSpacing(owner.px(4))
+        self.list.setStyleSheet(owner.css(
+            f"QListWidget#assetGrid {{ background: {BG_APP}; border: none; outline: none; color: {TEXT_PRIMARY};"
+            f" font-size: {FS_SMALL}px; }}"
+            f"QListWidget#assetGrid::item {{ border: 1px solid {LINE}; border-radius: 8px; padding: 4px; }}"
+            f"QListWidget#assetGrid::item:hover {{ background: {BG_HOVER}; }}"
+            f"QListWidget#assetGrid::item:selected {{ background: {SELECTED}; border: 1px solid {ACCENT_LINE};"
+            f" color: {TEXT_PRIMARY}; }}"
+            f"QListWidget#assetGrid::item:selected:hover {{ background: #2e3c5f; border: 1px solid {ACCENT}; }}"))
+        self.list.itemSelectionChanged.connect(self._picked_changed)
+        lay.addWidget(self.list, 1)
+        foot = QHBoxLayout()
+        self.count = owner._label("", FS_META, color=TEXT_LABEL)
+        foot.addWidget(self.count, 1)
+        self.add_button = owner._button("Add", STYLE_PRIMARY)
+        self.add_button.setToolTip("A MonoFX Loader on Source Asset for each picked asset (newest model, groom, "
+                                   "lookdev), wired into assets_merge. One undo step.")
+        self.add_button.clicked.connect(lambda: owner.add_picked(self.picked()))
+        fm = self.add_button.fontMetrics()  # no layout jump: as wide as its widest label
+        self.add_button.setMinimumWidth(fm.horizontalAdvance("Add 99") + owner.px(48))
+        foot.addWidget(self.add_button)
+        lay.addLayout(foot)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.owner.px(560), self.owner.px(500))
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:  # Esc leaves the narrowest state
+            self.owner.close_drawer()
+            return
+        super().keyPressEvent(event)
+
+    def open(self, root: str) -> None:
+        self.root = root
+        self.fill_groups()
+        self.fill()
+        self.search.setFocus()
+
+    def fill_groups(self) -> None:
+        while self.chips.count():
+            w = self.chips.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        items = logic.asset_catalog(self.root, "", "", self.model_only.isChecked())
+        counts: dict[str, int] = {}
+        for it in items:
+            counts[it.group] = counts.get(it.group, 0) + 1
+        for group, label in [("", "All")] + [(g, logic.group_label(g)) for g in logic.asset_groups(Path(self.root))
+                                              if g in counts]:
+            n = len(items) if not group else counts.get(group, 0)
+            b = self.owner._button(f"{label} {n}", STYLE_PILL)
+            b.setCheckable(True)
+            b.setChecked(group == self.group)
+            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            b.clicked.connect(lambda _=False, g=group: self._pick_group(g))
+            self.chips.addWidget(b)
+        self.chips.addStretch(1)
+
+    def _pick_group(self, group: str) -> None:
+        self.group = group
+        self.fill_groups()
+        self.fill()
+
+    def fill(self) -> None:
+        from PySide6.QtGui import QIcon, QPixmap
+
+        keep = set(self.picked())
+        self.list.clear()
+        in_scene = {r.asset for r in self.owner.ctl.rows() if r.asset_source}
+        w, h = self.owner.px(self.THUMB[0]), self.owner.px(self.THUMB[1])
+        for it in logic.asset_catalog(self.root, self.group, self.search.text(), self.model_only.isChecked()):
+            sub = "in the scene · adds another" if it.name in in_scene else (
+                f"UV {it.model or '\u2013'} \u00b7 LD {it.lookdev or '\u2013'}")
+            item = QListWidgetItem(f"{it.name}\n{sub}")
+            pix = QPixmap(it.thumb) if it.thumb else QPixmap()
+            if pix.isNull():
+                pix = QPixmap(w, h)
+                pix.fill(QColor(BG_HOVER))
+            item.setIcon(QIcon(pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio,
+                                          Qt.TransformationMode.SmoothTransformation)))
+            item.setData(ROLE_ROW, it.name)
+            item.setToolTip(f"{it.name} \u00b7 {logic.group_label(it.group)}")
+            self.list.addItem(item)
+            if it.name in keep:
+                item.setSelected(True)
+        if self.list.count() == 0:
+            self.count.setText("No assets match." if self.root else "Pick a project first.")
+        self._picked_changed()
+
+    def picked(self) -> list[str]:
+        return [i.data(ROLE_ROW) for i in self.list.selectedItems()]
+
+    def _picked_changed(self) -> None:
+        n = len(self.picked())
+        self.add_button.setText(f"Add {n}" if n else "Add")
+        self.add_button.setEnabled(n > 0)
+        if self.list.count():
+            self.count.setText(f"{n} picked \u00b7 Source Asset, newest versions" if n
+                               else f"{self.list.count()} assets \u00b7 click to pick")
