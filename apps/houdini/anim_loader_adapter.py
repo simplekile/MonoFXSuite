@@ -681,14 +681,22 @@ def heavy_message() -> str | None:
     return logic.heavy_shot_message(shot_subd_load())
 
 
+def _stage_viewers() -> list:
+    """Scene Viewers showing a LOP network: /stage has display options of its own, so a setting made while a
+    viewer shows /obj does not reach the stage (measured: hulls set before switching to /stage was off)."""
+    return [p for p in hou.ui.paneTabs() if p.type() == hou.paneTabType.SceneViewer
+            and p.pwd() is not None and p.pwd().childTypeCategory() == hou.lopNodeTypeCategory()]
+
+
 def set_hulls_only(enable: bool = True) -> int:
-    """Draw Hulls Only on every Scene Viewer viewport (view state, not saved in the loaders)."""
+    """Draw Hulls Only on every viewport of the Scene Viewers showing /stage; returns how many (0: none shows it).
+    View state, not saved in the loaders. Measured (Helen catmullClark, Houdini 22.0.466): RAM 12.8 -> 7.2 GB,
+    VRAM +6.7 -> +4.9 GB once settled; meshes with scheme none: 2.5 GB."""
     n = 0
-    for pane in hou.ui.paneTabs():
-        if pane.type() == hou.paneTabType.SceneViewer:
-            for vp in pane.viewports():
-                vp.settings().setHullsOnly(enable)
-                n += 1
+    for pane in _stage_viewers():
+        for vp in pane.viewports():
+            vp.settings().setHullsOnly(enable)
+            n += 1
     return n
 
 
@@ -696,9 +704,8 @@ def hulls_on() -> bool:
     """True when every Scene Viewer viewport draws hulls only; False without a UI (hython has no hou.ui)."""
     if not hou.isUIAvailable():
         return False
-    for pane in hou.ui.paneTabs():
-        if pane.type() == hou.paneTabType.SceneViewer:
-            return all(vp.settings().hullsOnly() for vp in pane.viewports())
+    viewers = _stage_viewers()
+    return bool(viewers) and all(vp.settings().hullsOnly() for p in viewers for vp in p.viewports())
     return False
 
 
@@ -720,7 +727,12 @@ def check_heavy_shot() -> None:
             if text and not hulls_on():
                 from tools.fx.anim_loader import ui
 
-                ui.show_heavy_shot_prompt(text, lambda: set_hulls_only(True))
+                def hulls():
+                    if not set_hulls_only(True):
+                        hou.ui.setStatusMessage("Anim Loader: no viewer shows /stage; open it, then Draw Hulls Only.",
+                                                severity=hou.severityType.Warning)
+
+                ui.show_heavy_shot_prompt(text, hulls)
         except Exception as exc:  # never break a scene load for a hint
             hou.ui.setStatusMessage(f"Anim Loader: {exc}", severity=hou.severityType.Warning)
 

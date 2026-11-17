@@ -539,7 +539,7 @@ class AnimLoaderManager(QWidget):
         self.hulls_link = QPushButton("Draw Hulls Only")
         self.hulls_link.setStyleSheet(self.css(STYLE_LINK))
         self.hulls_link.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.hulls_link.setToolTip("Every viewport draws hulls: lighter to work in; memory stays the same")
+        self.hulls_link.setToolTip("The /stage viewports draw hulls: lighter to draw and less memory")
         self.hulls_link.clicked.connect(self._hulls)
         st.addWidget(self.headline)
         st.addWidget(self.status_meta, 1)
@@ -755,7 +755,7 @@ class AnimLoaderManager(QWidget):
                             "from there, lookdev and settings kept (one undo step)",
                 "update": "Move what is behind to the newest version (one undo step)",
                 "upgrade": "Change Anim Loader 2.1 nodes to 2.2, keeping their settings (one undo step)",
-                "hulls": "Draw Hulls Only in every viewport: lighter to work in; memory stays the same",
+                "hulls": "Draw Hulls Only in the /stage viewports: lighter to draw and less memory",
             }[action[0]])
         n_old = len(self.ctl.legacy_paths())
         self.upgrade_button.setText(self.ctl.upgrade_label())
@@ -824,9 +824,7 @@ class AnimLoaderManager(QWidget):
         return go
 
     def _hulls(self) -> None:
-        n = self.backend.set_hulls_only()
-        self.ctl.message = (f"Draw Hulls Only on in {n} viewport{'s' if n != 1 else ''}: lighter to work in; "
-                            "memory stays the same.")
+        self.ctl.draw_hulls()
         self._update_bar()
         self._show_subd()
 
@@ -998,8 +996,9 @@ def open_manager() -> AnimLoaderManager:
 
 # --- heavy-shot prompt (the user's decision, 2026-11-17) ----------------------------------------------
 # Non-modal: a modal box would hold Houdini and the MCP bridge (and a farm job) until someone clicks.
-# Draw Hulls Only makes the viewport light to work in; it does NOT lower memory (measured: Helen catmullClark
-# 12.8 GB -> 19.5 GB when turned on, 13 GB when on from the start).
+# Draw Hulls Only lowers memory too (measured on /stage, Helen catmullClark: RAM 12.8 -> 7.2 GB once settled,
+# VRAM +6.7 -> +4.9 GB); scheme none lowers it most (2.5 GB). An earlier "does not lower memory" came from
+# measurements where hulls had not reached the /stage viewports.
 
 def prompt_allowed() -> bool:
     return _load_prefs().get("hulls_prompt", True) is not False
@@ -1026,7 +1025,8 @@ class HeavyShotPrompt(QWidget):
         title.setWordWrap(True)
         title.setStyleSheet(css(f"color: {TEXT_PRIMARY}; font-size: {FS_META}px; font-weight: 600; background: transparent;"))
         lay.addWidget(title)
-        hint = QLabel("The viewport may be slow. Draw Hulls Only makes it lighter to work in; it does not lower memory.")
+        hint = QLabel("The viewport may be slow and use a lot of memory. Draw Hulls Only draws the unsubdivided "
+                      "cages: lighter and less memory (Helen 12.8 GB -> 7.2 GB).")
         hint.setWordWrap(True)
         hint.setStyleSheet(css(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;"))
         lay.addWidget(hint)
