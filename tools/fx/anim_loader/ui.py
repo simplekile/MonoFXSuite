@@ -1144,14 +1144,14 @@ class AnimLoaderManager(QWidget):
     DIALOG_IN_MS, DIALOG_OUT_MS = 160, 120  # Monos motion tokens: enter faster than exit
 
     def _show_subd(self) -> None:
-        sel = self.ctl.selection[-1] if self.ctl.selection else ""
-        row = next((r for r in self.ctl.rows() if r.node_path == sel), None)
-        want = row is not None and not getattr(self, "_drawer_open", False)  # for a selection
-        if row is not None:
-            self.subd_panel.show_row(row)
+        by_path = {r.node_path: r for r in self.ctl.rows()}
+        rows = [by_path[p] for p in self.ctl.selection if p in by_path]  # every selected loader (the user's ask)
+        want = bool(rows) and not getattr(self, "_drawer_open", False)  # for a selection
+        if rows:
+            self.subd_panel.show_rows(rows)
         self._slide(self.subd_clip, want)
-        if row is None:
-            self.subd_panel.show_row(None)
+        if not rows:
+            self.subd_panel.show_rows([])
 
     def _slide(self, clip: "_SlideClip", show: bool) -> None:
         """The inspector slides in from the window's right edge (in 160 ms OutCubic) and back out (120 ms InCubic):
@@ -1284,13 +1284,14 @@ class AnimLoaderManager(QWidget):
             self.refresh()
         return go
 
-    def _run_detail(self, fn, path: str):
+    def _run_detail(self, fn, paths):
         """A write that moves no version (a show toggle): that loader's inspector is worked out again, the list and the
         project are not scanned again (a full refresh made each click ~1 s and held the window)."""
         def go(*_):
             try:
                 fn()
-                self.ctl.refresh_detail(path)
+                for path in [paths] if isinstance(paths, str) else paths:
+                    self.ctl.refresh_detail(path)
             except Exception as exc:  # the result line, never a dialog
                 self.ctl.message = f"Failed: {exc}"
             self._update_bar()
@@ -1933,6 +1934,7 @@ def TOGGLE_W(owner) -> int:  # noqa: N802: a toggle column's width, the icon and
 
 ROLE_TOGGLE = Qt.ItemDataRole.UserRole + 22  # (icon, colour) of a toggle cell
 ROLE_SHOW = Qt.ItemDataRole.UserRole + 23    # the row's logic.PrimShow
+ROLE_LOADER = Qt.ItemDataRole.UserRole + 24  # the loader node a row belongs to (several share the tree)
 
 
 class _CamEdit(QWidget):
@@ -2042,6 +2044,25 @@ class InspectorPanel(QWidget):
         top.addWidget(self.cam_edit)
         self.cam_head.apply(False)
         lay.addSpacing(owner.px(6))
+        self.filter = QLineEdit()  # the prims by name (the user's ask); their groups stay to show where they sit
+        self.filter.setObjectName("primFilter")
+        self.filter.setPlaceholderText("Filter prims")
+        self.filter.setToolTip("Only prims whose name holds this text, with the groups they sit in")
+        self.filter.setClearButtonEnabled(True)
+        self.filter.addAction(_crisp_icon("search", 16, TEXT_LABEL), QLineEdit.ActionPosition.LeadingPosition)
+        self.filter.setMinimumHeight(owner.px(30))
+        self.filter.setStyleSheet(owner.css(
+            f"QLineEdit#primFilter {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 2px solid {LINE};"
+            f" border-radius: 8px; padding: 2px 6px; font-size: {FS_SMALL}px; }}"
+            f"QLineEdit#primFilter:focus {{ border-color: {ACCENT}; }}"))
+        self.filter.textChanged.connect(lambda _t: self._apply_filter())
+        fbox = QWidget()
+        fl = QHBoxLayout(fbox)
+        fl.setContentsMargins(side, 0, side, owner.px(4))
+        fl.addWidget(self.filter)
+        lay.addWidget(fbox)
+        self.filter.hide()
+        self.paths: list[str] = []
         self.tree = _mesh_tree_class()()
         self.tree.setObjectName("subdTree")
         self.tree.setColumnCount(COLS)
@@ -2116,6 +2137,7 @@ class InspectorPanel(QWidget):
         from tools.fx.anim_loader.logic import HEAVY_SUBD_POLYGONS, mesh_groups, subd_polygons
 
         keep = self._tree_state() if row is not None and row.node_path == self.path else None
+        self.paths = [row.node_path] if row is not None else []
         self.tree.clear()
         if row is None:
             self.path = ""
@@ -2199,10 +2221,18 @@ class InspectorPanel(QWidget):
         self.cam_edit.load(row.node_path, cam_parms)
         self.cam_head.apply(bool(cam_parms))
         self.tree.setVisible(bool(self.path))
+        self.filter.setVisible(bool(self.path))
         self.hint.setVisible(False)
         self.tree.setToolTip("Right-click a row: subdivision, dicing, hide, render only, viewport only")
         if not self.path:
             return
+        any_dicing = self._build_tree(self.path, detail, None)
+        self._finish_tree(keep, any_dicing)
+
+    def _build_tree(self, path: str, detail: dict, root) -> bool:
+        """One loader's prims under ``root`` (an item; None: the top of the tree). Returns whether any has dicing."""
+        from PySide6.QtWidgets import QTreeWidgetItem
+
         plan, faces = detail["plan"], detail["faces"]
         curves = detail.get("curves", {})
         shown = detail.get("shown", {})
@@ -2298,22 +2328,74 @@ class InspectorPanel(QWidget):
                 word = shown_cell(item, prefix, parent_word)
                 for k, sub in kids.items():
                     add(item, k, prefix + "/" + k, sub, g_from, word)
-            if parent is None:
-                self.tree.addTopLevelItem(item)
-            else:
+            item.setData(0, ROLE_LOADER, path)  # each row knows its loader: several loaders share the tree
+            if parent is not None:
                 parent.addChild(item)
+            elif root is not None:
+                root.addChild(item)
+            else:
+                self.tree.addTopLevelItem(item)
 
         for k, sub in tree.items():
             add(None, k, k, sub, "")
+        return any_dicing
+
+    def _finish_tree(self, keep: dict | None, any_dicing: bool) -> None:
         self.tree.setColumnHidden(4, not any_dicing)
         if keep is None:
             self.tree.expandAll()
         else:
             for it in self._all_items():
-                it.setExpanded(it.data(0, ROLE_PATTERN) not in keep["folded"])
+                it.setExpanded(self._key(it) not in keep["folded"])
             self._restore_tree_state(keep)
+        self._apply_filter()
         self._fit_name()
         QTimer.singleShot(0, self._fit_name)  # again once the tree has its width
+
+    def show_rows(self, rows: list) -> None:
+        """The selection: one loader shows its details and prims; several share one tree, a branch each (the user's
+        ask), each row acting on its own loader."""
+        rows = [r for r in rows if r is not None]
+        if len(rows) <= 1:
+            self.paths = [rows[0].node_path] if rows else []
+            self.show_row(rows[0] if rows else None)
+            return
+        from PySide6.QtWidgets import QTreeWidgetItem
+
+        paths = [r.node_path for r in rows]
+        keep = self._tree_state() if paths == getattr(self, "paths", []) else None
+        self.paths, self.path, self.asset = paths, "", ""
+        self.tree.clear()
+        self.title.setText(f"{len(rows)} loaders")
+        self.details.set_rows([("Loaders", ", ".join(r.instance for r in rows), "")])
+        self.details_head.apply(True)
+        self.news.set_rows([])
+        self.news_head.apply(False)
+        self.cam_edit.load("", {})
+        self.cam_head.apply(False)
+        any_dicing = False
+        for r in rows:
+            detail = self.owner.ctl.subd_detail(r.node_path)
+            if not detail or not detail["plan"] or r.kind in ("layer", "cam"):
+                continue
+            faces = sum(detail["faces"].get(m, 0) for m in detail["plan"])
+            top = QTreeWidgetItem([r.instance, _faces_word(faces), "", "", "", "", "", ""])
+            top.setData(0, ROLE_LOADER, r.node_path)
+            top.setData(0, ROLE_PATTERN, "**")  # the loader's every prim
+            top.setData(0, ROLE_PRIM, "xform")
+            top.setToolTip(0, r.node_path)
+            for col in range(COLS):
+                top.setForeground(col, QColor(TEXT_PRIMARY))
+                if col:
+                    top.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
+            self.tree.addTopLevelItem(top)
+            any_dicing = self._build_tree(r.node_path, detail, top) or any_dicing
+        has = self.tree.topLevelItemCount() > 0
+        self.tree.setVisible(has)
+        self.filter.setVisible(has)
+        self.hint.setVisible(False)
+        if has:
+            self._finish_tree(keep, any_dicing)
 
     def _fit_name(self) -> None:
         """The name column fills what the other columns leave (never a strip of nothing on the right, never a name
@@ -2335,6 +2417,39 @@ class InspectorPanel(QWidget):
         if self.tree.topLevelItemCount():
             self._fit_name()
 
+    def _apply_filter(self) -> None:
+        """Rows whose name holds the filter text with everything under them, the groups above them (opened), and
+        nothing else; empty: all."""
+        text = self.filter.text().strip().lower()
+
+        def walk(item, inside: bool) -> bool:
+            own = not text or inside or text in item.text(0).lower()
+            kids = [walk(item.child(i), own) for i in range(item.childCount())]
+            hit = own or any(kids)
+            item.setHidden(not hit)
+            if text and any(kids) and not own:
+                item.setExpanded(True)
+            return hit
+
+        for i in range(self.tree.topLevelItemCount()):
+            walk(self.tree.topLevelItem(i), False)
+
+    @staticmethod
+    def _key(item) -> tuple:
+        return (item.data(0, ROLE_LOADER), item.data(0, ROLE_PATTERN))
+
+    def targets_for(self, item) -> dict[str, list[str]]:
+        """{loader: patterns} for the right-clicked row, or the whole selection when the row is part of it."""
+        selected = self.tree.selectedItems()
+        rows = selected if item in selected else [item]
+        out: dict[str, list[str]] = {}
+        for it in rows:
+            out.setdefault(it.data(0, ROLE_LOADER) or self.path, []).append(it.data(0, ROLE_PATTERN))
+        return out
+
+    def _by_loader(self, pats) -> dict[str, list[str]]:
+        return pats if isinstance(pats, dict) else {self.path: list(pats)}
+
     def _all_items(self):
         stack = [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
         while stack:
@@ -2346,9 +2461,9 @@ class InspectorPanel(QWidget):
         """What the artist did to the table: folded groups, selected rows, the current row, the scroll."""
         items = list(self._all_items())
         current = self.tree.currentItem()
-        return {"folded": {i.data(0, ROLE_PATTERN) for i in items if i.childCount() and not i.isExpanded()},
-                "selected": {i.data(0, ROLE_PATTERN) for i in self.tree.selectedItems()},
-                "current": current.data(0, ROLE_PATTERN) if current is not None else None,
+        return {"folded": {self._key(i) for i in items if i.childCount() and not i.isExpanded()},
+                "selected": {self._key(i) for i in self.tree.selectedItems()},
+                "current": self._key(current) if current is not None else None,
                 "scroll": (self.tree.verticalScrollBar().value(), self.tree.horizontalScrollBar().value())}
 
     def _restore_tree_state(self, keep: dict) -> None:
@@ -2356,7 +2471,7 @@ class InspectorPanel(QWidget):
 
         self.tree.blockSignals(True)
         for it in self._all_items():
-            pattern = it.data(0, ROLE_PATTERN)
+            pattern = self._key(it)
             if pattern in keep["folded"]:
                 it.setExpanded(False)
             if pattern == keep["current"]:
@@ -2412,7 +2527,8 @@ class InspectorPanel(QWidget):
     def menu_for(self, item) -> QMenu:
         from PySide6.QtGui import QIcon
 
-        pats = self.patterns_for(item)
+        pats = self.targets_for(item)
+        n_rows = sum(len(v) for v in pats.values())
         menu = QMenu(self)
         menu.setStyleSheet(self.owner.css(STYLE_MENU_SQ))
         size = self.owner.px(16)
@@ -2421,8 +2537,8 @@ class InspectorPanel(QWidget):
             return _crisp_icon(name, size, color)
 
         # what the menu acts on: a band of its own, not a greyed-out item (the user's ask)
-        if len(pats) > 1:
-            pix, name, note = icon("layers").pixmap(size), f"{len(pats)} rows selected", ""
+        if n_rows > 1:
+            pix, name, note = icon("layers").pixmap(size), f"{n_rows} rows selected", ""
         else:
             n = sum(1 for _ in self._leaves(item))
             kind = item.data(0, ROLE_PRIM) or "mesh"
@@ -2473,7 +2589,7 @@ class InspectorPanel(QWidget):
         menu.addAction(icon("undo"), self.MENU_CLEAR).triggered.connect(lambda _=False: self.clear(pats))
         # this loader's whole subdivision setup onto the asset's other loaders (its instances in the scene); only when
         # there are some (the user asked what "Copy these overrides" did)
-        others = self.other_instances()
+        others = self.other_instances() if len(pats) == 1 and self.path in pats else []
         if others:
             act = menu.addAction(icon("link"), f"Same overrides on the other {len(others)} {self.asset} "
                                                f"loader{'s' if len(others) != 1 else ''}")
@@ -2536,27 +2652,31 @@ class InspectorPanel(QWidget):
         which = TOGGLE_COLS[col]
         selected = self.tree.selectedItems()
         items = [item] + [i for i in selected if i is not item] if item in selected else [item]
-        rows = []
+        rows, loaders = [], []
         for it in items:
             ps = it.data(0, ROLE_SHOW)
             if ps is None:
                 continue
             parent = it.parent().data(0, ROLE_SHOW) if it.parent() is not None else None
             rows.append((it.data(0, ROLE_PATTERN), ps, parent))
-        edits = logic.toggle_edits(rows, which)
-        if not edits or not self.path:
+            loaders.append(it.data(0, ROLE_LOADER) or self.path)
+        edits = logic.toggle_edits(rows, which)  # one edit per row, in order
+        if not edits:
             return
+        by_loader: dict[str, list] = {}
+        for loader, e in zip(loaders, edits):
+            if loader:
+                by_loader.setdefault(loader, []).append(e)
         first = rows[0][1]
         what = {"eye": "hidden" if first.own_visible else "shown",
                 "viewport": "not drawn in the viewport" if first.viewport else "drawn in the viewport",
                 "render": "not rendered" if first.render else "rendered"}[which]
-        path = self.path
-        self.owner._run_detail(lambda: self.owner.ctl.set_show(path, edits, what), path)()
+        self.owner._run_detail(lambda: self.owner.ctl.set_show_many(by_loader, what), list(by_loader))()
 
-    def set_scheme(self, pats: list[str], scheme: str) -> None:
-        path = self.path
-        if path:
-            self.owner._run(lambda: self.owner.ctl.set_subd(path, pats, scheme))()
+    def set_scheme(self, pats, scheme: str) -> None:
+        targets = {p: v for p, v in self._by_loader(pats).items() if p}
+        if targets:
+            self.owner._run(lambda: [self.owner.ctl.set_subd(p, v, scheme) for p, v in targets.items()])()
 
     def set_dicing(self, pats: list[str], text: str) -> None:
         text = text.strip()
@@ -2566,14 +2686,16 @@ class InspectorPanel(QWidget):
             self.owner.ctl.message = f"Dicing must be a number, not {text!r}."
             self.owner._update_bar()
             return
-        path = self.path
-        if path:
-            self.owner._run(lambda: self.owner.ctl.set_subd(path, pats, None, dicing))()
+        targets = {p: v for p, v in self._by_loader(pats).items() if p}
+        if targets:
+            self.owner._run(lambda: [self.owner.ctl.set_subd(p, v, None, dicing) for p, v in targets.items()])()
 
-    def clear(self, pats: list[str] | None) -> None:
-        path = self.path
-        if path:
-            self.owner._run(lambda: self.owner.ctl.clear_subd(path, pats))()
+    def clear(self, pats) -> None:
+        """The shot's overrides of those rows, per loader (a loader's own row: all of that loader's)."""
+        targets = {p: (None if v is None or "**" in v else v) for p, v in
+                   (self._by_loader(pats) if pats is not None else {self.path: None}).items() if p}
+        if targets:
+            self.owner._run(lambda: [self.owner.ctl.clear_subd(p, v) for p, v in targets.items()])()
 
     def to_asset(self) -> None:
         path = self.path

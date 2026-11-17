@@ -480,6 +480,19 @@ class Controller:
         more = f" +{len(pats) - 3}" if len(pats) > 3 else ""
         self.message = f"{names}{more}: {what}."
 
+    def set_show_many(self, by_loader: dict[str, list], what: str) -> None:
+        """One toggle click over rows of several loaders: one undo step when the backend can."""
+        many = getattr(self.backend, "set_show_many", None)
+        if many is not None:
+            many(by_loader)
+        else:
+            for path, edits in by_loader.items():
+                self.backend.set_show(path, edits)
+        pats = [e[0] for edits in by_loader.values() for e in edits]
+        names = ", ".join(p.removesuffix("/**").rsplit("/", 1)[-1] for p in pats[:3])
+        more = f" +{len(pats) - 3}" if len(pats) > 3 else ""
+        self.message = f"{names}{more}: {what}."
+
     def camera_parms(self, path: str) -> dict:
         fn = getattr(self.backend, "cam_parms", None)
         return fn(path) if fn else {}

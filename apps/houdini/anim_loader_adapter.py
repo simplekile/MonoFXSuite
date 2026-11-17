@@ -1482,6 +1482,19 @@ class HoudiniBackend:
             node.parm(config.P_SHOW_RULES).set(json.dumps(left) if left else "")
 
     @staticmethod
+    def set_show_many(by_loader):
+        """{loader: edits} of one toggle click over several loaders; one undo step."""
+        from apps.houdini.solaris_adapter import undo_group
+
+        with undo_group("Show"):
+            for path, edits in by_loader.items():
+                node = hou.node(path)
+                if node is None:
+                    continue
+                left = logic.set_show_rules(logic.parse_show_rules(_s(node, config.P_SHOW_RULES)), list(edits))
+                node.parm(config.P_SHOW_RULES).set(json.dumps(left) if left else "")
+
+    @staticmethod
     def clear_overrides(path, patterns):
         """The shot's subdivision and show rules for those rows (None: all of them); one undo step."""
         from apps.houdini.solaris_adapter import undo_group

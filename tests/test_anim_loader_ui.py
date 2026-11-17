@@ -587,3 +587,65 @@ def test_a_toggle_reads_only_that_loader_again(make):
     w.subd_panel._toggle(w.subd_panel.tree.topLevelItem(0), 5)
     w.wait()
     assert calls == ["set_show", ("subd", ("/stage/b",))]
+
+
+
+def _two_loader_window(make):
+    """char_Helen (/stage/b) and veh_Spaceship (/stage/a), each with prims and their show states."""
+    from tests.test_anim_loader_controller import _subd_backend
+    from tools.fx.anim_loader import logic as lg
+    from tools.fx.anim_loader.logic import SubdChoice
+
+    mk, ui = make
+    b = _subd_backend()
+    plan_b = {"/Geo/Base_grp/Body_grp/Geo_Body": SubdChoice("catmullClark", "lookdev"),
+              "/Geo/Outfit_grp/Geo_Dress": SubdChoice("catmullClark", "lookdev")}
+    plan_a = {"/Geo/Hull_grp/Geo_Hull": SubdChoice("none", "publish"),
+              "/Geo/Hull_grp/Geo_Wing": SubdChoice("none", "publish")}
+
+    def detail(plan):
+        return {"plan": plan, "faces": {m: 100 for m in plan}, "curves": {},
+                "shown": lg.prim_shows([m.strip("/") for m in plan], {}, [], [], [])}
+
+    data = {"/stage/b": detail(plan_b), "/stage/a": detail(plan_a)}
+    b.subd = lambda infos: {i.path: data[i.path] for i in infos if i.path in data}
+    b.set_show_many = lambda by: b.calls.append(("set_show_many", {k: tuple(v) for k, v in by.items()}))
+    w = mk(b)
+    for i in range(w.list_view.count()):
+        r = w.list_view.item(i).data(ui.ROLE_ROW)
+        w.list_view.item(i).setSelected(bool(r) and r.node_path in ("/stage/a", "/stage/b"))
+    return w, ui, b
+
+
+def test_several_loaders_share_the_inspector_tree(make):
+    """The user's ask: the selected assets' trees together in the inspector, a branch each; a toggle over rows of
+    both loaders is one call (one undo step), each edit on its own loader."""
+    w, ui, b = _two_loader_window(make)
+    p = w.subd_panel
+    tops = {p.tree.topLevelItem(i).text(0): p.tree.topLevelItem(i) for i in range(p.tree.topLevelItemCount())}
+    assert set(tops) == {"char_Helen", "veh_Spaceship"} and p.title.text() == "2 loaders"
+    body = next(i for i in p._all_items() if i.text(0) == "Geo_Body")
+    hull = next(i for i in p._all_items() if i.text(0) == "Geo_Hull")
+    assert body.data(0, ui.ROLE_LOADER) == "/stage/b" and hull.data(0, ui.ROLE_LOADER) == "/stage/a"
+    body.setSelected(True)
+    hull.setSelected(True)
+    p._toggle(body, 5)
+    assert b.calls[-1] == ("set_show_many", {"/stage/b": (("Geo/Base_grp/Body_grp/Geo_Body", "vis", "invisible"),),
+                                             "/stage/a": (("Geo/Hull_grp/Geo_Hull", "vis", "invisible"),)})
+    tops = {p.tree.topLevelItem(i).text(0): p.tree.topLevelItem(i) for i in range(p.tree.topLevelItemCount())}
+    menu = p.menu_for(tops["veh_Spaceship"])  # a loader's own row: all its prims (the toggle rebuilt the tree)
+    _act(menu, ui.InspectorPanel.MENU_OFF).trigger()
+    assert ("set_subd", "/stage/a", ("**",), "none", ui.logic.KEEP) in b.calls
+
+
+def test_filter_keeps_matches_and_their_groups(make):
+    w, ui, b = _two_loader_window(make)
+    p = w.subd_panel
+    p.filter.setText("wing")
+    shown = [i.text(0) for i in p._all_items() if not i.isHidden()]
+    assert set(shown) == {"veh_Spaceship", "Geo", "Hull_grp", "Geo_Wing"}
+    p.filter.setText("hull_grp")  # a group that matches shows what is under it
+    shown = [i.text(0) for i in p._all_items() if not i.isHidden()]
+    assert set(shown) == {"veh_Spaceship", "Geo", "Hull_grp", "Geo_Hull", "Geo_Wing"}
+    p.filter.setText("")
+    assert all(not i.isHidden() for i in p._all_items())

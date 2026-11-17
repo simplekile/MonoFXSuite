@@ -310,7 +310,12 @@
   the value was "on" left a prim the loader hides hidden, two clicks to show it). A toggle re-reads only that loader
   (`Controller.refresh_detail`, `_run_detail`): a full refresh after each click walked the Dropbox project again
   (~10,000 stat calls, ~1 s on env_Envi, the user's report of a slow, stuck window); now 0.13-0.23 s on Cliff04's
-  780 rows. The header shows no icons
+  780 rows.
+- Inspector with several loaders selected (the user's ask): one tree, a branch per loader (`show_rows`, the loader's
+  own row has the pattern "**" = all its prims); every row carries its loader (`ROLE_LOADER`), so toggles, the
+  menu's subdivision / dicing / Remove act on each row's own loader, and a toggle over several loaders is one undo
+  step (`set_show_many`); Same overrides only for one loader. A filter field above the tree (`_apply_filter`) keeps
+  the rows whose name holds the text, everything under a matching group, and the groups above (opened). The header shows no icons
   (the user's ask); the right-click menu's Display submenu says each toggle as a verb (Hide / Show, Stop drawing
   in the viewport, Stop rendering) and runs the same toggle. Rules live in the hidden
   `mx_show_rules` (JSON {pattern = one prim under the instance, "vis": invisible | inherited, "purpose"}; the first
