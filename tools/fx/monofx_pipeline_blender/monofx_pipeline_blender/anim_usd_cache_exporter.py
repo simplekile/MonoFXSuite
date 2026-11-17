@@ -1259,6 +1259,7 @@ class UsdAnimCacheExportSession:
         self._current_frame = self.frame_start
         self._initialized = False
         self._finished = False
+        self._begin_error: Optional[str] = None
         self._cancelled = False
         self._step = 0
         self._frames_written = 0
@@ -1531,9 +1532,18 @@ class UsdAnimCacheExportSession:
 
     @property
     def done(self) -> bool:
-        return self._finished or self._cancelled
+        return self._finished or self._cancelled or self._begin_error is not None
 
     def begin(self) -> Optional[str]:
+        """Set the export up; an error ends the session (``done``, ``step`` repeats it)."""
+        err = self._begin()
+        if err:
+            self._begin_error = err
+            self.result.ok = False
+            self.result.error = err
+        return err
+
+    def _begin(self) -> Optional[str]:
         _setup_logging()
 
         self._mesh_objects = (
@@ -1718,8 +1728,12 @@ class UsdAnimCacheExportSession:
 
     def step(self, *, units_per_tick: int = 1, frames_per_tick: int = 1) -> Optional[str]:
         del frames_per_tick  # legacy alias; export is mesh-unit based now
-        if self._cancelled or self._finished or not self._initialized:
+        if self._begin_error is not None:
+            return self._begin_error
+        if self._cancelled or self._finished:
             return None
+        if not self._initialized:
+            return "Export session is not initialized."
         if self._scene is None or self._depsgraph is None:
             return "Export session is not initialized."
         if self._writer is None and not self._mesh_objects and self._camera_obj is None:
@@ -1791,6 +1805,8 @@ class UsdAnimCacheExportSession:
 
     def finish(self) -> UsdAnimCacheExportResult:
         if self._cancelled:
+            return self.result
+        if self._begin_error is not None:
             return self.result
         if not self._initialized or self._out_path is None:
             self.result.error = "Export session is not initialized."
@@ -1904,6 +1920,7 @@ class UsdAnimCacheMultiExportSession:
         self._job_index = 0
         self._session: Optional[UsdAnimCacheExportSession] = None
         self._finished = False
+        self._begin_error: Optional[str] = None
         self._cancelled = False
         self._completed_steps = 0
         self._total_steps = 1
@@ -2007,9 +2024,18 @@ class UsdAnimCacheMultiExportSession:
 
     @property
     def done(self) -> bool:
-        return self._finished or self._cancelled
+        return self._finished or self._cancelled or self._begin_error is not None
 
     def begin(self) -> Optional[str]:
+        """Set the export up; an error ends the session (``done``, ``step`` repeats it)."""
+        err = self._begin()
+        if err:
+            self._begin_error = err
+            self.result.ok = False
+            self.result.error = err
+        return err
+
+    def _begin(self) -> Optional[str]:
         if not PXR_AVAILABLE:
             return "OpenUSD (pxr) is not available in this Blender build."
         if not self.jobs:
@@ -2030,6 +2056,8 @@ class UsdAnimCacheMultiExportSession:
 
     def step(self, *, units_per_tick: int = 1, frames_per_tick: int = 1) -> Optional[str]:
         del frames_per_tick
+        if self._begin_error is not None:
+            return self._begin_error
         if self._cancelled or self._finished:
             return None
         if self._session is None:
@@ -2063,10 +2091,17 @@ class UsdAnimCacheMultiExportSession:
         if self._job_index >= len(self.jobs):
             self._finished = True
             return None
-        return self._start_current_job()
+        err = self._start_current_job()
+        if err:
+            self._begin_error = err
+            self.result.ok = False
+            self.result.error = err
+        return err
 
     def finish(self) -> UsdAnimCacheExportResult:
         if self._cancelled:
+            return self.result
+        if self._begin_error is not None:
             return self.result
         if not self._finished or not self._completed_geo_paths:
             self.result.error = "Export session did not complete."

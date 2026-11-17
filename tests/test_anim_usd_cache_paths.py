@@ -95,6 +95,16 @@ def test_sanitize_prim_segment():
     assert _paths.sanitize_prim_segment("geo-Body.001") == "geo_Body_001"
 
 
+def test_sanitize_prim_segment_leading_digit():
+    # Blender's USD export names these prims _01_... in the lookdev / UV publish.
+    assert _paths.sanitize_prim_segment("01_Pipe_Rubber") == "_01_Pipe_Rubber"
+    assert _paths.sanitize_prim_segment("rig::01_Pipe") == "_01_Pipe"
+    assert _paths.sanitize_prim_segment("_01_Pipe") == "_01_Pipe"
+    assert _paths.sanitize_prim_segment("Pipe_01") == "Pipe_01"
+    assert _paths.prim_path_from_object_chain(["Geo", "01_Pipe"]) == "/Geo/_01_Pipe"
+    assert _paths.sanitize_namespace_segment("2rig") == "_2rig"
+
+
 def test_prim_path_from_object_chain():
     path = _paths.prim_path_from_object_chain(["Char", "Body", "geo_Head"])
     assert path == "/Char/Body/geo_Head"
