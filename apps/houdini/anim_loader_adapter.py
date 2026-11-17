@@ -1200,6 +1200,12 @@ class HoudiniBackend:
     @staticmethod
     def scan(infos):
         out = {i.path: logic.status(i.state) for i in infos if i.state is not None}
+        for i in infos:  # Source Asset with a complete lookdev: the UV publish is not loaded, so not "missing"
+            st = i.state
+            if st is not None and logic.is_asset(st) and st.enabled.get("lookdev"):
+                look = logic.resolve(st).lookdev
+                if look and lookdev_defines_geometry(look):
+                    out[i.path] = {**out[i.path], "anim": (logic.STATUS_OFF, None)}
         for i in infos:
             if getattr(i, "layer", None) is not None:
                 out[i.path] = {i.layer.part: logic.ref_status(i.layer)}
@@ -1281,9 +1287,22 @@ class HoudiniBackend:
 
     @staticmethod
     def select(path):
+        """Selects the node and brings it into view in the Network Editor (its network, framed)."""
         node = hou.node(path.partition(LAYER_SEP)[0])
-        if node is not None:
-            node.setSelected(True, clear_all_selected=True)
+        if node is None:
+            return
+        node.setSelected(True, clear_all_selected=True)
+        node.setCurrent(True, clear_all_selected=False)
+        for pane in hou.ui.paneTabs():
+            if pane.type() != hou.paneTabType.NetworkEditor:
+                continue
+            try:
+                if pane.pwd() != node.parent():
+                    pane.cd(node.parent().path())
+                pane.homeToSelection()
+            except (AttributeError, hou.OperationFailed):
+                continue
+            break
 
     @staticmethod
     def undo():

@@ -77,7 +77,8 @@ class Controller:
     def __init__(self, backend: Any) -> None:
         self.backend = backend
         self.selection: list[str] = []
-        self.message = ""
+        self.message = ""   # the result line: one short sentence
+        self.details = ""   # everything behind it (the result line's tooltip)
         self._infos: list[LoaderInfo] = []
         self._status: dict[str, Status] = {}
         self._token = 0
@@ -279,6 +280,10 @@ class Controller:
         created, kept = self.backend.load_shot(root, shot, version)
         self.message = f"Loaded {shot} {version}: created {len(created)}, kept {len(kept)}."
 
+    def upgrade_paths(self, paths: list[str]) -> None:
+        n = self.backend.upgrade(paths) if paths else 0
+        self.message = f"Upgraded {_plural(n, 'loader')} to MonoFX Loader." if n else "Nothing to upgrade."
+
     def upgrade_all(self) -> None:
         paths = self.legacy_paths()
         n = self.backend.upgrade(paths) if paths else 0
@@ -299,8 +304,12 @@ class Controller:
             self.message = "Pick the sublayers to convert."
             return
         done, notes = self.backend.convert_layers(paths)
-        self.message = "; ".join([f"Converted {_plural(len(done), 'sublayer')}: " + ", ".join(done), *notes]) \
-            if done else ("; ".join(notes) or "Nothing converted.")
+        moved = sum(1 for d in done if "(moved " in d)
+        self.message = (f"Converted {_plural(len(done), 'sublayer')} to MonoFX Loaders"
+                        + (f" \u00b7 {moved} with their xforms" if moved else "")
+                        + (f" \u00b7 {_plural(len(notes), 'note')} (hover)" if notes else "")) if done \
+            else (notes[0] if notes else "Nothing converted.")
+        self.details = "\n".join(done + notes)
 
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)

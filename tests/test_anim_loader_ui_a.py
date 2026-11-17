@@ -225,3 +225,33 @@ def test_an_anim_loader_2_2_shows_its_versions_and_offers_upgrade(app, tmp_path,
     w.list_view.item(1).setSelected(True)
     assert w.subd_panel.source.text().startswith("Old loader")
     w.close()
+
+
+def test_inspector_slides_out_and_in(win):
+    w, ui = win
+    from PySide6.QtTest import QTest
+
+    w.show()
+    QTest.qWait(50)
+    _select(w, ui, "/stage/a")
+    assert not w.subd_panel.isHidden() and w.subd_panel._slide_anim.state() == w.subd_panel._slide_anim.State.Running
+    QTest.qWait(w.DIALOG_IN_MS + 120)
+    assert w.subd_panel.width() >= w.px(300) and w.subd_panel.minimumWidth() == w.px(360)
+    _select(w, ui, "")
+    QTest.qWait(w.DIALOG_OUT_MS + 120)
+    assert w.subd_panel.isHidden()
+
+
+def test_result_line_stays_short_and_the_rest_is_its_tooltip(win):
+    w, ui = win
+    w.ctl.message = "Converted 10 sublayers to MonoFX Loaders " + "x" * 200
+    w.ctl.details = "Castle -> /Castle\nCliff01 -> /Cliff01"
+    w._update_bar()
+    assert len(w.result.text()) <= 140 and w.result.text().endswith("\u2026")
+    assert w.result.toolTip() == "Castle -> /Castle\nCliff01 -> /Cliff01"
+
+
+def test_a_first_version_reads_plus(win):
+    _, ui = win
+    assert ui.chip(ui.logic.STATUS_NEWER, "V001", "")[0] == "+V001"
+    assert ui.chip(ui.logic.STATUS_NEWER, "v003", "v002")[0] == "v002 \u2192 v003"

@@ -269,6 +269,11 @@
   the layer's root prims under /<prim> (a group-level move acts in another frame); other parms naming those prims
   are listed, not changed. Checked on env_Envi lookdev v005: its 10 sublayers converted, 1040 meshes, 1040
   bindings, identical bounds.
+- Manager details (the user's asks, 2026-11-17): the list never drops a column, it scrolls sideways (the column header
+  follows the scroll); the inspector slides in 160 ms OutCubic / out 120 ms InCubic (Monos motion) beside the list,
+  just shows when stacked; the result line is two lines at most, details in its tooltip (`Controller.details`);
+  double-click selects the node and frames it in the Network Editor; menus are square (`STYLE_MENU_SQ`) with
+  separators between groups; a Source Asset whose lookdev holds the geometry reads "–" for its model (scan).
 - Manager type: bold only for the inspector's name, the shot crumb and the primary; list names, headers, bands and
   the status line are regular (the user's ask). Icons are drawn for every device-pixel ratio (`_crisp_icon`):
   scaling a small pixmap up broke the search icon; icon-only buttons centre their icon.

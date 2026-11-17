@@ -28,7 +28,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -109,6 +109,10 @@ def _crisp_icon(name: str, size: int, color: str) -> "QIcon":
     return icon
 
 
+# Menus with square corners (the user's ask, 2026-11-17): the suite's menu style without its radii
+STYLE_MENU_SQ = STYLE_MENU.replace("border-radius: 10px", "border-radius: 0px").replace(
+    "border-radius: 6px", "border-radius: 0px")
+
 WINDOW_NAME = "AnimLoaderManager"
 PREFS = Path(os.environ.get("APPDATA", Path.home())) / "MonoFXSuite" / "anim_loader_prefs.json"
 PART_LABEL = {"anim": "Anim", "lookdev": "Lookdev", "groom": "Groom", "cloth": "Cloth"}
@@ -142,7 +146,7 @@ def chip(state: str, newer: str | None, version: str) -> tuple[str, str]:
     if state == logic.STATUS_OK:
         return version or "ok", STATUS_COLORS[AM_OK]
     if state == logic.STATUS_NEWER:
-        return f"{version or '\u2013'} → {newer}", STATUS_COLORS[AM_UPDATE]
+        return (f"{version} → {newer}" if version else f"+{newer}"), STATUS_COLORS[AM_UPDATE]
     if state == logic.STATUS_MISSING:
         return (f"missing · {newer} out" if newer else "missing"), STATUS_COLORS[AM_MISSING]
     if state in (logic.STATUS_NONE, logic.STATUS_OFF):
@@ -312,13 +316,13 @@ class _ListDelegate(QStyledItemDelegate):
         self.view = view
 
     def visible_columns(self, width: int) -> tuple:
-        """The columns that fit with a name column of 160 px at least: Textures goes first, then Subd."""
+        """Every column: the list scrolls sideways when they do not fit (the user's ask, 2026-11-17)."""
+        return COLUMNS
+
+    def table_width(self) -> int:
+        """The narrowest the table gets: a 160 px name column and every column beside it."""
         pt = self.pt
-        cols = list(COLUMNS)
-        name_min = pt.px(16 + 28 + 10 + 160)
-        while len(cols) > 4 and width - sum(pt.px(w) + pt.px(8) for _, _, w in cols) - pt.px(16) < name_min:
-            cols.pop()
-        return tuple(cols)
+        return pt.px(16 + 28 + 10 + 160) + sum(pt.px(w) + pt.px(8) for _, _, w in COLUMNS) + pt.px(16)
 
     def columns(self, rect: QRect) -> tuple[dict[str, QRect], int]:
         """Each visible column's rect from the right edge, and where the name column ends."""
@@ -415,6 +419,8 @@ class _ListDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index) -> QSize:
         width = self.view.viewport().width() if self.view is not None else 1000
         wide = width >= self.pt.px(NARROW_ROW_PX)
+        if wide:  # the table keeps its columns; the view scrolls sideways
+            width = max(width, self.table_width())
         if index.data(ROLE_HEADER):
             return QSize(width, self.pt.px(28))
         return QSize(width, self.pt.px(40 if wide else 62))
@@ -437,8 +443,11 @@ class _ColumnHeader(QWidget):
     def paintEvent(self, _event) -> None:
         pt = self.pt
         p = QPainter(self)
+        p.fillRect(QRect(0, 0, self.width(), self.height()), QColor(BAND))
         rect = QRect(0, 0, self.width(), self.height())
-        p.fillRect(rect, QColor(BAND))
+        if self.width() >= pt.px(NARROW_ROW_PX):  # the table's width, moved with the list's sideways scroll
+            rect = QRect(0, 0, max(self.width(), self.delegate.table_width()), self.height())
+            p.translate(-self.view.horizontalScrollBar().value(), 0)
         p.setPen(QColor(LINE))
         p.drawLine(rect.bottomLeft(), rect.bottomRight())
         f = _font(pt.px(FS_SMALL), QFont.Weight.Normal)
@@ -561,7 +570,7 @@ class AnimLoaderManager(QWidget):
         self._poll.timeout.connect(self._collect)
         self._thumbs = _Thumbnails(self._repaint_views)
         self._paint = _Painter(self._thumbs, scale)
-        self.setStyleSheet(self.css(STYLE_WINDOW.replace("AutoMaterialWindow", WINDOW_NAME) + STYLE_MENU))
+        self.setStyleSheet(self.css(STYLE_WINDOW.replace("AutoMaterialWindow", WINDOW_NAME) + STYLE_MENU_SQ))
         self._build()
         self.set_view(self.prefs.get("view", "list"))
         self.refresh()
@@ -619,6 +628,7 @@ class AnimLoaderManager(QWidget):
         left_lay = QVBoxLayout(self.left)
         left_lay.setContentsMargins(0, 0, 0, 0)
         left_lay.setSpacing(0)
+        self.left.installEventFilter(self)  # the crumbs follow the left column's width
 
         top, t = self._bar()
         top.setObjectName("top")
@@ -764,6 +774,7 @@ class AnimLoaderManager(QWidget):
         root.addWidget(self._line())
         self.result = self._label("", FS_META, color=TEXT_LABEL)
         self.result.setWordWrap(True)
+        self.result.setMaximumHeight(self.px(44))  # two lines at most: a long result never pushes the bar up
         self.result.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.result_row, self._result_layout = self._bar()
         self._result_layout.setContentsMargins(self.px(16), self.px(8), self.px(16), 0)
@@ -812,7 +823,7 @@ class AnimLoaderManager(QWidget):
 
     def _menu_for(self, button: QPushButton) -> QMenu:
         menu = QMenu(button)
-        menu.setStyleSheet(self.css(STYLE_MENU))
+        menu.setStyleSheet(self.css(STYLE_MENU_SQ))
         button.setMenu(menu)
         if button is self.__dict__.get("load_button"):
             button.setStyleSheet(button.styleSheet() + "QPushButton::menu-indicator { image: none; width: 0px; }")
@@ -831,7 +842,9 @@ class AnimLoaderManager(QWidget):
         v.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         v.setMouseTracking(True)
         v.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        v.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        v.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff if grid
+                                       else Qt.ScrollBarPolicy.ScrollBarAsNeeded)  # the table scrolls sideways
+        v.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
         if grid:
             v.setViewMode(QListView.ViewMode.IconMode)
             v.setResizeMode(QListView.ResizeMode.Adjust)
@@ -845,6 +858,7 @@ class AnimLoaderManager(QWidget):
             v.setItemDelegate(delegate)
             v.setViewportMargins(0, self.px(30), 0, 0)  # room for the sticky column header
             self.column_header = _ColumnHeader(v, delegate, self._paint)
+            v.horizontalScrollBar().valueChanged.connect(lambda _v: self.column_header.update())
         v.viewport().installEventFilter(self)  # rows / cards follow the view's own width (the splitter moves it)
         v.itemSelectionChanged.connect(lambda view=v: self._selection_changed(view))
         v.itemDoubleClicked.connect(self._select_node)
@@ -983,18 +997,69 @@ class AnimLoaderManager(QWidget):
         self.solo_off.setVisible(bool(self.ctl.soloed))
         if getattr(self, "_drawer_open", False):  # one primary: the drawer's Add while it is open
             self.primary.setVisible(False)
-        self.result.setText(self.ctl.message)  # results only
+        msg = self.ctl.message
+        self.result.setText(msg if len(msg) <= 140 else msg[:137].rstrip() + "\u2026")  # results only, short
+        self.result.setToolTip(getattr(self.ctl, "details", "") or (msg if len(msg) > 140 else ""))
+        self.ctl.details = ""
 
     def _selection_changed(self, view: QListWidget) -> None:
         self.ctl.selection = [i.data(ROLE_ROW).node_path for i in view.selectedItems() if i.data(ROLE_ROW)]
         self._update_bar()
         self._show_subd()
 
+    DIALOG_IN_MS, DIALOG_OUT_MS = 160, 120  # Monos motion tokens: enter faster than exit
+
     def _show_subd(self) -> None:
         sel = self.ctl.selection[-1] if self.ctl.selection else ""
         row = next((r for r in self.ctl.rows() if r.node_path == sel), None)
-        self.subd_panel.setVisible(row is not None and not getattr(self, "_drawer_open", False))  # for a selection
-        self.subd_panel.show_row(row)
+        want = row is not None and not getattr(self, "_drawer_open", False)  # for a selection
+        if row is not None:
+            self.subd_panel.show_row(row)
+        self._slide(self.subd_panel, want)
+        if row is None:
+            self.subd_panel.show_row(None)
+
+    def _slide(self, panel: QWidget, show: bool) -> None:
+        """The inspector slides in from the right when it appears and out when it goes; stacked under the list
+        (narrow) or offscreen, it just shows."""
+        if show == (not panel.isHidden()) and not getattr(panel, "_sliding_out", False):
+            return
+        anim = getattr(panel, "_slide_anim", None)
+        if anim is not None:
+            anim.stop()
+        horizontal = self.split.orientation() == Qt.Orientation.Horizontal and self.isVisible()
+        full = self.px(360)
+        if not horizontal:
+            panel._sliding_out = False
+            panel.setMaximumWidth(16777215)
+            panel.setVisible(show)
+            return
+        anim = QPropertyAnimation(panel, b"maximumWidth", self)
+        panel._slide_anim = anim
+        panel.setMinimumWidth(0)  # the 360 px floor would stop the slide; set again when it ends
+        if show:
+            panel._sliding_out = False
+            panel.setMaximumWidth(0)
+            panel.setVisible(True)
+            anim.setDuration(self.DIALOG_IN_MS)
+            anim.setStartValue(0)
+            anim.setEndValue(full)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            anim.finished.connect(lambda: (panel.setMaximumWidth(16777215), panel.setMinimumWidth(full)))
+        else:
+            panel._sliding_out = True
+            anim.setDuration(self.DIALOG_OUT_MS)
+            anim.setStartValue(panel.width())
+            anim.setEndValue(0)
+            anim.setEasingCurve(QEasingCurve.Type.InCubic)
+
+            def done():
+                panel._sliding_out = False
+                panel.setVisible(False)
+                panel.setMaximumWidth(16777215)
+                panel.setMinimumWidth(full)
+            anim.finished.connect(done)
+        anim.start()
 
     def _repaint_views(self) -> None:
         for v in (self.list_view, self.grid_view):
@@ -1002,7 +1067,19 @@ class AnimLoaderManager(QWidget):
 
     NARROW_PX = 640
 
+    def _place_nav(self) -> None:
+        """Project and shot crumbs in the top bar, or on a row of their own when the left column (not the window:
+        the inspector takes a share of it) leaves them under 560 px."""
+        narrow = self.left.width() < self.px(560) if self.left.width() > 1 else self.width() < self.px(self.NARROW_PX)
+        if narrow and self.nav_box.parentWidget() is not self.nav_row:
+            self._nav_layout.addWidget(self.nav_box, 1)
+        elif not narrow and self.nav_box.parentWidget() is self.nav_row:
+            self._top_layout.insertWidget(0, self.nav_box, 1)  # first: the title label is gone
+        self.nav_row.setVisible(narrow)
+
     def eventFilter(self, obj, event) -> bool:
+        if event.type() == QEvent.Type.Resize and obj is getattr(self, "left", None):
+            self._place_nav()
         if event.type() == QEvent.Type.Resize:
             for v in (getattr(self, "list_view", None), getattr(self, "grid_view", None)):
                 if v is not None and obj is v.viewport():
@@ -1014,11 +1091,7 @@ class AnimLoaderManager(QWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         narrow = self.width() < self.px(self.NARROW_PX)
-        if narrow and self.nav_box.parentWidget() is not self.nav_row:
-            self._nav_layout.addWidget(self.nav_box, 1)
-        elif not narrow and self.nav_box.parentWidget() is self.nav_row:
-            self._top_layout.insertWidget(1, self.nav_box, 1)
-        self.nav_row.setVisible(narrow)
+        self._place_nav()
         self.weight_label.setVisible(not narrow and bool(self.weight_label.text()))  # the tooltip-level detail
         self.weight_icon.setVisible(self.weight_label.isVisible())
         for lab in (self.headline, self.heavy_label, self.gap_label):  # wrap when docked narrow, never widen
@@ -1128,8 +1201,9 @@ class AnimLoaderManager(QWidget):
         if row is None:
             return None
         menu = QMenu(self)
-        menu.setStyleSheet(self.css(STYLE_MENU))
+        menu.setStyleSheet(self.css(STYLE_MENU_SQ))
         menu.addAction("Select node", lambda: self._select_node(item))
+        menu.addSeparator()
         if row.kind == "layer":
             sel = self.ctl.layer_paths(self.ctl.selection) if row.node_path in self.ctl.selection else []
             paths = sel or [row.node_path]
@@ -1157,8 +1231,13 @@ class AnimLoaderManager(QWidget):
             if row.kind != "cam":
                 menu.addAction("Open in Monos", lambda: self._link(row.node_path, "monos"))
             menu.addAction("Frame in the viewport", lambda: self._link(row.node_path, "frame"))
+        if row.legacy:  # an old loader: its one action
+            menu.addAction("Upgrade to MonoFX Loader", self._run(lambda: self.ctl.upgrade_paths([row.node_path])))
         target = self.ctl.target_shot
-        if not row.legacy and row.shot and target and row.shot != target:
+        retarget = not row.legacy and row.shot and target and row.shot != target
+        if retarget or row.needs_asset or (not row.legacy and row.kind == "geo"):
+            menu.addSeparator()
+        if retarget:
             menu.addAction(f"Retarget to {target}", self._run(lambda: self.ctl.retarget([row.node_path])))
         if row.needs_asset or (not row.legacy and row.kind == "geo"):
             sub = menu.addMenu("Asset")
@@ -1625,10 +1704,11 @@ class InspectorPanel(QWidget):
 
         pats = self.patterns_for(item)
         menu = QMenu(self)
-        menu.setStyleSheet(self.owner.css(STYLE_MENU))
+        menu.setStyleSheet(self.owner.css(STYLE_MENU_SQ))
         current = item.text(3)
         head = menu.addAction(f"{len(pats)} item{'s' if len(pats) != 1 else ''}" if len(pats) > 1 else item.text(0))
         head.setEnabled(False)
+        menu.addSeparator()
         for word, scheme in WORD_SCHEME.items():
             act = menu.addAction(word)
             act.setCheckable(True)
