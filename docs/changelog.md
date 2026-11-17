@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Houdini
+- **MonoFX Loaders** manager: one **Upgrade** turns old loaders and publish sublayers alike into MonoFX Loaders (there were Upgrade and Convert for the same thing). The inspector is a list of labels and values; its Details and Newer version sections fold, and the fold is remembered.
 - **MonoFX Loaders** manager: a prop whose lookdev holds the whole asset shows "–" for its model (some said "missing"); a first version reads "+V001"; the result line keeps to two lines, the rest in its tooltip; double-click selects the node and shows it in the Network Editor; menus have square corners and separators, an old loader's menu offers Upgrade; the list scrolls sideways instead of dropping columns; the inspector slides in and out; the crumbs move to their own row when the list column is narrow.
 - **MonoFX Loaders** manager finds Sublayer and Reference nodes that read a publish (a scene built by hand): a "sublayers" group with what each reads and whether a newer version exists, **Update** (the version in the path), and **Convert to MonoFX Loader** from the right-click menu, which keeps the node's place and wires and moves the prim patterns of the xforms after it, so the scene stays where it was (env_Envi lookdev: 10 sublayers converted, same 1040 meshes and bounds).
 - **MonoFX Loaders** manager: fewer bold and big words, icons drawn sharp at any UI scale and centred in their buttons.

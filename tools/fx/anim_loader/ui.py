@@ -1013,7 +1013,8 @@ class AnimLoaderManager(QWidget):
             }[action[0]])
         n_old = len(self.ctl.legacy_paths())
         self.upgrade_button.setText(str(len(self.ctl.legacy_paths())))  # the icon says upgrade, the tip says it all
-        self.upgrade_button.setToolTip(f"{self.ctl.upgrade_label()}: to MonoFX Loader, keeping their settings")
+        self.upgrade_button.setToolTip(f"{self.ctl.upgrade_label()}: old loaders and publish sublayers become "
+                                       "MonoFX Loaders in place, keeping their settings")
         self.upgrade_button.setVisible(n_old > 0 and (action is None or action[0] != "upgrade"))
         self.retarget_button.setText(self.ctl.retarget_label())
         self.retarget_button.setVisible(bool(self.ctl.retarget_paths()) and (action is None or action[0] != "retarget"))
@@ -1273,7 +1274,7 @@ class AnimLoaderManager(QWidget):
             if newer and st == logic.STATUS_NEWER:
                 menu.addAction(f"Update to {newer}", self._run(lambda: self.ctl._update([row.node_path])))
             n = f" ({len(paths)})" if len(paths) > 1 else ""
-            menu.addAction(f"Convert to MonoFX Loader{n}", self._run(lambda: self.ctl.convert_layers(list(paths))))
+            menu.addAction(f"Upgrade to MonoFX Loader{n}", self._run(lambda: self.ctl.upgrade_paths(list(paths))))
             menu.addSeparator()
             menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))
             return menu
@@ -1739,10 +1740,10 @@ class InspectorPanel(QWidget):
         rows: list[tuple[str, str, str]] = [("Node", row.node_path.partition("#")[0], "")]
         if row.kind == "layer":
             rows += [("Kind", "Sublayer", ""), ("Reads", row.layer, ""),
-                     ("Convert", "right-click: a MonoFX Loader in its place, the xforms after it follow", TEXT_LABEL)]
+                     ("Upgrade", "a MonoFX Loader in its place, the xforms after it follow", TEXT_LABEL)]
         elif row.legacy:
             rows += [("Kind", "Old loader", warn),
-                     ("Upgrade", "right-click or the Upgrade button: keeps its settings", TEXT_LABEL)]
+                     ("Upgrade", "a MonoFX Loader in its place, keeping its settings", TEXT_LABEL)]
         elif row.kind == "cam":
             rows += [("Kind", "Camera", ""), ("Shot", row.shot, "")]
         elif row.asset_source:

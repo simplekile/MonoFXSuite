@@ -89,7 +89,7 @@ def test_update_selected():
 
 
 def test_headline():
-    assert _ctl().headline() == "2 behind, 1 needs an asset, 1 old loader"
+    assert _ctl().headline() == "2 behind, 1 needs an asset, 1 to upgrade"
 
 
 def test_stale_scan_dropped():
@@ -106,7 +106,7 @@ def test_legacy_rows_offer_upgrade():
     c = _ctl()
     legacy = [r for r in c.rows() if r.legacy]
     assert [r.node_path for r in legacy] == ["/stage/old"]
-    assert c.upgrade_label() == "Upgrade 1 old"
+    assert c.upgrade_label() == "Upgrade 1"
     c.upgrade_all()
     assert c.backend.calls[-1] == ("upgrade", ("/stage/old",))
 
@@ -199,8 +199,8 @@ def test_primary_action_follows_what_matters_most():
     b.status["/stage/a"]["lookdev"] = (STATUS_OK, None)
     b.status["/stage/c"]["anim"] = (STATUS_OK, None)
     c.refresh()
-    assert c.primary_action() == ("upgrade", "Upgrade 1 old")
-    assert c.headline().startswith("1 old loader")
+    assert c.primary_action() == ("upgrade", "Upgrade 1")
+    assert c.headline().startswith("1 to upgrade")
     b.infos = [i for i in b.infos if not i.legacy]
     b.hulls_on = lambda: False
     b.set_hulls_only = lambda: b.calls.append("hulls") or 2

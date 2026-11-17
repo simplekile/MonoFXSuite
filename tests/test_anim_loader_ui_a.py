@@ -222,7 +222,7 @@ def test_an_anim_loader_2_2_shows_its_versions_and_offers_upgrade(app, tmp_path,
     row = next(w.list_view.item(i).data(ui.ROLE_ROW) for i in range(w.list_view.count())
                if w.list_view.item(i).data(ui.ROLE_ROW))
     assert row.legacy and row.versions["anim"] == "v001" and row.shot == "sh025"
-    assert w.primary.text() == "Upgrade 1 old"
+    assert w.primary.text() == "Upgrade 1"
     w.list_view.item(1).setSelected(True)
     assert w.subd_panel.details.rows()["Kind"] == "Old loader"
     w.close()
@@ -274,3 +274,30 @@ def test_inspector_sections_fold_and_the_fold_is_remembered(win):
     assert p.details.isHidden()
     p.details_head.click()
     assert not p.details.isHidden() and ui._load_prefs()["inspector_details"] is True
+
+
+def test_one_upgrade_for_old_loaders_and_publish_sublayers(app, tmp_path, monkeypatch):
+    """Convert sublayer and Upgrade old loader were two actions for one thing (the user's report): one Upgrade."""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from tests.test_anim_loader_controller import FakeBackend, LoaderInfo
+    from tools.fx.anim_loader import ui
+    from tools.fx.anim_loader.logic import parse_publish_path
+
+    b = FakeBackend()
+    ref = parse_publish_path("D:/Job/proj/01_assets/_props/prop_Cliff01/05_lookdev/publish/v001/c.usdc")
+    b.infos = [LoaderInfo("/stage/old", None, True, "old_robot"), LoaderInfo("/stage/Cliff01#1", None, False,
+                                                                           "Cliff01", "", ref)]
+    b.status = {}
+    b.convert_layers = lambda paths: (b.calls.append(("convert", tuple(paths))) or ([f"{p} -> x (moved t)"
+                                                                                       for p in paths], []))
+    w = ui.AnimLoaderManager(b)
+    w.wait()
+    assert w.primary.text() == "Upgrade 2" and w.headline.text() == "2 to upgrade"
+    w.primary.click()
+    assert ("upgrade", ("/stage/old",)) in b.calls and ("convert", ("/stage/Cliff01#1",)) in b.calls
+    assert w.result.text().startswith("Upgraded 2 to MonoFX Loader, 1 with their xforms")
+    item = next(w.list_view.item(i) for i in range(w.list_view.count())
+                if (r := w.list_view.item(i).data(ui.ROLE_ROW)) and r.kind == "layer")
+    texts = [a.text() for a in w.row_menu(item).actions()]
+    assert "Upgrade to MonoFX Loader" in texts and not any("Convert" in t for t in texts)
+    w.close()

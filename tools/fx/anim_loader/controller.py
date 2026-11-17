@@ -159,7 +159,9 @@ class Controller:
                 and (only is None or r.node_path in only)]
 
     def legacy_paths(self) -> list[str]:
-        return [r.node_path for r in self._rows if r.legacy]
+        """Everything Upgrade turns into a MonoFX Loader: old loaders (2.2, 2.1, Character Loader) and Sublayers /
+        References reading a publish. One action, not Upgrade and Convert (the user's call, 2026-11-17)."""
+        return [r.node_path for r in self._rows if r.legacy or r.kind == "layer"]
 
     def headline(self) -> str:
         behind = len(self.behind_paths())
@@ -169,11 +171,11 @@ class Controller:
             return "No loaders in the scene"
         parts = [f"{behind} behind"] if behind else []
         if legacy and not behind:
-            parts.append(_plural(legacy, "old loader") + " to upgrade")
+            parts.append(f"{legacy} to upgrade")
         if asset:
             parts.append(f"{asset} {'needs' if asset == 1 else 'need'} an asset")
         if legacy and behind:
-            parts.append(_plural(legacy, "old loader"))
+            parts.append(f"{legacy} to upgrade")
         action = self.primary_action()
         if action and action[0] == "retarget":  # the headline says what the primary button does
             paths = set(self.retarget_paths())
@@ -230,7 +232,7 @@ class Controller:
         return f"Update {n} behind" if n else "Nothing to update"
 
     def upgrade_label(self) -> str:
-        return f"Upgrade {len(self.legacy_paths())} old"
+        return f"Upgrade {len(self.legacy_paths())}"
 
     # --- commands ---------------------------------------------------------------------------------
     def layer_paths(self, only: list[str] | None = None) -> list[str]:
@@ -281,13 +283,21 @@ class Controller:
         self.message = f"Loaded {shot} {version}: created {len(created)}, kept {len(kept)}."
 
     def upgrade_paths(self, paths: list[str]) -> None:
-        n = self.backend.upgrade(paths) if paths else 0
-        self.message = f"Upgraded {_plural(n, 'loader')} to MonoFX Loader." if n else "Nothing to upgrade."
+        """Old loaders and publish sublayers among ``paths`` -> MonoFX Loaders, one sentence for both."""
+        layers = set(self.layer_paths(paths))
+        old = [p for p in paths if p not in layers]
+        n = self.backend.upgrade(old) if old else 0
+        done, notes = (self.backend.convert_layers(sorted(layers)) if layers and hasattr(self.backend, "convert_layers")
+                       else ([], []))
+        total = n + len(done)
+        moved = sum(1 for d in done if "(moved " in d)
+        self.message = (f"Upgraded {total} to MonoFX Loader" + (f", {moved} with their xforms" if moved else "")
+                        + (f", {_plural(len(notes), 'note')} (hover)" if notes else "")) if total \
+            else (notes[0] if notes else "Nothing to upgrade.")
+        self.details = "\n".join(done + notes)
 
     def upgrade_all(self) -> None:
-        paths = self.legacy_paths()
-        n = self.backend.upgrade(paths) if paths else 0
-        self.message = f"Upgraded {_plural(n, 'loader')} to MonoFX Loader." if n else "No old loaders."
+        self.upgrade_paths(self.legacy_paths())
 
     def retarget(self, paths: list[str] | None = None) -> None:
         paths = paths if paths is not None else self.retarget_paths()
@@ -298,18 +308,8 @@ class Controller:
         self.message = "; ".join([f"Retargeted {len(moved)} to {self.target_shot}", *left])
 
     def convert_layers(self, paths: list[str]) -> None:
-        """Sublayers reading an asset publish -> MonoFX Loaders (Source Asset), patterns after them moved."""
-        paths = self.layer_paths(paths)
-        if not paths:
-            self.message = "Pick the sublayers to convert."
-            return
-        done, notes = self.backend.convert_layers(paths)
-        moved = sum(1 for d in done if "(moved " in d)
-        self.message = (f"Converted {_plural(len(done), 'sublayer')} to MonoFX Loaders"
-                        + (f", {moved} with their xforms" if moved else "")
-                        + (f", {_plural(len(notes), 'note')} (hover)" if notes else "")) if done \
-            else (notes[0] if notes else "Nothing converted.")
-        self.details = "\n".join(done + notes)
+        """Publish sublayers -> MonoFX Loaders: the same Upgrade as for old loaders."""
+        self.upgrade_paths(self.layer_paths(paths))
 
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)

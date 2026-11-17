@@ -53,10 +53,10 @@ def test_list_shows_every_loader_grouped(make):
     headers = [w.list_view.item(i).data(ui.ROLE_HEADER) for i in range(w.list_view.count())
                if w.list_view.item(i).data(ui.ROLE_HEADER)]
     assert headers == ["sh025   3", "sh900   1", "old loaders   1"]
-    assert w.headline.text() == "2 behind, 1 needs an asset, 1 old loader"
+    assert w.headline.text() == "2 behind, 1 needs an asset, 1 to upgrade"
     assert w.primary.text() == "Update 2 behind" and w.primary.isEnabled()
     assert w.upgrade_button.text() == "1" and not w.upgrade_button.isHidden()  # icon + count, the tip says it
-    assert w.upgrade_button.toolTip().startswith("Upgrade 1 old")
+    assert w.upgrade_button.toolTip().startswith("Upgrade 1")
 
 
 def test_grid_and_list_hold_the_same_rows_and_the_view_is_remembered(make):
@@ -260,7 +260,7 @@ def test_primary_button_follows_the_one_action(make):
     b.status["/stage/a"]["lookdev"] = (STATUS_OK, None)
     b.status["/stage/c"]["anim"] = (STATUS_OK, None)
     w.refresh(); w.wait()
-    assert w.primary.text() == "Upgrade 1 old" and w.upgrade_button.isHidden()   # not twice
+    assert w.primary.text() == "Upgrade 1" and w.upgrade_button.isHidden()   # not twice
     b.infos = [i for i in b.infos if not i.legacy]
     w.refresh(); w.wait()
     assert w.primary.isHidden()                                  # nothing worth doing: no primary button

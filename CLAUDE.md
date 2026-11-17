@@ -262,7 +262,8 @@
 - Sublayer / Reference LOPs that read a publish (`find_publish_layers`, `logic.parse_publish_path`: an absolute path
   `<project>/01_assets/_<group>/<asset>/<dept>/publish/vNNN/<file>` or `02_shots/<shot>/...`; a path with a
   variable or an expression is not read) show in the manager's "sublayers" group with their status. Update moves
-  the vNNN in the path to the newest version holding the file (a vNNN in the file name follows). Convert makes a
+  the vNNN in the path to the newest version holding the file (a vNNN in the file name follows). Upgrade (the same
+  action as for old loaders, one button and one menu item: Convert and Upgrade confused the user) makes a
   MonoFX Loader on Source Asset in its place (same name, place, wires; lookdev or model at the version it read,
   groom and hide off): the loader puts the asset under /<prim>, so prim patterns of the nodes after it up to the
   first merge / graft move there, and `lopinputprims('.', 0)` (the env scene's xforms) becomes the explicit list of
