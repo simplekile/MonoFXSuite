@@ -329,6 +329,21 @@ class Controller:
         self.message = f"{path.rsplit('/', 1)[-1]} is now {asset}."
 
     # --- manager A: add, view, links, what is new, hand off (the user's pick, 2026-11-17) ---------------------
+    def timeline(self, path: str) -> tuple[float, int, int] | None:
+        """(fps, first, last) of a shot loader's anim publish (publish_meta.json), None for an asset or unknown."""
+        from pathlib import Path
+
+        from tools.fx.anim_loader import logic as lg
+
+        st = next((i.state for i in self._infos if i.path == path and i.state is not None), None)
+        if st is None or lg.is_asset(st) or not (st.project_root and st.shot and st.anim_version):
+            return None
+        return lg.read_timeline(lg.anim_publish_dir(Path(st.project_root), st.shot) / st.anim_version)
+
+    def camera(self, path: str) -> dict:
+        fn = getattr(self.backend, "camera_info", None)
+        return fn(path) if fn else {}
+
     def news(self, path: str) -> list:
         """What is new for a loader (logic.WhatsNew per behind part), as the last scan read it."""
         return list(self._extras.get("news", {}).get(path, []))

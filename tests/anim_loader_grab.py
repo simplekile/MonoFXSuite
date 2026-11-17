@@ -87,8 +87,13 @@ def make_drawer(scale: float):
 
 
 def make_cam(scale: float):
-    """Layout A with the camera selected (the inspector of a camera)."""
+    """Layout A with the camera selected (the inspector of a camera: sh025's real lens, frames from its publish)."""
     w, role = _make_a(scale)
+    w.ctl.timeline = lambda path: (30.0, 0, 45)
+    w.backend.camera_info = lambda path: {
+        "prim": "/root/cam_sh025_root/cam_sh025_mount/cam_sh025_boom/cam_sh025_head/cam_sh025", "focal": 35.0,
+        "focal_animated": False, "h_aperture": 36.0, "v_aperture": 20.25, "clip": (0.0001, 1e6), "fstop": 0.0,
+        "focus": 0.0}
     for i in range(w.list_view.count()):
         r = w.list_view.item(i).data(role)
         w.list_view.item(i).setSelected(bool(r) and r.node_path == "/stage/c")

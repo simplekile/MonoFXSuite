@@ -1334,6 +1334,43 @@ def restore_baked(node):
     return loader
 
 
+def camera_info(path: str) -> dict:
+    """The camera a loader puts on the stage, at the current frame (what renders: the loader's own settings applied):
+    prim, focal length (and whether it is animated), apertures, clipping, f-stop, focus distance. {} without one."""
+    from pxr import Usd, UsdGeom
+
+    node = hou.node(path)
+    if node is None:
+        return {}
+    try:
+        stage = node.stage()
+    except hou.OperationFailed:
+        return {}
+    if stage is None:
+        return {}
+    t = Usd.TimeCode(hou.frame())
+    cam = next((p for p in stage.Traverse() if p.IsA(UsdGeom.Camera)), None)
+    if cam is None:
+        return {}
+    c = UsdGeom.Camera(cam)
+
+    mpu = UsdGeom.GetStageMetersPerUnit(stage) or 0.01
+
+    def get(attr, scale=1.0):
+        v = attr.Get(t) if attr else None
+        return None if v is None else float(v) * scale
+
+    # USD lens values are tenths of a scene unit (sh025, 1 m a unit: 35 mm is 0.35), distances are scene units:
+    # the inspector says mm and m
+    mm, m = mpu * 100.0, mpu
+    focal = c.GetFocalLengthAttr()
+    clip = c.GetClippingRangeAttr().Get(t)
+    return {"prim": cam.GetPath().pathString, "focal": get(focal, mm), "focal_animated": focal.GetNumTimeSamples() > 1,
+            "h_aperture": get(c.GetHorizontalApertureAttr(), mm), "v_aperture": get(c.GetVerticalApertureAttr(), mm),
+            "clip": (clip[0] * m, clip[1] * m) if clip is not None else None, "fstop": get(c.GetFStopAttr()),
+            "focus": get(c.GetFocusDistanceAttr(), m)}
+
+
 # --- the manager window's backend --------------------------------------------------------------------
 
 class HoudiniBackend:
@@ -1552,6 +1589,10 @@ class HoudiniBackend:
                 and not logic.is_asset(i.state)}
         gaps = logic.shot_gaps(target_root, target_shot, have) if target_root and target_shot else ("", [])
         return {"news": news, "weight": weight, "gaps": gaps}
+
+    @staticmethod
+    def camera_info(path):
+        return camera_info(path)
 
     @staticmethod
     def bake(paths):

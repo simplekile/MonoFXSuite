@@ -305,6 +305,11 @@ def subd_cell(row: Row) -> tuple[str, str]:
                                                  else TEXT_LABEL)
 
 
+def _num(v: float) -> str:
+    """A camera value for people: 35, 20.25, 0.0001, 1,000,000 (not 1e+06 or 34.99999)."""
+    return f"{v:,.0f}" if abs(v) >= 1e4 else f"{v:.4g}"
+
+
 def tex_cell(row: Row) -> tuple[str, str]:
     """(text, colour) of the textures a row's lookdev pulls."""
     if row.weight < 1e6:
@@ -1787,6 +1792,26 @@ class InspectorPanel(QWidget):
             text, color = chip(st, newer, row.versions.get(p, ""))
             rows.append((part_word(row, p).title(), text.replace("\u2013", "none"),
                          "" if st == logic.STATUS_OK else color))
+        tl = self.owner.ctl.timeline(row.node_path) if not row.legacy and row.kind in ("geo", "cam") else None
+        if tl is not None:  # a shot's anim: its frame range and fps (the user's ask)
+            rows += [("Frames", f"{tl[1]}-{tl[2]}", ""), ("Fps", f"{tl[0]:g}", "")]
+        if row.kind == "cam" and not row.legacy:
+            cam = self.owner.ctl.camera(row.node_path)
+            if cam:
+                rows.append(("Camera", cam["prim"].rsplit("/", 1)[-1], ""))
+                if cam["focal"] is not None:
+                    rows.append(("Focal length", _num(cam["focal"]) + " mm"
+                                 + (", animated" if cam["focal_animated"] else ""), ""))
+                h, v = cam["h_aperture"], cam["v_aperture"]
+                if h and v:
+                    rows.append(("Aperture", f"{_num(h)} x {_num(v)} mm, {h / v:.3g}:1", ""))
+                if cam["clip"]:
+                    rows.append(("Clipping", f"{_num(cam['clip'][0])} to {_num(cam['clip'][1])} m", ""))
+                if cam["fstop"]:  # f-stop 0: USD's "no depth of field"
+                    rows.append(("F-stop", _num(cam["fstop"]), ""))
+                    rows.append(("Focus distance", "none" if cam["focus"] is None else _num(cam["focus"]) + " m", ""))
+                else:
+                    rows.append(("Depth of field", "off", ""))
         if row.weight >= 1e6:
             rows.append(("Textures", logic.size_word(row.weight), ""))
         detail = self.owner.ctl.subd_detail(row.node_path)

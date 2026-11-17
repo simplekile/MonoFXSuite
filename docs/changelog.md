@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Houdini
+- **MonoFX Loaders** manager: the inspector of a camera shows its lens (focal length in mm, aperture and ratio, clipping in m, f-stop and focus distance or "Depth of field: off"), read from the stage at the current frame; a shot's loader shows its frame range and fps from the anim publish. An asset's loader shows neither.
 - **MonoFX Loaders** manager: **Bake to plain nodes** (hand-off menu, right-click) turns loaders into plain Houdini subnets that open without MonoFX, for someone with Houdini only; the scene stays the same. **Upgrade** turns them back into MonoFX Loaders.
 - **MonoFX Loaders** manager: one **Upgrade** turns old loaders and publish sublayers alike into MonoFX Loaders (there were Upgrade and Convert for the same thing). The inspector is a list of labels and values; its Details and Newer version sections fold, and the fold is remembered.
 - **MonoFX Loaders** manager: a prop whose lookdev holds the whole asset shows "–" for its model (some said "missing"); a first version reads "+V001"; the result line keeps to two lines, the rest in its tooltip; double-click selects the node and shows it in the Network Editor; menus have square corners and separators, an old loader's menu offers Upgrade; the list scrolls sideways instead of dropping columns; the inspector slides in and out; the crumbs move to their own row when the list column is narrow.

@@ -282,6 +282,10 @@
   the right edge (no reflow); the Geo column is a shot's anim or an asset's model; the result line is two lines at most, details in its tooltip (`Controller.details`);
   double-click selects the node and frames it in the Network Editor; menus are square (`STYLE_MENU_SQ`) with
   separators between groups; a Source Asset whose lookdev holds the geometry reads "–" for its model (scan).
+- Inspector of a shot loader (the user's ask, 2026-11-17): Frames and Fps from the anim publish's `publish_meta.json`
+  (`Controller.timeline`; an asset loader has none). A camera adds its lens from the loader's stage at the current
+  frame (`adapter.camera_info`): USD lens values are tenths of a scene unit (sh025, 1 m a unit: 35 mm is 0.35), so
+  they are turned into mm, distances into m; f-stop 0 is USD's "no depth of field" and reads "Depth of field off".
 - No "·"-joined facts anywhere in the manager (the user's dislike, 2026-11-17): the inspector is a property list
   (`_Props`: label left, value right) of Node, Kind, Shot / Asset, each part's version, Textures, Subdivision,
   Viewport polygons; a NEWER VERSION section lists the part and version ("V001, first version"), Published, Work

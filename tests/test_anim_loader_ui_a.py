@@ -306,3 +306,49 @@ def test_one_upgrade_for_old_loaders_and_publish_sublayers(app, tmp_path, monkey
     texts = [a.text() for a in w.row_menu(item).actions()]
     assert "Upgrade to MonoFX Loader" in texts and not any("Convert" in t for t in texts)
     w.close()
+
+
+def test_a_camera_shows_its_lens_and_a_shot_loader_its_frames(win, monkeypatch):
+    """The user's ask: the camera's inspector said too little; a shot's anim says its frame range and fps."""
+    w, ui = win
+    monkeypatch.setattr(w.ctl, "timeline", lambda path: (30.0, 0, 45))
+    w.backend.camera_info = lambda path: {"prim": "/sh025/root/cam", "focal": 35.0, "focal_animated": True,
+                                          "h_aperture": 36.0, "v_aperture": 20.25, "clip": (0.0001, 1000000.0),
+                                          "fstop": 5.6, "focus": None}
+    _select(w, ui, "/stage/c")
+    rows = w.subd_panel.details.rows()
+    assert rows["Frames"] == "0-45" and rows["Fps"] == "30"
+    assert rows["Camera"] == "cam" and rows["Focal length"] == "35 mm, animated"
+    assert rows["Aperture"] == "36 x 20.25 mm, 1.78:1" and rows["Clipping"] == "0.0001 to 1,000,000 m"
+    assert rows["F-stop"] == "5.6" and rows["Focus distance"] == "none"
+    w.backend.camera_info = lambda path: {"prim": "/root/cam", "focal": 34.99999, "focal_animated": False,
+                                          "h_aperture": None, "v_aperture": None, "clip": None, "fstop": 0.0,
+                                          "focus": 0.0}
+    _select(w, ui, "/stage/a")
+    _select(w, ui, "/stage/c")
+    rows = w.subd_panel.details.rows()
+    assert rows["Focal length"] == "35 mm" and rows["Depth of field"] == "off" and "F-stop" not in rows
+    _select(w, ui, "/stage/a")
+    rows = w.subd_panel.details.rows()
+    assert rows["Frames"] == "0-45" and "Focal length" not in rows
+
+
+def test_timeline_reads_the_anim_publish_and_not_an_asset(tmp_path):
+    import json
+
+    from tests.test_anim_loader_controller import _state
+    from tools.fx.anim_loader.controller import Controller, LoaderInfo
+
+    import dataclasses
+
+    st = dataclasses.replace(_state("sh025", "char_Helen", "char_Helen"), project_root=str(tmp_path))
+    d = tmp_path / "02_shots" / "sh025" / "01_anim" / "publish" / "v001"
+    d.mkdir(parents=True)
+    (d / "publish_meta.json").write_text(json.dumps({"fps": 30, "playback_range": [0, 45]}), encoding="utf-8")
+    b = BackendA()
+    b.infos = [LoaderInfo("/stage/h", st, False)]
+    b.status = {"/stage/h": b.status["/stage/b"]}
+    c = Controller(b)
+    c.refresh()
+    assert c.timeline("/stage/h") == (30.0, 0, 45)
+    assert c.timeline("/stage/nothing") is None
