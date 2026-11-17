@@ -109,7 +109,7 @@ def chip(state: str, newer: str | None, version: str) -> tuple[str, str]:
     if state == logic.STATUS_OK:
         return version or "ok", STATUS_COLORS[AM_OK]
     if state == logic.STATUS_NEWER:
-        return f"{version} → {newer}", STATUS_COLORS[AM_UPDATE]
+        return f"{version or '\u2013'} → {newer}", STATUS_COLORS[AM_UPDATE]
     if state == logic.STATUS_MISSING:
         return (f"missing · {newer} out" if newer else "missing"), STATUS_COLORS[AM_MISSING]
     if state in (logic.STATUS_NONE, logic.STATUS_OFF):
@@ -242,18 +242,24 @@ STATES_PILL = (f"QPushButton:pressed {{ background: #26262d; }}"
 STATES_GHOST = ("QPushButton:pressed { background: #26262d; color: #ededf0; }"
                 "QPushButton::menu-indicator { image: none; width: 0; }")  # the label carries the arrow
 STATES_PRIMARY = "QPushButton:pressed { background: #2f5bd8; }"
-COLUMNS = (("anim", "Anim", 72), ("lookdev", "Lookdev", 72), ("groom", "Groom", 72), ("cloth", "Cloth", 72),
-           ("subd", "Subd", 92))
+COLUMNS = (("anim", "Anim", 76), ("lookdev", "Lookdev", 76), ("groom", "Groom", 76), ("cloth", "Cloth", 76),
+           ("subd", "Subd", 92), ("tex", "Textures", 76))
 
 
 def subd_cell(row: Row) -> tuple[str, str]:
     """(text, colour) of a row's subdivision cell: meshes and viewport polygons, amber over the heavy line."""
-    weight = f"{row.weight / 1e9:.1f} GB" if row.weight >= 1e8 else ""
     if not row.subd:
-        return (weight or "\u2013"), (TEXT_LABEL if weight else TEXT_META)
+        return "\u2013", TEXT_META
     n, polys = row.subd
-    text = f"{n} \u00b7 ~{polys / 1e6:.1f} M" + (f" \u00b7 {weight}" if weight else "")
-    return text, (STATUS_COLORS[AM_WARN] if polys > logic.HEAVY_SUBD_POLYGONS else TEXT_LABEL)
+    return f"{n} \u00b7 ~{polys / 1e6:.1f} M", (STATUS_COLORS[AM_WARN] if polys > logic.HEAVY_SUBD_POLYGONS
+                                                 else TEXT_LABEL)
+
+
+def tex_cell(row: Row) -> tuple[str, str]:
+    """(text, colour) of the textures a row's lookdev pulls."""
+    if row.weight < 1e6:
+        return "\u2013", TEXT_META
+    return logic.size_word(row.weight), TEXT_LABEL
 
 
 def part_cell(row: Row, part: str) -> tuple[str, str]:
@@ -326,7 +332,7 @@ class _ListDelegate(QStyledItemDelegate):
         name_x = rect.left() + pad + th + pt.px(10)
         cols, name_end = self.columns(line1)
         if not wide:
-            name_end = cols["subd"].left() - pt.px(8)
+            name_end = cols["subd"].left() - pt.px(8)  # narrow: subd sits at the right of the name line
         p.setFont(_font(pt.px(FS_META), QFont.Weight.DemiBold))
         name_w = min(p.fontMetrics().horizontalAdvance(row.instance) + pt.px(4), name_end - name_x)
         self._text(p, QRect(name_x, line1.top(), name_w, line1.height()), row.instance, TEXT_PRIMARY, FS_META, True)
@@ -338,6 +344,9 @@ class _ListDelegate(QStyledItemDelegate):
         if row.kind != "cam" and not row.legacy:
             self._text(p, cols["subd"], text if wide or row.subd else "", color, FS_SMALL,
                        align=Qt.AlignmentFlag.AlignHCenter)  # every column but the name is centred
+            if wide:
+                t_text, t_color = tex_cell(row)
+                self._text(p, cols["tex"], t_text, t_color, FS_SMALL, align=Qt.AlignmentFlag.AlignHCenter)
         if wide:
             cells = [(cols[part], part) for part in ALL_PARTS]
         else:  # the versions on a second line, under the column names of the first header
@@ -1072,7 +1081,8 @@ class AnimLoaderManager(QWidget):
         if not row.legacy:
             menu.addSeparator()
             menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))
-            menu.addAction("Open in Monos", lambda: self._link(row.node_path, "monos"))
+            if row.kind != "cam":
+                menu.addAction("Open in Monos", lambda: self._link(row.node_path, "monos"))
             menu.addAction("Frame in the viewport", lambda: self._link(row.node_path, "frame"))
         target = self.ctl.target_shot
         if not row.legacy and row.shot and target and row.shot != target:
@@ -1437,7 +1447,9 @@ class InspectorPanel(QWidget):
             return
         self.title.setText(row.instance)
         bits = [row.node_path]
-        if not row.legacy:
+        if row.kind == "cam":  # a camera has its anim only
+            bits += ["camera", f"anim {row.versions.get('anim', '')}"]
+        elif not row.legacy:
             bits += [f"{PART_LABEL[p].lower()} {row.versions[p]}" for p in ALL_PARTS if row.versions.get(p)]
         self.meta.setText(" \u00b7 ".join(bits))
         self.asset = row.asset or ""
@@ -1457,13 +1469,16 @@ class InspectorPanel(QWidget):
             lines = [line.replace(" -> ", " \u2192 ") for x in news for line in x.lines[:4]]
             others = [f"{x.part} {x.old} \u2192 {x.new}" for x in news[1:]]
             self.news_text.setText("\n".join(lines + others) or f"{w.part} {w.old} \u2192 {w.new}")
+        self.actions_hint.setText("Right-click the camera: update, open folder, frame." if row.kind == "cam" else
+                                  "Right-click the loader: update, source, open folder, open in Monos, frame.")
         self.actions_hint.setVisible(not row.legacy)
         detail = self.owner.ctl.subd_detail(row.node_path)
         self.path = row.node_path if detail and detail["plan"] else ""
         self.tree.setVisible(bool(self.path))
         self.hint.setVisible(bool(self.path))
+        self.load.setVisible(row.kind != "cam")  # a camera has nothing to subdivide: no line about it
         if not self.path:
-            self.load.setText("Camera: nothing to subdivide." if row.kind == "cam" else "No meshes to subdivide.")
+            self.load.setText("No meshes to subdivide.")
             self.load.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {self.owner.px(FS_SMALL)}px; background: transparent;")
             return
         plan, faces = detail["plan"], detail["faces"]

@@ -84,3 +84,12 @@ def make_drawer(scale: float):
         w.drawer.list.item(0).setSelected(True)
         w.drawer.list.item(1).setSelected(True)
     return w
+
+
+def make_cam(scale: float):
+    """Layout A with the camera selected (the inspector of a camera)."""
+    w, role = _make_a(scale)
+    for i in range(w.list_view.count()):
+        r = w.list_view.item(i).data(role)
+        w.list_view.item(i).setSelected(bool(r) and r.node_path == "/stage/c")
+    return w

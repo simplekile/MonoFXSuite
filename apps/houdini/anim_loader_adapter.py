@@ -854,9 +854,7 @@ def frame(path: str) -> bool:
     inst = _s(node, config.P_INSTANCE) if node else ""
     if not inst:
         return False
-    for pane in hou.ui.paneTabs():
-        if pane.type() != hou.paneTabType.SceneViewer:
-            continue
+    for pane in scene_viewers():
         try:
             if pane.pwd() != node.parent():
                 pane.setPwd(node.parent())
@@ -1187,10 +1185,10 @@ class HoudiniBackend:
         news, weight = {}, {}
         for i in infos:
             st = i.state
-            if st is None or st.kind != "geo":
+            if st is None:
                 continue
             items = []
-            for part in ("anim", *logic.PARTS):
+            for part in (("anim",) if st.kind == "cam" else ("anim", *logic.PARTS)):
                 w = logic.whats_new(st, part)
                 if w is None:
                     continue
@@ -1296,11 +1294,30 @@ def heavy_message() -> str | None:
     return logic.heavy_shot_message(shot_subd_load())
 
 
+def scene_viewers() -> list:
+    """Every Scene Viewer of the UI: its own pane tabs, and the one inside each Context Viewer (Houdini 22's
+    default layouts wrap the viewer in a ContextViewer pane, which paneTabType.SceneViewer alone misses: Draw
+    Hulls Only said "No viewer shows /stage" while one did, the user's report 2026-11-17)."""
+    out = []
+    for p in hou.ui.paneTabs():
+        kind = p.type()
+        if kind == hou.paneTabType.SceneViewer:
+            out.append(p)
+        elif kind == getattr(hou.paneTabType, "ContextViewer", None):
+            try:
+                viewer = p.sceneViewer()
+            except (AttributeError, hou.OperationFailed):
+                viewer = None
+            if viewer is not None:
+                out.append(viewer)
+    return out
+
+
 def _stage_viewers() -> list:
     """Scene Viewers showing a LOP network: /stage has display options of its own, so a setting made while a
     viewer shows /obj does not reach the stage (measured: hulls set before switching to /stage was off)."""
-    return [p for p in hou.ui.paneTabs() if p.type() == hou.paneTabType.SceneViewer
-            and p.pwd() is not None and p.pwd().childTypeCategory() == hou.lopNodeTypeCategory()]
+    return [p for p in scene_viewers()
+            if p.pwd() is not None and p.pwd().childTypeCategory() == hou.lopNodeTypeCategory()]
 
 
 def set_hulls_only(enable: bool = True) -> int:

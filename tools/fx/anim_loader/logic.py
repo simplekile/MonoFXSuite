@@ -500,7 +500,10 @@ def status(state: LoaderState) -> dict[str, tuple[str, str | None]]:
             later = _newer(state.versions.get(part, ""), found)
             if not getattr(r, part):
                 named = state.versions.get(part, "")
-                out[part] = (STATUS_MISSING, later) if (named or found) else (STATUS_NONE, None)
+                if not named and found:  # nothing picked when the node was made; now there is: newer
+                    out[part] = (STATUS_NEWER, found[-1])
+                else:
+                    out[part] = (STATUS_MISSING, later) if named else (STATUS_NONE, None)
             else:
                 out[part] = (STATUS_NEWER, later) if later else (STATUS_OK, None)
     return out
@@ -1006,7 +1009,9 @@ def _folder_date(folder: Path) -> str:
 
 
 def size_word(n: int) -> str:
-    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.1f} MB"
+    if n >= 1e9:
+        return f"{n / 1e9:.1f} GB"
+    return f"{n / 1e6:.1f} MB" if n >= 1e6 else f"{max(n / 1e3, 0.1):.1f} KB"
 
 
 def whats_new(state: LoaderState, part: str) -> WhatsNew | None:

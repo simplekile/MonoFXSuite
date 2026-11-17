@@ -135,7 +135,7 @@ class Controller:
                             (self._thumbs or {}).get(info.path, ""), {"anim": logic.main_version(st), **st.versions},
                             self._subd_summary(info.path), asset_source,
                             self._extras.get("weight", {}).get(info.path, 0)))
-        return sorted(rows, key=lambda r: (r.legacy, r.shot, r.kind == "cam", r.instance.lower()))
+        return sorted(rows, key=lambda r: (r.legacy, r.asset_source, r.shot, r.kind == "cam", r.instance.lower()))
 
     def rows(self) -> list[Row]:
         return list(self._rows)

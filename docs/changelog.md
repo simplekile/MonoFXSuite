@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Houdini
+- **MonoFX Loader**: Draw Hulls Only and Frame find the Scene Viewer inside Houdini 22's Context Viewer pane; before, they said "No viewer shows /stage" while one did.
+- **MonoFX Loaders** manager: a part that had nothing published when the loader was made, and has a version now, shows as newer ("– → V001") with Update, not as missing. Textures get their own column (Subd was cut off); small files read in KB, not "0.0 MB"; shots are listed before assets. A camera's inspector shows only what a camera has (its anim), and what is new in its anim.
+
 
 ## [0.1.33] - 2026-11-17
 

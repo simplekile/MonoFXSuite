@@ -217,10 +217,13 @@ def test_subd_cell_in_rows(make):
     assert ui.subd_chip(helen) == "subd 2 \u00b7 ~6.6 M"
 
 
-def test_camera_has_nothing_to_subdivide(make):
+def test_camera_inspector_shows_only_what_a_camera_has(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/c")  # the camera
-    assert w.subd_panel.tree.isHidden() and "nothing to subdivide" in w.subd_panel.load.text()
+    p = w.subd_panel
+    assert p.tree.isHidden() and p.load.isHidden()          # no subdivision line at all
+    assert "camera" in p.meta.text() and "lookdev" not in p.meta.text()
+    assert p.source.isHidden() and "source" not in p.actions_hint.text()
 
 
 def test_every_style_follows_the_ui_scale(make):
