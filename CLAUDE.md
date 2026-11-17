@@ -246,7 +246,8 @@
   outputs, frames, meshes, size); its actions are on the row's right-click menu (Update to <part> <version>, Switch to
   Source Shot / Asset, Open folder, Open in Monos `monos://open?project&page&e=sha256[:10]`, Frame in the viewport).
   The list is a table: a sticky column header, group bands, zebra rows, column separators, every column but the
-  name centred, Textures a column of its own (the user's asks). Every button has pressed and selected + hover looks
+  name centred, Textures a column of its own (the user's asks). The top bar's icon buttons (viewport, list / grid, add) are flat
+  (`STYLE_ICON_FLAT`, 28 px, no border): a solid fill only on hover, press and the view that is on. Every button has pressed and selected + hover looks
   (Monos states). Fewer words (the user's ask): the top bar is icons (Filter with a search icon, eye = Viewport
   menu, list / grid, plus = Add menu), the view bar row is gone (the viewport state sits on the status line), Hand
   off / Undo / Upgrade are icons (Upgrade with its count), each icon button has a tooltip and an accessible name;
@@ -302,7 +303,8 @@
   user's report: blue and white for one state read as two): a dot under the icon marks the shot's override, what
   Remove the shot's overrides takes off (not the publish's or the loader's own values: a dot that stayed after a
   Remove read as a bug); who set a value (this shot, the publish, the loader's Hide Prims / Show in Viewport) is in
-  the tooltip. A click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the
+  the tooltip. A toggle that is on draws filled (`_filled_pixmap`: the pupil / lens cut out so any row colour shows
+  through), off is the outline with its slash; 13 px icons in 21 px columns. A click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the
   selection, one undo step; every click changes the state (`logic.toggle_edits`: the rule comes off only when the
   wanted value is the one the row has without it, `PrimShow.base_visible` / `base_purpose`; taking it off whenever
   the value was "on" left a prim the loader hides hidden, two clicks to show it). The header shows no icons

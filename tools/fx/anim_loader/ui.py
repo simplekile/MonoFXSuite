@@ -123,6 +123,47 @@ def _crisp_icon(name: str, size: int, color: str) -> "QIcon":
     return icon
 
 
+# A toggle that is on draws filled (the user's ask): the shape solid, its inner part (the pupil, the lens) cut out
+# so the row shows through; off stays the outline with its slash. Shapes from Lucide (ISC), in its 24-unit box.
+_FILLED = {
+    "eye": ('<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1'
+            '-19.876 0"/>', (12.0, 12.0, 3.4)),
+    "monitor": ('<rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8M12 17v4" fill="none"/>', None),
+    "camera": ('<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>',
+               (12.0, 13.0, 3.4)),
+}
+_filled_cache: dict = {}
+
+
+def _filled_pixmap(name: str, size: int, color: str, ratio: float = 2.0) -> "QPixmap":
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QPixmap
+    from PySide6.QtSvg import QSvgRenderer
+
+    key = (name, size, color, ratio)
+    if key not in _filled_cache:
+        body, hole = _FILLED[name]
+        phys = int(size * ratio)
+        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{phys}" height="{phys}" viewBox="0 0 24 24" '
+               f'fill="{color}" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+               f"{body}</svg>")
+        pm = QPixmap(phys, phys)
+        pm.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        QSvgRenderer(svg.encode("utf-8")).render(p)
+        if hole is not None:  # the pupil / the lens: cut out, not painted, so it reads on any row colour
+            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(0, 0, 0))
+            k = phys / 24.0
+            p.drawEllipse(QPointF(hole[0] * k, hole[1] * k), hole[2] * k, hole[2] * k)
+        p.end()
+        pm.setDevicePixelRatio(ratio)
+        _filled_cache[key] = pm
+    return _filled_cache[key]
+
+
 _prim_icon_cache: dict = {}
 _PRIM_LUCIDE = {"xform": "layers", "mesh": "box", "basiscurves": "droplet"}  # outside Houdini
 
@@ -327,6 +368,15 @@ STATES_PILL = (f"QPushButton:pressed {{ background: #26262d; }}"
 STATES_GHOST = ("QPushButton:pressed { background: #26262d; color: #ededf0; }"
                 "QPushButton::menu-indicator { image: none; width: 0; }")  # the label carries the arrow
 STATES_PRIMARY = "QPushButton:pressed { background: #2f5bd8; }"
+# The top bar's icon buttons (the user's ask): compact, no border; a solid fill only on hover, press and the view
+# that is on (List / Grid), never an outline
+STYLE_ICON_FLAT = (f"QPushButton {{ background: transparent; border: none; border-radius: 6px; padding: 0px;"
+                   f" font-size: {FS_META}px; }}"
+                   f"QPushButton:hover {{ background: {BG_HOVER}; }}"
+                   f"QPushButton:pressed {{ background: #2c2c34; }}"
+                   f"QPushButton:checked {{ background: #2a2a32; }}"
+                   f"QPushButton:checked:hover {{ background: #31313a; }}"
+                   "QPushButton::menu-indicator { image: none; width: 0; }")
 COLUMNS = (("anim", "Geo", 76), ("lookdev", "Lookdev", 76), ("groom", "Groom", 76), ("cloth", "Cloth", 76),
            ("subd", "Subd", 92), ("tex", "Textures", 76))
 
@@ -684,7 +734,8 @@ class AnimLoaderManager(QWidget):
         b.setAccessibleName(tip.split(":")[0])
         b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         if not text:
-            b.setFixedSize(self.px(34), self.px(34))
+            side = 28 if style is STYLE_ICON_FLAT else 34
+            b.setFixedSize(self.px(side), self.px(side))
             b.setStyleSheet(b.styleSheet() + self.css("QPushButton { padding: 0px; text-align: center; }"))
         return b
 
@@ -741,19 +792,19 @@ class AnimLoaderManager(QWidget):
         self.filter_edit.textChanged.connect(lambda _t: self._show_rows())
         t.addWidget(self.filter_edit)
         self.viewport_button = self._icon_button("eye", "Viewport: solo, lookdev and groom in the viewport, "
-                                                        "draw hulls only")
+                                                        "draw hulls only", STYLE_ICON_FLAT)
         self.viewport_menu = self._menu_for(self.viewport_button)
         self.viewport_menu.aboutToShow.connect(self._fill_viewport_menu)
         t.addWidget(self.viewport_button)
         self.view_buttons = QButtonGroup(self)
         for key, icon, text in (("list", "list", "List"), ("grid", "layout-grid", "Grid")):
-            b = self._icon_button(icon, f"{text}: show the loaders as a {text.lower()}", STYLE_PILL)
+            b = self._icon_button(icon, f"{text}: show the loaders as a {text.lower()}", STYLE_ICON_FLAT)
             b.setCheckable(True)
             b.setObjectName(f"view_{key}")
             b.clicked.connect(lambda _=False, k=key: self.set_view(k))
             self.view_buttons.addButton(b)
             t.addWidget(b)
-        self.load_button = self._icon_button("plus", "Add: load a shot, or add assets")
+        self.load_button = self._icon_button("plus", "Add: load a shot, or add assets", STYLE_ICON_FLAT)
         self.load_menu = self._menu_for(self.load_button)
         t.addWidget(self.load_button)
         left_lay.addWidget(top)
@@ -1752,11 +1803,14 @@ def _mesh_tree_class():
             toggle = index.data(ROLE_TOGGLE) if index.column() in TOGGLE_COLS else None
             if toggle:  # the eye, viewport and render toggles (Blender's outliner)
                 name, col, own, dim = toggle
-                size = self.px(16)
+                size = self.px(13)  # smaller than the prim icon (the user's ask)
                 cx, cy = r.center().x(), r.center().y() - self.px(2)
                 if dim:  # under a hidden parent: it keeps its own setting for when the parent shows again
                     painter.setOpacity(0.4)
-                painter.drawPixmap(cx - size // 2 + 1, cy - size // 2 + 1, _crisp_icon(name, size, col).pixmap(size))
+                ratio = painter.device().devicePixelRatioF() if painter.device() else 1.0
+                pm = (_filled_pixmap(name, size, col, max(2.0, ratio)) if name in _FILLED
+                      else _crisp_icon(name, size, col).pixmap(size))
+                painter.drawPixmap(cx - size // 2 + 1, cy - size // 2 + 1, pm)
                 if own:  # this shot overrides it: a dot under the icon (what Remove the shot's overrides takes off)
                     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
                     painter.setPen(Qt.PenStyle.NoPen)
@@ -1861,7 +1915,9 @@ TOGGLE_COLS = {5: "eye", 6: "viewport", 7: "render"}
 
 
 def TOGGLE_W(owner) -> int:  # noqa: N802: a toggle column's width, the icon and a little air
-    return owner.px(24)
+    return owner.px(21)
+
+
 ROLE_TOGGLE = Qt.ItemDataRole.UserRole + 22  # (icon, colour) of a toggle cell
 ROLE_SHOW = Qt.ItemDataRole.UserRole + 23    # the row's logic.PrimShow
 
