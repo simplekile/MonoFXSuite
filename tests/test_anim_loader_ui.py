@@ -428,7 +428,7 @@ def test_toggles_groom_curves_and_inheritance(make):
     hair = tops["Groom"].child(0)
     assert hair.data(0, ui.ROLE_PRIM) == "basiscurves"
     assert hair.data(6, ui.ROLE_TOGGLE)[0] == "monitor-off" and hair.data(7, ui.ROLE_TOGGLE)[0] == "camera"
-    assert hair.data(6, ui.ROLE_TOGGLE)[2] is True  # its own purpose (the loader's): a dot
+    assert hair.data(6, ui.ROLE_TOGGLE)[2] is False  # the loader's own purpose: no dot (only the shot's has one)
     geo = tops["Geo"]
     base, outfit = geo.child(0), geo.child(1)
     assert base.data(6, ui.ROLE_TOGGLE)[2]  # the shot's own value: a dot

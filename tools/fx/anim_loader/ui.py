@@ -1757,7 +1757,7 @@ def _mesh_tree_class():
                 if dim:  # under a hidden parent: it keeps its own setting for when the parent shows again
                     painter.setOpacity(0.4)
                 painter.drawPixmap(cx - size // 2 + 1, cy - size // 2 + 1, _crisp_icon(name, size, col).pixmap(size))
-                if own:  # its own value, not its parent's: a dot under the icon (colour is not the only cue)
+                if own:  # this shot overrides it: a dot under the icon (what Remove the shot's overrides takes off)
                     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
                     painter.setPen(Qt.PenStyle.NoPen)
                     painter.setBrush(QColor(col))
@@ -2160,22 +2160,23 @@ class InspectorPanel(QWidget):
             if ps is None:
                 return ""
             item.setData(0, ROLE_SHOW, ps)
-            # one look per state (the user's report: blue and white for the same state); a dot says the row has its
-            # own value (it overrides its parent), dimmed: under a hidden parent; who set it is in the tooltip
+            # one look per state (the user's report: blue and white for one state); a dot marks the shot's override,
+            # what Remove the shot's overrides takes off (a dot for the publish's or the loader's own value stayed
+            # after it, the user's report); dimmed: under a hidden parent; who set a value is in the tooltip
             def color(source):
                 return TEXT_LABEL
 
             pruned = not ps.visible and ps.own_visible
             item.setData(5, ROLE_TOGGLE, ("eye" if ps.own_visible else "eye-off", color(ps.vis_source),
-                                          bool(ps.vis_source), pruned))
+                                          ps.vis_source == "shot", pruned))
             item.setToolTip(5, ("Hidden with its parent; shows again with it" if pruned
                                 else "Shown" if ps.own_visible else "Hidden")
                             + (f", its own: {where[ps.vis_source]}" if ps.vis_source else ", as its parent")
                             + ". Click to toggle.")
             item.setData(6, ROLE_TOGGLE, ("monitor" if ps.viewport else "monitor-off", color(ps.purpose_source),
-                                          bool(ps.purpose_source), not ps.visible))
+                                          ps.purpose_source == "shot", not ps.visible))
             item.setData(7, ROLE_TOGGLE, ("camera" if ps.render else "camera-off", color(ps.purpose_source),
-                                          bool(ps.purpose_source), not ps.visible))
+                                          ps.purpose_source == "shot", not ps.visible))
             tip = f"Purpose {ps.purpose}, " + (f"its own: {where[ps.purpose_source]}" if ps.purpose_source
                                                else "inherited from its parent")
             item.setToolTip(6, ("Drawn in the viewport. " if ps.viewport else "Not drawn in the viewport. ") + tip)

@@ -299,9 +299,10 @@
   render (purpose: both on default, viewport only proxy, render only render, both off guide). Inheritance is
   Houdini's / USD's: hiding a prim hides everything under it and each child keeps its own eye for when the parent
   shows again (drawn dimmed meanwhile); a prim without its own purpose follows its parent. One look per state (the
-  user's report: blue and white for one state read as two): a dot under the icon says the row has its own value,
-  i.e. overrides its parent; who set it (this shot, the publish, the loader's Hide Prims / Show in Viewport) is in the
-  tooltip. A click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the
+  user's report: blue and white for one state read as two): a dot under the icon marks the shot's override, what
+  Remove the shot's overrides takes off (not the publish's or the loader's own values: a dot that stayed after a
+  Remove read as a bug); who set a value (this shot, the publish, the loader's Hide Prims / Show in Viewport) is in
+  the tooltip. A click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the
   selection, one undo step; every click changes the state (`logic.toggle_edits`: the rule comes off only when the
   wanted value is the one the row has without it, `PrimShow.base_visible` / `base_purpose`; taking it off whenever
   the value was "on" left a prim the loader hides hidden, two clicks to show it). The header shows no icons
