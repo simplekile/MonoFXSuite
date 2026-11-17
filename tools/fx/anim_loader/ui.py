@@ -1960,8 +1960,7 @@ class InspectorPanel(QWidget):
         for col, (name, tip) in {5: ("eye", "Show or hide (visibility): hiding a prim hides what is under it"),
                                  6: ("monitor", "Drawn in the viewport (purpose)"),
                                  7: ("camera", "Rendered by Karma (purpose)")}.items():
-            self.tree.headerItem().setIcon(col, _crisp_icon(name, owner.px(14), TEXT_LABEL))
-            self.tree.headerItem().setToolTip(col, tip)
+            self.tree.headerItem().setToolTip(col, tip)  # no icon in the header (the user's ask): the rows show them
         self.tree.on_toggle = self._toggle
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setRootIsDecorated(True)
