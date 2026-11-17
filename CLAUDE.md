@@ -227,6 +227,21 @@
   frame's samples beat a clip, and a same-layer anim beats a cloth clip. That gives motion blur; a cache without
   time samples falls back to Sublayer `$F` (no blur, said on the node).
 - A locked LOP HDA makes its inner nodes on first cook: `node.children()` is empty before.
+- Source Asset (the user's decisions, 2026-11-17; design `docs/plans/anim_loader_asset_source.md`): the node (label
+  **MonoFX Loader**, type still `mono_anim_loader::2.2`) loads either a shot's anim (`mx_source` shot) or the asset's
+  own publishes (asset): UV model `01_modelling/03_uv/publish/vNNN/` (Model File menu, the standard
+  `<asset>_uv_publish.usd*` first; several files and none standard -> the artist picks), groom
+  `04_grooming/publish`, lookdev. Both graft under `/<asset>`, so mesh paths match (Helen: all 26) and subdivision
+  rules carry over; switching Source keeps the other's parms. A scene in an asset folder (`logic.detect_asset`)
+  gets Source Asset on creation. Load shot / Retarget leave Asset nodes alone (`_key` is empty). Upgrade turns a
+  Character Loader 3.2 (Dropbox HDA) into an Asset node in its place (`logic.from_character_loader`; its SOP Modify
+  is dropped, the user's call).
+- Groom sits outside Geo in both sources, at `/<instance>/Groom/<name>`: Helen's lookdev binds hair there
+  (`/Groom/Hair_Back` -> `M_Grm_Hair_Back`, empty BasisCurves of those names). The asset's groom publish is already
+  at `/Groom`. A shot groom cache is moved there by name (`logic.groom_targets`): the branch's `groom_topology`
+  Python LOP copies each curves prim from the first frame (or each frame's file without time samples, `$F` in
+  `mx_groom_topo`), and the clips after the graft read the cache's own path (clip `primPath`, tokens `src=dst` in
+  `mx_groom_roots`); spike S3 checked blur and binding.
 - Subdivision per mesh (the user's decision, 2026-11-17; `logic.subd_plan`, `adapter.author_subd` from the
   `render_only` Python LOP): a shot rule on the loader (hidden `mx_subd_rules`, JSON `pattern` from `/<instance>`,
   `scheme` publish / none / catmullClark, `dicing`; a later rule wins) > lookdev publish > anim publish > `none`.

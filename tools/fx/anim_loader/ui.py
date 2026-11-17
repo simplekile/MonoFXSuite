@@ -596,7 +596,8 @@ class AnimLoaderManager(QWidget):
         self.retarget_button.clicked.connect(self._run(lambda: self.ctl.retarget()))
         self.retarget_button.hide()
         self.upgrade_button = self._button("", STYLE_GHOST)
-        self.upgrade_button.setToolTip("Change Anim Loader 2.1 nodes to 2.2, keeping their settings")
+        self.upgrade_button.setToolTip("Change Anim Loader 2.1 and Character Loader 3.2 nodes to 2.2, keeping "
+                                       "their settings")
         self.upgrade_button.clicked.connect(self._run(self.ctl.upgrade_all))
         self.primary = self._button("", STYLE_PRIMARY)
         self.primary.setToolTip("The one thing worth doing now")
@@ -700,10 +701,10 @@ class AnimLoaderManager(QWidget):
             view.clear()
             shot = None
             for row in rows:
-                group = row.shot or "old loaders"
+                group = row.shot or ("assets" if row.asset_source else "old loaders")
                 if group != shot:
                     shot = group
-                    count = sum(1 for r in rows if (r.shot or "old loaders") == group)
+                    count = sum(1 for r in rows if (r.shot or ("assets" if r.asset_source else "old loaders")) == group)
                     h = QListWidgetItem()
                     h.setData(ROLE_HEADER, f"{group} · {count}")
                     h.setFlags(Qt.ItemFlag.NoItemFlags)
@@ -754,7 +755,8 @@ class AnimLoaderManager(QWidget):
                 "retarget": "Move loaders copied from another shot to this shot: newest anim there, groom / cloth "
                             "from there, lookdev and settings kept (one undo step)",
                 "update": "Move what is behind to the newest version (one undo step)",
-                "upgrade": "Change Anim Loader 2.1 nodes to 2.2, keeping their settings (one undo step)",
+                "upgrade": "Change Anim Loader 2.1 and Character Loader 3.2 nodes to 2.2, keeping their settings "
+                           "(one undo step)",
                 "hulls": "Draw Hulls Only in the /stage viewports: lighter to draw and less memory",
             }[action[0]])
         n_old = len(self.ctl.legacy_paths())

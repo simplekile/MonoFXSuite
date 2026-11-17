@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from tools.fx.anim_loader import logic
 from tools.fx.anim_loader.logic import KEEP, STATUS_ASSET, STATUS_MISSING, STATUS_NEWER, LoaderState
 
 ALL_PARTS = ("anim", "lookdev", "groom", "cloth")
@@ -40,6 +41,7 @@ class Row:
     thumb: str = ""
     versions: dict[str, str] = field(default_factory=dict)
     subd: tuple[int, int] | None = None  # (subdivided meshes, estimated viewport polygons)
+    asset_source: bool = False  # Source Asset: the asset's model (no shot); Load shot and Retarget leave it
 
     @property
     def behind(self) -> bool:
@@ -119,10 +121,11 @@ class Controller:
                 rows.append(Row(info.path, "", info.legacy_name or info.path.rsplit("/", 1)[-1], "geo", None,
                                 legacy=True))
                 continue
-            rows.append(Row(info.path, st.shot, st.instance_name, st.kind, st.asset,
+            asset_source = logic.is_asset(st)
+            rows.append(Row(info.path, "" if asset_source else st.shot, st.instance_name, st.kind, st.asset,
                             self._status.get(info.path, {}), info.legacy,
-                            (self._thumbs or {}).get(info.path, ""), {"anim": st.anim_version, **st.versions},
-                            self._subd_summary(info.path)))
+                            (self._thumbs or {}).get(info.path, ""), {"anim": logic.main_version(st), **st.versions},
+                            self._subd_summary(info.path), asset_source))
         return sorted(rows, key=lambda r: (r.legacy, r.shot, r.kind == "cam", r.instance.lower()))
 
     def rows(self) -> list[Row]:
