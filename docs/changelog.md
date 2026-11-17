@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Houdini
+- **MonoFX Loaders** manager: right-click the inspector tree's column titles to choose which columns show (for example hide Faces and From); the choice is remembered.
 - **MonoFX Loaders** manager: with several loaders selected the inspector shows their prims in one tree, a branch each, and toggles or the right-click menu act on each row's own loader. A filter field narrows the tree to the prims whose name holds the text.
 - **MonoFX Loaders** manager: each prim in the inspector has three toggles, as in Blender's outliner: show / hide, drawn in the viewport, rendered. Hiding a group hides what is under it and each child keeps its own setting for when the group shows again; viewport and render follow the parent unless a child has its own. A dot marks what this shot overrides, which Remove the shot's overrides takes off (who set a value is in the tooltip); every click changes the state. The groom's curves are listed under Groom. A camera's clipping, aperture, ratio and guide scale on the loader are edited in the inspector.
 - **MonoFX Loaders** manager: the meshes' right-click menu says what each item does ("Use the publish's subdivision", "Turn subdivision off", "Subdivide (Catmull-Clark)", "Remove the shot's overrides", "Copy these overrides to every char_Helen"), every item has an icon and they line up; dicing is picked from a submenu of steps.

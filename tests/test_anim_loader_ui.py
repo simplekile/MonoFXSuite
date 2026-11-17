@@ -668,3 +668,24 @@ def test_a_loader_row_toggles_its_instance_root(make):
     assert rules == [{"pattern": ".", "vis": "invisible"}]
     st = lg.prim_shows(["Geo/Hull_grp/Geo_Hull"], {}, [], [], rules)
     assert not st["Geo/Hull_grp/Geo_Hull"].visible and st["Geo/Hull_grp/Geo_Hull"].own_visible
+
+
+
+def test_header_menu_shows_and_hides_columns_and_remembers(make):
+    """The user's ask: right-click a column title to turn columns off, e.g. Faces and From."""
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/b")
+    p = w.subd_panel
+    menu = p.columns_menu()
+    names = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert names == ["Show (eye)", "Viewport", "Render", "Faces", "From", "Scheme", "Dice"]
+    assert all(a.data() == "shown" for a in menu.actions() if not a.isSeparator())
+    _act(menu, "Faces").trigger()
+    _act(p.columns_menu(), "From").trigger()
+    assert p.tree.isColumnHidden(1) and p.tree.isColumnHidden(2) and not p.tree.isColumnHidden(3)
+    assert ui._load_prefs()["inspector_hidden_columns"] == [1, 2]
+    _select(w, ui, "/stage/a")
+    _select(w, ui, "/stage/b")  # a new tree keeps the choice
+    assert p.tree.isColumnHidden(1) and p.tree.isColumnHidden(2)
+    _act(p.columns_menu(), "Faces").trigger()
+    assert not p.tree.isColumnHidden(1)

@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEasingCurve, QEvent, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -2114,7 +2114,11 @@ class InspectorPanel(QWidget):
             head.moveSection(head.visualIndex(col), i)
         self.tree.setTreePosition(0)  # the branches and indentation stay in the name column
         head.setMinimumSectionSize(owner.px(20))  # the toggles are narrow; the name keeps its own minimum
-        head.setToolTip("Drag the edge of MESH to widen the name column")
+        head.setToolTip("Drag the edge of PRIM to widen it; right-click to choose the columns")
+        head.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        head.customContextMenuRequested.connect(self._columns_menu)
+        self._hidden_cols = {int(c) for c in _load_prefs().get("inspector_hidden_columns", [])
+                             if str(c).isdigit() and 0 < int(c) < COLS}  # view state, per viewer
         self._name_width = 0  # the width the artist dragged the name column to (kept across loaders)
         head.sectionResized.connect(lambda i, _old, new: setattr(self, "_name_width", new) if i == 0
                                     and QApplication.mouseButtons() != Qt.MouseButton.NoButton
@@ -2313,6 +2317,40 @@ class InspectorPanel(QWidget):
             add(None, k, k, sub, "")
         return any_dicing
 
+    COLUMN_NAMES = {5: "Show (eye)", 6: "Viewport", 7: "Render", 1: "Faces", 2: "From", 3: "Scheme", 4: "Dice"}
+
+    def _apply_columns(self) -> None:
+        """The columns the artist keeps (the header's right-click menu); DICE only when some prim has dicing."""
+        for col in range(1, COLS):
+            self.tree.setColumnHidden(col, col in self._hidden_cols
+                                      or (col == 4 and not getattr(self, "_any_dicing", False)))
+
+    def _columns_menu(self, pos) -> None:
+        self.columns_menu().exec(self.tree.header().mapToGlobal(pos))
+
+    def columns_menu(self) -> QMenu:
+        """Which columns show (the user's ask: Faces and From are seldom needed); the name always shows. A column
+        that shows has the check; a click shows or hides it, remembered per viewer."""
+        menu = QMenu(self)
+        menu.setStyleSheet(self.owner.css(STYLE_MENU_SQ))
+        size = self.owner.px(16)
+        for i, (col, name) in enumerate(self.COLUMN_NAMES.items()):
+            if i == 3:
+                menu.addSeparator()  # the toggles, then the subdivision columns
+            shown = col not in self._hidden_cols
+            act = menu.addAction(_crisp_icon("check", size, ACCENT) if shown else QIcon(), name)
+            act.setData("shown" if shown else "")
+            act.triggered.connect(lambda _=False, c=col: self._toggle_column(c))
+        return menu
+
+    def _toggle_column(self, col: int) -> None:
+        self._hidden_cols ^= {col}
+        prefs = _load_prefs()
+        prefs["inspector_hidden_columns"] = sorted(self._hidden_cols)
+        _save_prefs(prefs)
+        self._apply_columns()
+        self._fit_name()
+
     def _paint_toggles(self, item, ps) -> None:
         """The eye, viewport and render toggles of a row (logic.PrimShow): one look per state, a dot for the shot's
         override, dimmed under a hidden parent (it keeps its own setting for when the parent shows again)."""
@@ -2336,7 +2374,8 @@ class InspectorPanel(QWidget):
         item.setToolTip(7, ("Rendered. " if ps.render else "Not rendered. ") + tip)
 
     def _finish_tree(self, keep: dict | None, any_dicing: bool) -> None:
-        self.tree.setColumnHidden(4, not any_dicing)
+        self._any_dicing = any_dicing
+        self._apply_columns()
         if keep is None:
             self.tree.expandAll()
         else:

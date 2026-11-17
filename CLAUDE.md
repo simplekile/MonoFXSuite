@@ -316,7 +316,9 @@
   on `logic.ROOT` ".", which every prim under it inherits; hiding it hides the asset); every row carries its loader (`ROLE_LOADER`), so toggles, the
   menu's subdivision / dicing / Remove act on each row's own loader, and a toggle over several loaders is one undo
   step (`set_show_many`); Same overrides only for one loader. A filter field above the tree (`_apply_filter`) keeps
-  the rows whose name holds the text, everything under a matching group, and the groups above (opened). The header shows no icons
+  the rows whose name holds the text, everything under a matching group, and the groups above (opened).
+  Right-click the tree's header: which columns show (the toggles, Faces, From, Scheme, Dice; the name always),
+  remembered per viewer in the prefs (`inspector_hidden_columns`); Dice still shows only when some prim has dicing. The header shows no icons
   (the user's ask); the right-click menu's Display submenu says each toggle as a verb (Hide / Show, Stop drawing
   in the viewport, Stop rendering) and runs the same toggle. Rules live in the hidden
   `mx_show_rules` (JSON {pattern = one prim under the instance, "vis": invisible | inherited, "purpose"}; the first
