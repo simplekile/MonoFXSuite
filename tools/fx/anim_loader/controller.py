@@ -439,6 +439,17 @@ class Controller:
         n = sum(1 for c in d["plan"].values() if c.scheme != SUBD_NONE)
         return (n, subd_polygons(d["faces"], d["plan"])) if n else None
 
+    def refresh_detail(self, path: str) -> None:
+        """One loader's inspector data again, after a change that moves no version (a show toggle): its settings read
+        again and its prims worked out from the publish files the last scan read (cached), no rescan of the project
+        (a toggle took ~1 s, most of it the Dropbox folder walk of the full scan, the user's report)."""
+        fresh = [i for i in self.backend.loaders() if i.path == path]
+        if not fresh:
+            return
+        self._infos = [fresh[0] if i.path == path else i for i in self._infos]
+        if fresh[0].state is not None and fresh[0].state.kind == "geo" and hasattr(self.backend, "subd"):
+            self._subd.update(self.backend.subd(fresh))
+
     def subd_detail(self, path: str) -> dict | None:
         """{"plan": {mesh: SubdChoice}, "faces": {mesh: n}} of a loader, as the last scan read it."""
         return self._subd.get(path)

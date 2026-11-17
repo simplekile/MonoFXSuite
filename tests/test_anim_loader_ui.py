@@ -417,6 +417,7 @@ def test_toggles_groom_curves_and_inheritance(make):
     prims = [m.strip("/") for m in detail["plan"]] + ["Groom/Hair_Back", "Groom/Eyebrows"]
     detail["shown"] = lg.prim_shows(prims, {}, ["Geo/Outfit_grp"], ["Groom/Hair_Back", "Groom/Eyebrows"],
                                     [{"pattern": "Geo/Base_grp", "purpose": "proxy"}])
+    b.subd = lambda infos: {"/stage/b": detail}  # what the backend reads again after a toggle
     _select(w, ui, "/stage/a")
     _select(w, ui, "/stage/b")
     tree = w.subd_panel.tree
@@ -563,3 +564,26 @@ def test_every_click_changes_the_state():
         purpose_seen.append(st["Geo/E"].render)
         rules = lg.set_show_rules(rules, lg.toggle_edits([("Geo/E", st["Geo/E"], st["Geo"])], "render"))
     assert purpose_seen == [False, True, False, True]
+
+
+
+def test_a_toggle_reads_only_that_loader_again(make):
+    """The user's report: a toggle took long and held the app; it rescanned the whole project. Now it works out that
+    loader's inspector again and nothing else."""
+    from tools.fx.anim_loader import logic as lg
+
+    w, ui = _subd_window(make)
+    b = w.backend
+    _select(w, ui, "/stage/b")
+    detail = w.ctl.subd_detail("/stage/b")
+    detail["shown"] = lg.prim_shows([m.strip("/") for m in detail["plan"]], {}, [], [], [])
+    calls = []
+    b.set_show = lambda path, edits: calls.append("set_show")
+    real_scan, real_subd = b.scan, b.subd
+    b.scan = lambda infos: calls.append("scan") or real_scan(infos)
+    b.subd = lambda infos: calls.append(("subd", tuple(i.path for i in infos))) or {"/stage/b": detail}
+    _select(w, ui, "/stage/a")
+    _select(w, ui, "/stage/b")
+    w.subd_panel._toggle(w.subd_panel.tree.topLevelItem(0), 5)
+    w.wait()
+    assert calls == ["set_show", ("subd", ("/stage/b",))]

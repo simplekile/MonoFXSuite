@@ -1284,6 +1284,19 @@ class AnimLoaderManager(QWidget):
             self.refresh()
         return go
 
+    def _run_detail(self, fn, path: str):
+        """A write that moves no version (a show toggle): that loader's inspector is worked out again, the list and the
+        project are not scanned again (a full refresh made each click ~1 s and held the window)."""
+        def go(*_):
+            try:
+                fn()
+                self.ctl.refresh_detail(path)
+            except Exception as exc:  # the result line, never a dialog
+                self.ctl.message = f"Failed: {exc}"
+            self._update_bar()
+            self._show_subd()
+        return go
+
     def _fill_viewport_menu(self) -> None:
         """Explicit actions, each saying what it does (Monos menu rules: actions, never hidden state)."""
         m = self.viewport_menu
@@ -2538,7 +2551,7 @@ class InspectorPanel(QWidget):
                 "viewport": "not drawn in the viewport" if first.viewport else "drawn in the viewport",
                 "render": "not rendered" if first.render else "rendered"}[which]
         path = self.path
-        self.owner._run(lambda: self.owner.ctl.set_show(path, edits, what))()
+        self.owner._run_detail(lambda: self.owner.ctl.set_show(path, edits, what), path)()
 
     def set_scheme(self, pats: list[str], scheme: str) -> None:
         path = self.path
