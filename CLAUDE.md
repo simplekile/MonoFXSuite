@@ -279,7 +279,8 @@
   (`_Props`: label left, value right) of Node, Kind, Shot / Asset, each part's version, Textures, Subdivision,
   Viewport polygons; a NEWER VERSION section lists the part and version ("V001, first version"), Published, Work
   file by, and only real changes (outputs added / removed, frames, fps, meshes added / removed; never a file size).
-  The list's side margins are 6 px (`LIST_PAD`).
+  Both sections fold from their titles (`_Section`, view state kept per viewer in the prefs as
+  `inspector_details` / `inspector_news`). The list's side margins are 6 px (`LIST_PAD`).
 - Manager type: bold only for the inspector's name, the shot crumb and the primary; list names, headers, bands and
   the status line are regular (the user's ask). Icons are drawn for every device-pixel ratio (`_crisp_icon`):
   scaling a small pixmap up broke the search icon; icon-only buttons centre their icon.

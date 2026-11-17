@@ -94,6 +94,7 @@ LUCIDE.update({
     "layout-grid": '<rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/>'
                    '<rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>',
     "search": '<circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>',
+    "chevron-right": '<path d="m9 18 6-6-6-6"/>',
     "scan": '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/>'
             '<path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
 })
@@ -1610,6 +1611,46 @@ class _Props(QWidget):
         return out
 
 
+class _Section(QPushButton):
+    """A section title that folds the widget under it: chevron + caps label, flat. Folded or open is view state,
+    kept per viewer in the prefs (``inspector_<key>``), never in the scene."""
+
+    def __init__(self, owner, title: str, key: str, body: QWidget) -> None:
+        super().__init__(title.upper())
+        self.owner, self.key, self.body = owner, key, body
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setCheckable(True)
+        self.setChecked(_load_prefs().get(f"inspector_{key}", True) is not False)
+        self.setStyleSheet(owner.css(
+            f"QPushButton {{ background: transparent; border: none; color: {TEXT_LABEL}; text-align: left;"
+            f" padding: 2px 0px; font-size: {FS_SMALL}px; letter-spacing: 1px; }}"
+            f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"))
+        self.setMinimumHeight(owner.px(24))
+        self.setIconSize(QSize(owner.px(14), owner.px(14)))
+        self.toggled.connect(self._toggled)
+        self._paint_icon()
+
+    def _paint_icon(self) -> None:
+        self.setIcon(_crisp_icon("chevron-down" if self.isChecked() else "chevron-right", self.owner.px(14),
+                                 TEXT_LABEL))
+        self.setToolTip("Fold this section" if self.isChecked() else "Show this section")
+
+    def _toggled(self, on: bool) -> None:
+        prefs = _load_prefs()
+        prefs[f"inspector_{self.key}"] = on
+        _save_prefs(prefs)
+        self._paint_icon()
+        self.apply()
+
+    def apply(self, has_rows: bool | None = None) -> None:
+        """Shows the body when open and it has something; the title shows whenever the body has rows."""
+        if has_rows is not None:
+            self._has = has_rows
+        has = getattr(self, "_has", True)
+        self.setVisible(has)
+        self.body.setVisible(has and self.isChecked())
+
+
 class InspectorPanel(QWidget):
     """The selected loader (shown only while one is selected): name, node and versions, then its meshes by group
     with faces, where the scheme comes from (only where it differs from the group), scheme and dicing (that column
@@ -1631,13 +1672,15 @@ class InspectorPanel(QWidget):
         lay.addWidget(self.title)
         lay.addSpacing(owner.px(6))
         self.details = _Props(owner)  # node, kind, shot / asset, versions, textures, subdivision
+        self.details_head = _Section(owner, "Details", "details", self.details)
+        lay.addWidget(self.details_head)
         lay.addWidget(self.details)
-        lay.addSpacing(owner.px(10))
-        self.news_head = owner._label("NEWER VERSION", FS_SMALL, color=TEXT_LABEL)
-        lay.addWidget(self.news_head)
+        lay.addSpacing(owner.px(6))
         self.news = _Props(owner)  # which part, version, published, by, what changed
+        self.news_head = _Section(owner, "Newer version", "news", self.news)
+        lay.addWidget(self.news_head)
         lay.addWidget(self.news)
-        lay.addSpacing(owner.px(10))
+        lay.addSpacing(owner.px(6))
         self.tree = QTreeWidget()
         self.tree.setObjectName("subdTree")
         self.tree.setColumnCount(5)
@@ -1729,6 +1772,7 @@ class InspectorPanel(QWidget):
                                                                         else ""),
                          warn if polys > HEAVY_SUBD_POLYGONS else ""))
         self.details.set_rows(rows)
+        self.details_head.apply(bool(rows))
         news = self.owner.ctl.news(row.node_path) if not row.legacy else []
         news_rows: list[tuple[str, str, str]] = []
         for w in news:
@@ -1739,7 +1783,7 @@ class InspectorPanel(QWidget):
                 news_rows.append(("Work file by", w.author, ""))
             news_rows += [(k, v, "") for k, v in w.lines]
         self.news.set_rows(news_rows)
-        self.news_head.setVisible(bool(news_rows))
+        self.news_head.apply(bool(news_rows))
         self.tree.setVisible(bool(self.path))
         self.hint.setVisible(False)
         self.tree.setToolTip("Right-click meshes: scheme, dicing, clear, apply to every instance")

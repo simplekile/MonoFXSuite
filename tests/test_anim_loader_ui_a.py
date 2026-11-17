@@ -118,7 +118,8 @@ def test_inspector_is_information_and_actions_are_on_the_row_menu(win):
     assert news["Published"] == "2026-11-16 10:00" and news["Work file by"] == "Mai"
     assert news["Meshes added"] == "Fin_L, Fin_R"
     assert p.details.rows()["Kind"] == "Shot loader" and p.details.rows()["Shot"] == "sh025"
-    assert not p.findChildren(ui.QPushButton)  # Monos: the inspector shows, it does not act
+    # Monos: the inspector shows, it does not act; its only buttons fold its sections (view state)
+    assert all(isinstance(b, ui._Section) for b in p.findChildren(ui.QPushButton))
     menu = w.row_menu(_item(w, ui, "/stage/a"))
     texts = [a.text() for a in menu.actions() if not a.isSeparator()]
     assert "Update to lookdev v003" in texts and "Switch to Source Asset" in texts
@@ -259,3 +260,17 @@ def test_a_first_version_reads_plus(win):
     _, ui = win
     assert ui.chip(ui.logic.STATUS_NEWER, "V001", "")[0] == "+V001"
     assert ui.chip(ui.logic.STATUS_NEWER, "v003", "v002")[0] == "v002 \u2192 v003"
+
+
+def test_inspector_sections_fold_and_the_fold_is_remembered(win):
+    w, ui = win
+    _select(w, ui, "/stage/a")
+    p = w.subd_panel
+    assert not p.details.isHidden() and not p.news.isHidden()
+    p.details_head.click()                       # fold the details
+    assert p.details.isHidden() and not p.details_head.isHidden()
+    assert ui._load_prefs()["inspector_details"] is False
+    _select(w, ui, "/stage/b")                   # another loader: still folded
+    assert p.details.isHidden()
+    p.details_head.click()
+    assert not p.details.isHidden() and ui._load_prefs()["inspector_details"] is True
