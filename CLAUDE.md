@@ -237,12 +237,16 @@
   which then lists only assets with a UV publish; Advanced shows Model Path (Anim Path hides). A part with nothing
   published reads "none published", not Houdini's "(no entries)".
 - Manager layout A (the user's pick, 2026-11-17, mockups in the module docstring): "+ Add" = Load shot (versions)
-  and Assets... (a drawer: type chips, search, thumbnails, pick several, Add N); a view bar (Solo selected through
-  Houdini's Solo Geometry, view state; Lookdev / Groom Show in Viewport on every loader, one undo step; Filter); the
-  status line adds the shot's outputs the scene lacks (Add it) and the textures the lookdevs pull; the inspector adds
-  Source Shot / Asset, what is new in a newer version (date, Monos work file author from `.monos/authors.json` of the
-  same vNNN, outputs, frames, meshes, size), Open folder / Open in Monos (`monos://open?project&page&e=sha256[:10]`) /
-  Frame; Hand off... writes `<instance>_handoff/<instance>.usd` (the loader's stage flattened, textures copied,
+  and Add assets... (a drawer: type chips, search, thumbnails, pick several, Add N); a view bar (Viewport menu of
+  explicit actions: solo the selected / show all through Houdini's Solo Geometry, view state; show or hide lookdev /
+  groom in the viewport on every loader, one undo step; draw hulls only; what the viewport shows now in words, with
+  Show all while soloed; Filter); the status line adds the shot's outputs the scene lacks (Add it) and the textures
+  the lookdevs pull; the inspector is information only (Monos rules, reviewed 2026-11-17 with the monos-qml-ui skill):
+  source, what is new in a newer version (date, Monos work file author from `.monos/authors.json` of the same vNNN,
+  outputs, frames, meshes, size); its actions are on the row's right-click menu (Update to <part> <version>, Switch to
+  Source Shot / Asset, Open folder, Open in Monos `monos://open?project&page&e=sha256[:10]`, Frame in the viewport).
+  The list is a table: a sticky column header, group bands, zebra rows, column separators (the user's ask). Every
+  button has pressed and selected + hover looks (Monos states). Hand off... writes `<instance>_handoff/<instance>.usd` (the loader's stage flattened, textures copied,
   relative paths) for people without MonoFX.
 - Where new loaders go: a network with the shot layout (`merge_actors`, `merge_cameras`, `merge_environments`,
   skill solaris-shot-stage-layout) gets them wired there (Load shot: geo -> actors, camera -> cameras; Add: characters

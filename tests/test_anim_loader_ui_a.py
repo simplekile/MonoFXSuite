@@ -100,36 +100,63 @@ def test_status_line_offers_the_shot_gap_and_textures(win):
     assert w.weight_label.text() == "textures 2.1 GB"
 
 
-def test_inspector_shows_what_is_new_source_and_links(win):
+def _item(w, ui, path):
+    return next(w.list_view.item(i) for i in range(w.list_view.count())
+                if (r := w.list_view.item(i).data(ui.ROLE_ROW)) and r.node_path == path)
+
+
+def _act(menu, text):
+    return next(a for a in menu.actions() if a.text() == text)
+
+
+def test_inspector_is_information_and_actions_are_on_the_row_menu(win):
     w, ui = win
     _select(w, ui, "/stage/a")
     p = w.subd_panel
     assert not p.news_box.isHidden()
     assert p.news_title.text() == "What is new in lookdev v003"
-    assert p.news_meta.text() == "2026-11-16 10:00 \u00b7 work file by Mai"
-    assert "+ 2 meshes: Fin_L, Fin_R" in p.news_text.text() and "1.0 MB \u2192 2.0 MB" in p.news_text.text()
-    assert p.source_buttons["shot"].isChecked() and not p.source_buttons["asset"].isChecked()
-    p.source_buttons["asset"].click()
+    assert p.news_meta.text() == "2026-11-16 10:00 · work file by Mai"
+    assert "+ 2 meshes: Fin_L, Fin_R" in p.news_text.text() and "1.0 MB → 2.0 MB" in p.news_text.text()
+    assert p.source.text() == "Source Shot · sh025"
+    assert not p.findChildren(ui.QPushButton)  # Monos: the inspector shows, it does not act
+    menu = w.row_menu(_item(w, ui, "/stage/a"))
+    texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert "Update to lookdev v003" in texts and "Switch to Source Asset" in texts
+    _act(menu, "Switch to Source Asset").trigger()
     assert ("source", ("/stage/a",), "asset") in w.backend.calls
-    for key, call in (("folder", "folder"), ("monos", "monos"), ("frame", "frame")):
-        p.link_buttons[key].click()
+    for text, call in (("Open folder", "folder"), ("Open in Monos", "monos"), ("Frame in the viewport", "frame")):
+        _act(w.row_menu(_item(w, ui, "/stage/a")), text).trigger()
         assert w.backend.calls[-1] == (call, "/stage/a")
     _select(w, ui, "/stage/b")
     assert p.news_box.isHidden()  # nothing newer: no box
 
 
-def test_view_bar_solo_and_viewport_parts(win):
+def test_viewport_menu_is_explicit_actions(win):
     w, ui = win
-    assert w.part_buttons["lookdev"].isChecked()
-    w.solo_button.click()
-    assert "Select the loaders" in w.result.text()  # nothing selected
+    w._fill_viewport_menu()
+    texts = [a.text() for a in w.viewport_menu.actions() if not a.isSeparator()]
+    assert texts[:3] == ["Solo the selected loaders", "Hide lookdev in the viewport (every loader)",
+                         "Hide groom in the viewport (every loader)"]
+    assert not w.viewport_menu.actions()[0].isEnabled()  # nothing selected
     _select(w, ui, "/stage/b")
-    w.solo_button.click()
-    assert w.backend.calls[-1] == ("solo", ("/stage/b",)) and w.solo_button.isChecked()
-    w.solo_button.click()
-    assert w.backend.calls[-1] == ("solo", ()) and not w.solo_button.isChecked()
-    w.part_buttons["groom"].click()
-    assert w.backend.calls[-1] == ("viewport", "groom", False) and not w.part_buttons["groom"].isChecked()
+    w._fill_viewport_menu()
+    _act(w.viewport_menu, "Solo the selected loaders").trigger()
+    assert w.backend.calls[-1] == ("solo", ("/stage/b",))
+    assert w.view_state.text() == "Solo · 1 loader" and not w.solo_off.isHidden()
+    w.solo_off.click()
+    assert w.backend.calls[-1] == ("solo", ()) and w.solo_off.isHidden()
+    w._fill_viewport_menu()
+    _act(w.viewport_menu, "Hide groom in the viewport (every loader)").trigger()
+    assert w.backend.calls[-1] == ("viewport", "groom", False)
+    assert w.view_state.text() == "Groom render only"
+
+
+def test_list_rows_alternate_and_groups_are_bands(win):
+    w, ui = win
+    zebra = [w.list_view.item(i).data(ui.ROLE_ZEBRA) for i in range(w.list_view.count())
+             if w.list_view.item(i).data(ui.ROLE_ROW)]
+    assert zebra[:3] == [False, True, False]  # sh025: three rows alternate; each group starts plain
+    assert w.column_header.height() == w.px(30)
 
 
 def test_filter_keeps_matching_rows(win):

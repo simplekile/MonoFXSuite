@@ -319,7 +319,7 @@ def test_project_menu_loads_a_shot_in_an_unsaved_scene(make, tmp_path, monkeypat
     _act(w.shot_menu, "sh020").trigger()
     assert w.versions == ["v003", "v002"]
     acts = [a for a in w.load_menu.actions() if not a.isSeparator()]  # sections and separators are separators
-    assert [a.text() for a in acts] == ["sh020 v003  ·  newest", "sh020 v002", "Assets…"]
+    assert [a.text() for a in acts] == ["Load sh020 v003 · newest", "Load sh020 v002", "Add assets…"]
     acts[1].trigger()
     assert b.calls[-1] == ("load_shot", proj.as_posix(), "sh020", "v002")
     monkeypatch.setattr(ui.QFileDialog, "getExistingDirectory", lambda *a, **k: str(other / "02_shots"))
@@ -341,7 +341,7 @@ def test_no_project_yet_says_so(make):
     w = mk(b)
     assert w.project_button.text() == "Pick a project \u203a" and w.shot_button.isHidden()
     acts = [a for a in w.load_menu.actions() if not a.isSeparator()]
-    assert [a.text() for a in acts] == ["Pick a project first", "Assets…"] and not acts[1].isEnabled()
+    assert [a.text() for a in acts] == ["Pick a project first", "Add assets…"] and not acts[1].isEnabled()
 
 
 def test_unsaved_scene_shot_starts_on_the_loaders_shot(make, tmp_path):
