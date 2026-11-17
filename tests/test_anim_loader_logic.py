@@ -556,7 +556,7 @@ def test_asset_source_model_files_and_steps(tmp_path):
     assert next_step(replace(st, asset=None))[0] == "Pick an asset."
     assert next_step(replace(st, asset="char_Nobody"))[1] == "no asset char_Nobody"
     make(root, ["01_assets/_props/prop_Rock/05_lookdev/"])
-    assert next_step(replace(st, asset="prop_Rock"))[0] == "prop_Rock has no UV publish yet."
+    assert next_step(replace(st, asset="prop_Rock"))[0] == "prop_Rock has no UV or lookdev publish yet."
 
 
 def test_asset_source_keeps_shot_fields_and_lookdev(tmp_path):

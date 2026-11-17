@@ -1,4 +1,11 @@
-"""Mono Anim Loader manager window (PySide6): every loader in the scene, what is behind, one-step updates.
+"""MonoFX Loaders manager window (PySide6): every loader in the scene, what is behind, one-step updates.
+Layout A, picked by the user (2026-11-17, mockups https://claude.ai/artifact/1uy5omTXrVU2LX4ePHZ2bb): one list and an
+Add drawer. "+ Add" holds Load shot (versions) and Assets... (a drawer beside the list: type chips, search, thumbnails,
+pick several, Add N: Source Asset loaders wired into ``assets_merge``). A view bar under the top bar: Solo selected,
+Lookdev / Groom in the viewport, Filter. The status line adds what the shot has that the scene lacks (Add it) and the
+textures the lookdevs pull. The inspector adds Source Shot / Asset, what is new in a newer version, and Folder, Monos,
+Frame. The action bar adds Hand off... (a self-contained package for people without MonoFX).
+Before that:
 
 Layout R-A, picked by the user (2026-11-17, mockups https://claude.ai/artifact/GEiaL6PUnMXhXukHH2isM1, after the
 Monos UI rules: browse first, act second; the inspector is information and shows only for a selection; actions in
@@ -26,8 +33,10 @@ from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QCheckBox,
     QFileDialog,
     QHBoxLayout,
+    QLineEdit,
     QLabel,
     QListView,
     QListWidget,
@@ -216,11 +225,12 @@ COLUMNS = (("anim", "Anim", 72), ("lookdev", "Lookdev", 72), ("groom", "Groom", 
 
 def subd_cell(row: Row) -> tuple[str, str]:
     """(text, colour) of a row's subdivision cell: meshes and viewport polygons, amber over the heavy line."""
+    weight = f"{row.weight / 1e9:.1f} GB" if row.weight >= 1e8 else ""
     if not row.subd:
-        return "\u2013", TEXT_META
+        return (weight or "\u2013"), (TEXT_LABEL if weight else TEXT_META)
     n, polys = row.subd
-    return f"{n} \u00b7 ~{polys / 1e6:.1f} M", (STATUS_COLORS[AM_WARN] if polys > logic.HEAVY_SUBD_POLYGONS
-                                                 else TEXT_LABEL)
+    text = f"{n} \u00b7 ~{polys / 1e6:.1f} M" + (f" \u00b7 {weight}" if weight else "")
+    return text, (STATUS_COLORS[AM_WARN] if polys > logic.HEAVY_SUBD_POLYGONS else TEXT_LABEL)
 
 
 def part_cell(row: Row, part: str) -> tuple[str, str]:
@@ -512,8 +522,8 @@ class AnimLoaderManager(QWidget):
             b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
             self.view_buttons.addButton(b)
             t.addWidget(b)
-        self.load_button = self._button("Load shot \u25be", STYLE_GHOST)
-        self.load_button.setToolTip("A loader for every anim output of a version that has none yet")
+        self.load_button = self._button("+ Add \u25be", STYLE_GHOST)
+        self.load_button.setToolTip("Load a shot (a loader for every anim output that has none yet) or add assets")
         self.load_menu = self._menu_for(self.load_button)
         self.load_button.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         t.addWidget(self.load_button)
@@ -523,6 +533,42 @@ class AnimLoaderManager(QWidget):
         self._nav_layout.setContentsMargins(self.px(10), 0, self.px(16), self.px(6))
         self.nav_row.hide()
         root.addWidget(self.nav_row)
+        root.addWidget(self._line())
+
+        # View bar: what the viewport shows (view state and Show in Viewport), apart from the action bar
+        vbar, vb = self._bar()
+        vbar.setObjectName("viewbar")
+        vb.setContentsMargins(self.px(16), self.px(6), self.px(16), self.px(6))
+        vb.addWidget(self._label("VIEWPORT", FS_SMALL, QFont.Weight.DemiBold, color=TEXT_LABEL))
+        self.solo_button = self._button("Solo selected", STYLE_PILL)
+        self.solo_button.setCheckable(True)
+        self.solo_button.setToolTip("Only the selected loaders in the viewport (Houdini's Solo Geometry; not saved). "
+                                    "Click again to show all.")
+        self.solo_button.clicked.connect(self._run(self.ctl.toggle_solo))
+        self.part_buttons = {}
+        for part in ("lookdev", "groom"):
+            b = self._button(part.title(), STYLE_PILL)
+            b.setCheckable(True)
+            b.setToolTip(f"Show in Viewport: {part} on every loader (off: render only, Karma). One undo step.")
+            b.clicked.connect(self._run(lambda p=part: self.ctl.toggle_viewport_part(p)))
+            self.part_buttons[part] = b
+        for b in (self.solo_button, *self.part_buttons.values()):
+            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            vb.addWidget(b)
+        vb.addStretch(1)
+        self.filter_edit = QLineEdit()
+        self.filter_edit.setObjectName("filter")
+        self.filter_edit.setPlaceholderText("Filter")
+        self.filter_edit.setToolTip("Only loaders whose name or asset holds this text")
+        self.filter_edit.setFixedWidth(self.px(170))
+        self.filter_edit.setStyleSheet(self.css(
+            f"QLineEdit#filter {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};"
+            f" border-radius: 7px; padding: 3px 8px; font-size: {FS_SMALL}px; }}"
+            f"QLineEdit#filter:focus {{ border: 1px solid {ACCENT}; }}"))
+        self.filter_edit.textChanged.connect(lambda _t: self._show_rows())
+        vb.addWidget(self.filter_edit)
+        self.view_bar = vbar
+        root.addWidget(vbar)
         root.addWidget(self._line())
 
         # Status line: what the primary does, how many loaders; the heavy-shot note on the right
@@ -541,8 +587,20 @@ class AnimLoaderManager(QWidget):
         self.hulls_link.setCursor(Qt.CursorShape.PointingHandCursor)
         self.hulls_link.setToolTip("The /stage viewports draw hulls: lighter to draw and less memory")
         self.hulls_link.clicked.connect(self._hulls)
+        self.gap_label = self._label("", FS_META, color=TEXT_LABEL)
+        self.gap_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.gap_link = QPushButton("Add it")
+        self.gap_link.setStyleSheet(self.css(STYLE_LINK))
+        self.gap_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.gap_link.setToolTip("A loader for each output of the shot's newest anim version that the scene lacks")
+        self.gap_link.clicked.connect(self._run(self.ctl.add_missing))
+        self.weight_label = self._label("", FS_SMALL, color=TEXT_LABEL)
+        self.weight_label.setToolTip("Files the lookdevs pull (textures, UDIM tiles), read from the publishes")
         st.addWidget(self.headline)
-        st.addWidget(self.status_meta, 1)
+        st.addWidget(self.status_meta)
+        st.addWidget(self.gap_label, 1)
+        st.addWidget(self.gap_link)
+        st.addWidget(self.weight_label)
         st.addWidget(self.heavy_label)
         st.addWidget(self.hulls_link)
         root.addWidget(status)
@@ -571,6 +629,9 @@ class AnimLoaderManager(QWidget):
         self.subd_panel.setMinimumWidth(1)  # set by resizeEvent: 360 beside the list, free when stacked
         self.subd_panel.hide()  # only while a loader is selected
         self.split.addWidget(self.subd_panel)
+        self.drawer = AddDrawer(self)
+        self.drawer.hide()
+        self.split.addWidget(self.drawer)
         self.split.setStretchFactor(0, 1)
         self.split.setStretchFactor(1, 0)  # the inspector keeps its width; the list takes the rest
         root.addWidget(self.split, 1)
@@ -588,6 +649,10 @@ class AnimLoaderManager(QWidget):
         self._actions_layout = b
         b.addWidget(self.result, 1)  # the result line beside the buttons (above them when narrow)
         b.addStretch(0)  # keeps the buttons right when the result line moves above them
+        self.handoff_button = self._button("Hand off\u2026", STYLE_GHOST)
+        self.handoff_button.setToolTip("A self-contained package of the selected loaders (else every one) for people "
+                                       "without MonoFX: one USD each, textures copied, paths relative")
+        self.handoff_button.clicked.connect(self._handoff)
         self.undo_button = self._button("Undo", STYLE_GHOST)
         self.undo_button.setToolTip("Houdini's undo of the last change")
         self.undo_button.clicked.connect(self._undo)
@@ -603,7 +668,7 @@ class AnimLoaderManager(QWidget):
         self.primary = self._button("", STYLE_PRIMARY)
         self.primary.setToolTip("The one thing worth doing now")
         self.primary.clicked.connect(self._run(self.ctl.primary))
-        for w in (self.undo_button, self.retarget_button, self.upgrade_button, self.primary):
+        for w in (self.handoff_button, self.undo_button, self.retarget_button, self.upgrade_button, self.primary):
             b.addWidget(w)
         root.addWidget(bar)
 
@@ -696,6 +761,9 @@ class AnimLoaderManager(QWidget):
 
     def _show_rows(self) -> None:
         rows = self.ctl.rows()
+        needle = self.filter_edit.text().strip().lower() if hasattr(self, "filter_edit") else ""
+        if needle:
+            rows = [r for r in rows if needle in r.instance.lower() or needle in (r.asset or "").lower()]
         for view in (self.list_view, self.grid_view):
             keep = {i.data(ROLE_ROW).node_path for i in view.selectedItems() if i.data(ROLE_ROW)}
             view.blockSignals(True)
@@ -765,6 +833,16 @@ class AnimLoaderManager(QWidget):
         self.upgrade_button.setVisible(n_old > 0 and (action is None or action[0] != "upgrade"))
         self.retarget_button.setText(self.ctl.retarget_label())
         self.retarget_button.setVisible(bool(self.ctl.retarget_paths()) and (action is None or action[0] != "retarget"))
+        gap = self.ctl.gap_line()
+        self.gap_label.setText(("\u00b7 " + gap) if gap else "")
+        self.gap_link.setVisible(bool(gap))
+        total = self.ctl.weight_total()
+        self.weight_label.setText(f"textures {total / 1e9:.1f} GB" if total >= 1e8 else "")
+        self.solo_button.setChecked(bool(self.ctl.soloed))
+        for part, b in self.part_buttons.items():
+            b.setChecked(self.ctl.viewport_part_on(part))
+        if getattr(self, "_drawer_open", False):  # one primary: the drawer's Add while it is open
+            self.primary.setVisible(False)
         self.result.setText(self.ctl.message)  # results only
 
     def _selection_changed(self, view: QListWidget) -> None:
@@ -775,7 +853,7 @@ class AnimLoaderManager(QWidget):
     def _show_subd(self) -> None:
         sel = self.ctl.selection[-1] if self.ctl.selection else ""
         row = next((r for r in self.ctl.rows() if r.node_path == sel), None)
-        self.subd_panel.setVisible(row is not None)  # the inspector is for a selection (Monos)
+        self.subd_panel.setVisible(row is not None and not getattr(self, "_drawer_open", False))  # for a selection
         self.subd_panel.show_row(row)
 
     def _repaint_views(self) -> None:
@@ -825,6 +903,30 @@ class AnimLoaderManager(QWidget):
             self._show_rows()
             self.refresh()
         return go
+
+    def open_drawer(self) -> None:
+        self.ctl.target_root = self._project
+        self.drawer.open(self._project)
+        self.subd_panel.hide()
+        self.drawer.show()
+        self._drawer_open = True
+        self._update_bar()
+
+    def close_drawer(self) -> None:
+        self.drawer.hide()
+        self._drawer_open = False
+        self._show_subd()
+        self._update_bar()
+
+    def add_picked(self, names: list[str]) -> None:
+        self.ctl.target_root = self._project
+        self._run(lambda: self.ctl.add_assets(names))()
+        self.close_drawer()
+
+    def _handoff(self) -> None:
+        out = QFileDialog.getExistingDirectory(self, "Hand off to folder", str(Path.home()))
+        if out:
+            self._run(lambda: self.ctl.handoff(out))()
 
     def _hulls(self) -> None:
         self.ctl.draw_hulls()
@@ -906,6 +1008,7 @@ class AnimLoaderManager(QWidget):
                 or (loaded[0] if loaded else "") or (self.shots[0] if self.shots else ""))
         self.ctl.scene_shot = guess[1]
         self.ctl.target_shot = shot
+        self.ctl.target_root = root
         self.shot_menu.clear()
         for name in self.shots:
             act = self.shot_menu.addAction(name)
@@ -921,11 +1024,17 @@ class AnimLoaderManager(QWidget):
         self.versions = list(reversed(logic.list_versions(logic.anim_publish_dir(Path(root), shot)))) \
             if root and shot else []
         self.load_menu.clear()
+        self.load_menu.addSection(f"Load shot {shot}" if shot else "Load shot")
         if not self.versions:
             self.load_menu.addAction(f"No anim publish in {shot}" if shot else "Pick a project first").setEnabled(False)
         for i, version in enumerate(self.versions):
             act = self.load_menu.addAction(f"{shot} {version}" + ("  \u00b7  newest" if i == 0 else ""))
             act.triggered.connect(lambda _=False, v=version: self.load_version(v))
+        self.load_menu.addSeparator()
+        assets = self.load_menu.addAction("Assets\u2026")
+        assets.setToolTip("Pick assets to load on Source Asset (newest model, groom, lookdev)")
+        assets.setEnabled(bool(root))
+        assets.triggered.connect(self.open_drawer)
 
     def pick_project(self, path: str) -> None:
         """A project from the menu, or BROWSE: Qt's folder picker; a folder anywhere inside a project finds its
@@ -1141,6 +1250,56 @@ class InspectorPanel(QWidget):
         self.meta = owner._label("", FS_SMALL, color=TEXT_LABEL)
         self.meta.setWordWrap(True)
         lay.addWidget(self.meta)
+        lay.addSpacing(owner.px(6))
+        # Source Shot / Asset for the selection (each loader keeps the other side's settings)
+        src_row = QHBoxLayout()
+        src_row.setSpacing(owner.px(6))
+        self.source_buttons = {}
+        for key, text in (("shot", "Shot"), ("asset", "Asset")):
+            b = owner._button(text, STYLE_PILL)
+            b.setCheckable(True)
+            b.setToolTip(f"Source {text} for the selected loaders (the other source's settings stay on the node)")
+            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            b.clicked.connect(lambda _=False, k=key: owner._run(lambda: owner.ctl.set_source(k))())
+            self.source_buttons[key] = b
+            src_row.addWidget(b)
+        src_row.addStretch(1)
+        lay.addLayout(src_row)
+        # What a newer version brings (date, who saved its work file, what changed), with its Update
+        self.news_box = QWidget()
+        self.news_box.setObjectName("newsBox")
+        self.news_box.setStyleSheet(owner.css(f"QWidget#newsBox {{ background: {BG_RAISED}; border: 1px solid {LINE};"
+                                              f" border-radius: 10px; }}"))
+        nl = QVBoxLayout(self.news_box)
+        nl.setContentsMargins(owner.px(12), owner.px(10), owner.px(12), owner.px(10))
+        nl.setSpacing(owner.px(3))
+        self.news_title = owner._label("", FS_META, QFont.Weight.DemiBold)
+        self.news_text = owner._label("", FS_SMALL, color=TEXT_PRIMARY)
+        self.news_text.setWordWrap(True)
+        self.news_meta = owner._label("", FS_SMALL, color=TEXT_LABEL)
+        self.news_meta.setWordWrap(True)
+        self.news_update = QPushButton("Update")
+        self.news_update.setStyleSheet(owner.css(STYLE_LINK))
+        self.news_update.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.news_update.clicked.connect(lambda: owner._run(owner.ctl.update_selected)())
+        for w in (self.news_title, self.news_meta, self.news_text, self.news_update):
+            nl.addWidget(w)
+        lay.addWidget(self.news_box)
+        links = QHBoxLayout()
+        links.setSpacing(owner.px(14))
+        self.link_buttons = {}
+        for key, text, tip in (("folder", "Open folder", "The publish folder in Explorer"),
+                               ("monos", "Open in Monos", "Monos on this asset or shot"),
+                               ("frame", "Frame", "Select the instance in the Scene Viewer and frame it")):
+            b = QPushButton(text)
+            b.setStyleSheet(owner.css(STYLE_LINK))
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+            b.setToolTip(tip)
+            b.clicked.connect(lambda _=False, k=key: self._link(k))
+            self.link_buttons[key] = b
+            links.addWidget(b)
+        links.addStretch(1)
+        lay.addLayout(links)
         lay.addSpacing(owner.px(8))
         self.load = owner._label("", FS_SMALL, QFont.Weight.DemiBold, color=TEXT_LABEL)
         self.load.setWordWrap(True)
@@ -1190,6 +1349,24 @@ class InspectorPanel(QWidget):
             bits += [f"{PART_LABEL[p].lower()} {row.versions[p]}" for p in ALL_PARTS if row.versions.get(p)]
         self.meta.setText(" \u00b7 ".join(bits))
         self.asset = row.asset or ""
+        self.row_path = row.node_path
+        for key, b in self.source_buttons.items():
+            b.setChecked((key == "asset") == row.asset_source)
+            b.setVisible(not row.legacy and row.kind == "geo")
+        news = self.owner.ctl.news(row.node_path) if not row.legacy else []
+        self.news_box.setVisible(bool(news))
+        if news:
+            self.news_title.setText(" \u00b7 ".join(f"What is new in {w.part} {w.new}" for w in news[:1])
+                                    + (f" (+{len(news) - 1} more)" if len(news) > 1 else ""))
+            w = news[0]
+            self.news_meta.setText(" \u00b7 ".join(x for x in (w.date, f"work file by {w.author}" if w.author else "")
+                                                    if x))
+            lines = [line.replace(" -> ", " \u2192 ") for x in news for line in x.lines[:4]]
+            others = [f"{x.part} {x.old} \u2192 {x.new}" for x in news[1:]]
+            self.news_text.setText("\n".join(lines + others) or f"{w.part} {w.old} \u2192 {w.new}")
+            self.news_update.setText(f"Update to {w.new}" if len(news) == 1 else f"Update {len(news)} parts")
+        for b in self.link_buttons.values():
+            b.setVisible(not row.legacy)
         detail = self.owner.ctl.subd_detail(row.node_path)
         self.path = row.node_path if detail and detail["plan"] else ""
         self.tree.setVisible(bool(self.path))
@@ -1227,6 +1404,15 @@ class InspectorPanel(QWidget):
                 g.addChild(item)
         self.tree.setColumnHidden(4, not any_dicing)
         self.tree.expandAll()
+
+    def _link(self, key: str) -> None:
+        path = getattr(self, "row_path", "")
+        if not path:
+            return
+        fn = {"folder": self.owner.ctl.open_folder, "monos": self.owner.ctl.open_monos,
+              "frame": self.owner.ctl.frame}[key]
+        fn(path)
+        self.owner.result.setText(self.owner.ctl.message)
 
     @staticmethod
     def _common(values: list[str]) -> str:
@@ -1306,3 +1492,158 @@ class InspectorPanel(QWidget):
         path = self.path
         if path:
             self.owner._run(lambda: self.owner.ctl.subd_to_asset(path))()
+
+
+# --- Add drawer (layout A, the user's pick, 2026-11-17) ------------------------------------------------------
+
+class AddDrawer(QWidget):
+    """Assets of the project beside the list: type chips with counts, search, "with a model only", thumbnails;
+    pick several (click toggles), Add N makes a MonoFX Loader on Source Asset for each, wired into assets_merge in
+    the manager's network. Its Add is the window's one primary while it is open."""
+
+    THUMB = (132, 88)
+
+    def __init__(self, owner) -> None:
+        super().__init__()
+        self.owner = owner
+        self.root = ""
+        self.group = ""
+        self.setObjectName("addDrawer")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(owner.px(14), owner.px(12), owner.px(14), owner.px(10))
+        lay.setSpacing(owner.px(8))
+        head = QHBoxLayout()
+        head.addWidget(owner._label("Add assets", 17, QFont.Weight.DemiBold))
+        head.addStretch(1)
+        close = QPushButton("Close")
+        close.setStyleSheet(owner.css(STYLE_LINK))
+        close.setCursor(Qt.CursorShape.PointingHandCursor)
+        close.setToolTip("Back to the selected loader (Esc)")
+        close.clicked.connect(owner.close_drawer)
+        head.addWidget(close)
+        lay.addLayout(head)
+        self.search = QLineEdit()
+        self.search.setObjectName("assetSearch")
+        self.search.setPlaceholderText("Search assets")
+        self.search.setStyleSheet(owner.css(
+            f"QLineEdit#assetSearch {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};"
+            f" border-radius: 8px; padding: 5px 9px; font-size: {FS_META}px; }}"
+            f"QLineEdit#assetSearch:focus {{ border: 1px solid {ACCENT}; }}"))
+        self.search.textChanged.connect(lambda _t: self.fill())
+        lay.addWidget(self.search)
+        self.chips_box = QWidget()
+        self.chips = QHBoxLayout(self.chips_box)
+        self.chips.setContentsMargins(0, 0, 0, 0)
+        self.chips.setSpacing(owner.px(6))
+        lay.addWidget(self.chips_box)
+        self.model_only = QCheckBox("Published only")
+        self.model_only.setChecked(True)
+        self.model_only.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {owner.px(FS_SMALL)}px;")
+        self.model_only.setToolTip("Only assets with a UV or lookdev publish (a prop's lookdev is the whole asset)")
+        self.model_only.toggled.connect(lambda _on: (self.fill_groups(), self.fill()))
+        lay.addWidget(self.model_only)
+        self.list = QListWidget()
+        self.list.setObjectName("assetGrid")
+        self.list.setViewMode(QListView.ViewMode.IconMode)
+        self.list.setResizeMode(QListView.ResizeMode.Adjust)
+        self.list.setMovement(QListView.Movement.Static)
+        self.list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self.list.setIconSize(QSize(owner.px(self.THUMB[0]), owner.px(self.THUMB[1])))
+        self.list.setGridSize(QSize(owner.px(self.THUMB[0] + 24), owner.px(self.THUMB[1] + 58)))
+        self.list.setWordWrap(True)
+        self.list.setSpacing(owner.px(4))
+        self.list.setStyleSheet(owner.css(
+            f"QListWidget#assetGrid {{ background: {BG_APP}; border: none; outline: none; color: {TEXT_PRIMARY};"
+            f" font-size: {FS_SMALL}px; }}"
+            f"QListWidget#assetGrid::item {{ border: 1px solid {LINE}; border-radius: 8px; padding: 4px; }}"
+            f"QListWidget#assetGrid::item:hover {{ background: {BG_HOVER}; }}"
+            f"QListWidget#assetGrid::item:selected {{ background: {SELECTED}; border: 1px solid {ACCENT_LINE};"
+            f" color: {TEXT_PRIMARY}; }}"))
+        self.list.itemSelectionChanged.connect(self._picked_changed)
+        lay.addWidget(self.list, 1)
+        foot = QHBoxLayout()
+        self.count = owner._label("", FS_META, color=TEXT_LABEL)
+        foot.addWidget(self.count, 1)
+        self.add_button = owner._button("Add", STYLE_PRIMARY)
+        self.add_button.setToolTip("A MonoFX Loader on Source Asset for each picked asset (newest model, groom, "
+                                   "lookdev), wired into assets_merge. One undo step.")
+        self.add_button.clicked.connect(lambda: owner.add_picked(self.picked()))
+        foot.addWidget(self.add_button)
+        lay.addLayout(foot)
+
+    def sizeHint(self) -> QSize:
+        return QSize(self.owner.px(560), self.owner.px(500))
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() == Qt.Key.Key_Escape:  # Esc leaves the narrowest state
+            self.owner.close_drawer()
+            return
+        super().keyPressEvent(event)
+
+    def open(self, root: str) -> None:
+        self.root = root
+        self.fill_groups()
+        self.fill()
+        self.search.setFocus()
+
+    def fill_groups(self) -> None:
+        while self.chips.count():
+            w = self.chips.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        items = logic.asset_catalog(self.root, "", "", self.model_only.isChecked())
+        counts: dict[str, int] = {}
+        for it in items:
+            counts[it.group] = counts.get(it.group, 0) + 1
+        for group, label in [("", "All")] + [(g, logic.group_label(g)) for g in logic.asset_groups(Path(self.root))
+                                              if g in counts]:
+            n = len(items) if not group else counts.get(group, 0)
+            b = self.owner._button(f"{label} {n}", STYLE_PILL)
+            b.setCheckable(True)
+            b.setChecked(group == self.group)
+            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
+            b.clicked.connect(lambda _=False, g=group: self._pick_group(g))
+            self.chips.addWidget(b)
+        self.chips.addStretch(1)
+
+    def _pick_group(self, group: str) -> None:
+        self.group = group
+        self.fill_groups()
+        self.fill()
+
+    def fill(self) -> None:
+        from PySide6.QtGui import QIcon, QPixmap
+
+        keep = set(self.picked())
+        self.list.clear()
+        in_scene = {r.asset for r in self.owner.ctl.rows() if r.asset_source}
+        w, h = self.owner.px(self.THUMB[0]), self.owner.px(self.THUMB[1])
+        for it in logic.asset_catalog(self.root, self.group, self.search.text(), self.model_only.isChecked()):
+            sub = "in the scene · adds another" if it.name in in_scene else (
+                f"UV {it.model or '\u2013'} \u00b7 lookdev {it.lookdev or '\u2013'}")
+            item = QListWidgetItem(f"{it.name}\n{sub}")
+            pix = QPixmap(it.thumb) if it.thumb else QPixmap()
+            if pix.isNull():
+                pix = QPixmap(w, h)
+                pix.fill(QColor(BG_HOVER))
+            item.setIcon(QIcon(pix.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatio,
+                                          Qt.TransformationMode.SmoothTransformation)))
+            item.setData(ROLE_ROW, it.name)
+            item.setToolTip(f"{it.name} \u00b7 {logic.group_label(it.group)}")
+            self.list.addItem(item)
+            if it.name in keep:
+                item.setSelected(True)
+        if self.list.count() == 0:
+            self.count.setText("No assets match." if self.root else "Pick a project first.")
+        self._picked_changed()
+
+    def picked(self) -> list[str]:
+        return [i.data(ROLE_ROW) for i in self.list.selectedItems()]
+
+    def _picked_changed(self) -> None:
+        n = len(self.picked())
+        self.add_button.setText(f"Add {n}" if n else "Add")
+        self.add_button.setEnabled(n > 0)
+        if self.list.count():
+            self.count.setText(f"{n} picked \u00b7 Source Asset, newest versions" if n
+                               else f"{self.list.count()} assets \u00b7 click to pick")

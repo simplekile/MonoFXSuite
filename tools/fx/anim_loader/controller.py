@@ -42,6 +42,7 @@ class Row:
     versions: dict[str, str] = field(default_factory=dict)
     subd: tuple[int, int] | None = None  # (subdivided meshes, estimated viewport polygons)
     asset_source: bool = False  # Source Asset: the asset's model (no shot); Load shot and Retarget leave it
+    weight: int = 0  # bytes of the files its lookdev pulls (textures), 0 when unknown
 
     @property
     def behind(self) -> bool:
@@ -82,6 +83,9 @@ class Controller:
         self._thumbs: dict[str, str] | None = None
         self._subd: dict[str, dict] = {}
         self.target_shot = ""  # the shot in the window's Load shot box
+        self.target_root = ""  # the project of that box
+        self.soloed: list[str] = []  # view state: loaders soloed in the viewport (never saved)
+        self._extras: dict = {}
         self.scene_shot = ""   # the shot of the open scene ($HIP), "" when it is no shot's
 
     # --- reading ---------------------------------------------------------------------------------
@@ -92,7 +96,7 @@ class Controller:
         return self._token, list(self._infos)
 
     def finish_scan(self, token: int, status: dict[str, Status], thumbs: dict[str, str] | None = None,
-                    subd: dict[str, dict] | None = None) -> bool:
+                    subd: dict[str, dict] | None = None, extras: dict | None = None) -> bool:
         """Takes a scan's result (status and thumbnail paths, both read off the main thread) unless a newer scan
         started since; True when taken."""
         if token != self._token:
@@ -100,13 +104,17 @@ class Controller:
         self._status = status
         self._thumbs = thumbs
         self._subd = subd or {}
+        self._extras = extras or {}
         self._rows = self._make_rows()
         return True
 
     def scan_job(self, infos: list[LoaderInfo]) -> tuple[dict[str, Status], dict[str, str]]:
         """Everything a scan reads from disk; safe on a worker thread."""
         subd = self.backend.subd(infos) if hasattr(self.backend, "subd") else {}
-        return self.backend.scan(infos), {i.path: self.backend.thumbnail(i.state) for i in infos if i.state}, subd
+        extras = (self.backend.extras(infos, self.target_root, self.target_shot)
+                  if hasattr(self.backend, "extras") else {})
+        return (self.backend.scan(infos), {i.path: self.backend.thumbnail(i.state) for i in infos if i.state}, subd,
+                extras)
 
     def refresh(self) -> None:
         """Reads and scans now, on the calling thread (tests; the window scans on its worker)."""
@@ -125,7 +133,8 @@ class Controller:
             rows.append(Row(info.path, "" if asset_source else st.shot, st.instance_name, st.kind, st.asset,
                             self._status.get(info.path, {}), info.legacy,
                             (self._thumbs or {}).get(info.path, ""), {"anim": logic.main_version(st), **st.versions},
-                            self._subd_summary(info.path), asset_source))
+                            self._subd_summary(info.path), asset_source,
+                            self._extras.get("weight", {}).get(info.path, 0)))
         return sorted(rows, key=lambda r: (r.legacy, r.shot, r.kind == "cam", r.instance.lower()))
 
     def rows(self) -> list[Row]:
@@ -268,6 +277,92 @@ class Controller:
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)
         self.message = f"{path.rsplit('/', 1)[-1]} is now {asset}."
+
+    # --- manager A: add, view, links, what is new, hand off (the user's pick, 2026-11-17) ---------------------
+    def news(self, path: str) -> list:
+        """What is new for a loader (logic.WhatsNew per behind part), as the last scan read it."""
+        return list(self._extras.get("news", {}).get(path, []))
+
+    def gaps(self) -> tuple[str, list]:
+        """(newest anim version, outputs no loader stands for) of the shot in the box."""
+        return self._extras.get("gaps", ("", []))
+
+    def gap_line(self) -> str:
+        version, missing = self.gaps()
+        if not missing:
+            return ""
+        names = ", ".join(o.file.rsplit(".", 1)[0].removeprefix("geo_").removeprefix("cam_") for o in missing[:3])
+        more = f" +{len(missing) - 3}" if len(missing) > 3 else ""
+        return (f"{self.target_shot} {version} has {_plural(len(missing), 'output')} not in the scene: "
+                f"{names}{more}")
+
+    def add_missing(self) -> None:
+        version, missing = self.gaps()
+        if not missing:
+            self.message = "The scene has every output of the shot."
+            return
+        created, kept = self.backend.load_shot(self.target_root, self.target_shot, version)
+        self.message = f"Added {_plural(len(created), 'loader')} from {self.target_shot} {version}."
+
+    def add_assets(self, names: list[str]) -> None:
+        if not names:
+            self.message = "Pick the assets to add."
+            return
+        created, kept = self.backend.add_assets(self.target_root, names)
+        bits = [f"Added {_plural(len(created), 'asset')}"]
+        if kept:
+            bits.append(f"{', '.join(kept)} already in the network")
+        self.message = "; ".join(bits) + "."
+
+    def weight_total(self) -> int:
+        return sum(r.weight for r in self._rows)
+
+    def toggle_solo(self) -> None:
+        """Solo the selected loaders in the viewport, or clear the solo (view state, not undoable)."""
+        if self.soloed:
+            self.backend.solo([])
+            self.soloed = []
+            self.message = "Solo off."
+            return
+        if not self.selection:
+            self.message = "Select the loaders to solo."
+            return
+        self.backend.solo(self.selection)
+        self.soloed = list(self.selection)
+        self.message = f"Solo: {_plural(len(self.soloed), 'loader')} in the viewport."
+
+    def viewport_part_on(self, part: str) -> bool:
+        fn = getattr(self.backend, "viewport_part_on", None)
+        return bool(fn(part)) if fn else True
+
+    def toggle_viewport_part(self, part: str) -> None:
+        on = not self.viewport_part_on(part)
+        n = self.backend.set_viewport_part(part, on)
+        self.message = f"{part.title()} {'shown' if on else 'hidden'} in the viewport on {_plural(n, 'loader')}."
+
+    def set_source(self, source: str, paths: list[str] | None = None) -> None:
+        paths = paths if paths is not None else list(self.selection)
+        n = self.backend.set_source(paths, source)
+        self.message = (f"{_plural(n, 'loader')} on Source {source.title()}." if n
+                        else f"Already on Source {source.title()}.")
+
+    def frame(self, path: str) -> None:
+        self.message = "" if self.backend.frame(path) else "No Scene Viewer to frame it in."
+
+    def open_folder(self, path: str) -> None:
+        self.message = "" if self.backend.open_folder(path) else "No folder for this loader."
+
+    def open_monos(self, path: str) -> None:
+        self.message = "" if self.backend.open_monos(path) else "Monos could not open this loader's asset or shot."
+
+    def handoff(self, out_dir: str, paths: list[str] | None = None) -> None:
+        paths = paths if paths is not None else (list(self.selection) or
+                                                 [r.node_path for r in self._rows if not r.legacy and r.kind == "geo"])
+        if not out_dir or not paths:
+            self.message = "Nothing to hand off."
+            return
+        lines = self.backend.handoff(paths, out_dir)
+        self.message = "Handed off " + "; ".join(lines) if lines else "Nothing was written."
 
     # --- subdivision ----------------------------------------------------------------------------------
     def _subd_summary(self, path: str) -> tuple[int, int] | None:
