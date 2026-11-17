@@ -332,7 +332,7 @@ class _ListDelegate(QStyledItemDelegate):
         if row.legacy:
             first = cells[0][0]
             self._text(p, QRect(first.left(), first.top(), rect.right() - pad - first.left(), first.height()),
-                       "Upgrade to 2.2 keeps its settings", STATUS_COLORS[AM_WARN], FS_SMALL)
+                       "Upgrade to MonoFX Loader keeps its settings", STATUS_COLORS[AM_WARN], FS_SMALL)
         else:
             for r, part in cells:
                 if row.kind == "cam" and part != "anim":
@@ -561,6 +561,7 @@ class AnimLoaderManager(QWidget):
         self.filter_edit.setPlaceholderText("Filter")
         self.filter_edit.setToolTip("Only loaders whose name or asset holds this text")
         self.filter_edit.setFixedWidth(self.px(170))
+        self.filter_edit.setMinimumHeight(self.px(24))
         self.filter_edit.setStyleSheet(self.css(
             f"QLineEdit#filter {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE};"
             f" border-radius: 7px; padding: 3px 8px; font-size: {FS_SMALL}px; }}"
@@ -594,6 +595,7 @@ class AnimLoaderManager(QWidget):
         self.gap_link.setCursor(Qt.CursorShape.PointingHandCursor)
         self.gap_link.setToolTip("A loader for each output of the shot's newest anim version that the scene lacks")
         self.gap_link.clicked.connect(self._run(self.ctl.add_missing))
+        self.gap_link.setMinimumHeight(self.px(24))  # a 24 px target (WCAG 2.5.8)
         self.weight_label = self._label("", FS_SMALL, color=TEXT_LABEL)
         self.weight_label.setToolTip("Files the lookdevs pull (textures, UDIM tiles), read from the publishes")
         st.addWidget(self.headline)
@@ -877,7 +879,8 @@ class AnimLoaderManager(QWidget):
         elif not narrow and self.nav_box.parentWidget() is self.nav_row:
             self._top_layout.insertWidget(1, self.nav_box, 1)
         self.nav_row.setVisible(narrow)
-        for lab in (self.headline, self.heavy_label):  # wrap when docked narrow, never widen the window
+        self.weight_label.setVisible(not narrow and bool(self.weight_label.text()))  # the tooltip-level detail
+        for lab in (self.headline, self.heavy_label, self.gap_label):  # wrap when docked narrow, never widen
             lab.setWordWrap(narrow)
         if narrow and self.result.parentWidget() is not self.result_row:
             self._result_layout.addWidget(self.result, 1)
@@ -890,7 +893,11 @@ class AnimLoaderManager(QWidget):
         self.list_view.doItemsLayout()  # list rows change height when narrow
         # the inspector sits beside the list, or under it when docked narrow
         narrow_split = self.width() < self.px(760)
+        was_vertical = self.split.orientation() == Qt.Orientation.Vertical
         self.split.setOrientation(Qt.Orientation.Vertical if narrow_split else Qt.Orientation.Horizontal)
+        if narrow_split and not was_vertical:  # stacked: the list keeps the larger half
+            h = max(self.split.height(), self.px(400))
+            self.split.setSizes([int(h * 0.55), int(h * 0.45), int(h * 0.45)])
         self.subd_panel.setMinimumWidth(1 if narrow_split else self.px(360))
 
     # --- commands --------------------------------------------------------------------------------
@@ -1282,6 +1289,8 @@ class InspectorPanel(QWidget):
         self.news_update.setStyleSheet(owner.css(STYLE_LINK))
         self.news_update.setCursor(Qt.CursorShape.PointingHandCursor)
         self.news_update.clicked.connect(lambda: owner._run(owner.ctl.update_selected)())
+        self.news_update.setMinimumHeight(owner.px(24))
+        self.news_update.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         for w in (self.news_title, self.news_meta, self.news_text, self.news_update):
             nl.addWidget(w)
         lay.addWidget(self.news_box)
@@ -1296,6 +1305,7 @@ class InspectorPanel(QWidget):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setToolTip(tip)
             b.clicked.connect(lambda _=False, k=key: self._link(k))
+            b.setMinimumHeight(owner.px(24))
             self.link_buttons[key] = b
             links.addWidget(b)
         links.addStretch(1)
@@ -1326,10 +1336,11 @@ class InspectorPanel(QWidget):
         head.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # the mesh name gets the room
         for col in range(1, 5):
             head.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
-        lay.addWidget(self.tree, 1)
+        lay.addWidget(self.tree, 100)  # the meshes take the room; without them the stretch below does
         self.hint = owner._label("Right-click meshes to set their scheme or dicing.", FS_SMALL, color=TEXT_LABEL)
         self.hint.setWordWrap(True)
         lay.addWidget(self.hint)
+        lay.addStretch(1)
 
     def sizeHint(self) -> QSize:
         return QSize(self.owner.px(360), self.owner.px(400))
@@ -1501,7 +1512,7 @@ class AddDrawer(QWidget):
     pick several (click toggles), Add N makes a MonoFX Loader on Source Asset for each, wired into assets_merge in
     the manager's network. Its Add is the window's one primary while it is open."""
 
-    THUMB = (132, 88)
+    THUMB = (118, 80)
 
     def __init__(self, owner) -> None:
         super().__init__()
@@ -1520,6 +1531,7 @@ class AddDrawer(QWidget):
         close.setCursor(Qt.CursorShape.PointingHandCursor)
         close.setToolTip("Back to the selected loader (Esc)")
         close.clicked.connect(owner.close_drawer)
+        close.setMinimumHeight(owner.px(24))
         head.addWidget(close)
         lay.addLayout(head)
         self.search = QLineEdit()
@@ -1541,6 +1553,7 @@ class AddDrawer(QWidget):
         self.model_only.setStyleSheet(f"color: {TEXT_LABEL}; font-size: {owner.px(FS_SMALL)}px;")
         self.model_only.setToolTip("Only assets with a UV or lookdev publish (a prop's lookdev is the whole asset)")
         self.model_only.toggled.connect(lambda _on: (self.fill_groups(), self.fill()))
+        self.model_only.setMinimumHeight(owner.px(24))
         lay.addWidget(self.model_only)
         self.list = QListWidget()
         self.list.setObjectName("assetGrid")
@@ -1620,7 +1633,7 @@ class AddDrawer(QWidget):
         w, h = self.owner.px(self.THUMB[0]), self.owner.px(self.THUMB[1])
         for it in logic.asset_catalog(self.root, self.group, self.search.text(), self.model_only.isChecked()):
             sub = "in the scene · adds another" if it.name in in_scene else (
-                f"UV {it.model or '\u2013'} \u00b7 lookdev {it.lookdev or '\u2013'}")
+                f"UV {it.model or '\u2013'} \u00b7 LD {it.lookdev or '\u2013'}")
             item = QListWidgetItem(f"{it.name}\n{sub}")
             pix = QPixmap(it.thumb) if it.thumb else QPixmap()
             if pix.isNull():
