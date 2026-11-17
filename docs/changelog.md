@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Houdini
+- **MonoFX Loaders** manager: the meshes' right-click menu says what each item does ("Use the publish's subdivision", "Turn subdivision off", "Subdivide (Catmull-Clark)", "Remove the shot's overrides", "Copy these overrides to every char_Helen"), every item has an icon and they line up; dicing is picked from a submenu of steps.
 - **MonoFX Loaders** manager: the inspector's meshes table runs the full width with no strips beside it, its name column fills the room, its thin scroll bar sits inside it, and its rows are dark like the main list (Houdini painted them grey). It shows every level of the hierarchy, as the scene graph does (Geo, Base_grp, Body_grp, Geo_Body), each group with its meshes' faces summed, and Houdini's own Xform / Mesh icon before each name.
 - **MonoFX Loaders** manager: the inspector of a camera shows its lens (focal length in mm, aperture and ratio, clipping in m, f-stop and focus distance or "Depth of field: off"), read from the stage at the current frame; a shot's loader shows its frame range and fps from the anim publish. An asset's loader shows neither.
 - **MonoFX Loaders** manager: **Bake to plain nodes** (hand-off menu, right-click) turns loaders into plain Houdini subnets that open without MonoFX, for someone with Houdini only; the scene stays the same. **Upgrade** turns them back into MonoFX Loaders.

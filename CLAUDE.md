@@ -295,6 +295,11 @@
   group reads as one by its quieter text and chevron, a selected row by the selection colour.
   Each row starts with its prim type's icon from Houdini's Scene Graph Tree (`SCENEGRAPH_primtype_xform` for a group,
   `_mesh` for a mesh; `_prim_icon`, Lucide outside Houdini); groups are drawn as Xforms, their real type is not read.
+  The meshes' right-click menu (the user's "cryptic", 2026-11-17): verbs (Use the publish's subdivision, Turn
+  subdivision off, Subdivide (Catmull-Clark), Remove the shot's overrides, Copy these overrides to every <asset>), an
+  icon on every row and no checkable actions (their check column pushed rows in): the current choice shows a check icon.
+  Dicing is a submenu of steps (publish's, 0.25 to 4), not a field. A submenu is made as `QMenu(title, menu)`:
+  `addMenu(icon, title)`'s submenu was deleted with its Python wrapper.
 - Inspector of a shot loader (the user's ask, 2026-11-17): Frames and Fps from the anim publish's `publish_meta.json`
   (`Controller.timeline`; an asset loader has none). A camera adds its lens from the loader's stage at the current
   frame (`adapter.camera_info`): USD lens values are tenths of a scene unit (sh025, 1 m a unit: 35 mm is 0.35), so

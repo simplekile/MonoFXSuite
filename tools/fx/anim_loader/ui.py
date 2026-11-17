@@ -2053,43 +2053,77 @@ class InspectorPanel(QWidget):
         rows = selected if item in selected else [item]
         return [i.data(0, ROLE_PATTERN) for i in rows]
 
+    # the meshes' right-click menu: verbs that say what happens, an icon on every row (the user's ask, 2026-11-17:
+    # "Publish / Off / Catmull-Clark" and a Dicing field were cryptic and did not line up)
+    MENU_PUBLISH = "Use the publish's subdivision"
+    MENU_OFF = "Turn subdivision off"
+    MENU_CATMULL = "Subdivide (Catmull-Clark)"
+    MENU_DICING = "Dicing quality (Karma)"
+    MENU_DICING_PUBLISH = "Use the publish's dicing"
+    MENU_CLEAR = "Remove the shot's overrides"
+    DICING_STEPS = ("0.25", "0.5", "1", "2", "4")
+
+    @staticmethod
+    def _source_of(item) -> str:
+        """Where the row's scheme comes from; a mesh left blank shares its group's."""
+        while item is not None and not item.text(2):
+            item = item.parent()
+        return item.text(2) if item is not None else ""
+
     def menu_for(self, item) -> QMenu:
-        from PySide6.QtWidgets import QLineEdit, QWidgetAction
+        from PySide6.QtGui import QIcon
 
         pats = self.patterns_for(item)
         menu = QMenu(self)
         menu.setStyleSheet(self.owner.css(STYLE_MENU_SQ))
-        current = item.text(3)
-        head = menu.addAction(f"{len(pats)} item{'s' if len(pats) != 1 else ''}" if len(pats) > 1 else item.text(0))
+        size = self.owner.px(16)
+
+        def icon(name, color=TEXT_LABEL):
+            return _crisp_icon(name, size, color)
+
+        if len(pats) > 1:
+            head = menu.addAction(icon("layers"), f"{len(pats)} rows selected")
+        else:
+            n = sum(1 for _ in self._leaves(item))
+            kind = item.data(0, ROLE_PRIM) or "mesh"
+            head = menu.addAction(QIcon(_prim_icon(kind, size)),
+                                  item.text(0) + (f", {n} mesh{'es' if n != 1 else ''}" if kind != "mesh" else ""))
         head.setEnabled(False)
         menu.addSeparator()
-        for word, scheme in WORD_SCHEME.items():
-            act = menu.addAction(word)
-            act.setCheckable(True)
-            act.setChecked(word == current)
+        overridden = self._source_of(item) == "shot"
+        current = item.text(3) if overridden else ""
+        for label, scheme, name, on in ((self.MENU_PUBLISH, "publish", "file-box", not overridden),
+                                        (self.MENU_OFF, "none", "x", current == SCHEME_WORD["none"]),
+                                        (self.MENU_CATMULL, "catmullClark", "sparkles",
+                                         current == SCHEME_WORD["catmullClark"])):
+            act = menu.addAction(icon("check", ACCENT) if on else icon(name), label)
             act.triggered.connect(lambda _=False, sc=scheme: self.set_scheme(pats, sc))
+        dicing = QMenu(self.MENU_DICING, menu)  # parented: addMenu's own submenu was deleted with its wrapper
+        dicing.setIcon(icon("sliders"))
+        menu.addMenu(dicing)
+        menu._keep = dicing  # noqa: SLF001 (the Python wrapper lives as long as the menu)
+        dicing.setStyleSheet(self.owner.css(STYLE_MENU_SQ))
+        dicing.setToolTipsVisible(True)
+        now = item.text(4)
+        for value in ("",) + self.DICING_STEPS:
+            on = (now == value) if value else not now
+            act = dicing.addAction(icon("check", ACCENT) if on else QIcon(),
+                                   value or self.MENU_DICING_PUBLISH)
+            act.setToolTip("How finely Karma dices the subdivided surface at render time (1 is Karma's default)")
+            act.triggered.connect(lambda _=False, v=value: self.set_dicing(pats, v))
         menu.addSeparator()
-        box = QWidget()
-        row = QHBoxLayout(box)
-        row.setContentsMargins(self.owner.px(12), self.owner.px(4), self.owner.px(12), self.owner.px(4))
-        row.addWidget(self.owner._label("Dicing", FS_SMALL, color=TEXT_LABEL))
-        edit = QLineEdit(item.text(4))
-        edit.setPlaceholderText("-")
-        edit.setToolTip("Karma dicing quality (render only); empty clears it. Enter sets it.")
-        edit.setFixedWidth(self.owner.px(64))
-        edit.setStyleSheet(self.owner.css(f"QLineEdit {{ background: {BG_APP}; color: {TEXT_PRIMARY};"
-                                          f" border: 1px solid #2c2c33; border-radius: 6px; padding: 3px 6px;"
-                                          f" font-size: {FS_SMALL}px; }}"))
-        edit.returnPressed.connect(lambda: (self.set_dicing(pats, edit.text()), menu.close()))
-        row.addWidget(edit)
-        wa = QWidgetAction(menu)
-        wa.setDefaultWidget(box)
-        menu.addAction(wa)
-        menu.addSeparator()
-        menu.addAction("Clear override").triggered.connect(lambda _=False: self.clear(pats))
+        menu.addAction(icon("undo"), self.MENU_CLEAR).triggered.connect(lambda _=False: self.clear(pats))
         what = f"every {self.asset}" if self.asset else "every instance"
-        menu.addAction(f"Apply overrides to {what}").triggered.connect(lambda _=False: self.to_asset())
+        menu.addAction(icon("link"), f"Copy these overrides to {what}").triggered.connect(
+            lambda _=False: self.to_asset())
         return menu
+
+    @staticmethod
+    def _leaves(item):
+        if not item.childCount():
+            yield item
+        for i in range(item.childCount()):
+            yield from InspectorPanel._leaves(item.child(i))
 
     def _context_menu(self, pos) -> None:
         item = self.tree.itemAt(pos)

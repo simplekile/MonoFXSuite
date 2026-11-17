@@ -177,13 +177,13 @@ def test_subd_scheme_from_the_menu_applies_to_the_selection(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/b")
     tree = w.subd_panel.tree
-    _act(w.subd_panel.menu_for(tree.topLevelItem(0).child(0)), "Off").trigger()   # one row, not selected: that row only
+    _act(w.subd_panel.menu_for(tree.topLevelItem(0).child(0)), ui.InspectorPanel.MENU_OFF).trigger()   # one row, not selected: that row only
     assert w.backend.calls[-1][:5] == ("set_subd", "/stage/b", ("Geo/Base_grp/**",), "none", KEEP)
     base, outfit = tree.topLevelItem(0).child(0), tree.topLevelItem(0).child(1)            # the rescan rebuilt the tree
     base.setSelected(True)
     outfit.setSelected(True)
     menu = w.subd_panel.menu_for(outfit)                                 # a selected row: the whole selection
-    _act(menu, "Catmull-Clark").trigger()
+    _act(menu, ui.InspectorPanel.MENU_CATMULL).trigger()
     assert set(w.backend.calls[-1][2]) == {"Geo/Base_grp/**", "Geo/Outfit_grp/**"}
     assert w.backend.calls[-1][3] == "catmullClark"
 
@@ -203,10 +203,10 @@ def test_subd_menu_clear_and_apply(make):
     w, ui = _subd_window(make)
     _select(w, ui, "/stage/b")
     menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
-    _act(menu, "Clear override").trigger()
+    _act(menu, ui.InspectorPanel.MENU_CLEAR).trigger()
     assert w.backend.calls[-1] == ("clear_subd", "/stage/b", ["Geo/Outfit_grp/**"])
     menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
-    _act(menu, "Apply overrides to every char_Helen").trigger()
+    _act(menu, "Copy these overrides to every char_Helen").trigger()
     assert w.backend.calls[-1] == ("subd_to_asset", "/stage/b")
 
 
@@ -375,3 +375,16 @@ def test_unsaved_scene_shot_starts_on_the_loaders_shot(make, tmp_path):
     b.project_and_shot = lambda: ("", "")
     w = mk(b)
     assert w._project == proj.as_posix() and w.ctl.target_shot == "sh900"
+
+
+def test_subd_menu_says_what_it_does_and_every_row_has_an_icon(make):
+    """The user's ask: the menu was cryptic (Publish / Off / Catmull-Clark, a Dicing field) and did not line up."""
+    w, ui = _subd_window(make)
+    _select(w, ui, "/stage/b")
+    menu = w.subd_panel.menu_for(w.subd_panel.tree.topLevelItem(0).child(1))
+    acts = [a for a in menu.actions() if not a.isSeparator()]
+    assert all(not a.icon().isNull() for a in acts)
+    assert not any(a.isCheckable() for a in acts)  # no check column pushing some rows in
+    dicing = next(a.menu() for a in acts if a.text() == ui.InspectorPanel.MENU_DICING)
+    _act(dicing, "0.5").trigger()
+    assert w.backend.calls[-1][2:] == (("Geo/Outfit_grp/**",), None, 0.5)
