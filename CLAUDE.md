@@ -293,19 +293,24 @@
   when the artist drags it (mouse down), never from Qt's own resizes.
   One background for every row (the user's "too many colours", 2026-11-17): no zebra, no band per group level; a
   group reads as one by its quieter text and chevron, a selected row by the selection colour.
-- Inspector layout B (the user's pick of three mockups, 2026-11-17): what each prim shows. A SHOWN column says only
-  what differs from the row above (hidden, render only, viewport only) or what the shot set (accent); hidden when
-  nothing differs. The right-click menu sets it: Hide (visibility invisible), Render only (purpose render), Viewport
-  only (purpose proxy: Houdini GL draws it, Karma skips it), Render and viewport (visible, purpose default). Rules
-  live in the hidden `mx_show_rules` (JSON pattern = one prim under the instance, show), authored by the HDA's
-  `show_rules` Python LOP after Hide Prims (`adapter.author_show`: hidden rules first, then `MakeVisible`, which
-  opens a hidden parent and hides its other children, as Houdini's Make Visible; a plain "inherited" under the hidden
-  hair driver stayed hidden, the user's report), so a rule wins over Hide Prims and the
-  groom's render purpose; bake writes them as data (`BAKED_SHOW_CODE`). SHOWN comes from the files on the worker
-  thread (`shown_for`: publish visibility / purpose, Hide Prims, Show in Viewport, rules; `logic.shown_plan`).
-  The groom's curves are rows under Groom (`groom_curve_counts`, first frame of a cache; not `groom_curves`, the
-  cache's own paths that refresh uses: a second function of that name broke every groom loader). Remove the
-  shot's overrides clears subdivision and show rules; a change keeps the table's scroll, selection and folds; Same overrides copies both. A camera has "On the loader":
+- Inspector layout B (the user's pick of three mockups, 2026-11-17), then its toggles (the user's ask the same day):
+  each prim row has three toggles right after its name, as Blender's outliner: the eye (visibility), viewport and
+  render (purpose: both on default, viewport only proxy, render only render, both off guide). Inheritance is
+  Houdini's / USD's: hiding a prim hides everything under it and each child keeps its own eye for when the parent
+  shows again (drawn dimmed meanwhile); a prim without its own purpose follows its parent. Colour says who set a
+  value (accent: this shot; bright: the publish or the loader's Hide Prims / Show in Viewport; grey: inherited), a
+  dot under the icon says the row has its own value, i.e. overrides its parent (colour is not the only cue). A
+  click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the selection, one
+  undo step (`logic.toggle_edits`; a value equal to the inherited one takes the rule off). Rules live in the hidden
+  `mx_show_rules` (JSON {pattern = one prim under the instance, "vis": invisible | inherited, "purpose"}; the first
+  form {"show": ...} still reads), authored by the HDA's `show_rules` Python LOP after Hide Prims
+  (`adapter.author_show`; no MakeVisible: hiding prunes, the user's rule), so a rule wins over Hide Prims and the
+  groom's render purpose; bake writes them as data (`BAKED_SHOW_CODE`). The panel's state comes from the files on
+  the worker thread (`shown_for`, `logic.prim_shows`: publish visibility / purpose, Hide Prims, Show in Viewport,
+  rules), checked against the stage with hython on sh025. The groom's curves are rows under Groom
+  (`groom_curve_counts`, first frame of a cache; not `groom_curves`, the cache's own paths that refresh uses: a second
+  function of that name broke every groom loader). Remove the shot's overrides clears subdivision and show rules;
+  Same overrides copies both; a change keeps the table's scroll, selection and folds. A camera has "On the loader":
   clipping, aperture, ratio, guide scale as parm fields (Enter sets the parm, one undo step).
 - hython: `hou.hda.installFile` goes into the open hip's library list, which `hipFile.load` replaces: install
   after the load (and `setIsPreferred`) or the scene runs the installed MonoFX's loader, or no loader at all.

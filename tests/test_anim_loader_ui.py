@@ -400,41 +400,50 @@ def test_subd_menu_marks_the_current_choice(make):
     geo = w.subd_panel.tree.topLevelItem(0)
     for item in (geo.child(1), geo.child(1).child(0)):  # Outfit_grp and its mesh: from the lookdev, no override
         menu = w.subd_panel.menu_for(item)
-        assert [a.text() for a in menu.actions() if a.data() == "current"] == [ui.InspectorPanel.MENU_PUBLISH,
-                                                                        "Render and viewport"]
+        assert [a.text() for a in menu.actions() if a.data() == "current"] == [ui.InspectorPanel.MENU_PUBLISH]
 
 
 
-def test_shown_column_groom_curves_and_show_menu(make):
-    """Layout B (the user's pick): SHOWN says only what differs, groom curves are rows, the menu sets visibility /
-    purpose; a camera has its loader settings as fields."""
+def test_toggles_groom_curves_and_inheritance(make):
+    """The user's ask: the eye (visibility), viewport and render (purpose) as three toggles, Blender's outliner;
+    a click toggles the row, or the selection it is part of, and leaves the selection alone."""
+    from tools.fx.anim_loader import logic as lg
+
     w, ui = _subd_window(make)
     b = w.backend
-    b.subd_detail_extra = True
     _select(w, ui, "/stage/b")
     detail = w.ctl.subd_detail("/stage/b")
     detail["curves"] = {"/Groom/Hair_Back": 21000, "/Groom/Eyebrows": 1200}
-    detail["shown"] = {"Groom": ("render only", ""), "Groom/Hair_Back": ("render only", "loader"),
-                       "Groom/Eyebrows": ("render only", "loader"), "Geo/Outfit_grp": ("hidden", "shot")}
+    prims = [m.strip("/") for m in detail["plan"]] + ["Groom/Hair_Back", "Groom/Eyebrows"]
+    detail["shown"] = lg.prim_shows(prims, {}, ["Geo/Outfit_grp"], ["Groom/Hair_Back", "Groom/Eyebrows"],
+                                    [{"pattern": "Geo/Base_grp", "purpose": "proxy"}])
     _select(w, ui, "/stage/a")
     _select(w, ui, "/stage/b")
     tree = w.subd_panel.tree
     tops = {tree.topLevelItem(i).text(0): tree.topLevelItem(i) for i in range(tree.topLevelItemCount())}
-    assert set(tops) == {"Geo", "Groom"} and not tree.isColumnHidden(5)
-    groom = tops["Groom"]
-    assert groom.text(1) == "22.2k cv" and groom.text(5) == "render only"
-    assert groom.child(0).text(5) == ""  # the same as its group: left blank
-    assert groom.child(0).data(0, ui.ROLE_PRIM) == "basiscurves"
-    outfit = tops["Geo"].child(1)
-    assert outfit.text(5) == "hidden"
-    menu = w.subd_panel.menu_for(groom.child(0))
-    texts = [a.text() for a in menu.actions() if a.isVisible() and not a.isSeparator()]
-    assert ui.InspectorPanel.MENU_OFF not in texts  # curves: no subdivision
-    assert [a.text() for a in menu.actions() if a.data() == "current"] == ["Render only"]
-    b.calls.clear()
-    b.set_show = lambda path, pats, show: b.calls.append(("set_show", path, tuple(pats), show))
-    _act(menu, "Viewport only").trigger()
-    assert b.calls[0] == ("set_show", "/stage/b", ("Groom/Hair_Back",), "proxy")
+    assert set(tops) == {"Geo", "Groom"}
+    hair = tops["Groom"].child(0)
+    assert hair.data(0, ui.ROLE_PRIM) == "basiscurves"
+    assert hair.data(6, ui.ROLE_TOGGLE)[0] == "monitor-off" and hair.data(7, ui.ROLE_TOGGLE)[0] == "camera"
+    assert hair.data(6, ui.ROLE_TOGGLE)[2] is True  # its own purpose (the loader's): a dot
+    geo = tops["Geo"]
+    base, outfit = geo.child(0), geo.child(1)
+    assert base.data(6, ui.ROLE_TOGGLE)[1] == ui.ACCENT and base.data(6, ui.ROLE_TOGGLE)[2]  # the shot's: accent, dot
+    mesh = base.child(0)
+    assert mesh.data(6, ui.ROLE_TOGGLE)[0] == "monitor" and not mesh.data(6, ui.ROLE_TOGGLE)[2]  # inherited: no dot
+    assert outfit.data(5, ui.ROLE_TOGGLE)[0] == "eye-off"
+    child = outfit.child(0)
+    assert child.data(5, ui.ROLE_TOGGLE)[0] == "eye" and child.data(5, ui.ROLE_TOGGLE)[3]  # kept, dimmed
+    b.set_show = lambda path, edits: b.calls.append(("set_show", path, tuple(edits)))
+    mesh.setSelected(True)
+    hair.setSelected(True)
+    mesh_pat, mesh_name = mesh.data(0, ui.ROLE_PATTERN), mesh.text(0)
+    w.subd_panel._toggle(hair, 7)  # the change rebuilds the table: the items above are gone  # render off: the clicked row decides, the whole selection follows
+    assert b.calls[-1][0] == "set_show"
+    edits = dict((p, v) for p, _f, v in b.calls[-1][2])
+    # Hair_Back: render only -> neither (guide); the mesh already does not render (its parent's proxy): no rule
+    assert edits["Groom/Hair_Back"] == "guide" and edits[mesh_pat] is None
+    assert {i.text(0) for i in tree.selectedItems()} == {mesh_name, "Hair_Back"}  # selection kept
 
 
 def test_camera_settings_on_the_loader(make):
@@ -455,16 +464,30 @@ def test_camera_settings_on_the_loader(make):
 
 
 
-def test_shown_follows_make_visible_under_a_hidden_parent():
-    """The user's report: "Render and viewport" on meshes under the hair driver (hidden by Hide Prims) read hidden.
-    A shown rule opens the way like USD's MakeVisible: the parent shows, its other children are hidden."""
+def test_show_inherits_like_houdini():
+    """Hiding a parent hides its children, which keep their own eye; purpose follows the parent unless a child has
+    its own; a toggle back to the inherited value takes the rule off."""
     from tools.fx.anim_loader import logic as lg
 
-    kids = [f"Geo/Groom_grp/HairDriver_grp/{n}" for n in ("Geo_HairBack", "Geo_HairBang")]
-    plan = lg.shown_plan(kids, {}, ["Geo/Groom_grp/HairDriver_grp"], [], [{"pattern": kids[0], "show": "both"}])
-    assert plan[kids[0]] == ("", "shot") and plan[kids[1]] == ("hidden", "")
-    plan = lg.shown_plan(kids, {}, ["Geo/Groom_grp/HairDriver_grp"], [], [{"pattern": k, "show": "proxy"} for k in kids])
-    assert plan[kids[0]] == ("viewport only", "shot") and plan[kids[1]] == ("viewport only", "shot")
+    kids = ["Geo/Hair_grp/A", "Geo/Hair_grp/B"]
+    rules = lg.parse_show_rules(__import__("json").dumps(lg.set_show_rules([], [
+        ("Geo/Hair_grp", "vis", "invisible"), ("Geo/Hair_grp/B", "vis", "invisible"),
+        ("Geo/Hair_grp/**", "purpose", "render"), ("Geo/Hair_grp/A", "purpose", "proxy")])))
+    st = lg.prim_shows(kids, {}, [], [], rules)
+    a, b, grp = st["Geo/Hair_grp/A"], st["Geo/Hair_grp/B"], st["Geo/Hair_grp"]
+    assert not a.visible and a.own_visible and not b.own_visible
+    assert a.purpose == "proxy" and b.purpose == "render" and b.purpose_source == ""
+    on = lg.prim_shows(kids, {}, [], [], [r for r in rules if r.get("vis") is None or r["pattern"] != "Geo/Hair_grp"])
+    assert on["Geo/Hair_grp/A"].visible and not on["Geo/Hair_grp/B"].visible  # B remembered its own
+    # the parent's eye on again over Hide Prims needs a rule; a child's purpose back to its parent's needs none
+    assert lg.toggle_edits([("Geo/Hair_grp/**", lg.prim_shows(kids, {}, ["Geo/Hair_grp"], [], [])["Geo/Hair_grp"],
+                             None)], "eye") == [("Geo/Hair_grp/**", "vis", "inherited")]
+    assert lg.toggle_edits([("Geo/Hair_grp/A", a, grp)], "render") == [("Geo/Hair_grp/A", "purpose", "default")]
+    own_default = lg.prim_shows(kids, {}, [], [], [{"pattern": "Geo/Hair_grp", "purpose": "render"},
+                                                    {"pattern": "Geo/Hair_grp/A", "purpose": "default"}])
+    # A: default (viewport and render) under a render-only parent; viewport off = render = the parent's: no rule
+    assert lg.toggle_edits([("Geo/Hair_grp/A", own_default["Geo/Hair_grp/A"], own_default["Geo/Hair_grp"])],
+                           "viewport") == [("Geo/Hair_grp/A", "purpose", None)]
 
 
 def test_a_change_keeps_the_scroll_selection_and_folds(make):

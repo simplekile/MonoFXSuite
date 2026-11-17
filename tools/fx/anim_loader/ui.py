@@ -104,6 +104,10 @@ LUCIDE.update({
               '<circle cx="12" cy="13" r="3"/>',
     "monitor": '<rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/>'
                '<line x1="12" x2="12" y1="17" y2="21"/>',
+    "monitor-off": '<path d="M17 17H4a2 2 0 0 1-2-2V5c0-1.5 1-2 1-2"/><path d="M22 15V5a2 2 0 0 0-2-2H9"/>'
+                   '<path d="M8 21h8"/><path d="M12 17v4"/><path d="m2 2 20 20"/>',
+    "camera-off": '<line x1="2" x2="22" y1="2" y2="22"/><path d="M7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16"/>'
+                  '<path d="M9.5 4h5L17 7h3a2 2 0 0 1 2 2v7.5"/><path d="M14.121 15.121A3 3 0 1 1 9.88 10.88"/>',
     "scan": '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/>'
             '<path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
 })
@@ -1744,6 +1748,22 @@ def _mesh_tree_class():
             painter.setFont(option.font)
             align = index.data(Qt.ItemDataRole.TextAlignmentRole)
             align = Qt.AlignmentFlag(align) if align else Qt.AlignmentFlag.AlignLeft
+            toggle = index.data(ROLE_TOGGLE) if index.column() in TOGGLE_COLS else None
+            if toggle:  # the eye, viewport and render toggles (Blender's outliner)
+                name, col, own, dim = toggle
+                size = self.px(16)
+                cx, cy = r.center().x(), r.center().y() - self.px(2)
+                if dim:  # under a hidden parent: it keeps its own setting for when the parent shows again
+                    painter.setOpacity(0.4)
+                painter.drawPixmap(cx - size // 2 + 1, cy - size // 2 + 1, _crisp_icon(name, size, col).pixmap(size))
+                if own:  # its own value, not its parent's: a dot under the icon (colour is not the only cue)
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(col))
+                    d = self.px(4)
+                    painter.drawEllipse(cx - d // 2 + 1, cy + size // 2 + self.px(2), d, d)
+                painter.restore()
+                return
             text_rect = r.adjusted(self.px(6), 0, -self.px(6), 0)
             kind = index.data(ROLE_PRIM) if index.column() == 0 else None
             if kind:  # the prim's icon before its name, as in Houdini's Scene Graph Tree
@@ -1762,9 +1782,27 @@ def _mesh_tree_class():
             return QSize(w, self.px(28))
 
     class _MeshTree(QTreeWidget):
+        on_toggle = None  # (item, column): set by the panel
+
         def set_px(self, px) -> None:
             self.setItemDelegate(_MeshDelegate(self, px))
             self.setMouseTracking(True)
+
+        def mousePressEvent(self, event):  # noqa: N802 (Qt)
+            index = self.indexAt(event.position().toPoint())
+            if (event.button() == Qt.MouseButton.LeftButton and index.isValid() and index.column() in TOGGLE_COLS
+                    and index.data(ROLE_TOGGLE) and self.on_toggle is not None):
+                self.on_toggle(self.itemFromIndex(index), index.column())
+                event.accept()
+                return
+            super().mousePressEvent(event)
+
+        def mouseDoubleClickEvent(self, event):  # noqa: N802 (Qt): a quick second click toggles again, no expand
+            index = self.indexAt(event.position().toPoint())
+            if index.isValid() and index.column() in TOGGLE_COLS:
+                self.mousePressEvent(event)
+                return
+            super().mouseDoubleClickEvent(event)
 
         def _row_color(self, index) -> str:
             # one background (the user's ask, "too many colours"): no zebra, no band per group level; a group reads
@@ -1800,7 +1838,10 @@ def _mesh_tree_class():
     return _MeshTree
 
 
-COLS = 6  # the inspector's prim table: PRIM, FACES, FROM, SCHEME, DICE, SHOWN
+COLS = 8  # the inspector's prim table: PRIM, FACES, FROM, SCHEME, DICE, then the eye, viewport, render toggles
+TOGGLE_COLS = {5: "eye", 6: "viewport", 7: "render"}
+ROLE_TOGGLE = Qt.ItemDataRole.UserRole + 22  # (icon, colour) of a toggle cell
+ROLE_SHOW = Qt.ItemDataRole.UserRole + 23    # the row's logic.PrimShow
 
 
 class _CamEdit(QWidget):
@@ -1913,9 +1954,15 @@ class InspectorPanel(QWidget):
         self.tree = _mesh_tree_class()()
         self.tree.setObjectName("subdTree")
         self.tree.setColumnCount(COLS)
-        self.tree.setHeaderLabels(["PRIM", "FACES", "FROM", "SCHEME", "DICE", "SHOWN"])
+        self.tree.setHeaderLabels(["PRIM", "FACES", "FROM", "SCHEME", "DICE", "", "", ""])
         for col in range(1, COLS):
             self.tree.headerItem().setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
+        for col, (name, tip) in {5: ("eye", "Show or hide (visibility): hiding a prim hides what is under it"),
+                                 6: ("monitor", "Drawn in the viewport (purpose)"),
+                                 7: ("camera", "Rendered by Karma (purpose)")}.items():
+            self.tree.headerItem().setIcon(col, _crisp_icon(name, owner.px(14), TEXT_LABEL))
+            self.tree.headerItem().setToolTip(col, tip)
+        self.tree.on_toggle = self._toggle
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.tree.setRootIsDecorated(True)
         self.tree.setUniformRowHeights(True)
@@ -1947,7 +1994,12 @@ class InspectorPanel(QWidget):
         head.setStretchLastSection(False)
         head.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)  # drag its edge: the name column's width
         for col in range(1, COLS):
-            head.setSectionResizeMode(col, QHeaderView.ResizeMode.ResizeToContents)
+            head.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed if col in TOGGLE_COLS
+                                      else QHeaderView.ResizeMode.ResizeToContents)
+        for col in TOGGLE_COLS:
+            self.tree.setColumnWidth(col, owner.px(32))
+        for i, col in enumerate(sorted(TOGGLE_COLS)):  # shown right after the name: never scrolled out of sight
+            head.moveSection(head.visualIndex(col), 1 + i)
         head.setMinimumSectionSize(owner.px(48))
         head.setToolTip("Drag the edge of MESH to widen the name column")
         self._name_width = 0  # the width the artist dragged the name column to (kept across loaders)
@@ -2075,19 +2127,41 @@ class InspectorPanel(QWidget):
         def under(prefix: str) -> list[str]:
             return [m for m in plan if m.strip("/").startswith(prefix + "/")]
 
-        def shown_cell(item, prefix: str, parent_word: str) -> str:
-            """SHOWN says only what differs from the row above it, or what the shot set on this row."""
-            word, source = shown.get(prefix, ("", ""))
-            if source == "shot" or word != parent_word:
-                item.setText(5, word or "shown")
-                item.setForeground(5, QColor(ACCENT if source == "shot" else TEXT_LABEL))
-                item.setToolTip(5, {"shot": "Set for this shot", "loader": "Set on the loader (Hide Prims, Show in "
-                                    "Viewport)", "publish": "As published"}.get(source, "Inherited"))
-            return word
+        where = {"shot": "set for this shot", "loader": "set on the loader (Hide Prims, Show in Viewport)",
+                 "publish": "as published", "": ""}
+
+        def shown_cell(item, prefix: str, parent_word: str = "") -> str:
+            """The eye, viewport and render toggles of a row (logic.PrimShow): a shot setting in the accent, a toggle
+            under a hidden parent dimmed (it keeps its own setting for when the parent shows again)."""
+            ps = shown.get(prefix)
+            if ps is None:
+                return ""
+            item.setData(0, ROLE_SHOW, ps)
+            # colour says who set it (accent: this shot; bright: the publish or the loader; grey: inherited from the
+            # parent), a dot says the row has its own value (it overrides its parent), dimmed: under a hidden parent
+            def color(source):
+                return ACCENT if source == "shot" else TEXT_PRIMARY if source else TEXT_LABEL
+
+            pruned = not ps.visible and ps.own_visible
+            item.setData(5, ROLE_TOGGLE, ("eye" if ps.own_visible else "eye-off", color(ps.vis_source),
+                                          bool(ps.vis_source), pruned))
+            item.setToolTip(5, ("Hidden with its parent; shows again with it" if pruned
+                                else "Shown" if ps.own_visible else "Hidden")
+                            + (f", its own: {where[ps.vis_source]}" if ps.vis_source else ", as its parent")
+                            + ". Click to toggle.")
+            item.setData(6, ROLE_TOGGLE, ("monitor" if ps.viewport else "monitor-off", color(ps.purpose_source),
+                                          bool(ps.purpose_source), not ps.visible))
+            item.setData(7, ROLE_TOGGLE, ("camera" if ps.render else "camera-off", color(ps.purpose_source),
+                                          bool(ps.purpose_source), not ps.visible))
+            tip = f"Purpose {ps.purpose}, " + (f"its own: {where[ps.purpose_source]}" if ps.purpose_source
+                                               else "inherited from its parent")
+            item.setToolTip(6, ("Drawn in the viewport. " if ps.viewport else "Not drawn in the viewport. ") + tip)
+            item.setToolTip(7, ("Rendered. " if ps.render else "Not rendered. ") + tip)
+            return ""
 
         def add(parent, name: str, prefix: str, kids: dict, parent_from: str, parent_word: str = "") -> None:
             if not kids and "/" + prefix in curves:  # groom curves: no subdivision
-                item = QTreeWidgetItem([name, f"{_faces_word(curves['/' + prefix])} cv", "", "\u2013", "", ""])
+                item = QTreeWidgetItem([name, f"{_faces_word(curves['/' + prefix])} cv", "", "\u2013", "", "", "", ""])
                 item.setData(0, ROLE_PATTERN, prefix)
                 item.setData(0, ROLE_PRIM, "basiscurves")
                 item.setToolTip(0, "/" + prefix)
@@ -2120,7 +2194,7 @@ class InspectorPanel(QWidget):
                     g_from = ""
                     cvs = sum(n for c, n in curves.items() if c.strip("/").startswith(prefix + "/"))
                     cells = [f"{_faces_word(cvs)} cv", "", "\u2013", ""]
-                item = QTreeWidgetItem([name, *cells, ""])
+                item = QTreeWidgetItem([name, *cells, "", "", ""])
                 item.setData(0, ROLE_PATTERN, prefix + "/**")
                 item.setData(0, ROLE_PRIM, "xform")
                 item.setToolTip(0, "/" + prefix)
@@ -2139,8 +2213,6 @@ class InspectorPanel(QWidget):
         for k, sub in tree.items():
             add(None, k, k, sub, "")
         self.tree.setColumnHidden(4, not any_dicing)
-        any_shown = any(self._items_text(5))
-        self.tree.setColumnHidden(5, not any_shown)  # SHOWN only when something is not shown everywhere
         if keep is None:
             self.tree.expandAll()
         else:
@@ -2155,10 +2227,14 @@ class InspectorPanel(QWidget):
         column squeezed to nothing); dragging its edge wider keeps that width, with a sideways scroll."""
         self._filling = True
         for col in range(1, COLS):
-            self.tree.resizeColumnToContents(col)
+            if col in TOGGLE_COLS:
+                self.tree.setColumnWidth(col, self.owner.px(32))
+            else:
+                self.tree.resizeColumnToContents(col)
         rest = sum(self.tree.columnWidth(c) for c in range(1, COLS) if not self.tree.isColumnHidden(c))
         free = self.tree.viewport().width() - rest  # exactly the width: no strip, no sideways scroll
-        self.tree.setColumnWidth(0, max(self.owner.px(90), free, self._name_width))
+        # names before numbers: the name keeps room for the deepest rows; FACES / FROM / SCHEME scroll sideways
+        self.tree.setColumnWidth(0, max(self.owner.px(170), free, self._name_width))
         self._filling = False
 
     def resizeEvent(self, event) -> None:
@@ -2230,8 +2306,6 @@ class InspectorPanel(QWidget):
     MENU_DICING = "Dicing quality (Karma)"
     MENU_DICING_PUBLISH = "Use the publish's dicing"
     MENU_CLEAR = "Remove the shot's overrides"
-    MENU_SHOW = (("hidden", "Hide", "eye-off"), ("render", "Render only", "camera"),
-                 ("proxy", "Viewport only", "monitor"), ("both", "Render and viewport", "eye"))
     DICING_STEPS = ("0.25", "0.5", "1", "2", "4")
 
     @staticmethod
@@ -2287,19 +2361,6 @@ class InspectorPanel(QWidget):
                                    value or self.MENU_DICING_PUBLISH)
             act.setToolTip("How finely Karma dices the subdivided surface at render time (1 is Karma's default)")
             act.triggered.connect(lambda _=False, v=value: self.set_dicing(pats, v))
-        # what the shot shows of the rows (visibility, purpose); the current state has the check
-        if has_mesh:
-            menu.addSeparator()
-        now = self._shown_now(item)
-        for show, label, name in self.MENU_SHOW:
-            on = now == show
-            act = menu.addAction(icon("check", ACCENT) if on else icon(name), label)
-            act.setData("current" if on else "")
-            act.setToolTip({"hidden": "Invisible in the viewport and the render",
-                            "render": "Karma renders it; the viewport does not draw it (purpose render)",
-                            "proxy": "The viewport draws it; Karma does not render it (purpose proxy)",
-                            "both": "Drawn and rendered (visible, purpose default)"}[show])
-            act.triggered.connect(lambda _=False, s=show: self.set_show(pats, s))
         menu.addSeparator()
         menu.addAction(icon("undo"), self.MENU_CLEAR).triggered.connect(lambda _=False: self.clear(pats))
         # this loader's whole subdivision setup onto the asset's other loaders (its instances in the scene); only when
@@ -2361,22 +2422,28 @@ class InspectorPanel(QWidget):
         if item is not None and self.path:
             self.menu_for(item).exec(self.tree.viewport().mapToGlobal(pos))
 
-    @staticmethod
-    def _shown_now(item) -> str:
-        """The row's state as SHOWN says it (inherited from above when its cell is empty)."""
-        word = ""
-        while item is not None:
-            if item.text(5):
-                word = item.text(5)
-                break
-            item = item.parent()
-        return {"hidden": "hidden", "render only": "render", "viewport only": "proxy"}.get(word, "both")
-
-
-    def set_show(self, pats: list[str], show: str) -> None:
+    def _toggle(self, item, col: int) -> None:
+        """A click on a row's eye, viewport or render toggle: that row, or the whole selection when the row is part
+        of it, takes the clicked row's new value (Blender's outliner); one undo step."""
+        which = TOGGLE_COLS[col]
+        selected = self.tree.selectedItems()
+        items = [item] + [i for i in selected if i is not item] if item in selected else [item]
+        rows = []
+        for it in items:
+            ps = it.data(0, ROLE_SHOW)
+            if ps is None:
+                continue
+            parent = it.parent().data(0, ROLE_SHOW) if it.parent() is not None else None
+            rows.append((it.data(0, ROLE_PATTERN), ps, parent))
+        edits = logic.toggle_edits(rows, which)
+        if not edits or not self.path:
+            return
+        first = rows[0][1]
+        what = {"eye": "hidden" if first.own_visible else "shown",
+                "viewport": "not drawn in the viewport" if first.viewport else "drawn in the viewport",
+                "render": "not rendered" if first.render else "rendered"}[which]
         path = self.path
-        if path:
-            self.owner._run(lambda: self.owner.ctl.set_show(path, pats, show))()
+        self.owner._run(lambda: self.owner.ctl.set_show(path, edits, what))()
 
     def set_scheme(self, pats: list[str], scheme: str) -> None:
         path = self.path

@@ -461,15 +461,13 @@ class Controller:
         (clear or self.backend.clear_subd)(path, patterns)
         self.message = f"{path.rsplit('/', 1)[-1]}: the shot's overrides removed, the publish decides again."
 
-    SHOW_DONE = {"hidden": "hidden", "render": "render only", "proxy": "viewport only",
-                 "both": "shown in render and viewport"}
-
-    def set_show(self, path: str, patterns: list[str], show: str | None) -> None:
-        """What the shot shows of those rows (logic.SHOW_STATES; None removes their rules)."""
-        self.backend.set_show(path, patterns, show)
-        names = ", ".join(p.removesuffix("/**").rsplit("/", 1)[-1] for p in patterns[:3])
-        more = f" +{len(patterns) - 3}" if len(patterns) > 3 else ""
-        self.message = f"{names}{more}: {self.SHOW_DONE.get(show, 'as published')} (shot override)."
+    def set_show(self, path: str, edits: list[tuple[str, str, Any]], what: str) -> None:
+        """(pattern, "vis" | "purpose", value or None) edits from one toggle click; ``what`` says it in words."""
+        self.backend.set_show(path, edits)
+        pats = [e[0] for e in edits]
+        names = ", ".join(p.removesuffix("/**").rsplit("/", 1)[-1] for p in pats[:3])
+        more = f" +{len(pats) - 3}" if len(pats) > 3 else ""
+        self.message = f"{names}{more}: {what}."
 
     def camera_parms(self, path: str) -> dict:
         fn = getattr(self.backend, "cam_parms", None)

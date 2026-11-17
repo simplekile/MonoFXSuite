@@ -927,18 +927,43 @@ def clear_subd_rules(rules: list[dict], patterns: list[str] | None) -> list[dict
     return [] if patterns is None else [r for r in rules if r["pattern"] not in patterns]
 
 
-# --- what each prim shows: visibility and purpose (the user's pick, layout B, 2026-11-17) -----------------------
-# A rule names one prim (a group or a mesh / curves) and what the shot shows of it:
-#   hidden  - visibility invisible (neither the viewport nor the render)
-#   render  - purpose render: Karma renders it, Houdini GL does not draw it
-#   proxy   - purpose proxy: Houdini GL draws it, Karma does not render it ("viewport only")
-#   both    - visible, purpose default (undoes the publish's or the loader's own hiding)
-SHOW_STATES = ("hidden", "render", "proxy", "both")
-SHOW_WORD = {"hidden": "hidden", "render": "render only", "proxy": "viewport only", "guide": "guide"}
+# --- what each prim shows: visibility and purpose, apart (the user's ask, 2026-11-17: three toggles as Blender's
+# outliner, inheritance as Houdini / USD) ------------------------------------------------------------------------
+# A rule names one prim under the instance and sets either or both:
+#   "vis":     "invisible" | "inherited"   the eye; hiding a prim hides everything under it, and each child keeps
+#                                          its own setting for when the parent shows again
+#   "purpose": "default" | "proxy" | "render" | "guide"   the viewport and render toggles: both on = default,
+#                                          viewport only = proxy, render only = render, both off = guide; a prim
+#                                          without its own purpose follows its parent's
+PURPOSES = ("default", "proxy", "render", "guide")
+PURPOSE_TOGGLES = {"default": (True, True), "proxy": (True, False), "render": (False, True), "guide": (False, False)}
+TOGGLES_PURPOSE = {v: k for k, v in PURPOSE_TOGGLES.items()}
+_OLD_SHOW = {"hidden": {"vis": "invisible"}, "render": {"vis": "inherited", "purpose": "render"},
+             "proxy": {"vis": "inherited", "purpose": "proxy"}, "both": {"vis": "inherited", "purpose": "default"}}
+
+
+@dataclass(frozen=True)
+class PrimShow:
+    """What a prim shows: its own eye and the result under its parents, and its purpose."""
+
+    own_visible: bool        # its own eye, remembered under a hidden parent
+    visible: bool            # its parents and itself all visible
+    vis_source: str          # where its own eye comes from: "shot" | "loader" | "publish" | "" (not authored)
+    purpose: str             # the purpose it ends up with (its own, else its parent's)
+    purpose_source: str      # "shot" | "loader" | "publish" | "" (inherited)
+
+    @property
+    def viewport(self) -> bool:
+        return PURPOSE_TOGGLES.get(self.purpose, (True, True))[0]
+
+    @property
+    def render(self) -> bool:
+        return PURPOSE_TOGGLES.get(self.purpose, (True, True))[1]
 
 
 def parse_show_rules(text: str) -> list[dict]:
-    """The loader's JSON show rules, keeping only well-formed ones."""
+    """The loader's JSON show rules, well-formed ones only; the first form ({"show": hidden | render | proxy | both})
+    reads as its visibility and purpose."""
     import json
 
     try:
@@ -947,9 +972,15 @@ def parse_show_rules(text: str) -> list[dict]:
         return []
     out = []
     for r in raw if isinstance(raw, list) else []:
-        if isinstance(r, dict) and isinstance(r.get("pattern"), str) and r["pattern"].strip("/ ") \
-                and r.get("show") in SHOW_STATES:
-            out.append({"pattern": r["pattern"].strip("/ "), "show": r["show"]})
+        if not isinstance(r, dict) or not isinstance(r.get("pattern"), str) or not r["pattern"].strip("/ "):
+            continue
+        rule = {"pattern": r["pattern"].strip("/ "), **_OLD_SHOW.get(r.get("show"), {})}
+        if r.get("vis") in ("invisible", "inherited"):
+            rule["vis"] = r["vis"]
+        if r.get("purpose") in PURPOSES:
+            rule["purpose"] = r["purpose"]
+        if len(rule) > 1:
+            out.append(rule)
     return out
 
 
@@ -959,71 +990,91 @@ def show_target(pattern: str) -> str:
     return p[:-3] if p.endswith("/**") else p
 
 
-def set_show_rules(rules: list[dict], patterns: list[str], show: str | None) -> list[dict]:
-    """One rule per prim, put last; ``show`` None removes the prims' rules."""
-    targets = [show_target(p) for p in patterns]
-    keep = [r for r in rules if r["pattern"] not in targets]
-    if show is not None:
-        keep += [{"pattern": t, "show": show} for t in targets]
-    return keep
+def set_show_rules(rules: list[dict], edits: list[tuple[str, str, object]]) -> list[dict]:
+    """Rules after (pattern, field, value) edits: field "vis" or "purpose", value None takes that field off the
+    prim's rule (it inherits again); a rule left with nothing is dropped."""
+    by = {r["pattern"]: dict(r) for r in rules}
+    order = [r["pattern"] for r in rules]
+    for pattern, field, value in edits:
+        t = show_target(pattern)
+        rule = by.setdefault(t, {"pattern": t})
+        if t not in order:
+            order.append(t)
+        if value is None:
+            rule.pop(field, None)
+        else:
+            rule[field] = value
+    return [by[t] for t in order if len(by[t]) > 1]
 
 
-def shown_plan(prims: list[str], publish: dict[str, dict], hidden: list[str], render_only: list[str],
-               rules: list[dict]) -> dict[str, tuple[str, str]]:
-    """(word, source) per prim (paths under the instance, no leading "/"): what it ends up showing, "" for normal
-    (visible, default purpose). Opinions, weakest first: the publish files' own visibility / purpose (``publish``:
-    {prim: {"visibility", "purpose"}}), the loader's Hide Prims (``hidden``) and groom shown for render only
-    (``render_only``), then the shot's rules. Visibility and purpose inherit down the tree as in USD: a prim under
-    a hidden one stays hidden whatever it says, except that a shot rule showing a prim opens the way to it as USD's
-    MakeVisible does (the user's report: "Render and viewport" under the hidden hair driver still read hidden): its
-    hidden ancestors show, and their other children are hidden instead. Source is "shot" where a rule names the
-    prim, "loader" for the loader's own settings, "publish" for the files, "" where it only inherits."""
-    rule_at = {r["pattern"]: r["show"] for r in rules}
-    shown_by_rule = [p for p, s in rule_at.items() if s != "hidden"]
-    on_path = set(shown_by_rule)
-    for p in shown_by_rule:
-        bits = p.split("/")
-        on_path.update("/".join(bits[:i]) for i in range(1, len(bits)))
-    opened: set[str] = set()  # hidden prims a rule opened: their children off the path are hidden
+def clear_show_rules(rules: list[dict], patterns: list[str] | None) -> list[dict]:
+    """Rules without those rows' (None: none at all)."""
+    if patterns is None:
+        return []
+    targets = {show_target(p) for p in patterns}
+    return [r for r in rules if r["pattern"] not in targets]
+
+
+def prim_shows(prims: list[str], publish: dict[str, dict], hidden: list[str], render_only: list[str],
+               rules: list[dict]) -> dict[str, PrimShow]:
+    """What each prim (paths under the instance, no leading "/"; the groups above them are added) shows, by USD's
+    rules: visibility prunes (a prim under a hidden one is hidden, its own setting kept), purpose inherits unless
+    the prim has its own. Opinions, weakest first: the publish files' own (``publish``: {prim: {"visibility",
+    "purpose"}}), the loader's Hide Prims (``hidden``) and groom shown for render only (``render_only``), then the
+    shot's rules."""
+    rule_at = {r["pattern"]: r for r in rules}
     hidden_set, render_set = set(hidden), set(render_only)
     every = set(prims)
-    for p in prims:  # the groups above each prim, so the tree inherits through them
+    for p in prims:
         bits = p.split("/")
         every.update("/".join(bits[:i]) for i in range(1, len(bits)))
-    state: dict[str, tuple[bool, str]] = {}
-    out: dict[str, tuple[str, str]] = {}
+    out: dict[str, PrimShow] = {}
     for p in sorted(every, key=lambda x: (x.count("/"), x)):
-        parent = p.rsplit("/", 1)[0] if "/" in p else ""
-        hid, purpose = state.get(parent, (False, "default"))
-        own_hidden, own_purpose, source = None, None, ""
+        parent = out.get(p.rsplit("/", 1)[0]) if "/" in p else None
+        own_vis, vis_src, own_pur, pur_src = True, "", None, ""
         op = publish.get(p, {})
         if op.get("visibility") in ("invisible", "inherited"):
-            own_hidden, source = op["visibility"] == "invisible", "publish"
-        if op.get("purpose") in ("default", "render", "proxy", "guide"):
-            own_purpose, source = op["purpose"], "publish"
+            own_vis, vis_src = op["visibility"] != "invisible", "publish"
+        if op.get("purpose") in PURPOSES:
+            own_pur, pur_src = op["purpose"], "publish"
         if p in hidden_set:
-            own_hidden, source = True, "loader"
+            own_vis, vis_src = False, "loader"
         if p in render_set:
-            own_purpose, source = "render", "loader"
-        rule = rule_at.get(p)
-        if rule is not None:
-            source = "shot"
-            own_hidden = rule == "hidden"
-            if rule != "hidden":
-                own_purpose = {"render": "render", "proxy": "proxy", "both": "default"}[rule]
-        if own_hidden is not None:
-            hid = hid or own_hidden  # "inherited" cannot show what a parent hides
-        if p in on_path:  # MakeVisible: the way to a shown prim is visible
-            if hid:
-                opened.add(p)
-            hid = False
-        elif parent in opened:  # ... and the opened prim's other children hidden
-            hid = True
-        if own_purpose is not None:
-            purpose = own_purpose
-        state[p] = (hid, purpose)
-        out[p] = ("hidden" if hid else SHOW_WORD.get(purpose, ""), source)
+            own_pur, pur_src = "render", "loader"
+        rule = rule_at.get(p, {})
+        if "vis" in rule:
+            own_vis, vis_src = rule["vis"] != "invisible", "shot"
+        if "purpose" in rule:
+            own_pur, pur_src = rule["purpose"], "shot"
+        out[p] = PrimShow(own_vis, own_vis and (parent.visible if parent else True), vis_src,
+                          own_pur if own_pur is not None else (parent.purpose if parent else "default"), pur_src)
     return out
+
+
+def toggle_edits(rows: list[tuple[str, PrimShow, PrimShow | None]], which: str) -> list[tuple[str, str, object]]:
+    """Rule edits for one click on a toggle ("eye", "viewport" or "render") over rows (pattern, the row, its
+    parent). The clicked row, first, decides the new value for all, as in Blender. A value the row would have
+    anyway without the shot's rule (visible; its parent's purpose) takes the rule off, so the row inherits again;
+    a value against the publish or the loader stays as a rule."""
+    if not rows:
+        return []
+    first = rows[0][1]
+    edits: list[tuple[str, str, object]] = []
+    if which == "eye":
+        on = not first.own_visible
+        for pattern, row, _parent in rows:
+            needs_rule = row.vis_source in ("publish", "loader") or not on
+            edits.append((pattern, "vis", ("inherited" if on else "invisible") if needs_rule else None))
+        return edits
+    flip_view = which == "viewport"
+    on = not (first.viewport if flip_view else first.render)
+    for pattern, row, parent in rows:
+        pair = (on, row.render) if flip_view else (row.viewport, on)
+        purpose = TOGGLES_PURPOSE[pair]
+        inherited = parent.purpose if parent else "default"
+        keep = purpose != inherited or row.purpose_source in ("publish", "loader")
+        edits.append((pattern, "purpose", purpose if keep else None))
+    return edits
 
 
 def hide_targets(pattern: str, prims: list[str]) -> list[str]:

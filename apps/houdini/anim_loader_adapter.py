@@ -1187,20 +1187,17 @@ BAKED_SHOW_CODE = """hda = hou.pwd().parent()
 stage = hou.pwd().editableStage()
 from pxr import UsdGeom
 inst = hda.evalParm("mx_instance_name")
-# What the shot shows of each prim, baked from the MonoFX Loader: hidden / render / proxy / both
+# Each prim's own visibility and purpose, baked from the MonoFX Loader
 RULES = %s
-for rule in sorted(RULES, key=lambda r: r["show"] != "hidden") if inst else []:
+for rule in RULES if inst else []:
     prim = stage.GetPrimAtPath("/" + inst + "/" + rule["pattern"])
     if not prim or not prim.IsA(UsdGeom.Imageable):
         continue
     img = UsdGeom.Imageable(prim)
-    if rule["show"] == "hidden":
-        img.CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible)
-    else:
-        img.MakeVisible()
-    if rule["show"] != "hidden":
-        img.CreatePurposeAttr().Set({"render": UsdGeom.Tokens.render, "proxy": UsdGeom.Tokens.proxy,
-                                     "both": UsdGeom.Tokens.default_}[rule["show"]])
+    if "vis" in rule:
+        img.CreateVisibilityAttr().Set(rule["vis"])
+    if "purpose" in rule:
+        img.CreatePurposeAttr().Set(rule["purpose"])
 """
 
 BAKED_SUBD_CODE = """hda = hou.pwd().parent()
@@ -1473,13 +1470,13 @@ class HoudiniBackend:
             node.parm(config.P_SUBD_RULES).set(json.dumps(left) if left else "")
 
     @staticmethod
-    def set_show(path, patterns, show):
-        """What the shot shows of each prim (``show`` None removes the prims' rules); one undo step."""
+    def set_show(path, edits):
+        """(pattern, "vis" | "purpose", value or None) edits of the shot's show rules; one undo step."""
         from apps.houdini.solaris_adapter import undo_group
 
         node = hou.node(path)
         rules = logic.parse_show_rules(_s(node, config.P_SHOW_RULES))
-        left = logic.set_show_rules(rules, list(patterns), show)
+        left = logic.set_show_rules(rules, list(edits))
         with undo_group(f"Show {node.name()}"):
             node.parm(config.P_SHOW_RULES).set(json.dumps(left) if left else "")
 
@@ -1491,7 +1488,7 @@ class HoudiniBackend:
         node = hou.node(path)
         subd = logic.clear_subd_rules(logic.parse_subd_rules(_s(node, config.P_SUBD_RULES)), patterns)
         show = logic.parse_show_rules(_s(node, config.P_SHOW_RULES))
-        show = [] if patterns is None else logic.set_show_rules(show, list(patterns), None)
+        show = logic.clear_show_rules(show, patterns)
         with undo_group(f"Clear overrides {node.name()}"):
             node.parm(config.P_SUBD_RULES).set(json.dumps(subd) if subd else "")
             node.parm(config.P_SHOW_RULES).set(json.dumps(show) if show else "")
@@ -1799,14 +1796,14 @@ def groom_curve_counts(path: str) -> dict[str, int]:  # not groom_curves (the ca
 
 
 def shown_for(meshes: list[str], curves: list[str], anim: str, lookdev: str, show: dict | None) -> dict:
-    """logic.shown_plan for a loader's meshes and curves, from its publish files and settings (no hou)."""
+    """logic.prim_shows for a loader's meshes and curves, from its publish files and settings (no hou)."""
     show = show or {}
     prims = [p.strip("/") for p in meshes + curves]
     groups = {"/".join(p.split("/")[:i]) for p in prims for i in range(1, p.count("/") + 1)}
     publish = {**show_opinions(anim), **show_opinions(lookdev)}
     hidden = logic.hide_targets(show.get("hide", ""), sorted(groups | set(prims))) if show.get("hide_on") else []
     render_only = [c.strip("/") for c in curves] if not (show.get("viewport", 3) & 2) else []
-    return logic.shown_plan(prims, publish, hidden, render_only, logic.parse_show_rules(show.get("rules", "")))
+    return logic.prim_shows(prims, publish, hidden, render_only, logic.parse_show_rules(show.get("rules", "")))
 
 
 def author_show(node, stage) -> None:
@@ -1816,20 +1813,17 @@ def author_show(node, stage) -> None:
     inst = _s(node, config.P_INSTANCE)
     if not inst:
         return
-    rules = logic.parse_show_rules(_s(node, config.P_SHOW_RULES))
-    # hidden first, shown after: MakeVisible opens the way through a hidden parent (Hide Prims' hair driver) and
-    # hides that parent's other children, as Houdini's own Make Visible does (logic.shown_plan says the same)
-    for rule in sorted(rules, key=lambda r: r["show"] != "hidden"):
+    # each prim's own eye and purpose, as Houdini authors them: hiding prunes (the children keep their own
+    # visibility for when the parent shows again), purpose inherits where a prim has none of its own
+    for rule in logic.parse_show_rules(_s(node, config.P_SHOW_RULES)):
         prim = stage.GetPrimAtPath(f"/{inst}/{rule['pattern']}")
         if not prim or not prim.IsA(UsdGeom.Imageable):
             continue
         img = UsdGeom.Imageable(prim)
-        if rule["show"] == "hidden":
-            img.CreateVisibilityAttr().Set(UsdGeom.Tokens.invisible)
-        else:
-            img.MakeVisible()
-            img.CreatePurposeAttr().Set({"render": UsdGeom.Tokens.render, "proxy": UsdGeom.Tokens.proxy,
-                                         "both": UsdGeom.Tokens.default_}[rule["show"]])
+        if "vis" in rule:
+            img.CreateVisibilityAttr().Set(rule["vis"])
+        if "purpose" in rule:
+            img.CreatePurposeAttr().Set(rule["purpose"])
 
 
 # --- the camera's settings on the loader (layout B: edited from the inspector) ---------------------------------
