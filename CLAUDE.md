@@ -246,8 +246,11 @@
 - Heavy shot (over `logic.HEAVY_SUBD_POLYGONS`, faces x 16): a non-modal prompt after Load shot and on scene
   load (HDA OnLoaded, one check per burst, UI only) offers Draw Hulls Only for every viewport; "Don't ask again"
   is a viewer pref. In the manager the warning lives in one place only, the Subdivision column (line + Draw Hulls
-  Only link), never in the result line. Draw Hulls Only makes the viewport lighter to work
-  in but does NOT lower memory (Helen catmullClark 12.8 GB -> 19.5 GB when turned on; 13 GB on from the start).
+  Only link), never in the result line. Draw Hulls Only lowers memory as well (measured on /stage,
+  Helen catmullClark: RAM 12.8 -> 7.2 GB once settled, VRAM +6.7 -> +4.9 GB; the first seconds still peak ~15 GB);
+  scheme none lowers it most (2.5 GB). It is set only on viewers showing a LOP network (`_stage_viewers`): /stage
+  has its own display options, and a value set while the viewer showed /obj never reached it (that, and reading RAM
+  at the peak, gave an earlier wrong "does not lower memory").
 - Lookdev and groom have "Show in Viewport" (on by default). Off: bindings move to `material:binding:full` (Karma
   only) and groom curves get purpose `render`.
 - Manager layout R-A (the user's pick, 2026-11-17, after the Monos UI rules in `products/monos/monos/docs/`:

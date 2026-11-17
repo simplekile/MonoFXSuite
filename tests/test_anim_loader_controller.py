@@ -244,3 +244,25 @@ def test_headline_follows_a_retarget_primary():
     c.selection = ["/stage/b"]                         # not behind, from sh025
     assert c.primary_action() == ("retarget", "Retarget 1 to sh777")
     assert c.headline().startswith("1 loader from sh025, not sh777")
+
+
+def test_hulls_without_a_stage_viewer_says_so():
+    b = _subd_backend()
+    b.infos = [i for i in b.infos if not i.legacy]
+    b.hulls_on = lambda: False
+    b.set_hulls_only = lambda: 0
+    plan = b.subd(None)["/stage/b"]
+    plan["faces"]["/Geo/Base_grp/Body_grp/Geo_Body"] = 1_000_000
+    b.subd = lambda infos: {"/stage/b": plan}
+    c = Controller(b)
+    c.refresh()
+    for p in ("/stage/a", "/stage/c"):
+        for part, (st, _) in list(b.status[p].items()):
+            if st == "newer":
+                b.status[p][part] = ("ok", None)
+    c.refresh()
+    c.draw_hulls()
+    assert "/stage" in c.message
+    b.set_hulls_only = lambda: 4
+    c.draw_hulls()
+    assert c.message.startswith("Draw Hulls Only on in 4 viewports") and "less memory" in c.message
