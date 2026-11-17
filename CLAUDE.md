@@ -245,16 +245,122 @@
   source, what is new in a newer version (date, Monos work file author from `.monos/authors.json` of the same vNNN,
   outputs, frames, meshes, size); its actions are on the row's right-click menu (Update to <part> <version>, Switch to
   Source Shot / Asset, Open folder, Open in Monos `monos://open?project&page&e=sha256[:10]`, Frame in the viewport).
-  The list is a table: a sticky column header, group bands, zebra rows, column separators (the user's ask). Every
-  button has pressed and selected + hover looks (Monos states). Hand off... writes `<instance>_handoff/<instance>.usd` (the loader's stage flattened, textures copied,
+  The list is a table: a sticky column header, group bands, zebra rows, column separators, every column but the
+  name centred, Textures a column of its own (the user's asks). The top bar's icon buttons (viewport, list / grid, add) are flat
+  (`STYLE_ICON_FLAT`, 28 px, no border): a solid fill only on hover, press and the view that is on. Every button has pressed and selected + hover looks
+  (Monos states). Fewer words (the user's ask): the top bar is icons (Filter with a search icon, eye = Viewport
+  menu, list / grid, plus = Add menu), the view bar row is gone (the viewport state sits on the status line), Hand
+  off / Undo / Upgrade are icons (Upgrade with its count), each icon button has a tooltip and an accessible name;
+  only the primary keeps words. The inspector is a full-height column from the window's top to the action bar.
+  A rounded control's border is 2 px at least and follows the UI scale (`scale_css`): Qt does not anti-alias a
+  stylesheet border, and 1 px broke on the corners; dividers stay hairlines. Viewers are found inside Houdini 22's
+  ContextViewer too (`scene_viewers`). Hand off... writes `<instance>_handoff/<instance>.usd` (the loader's stage flattened, textures copied,
   relative paths) for people without MonoFX.
 - Where new loaders go: a network with the shot layout (`merge_actors`, `merge_cameras`, `merge_environments`,
   skill solaris-shot-stage-layout) gets them wired there (Load shot: geo -> actors, camera -> cameras; Add: characters
   -> actors, the rest -> environments); any other network gets `<shot>_merge` / `assets_merge`. Adding an asset
   already in the network makes another instance, prim `<asset>_inst02` (set dressing places one asset many times).
+- Bake to plain nodes (Hand off menu, row menu; `bake_loaders`): a MonoFX Loader becomes a plain subnet in place
+  that anyone with Houdini opens: the loader's inner network copied in, its parms as spare parms without callbacks
+  or menu scripts, the subdivision Python LOP holding its plan as data (`BAKED_SUBD_CODE`, no `apps.` import). The
+  subnet keeps the loader's values and user data `monofx_baked_loader`, so the one Upgrade restores the loader
+  (edits made inside are lost). Unlocking the HDA was not enough: its Python LOPs import the adapter and its parms
+  call `hou.phm()`. sh025: 4 loaders baked, 50 meshes and 7 curves the same.
+- Sublayer / Reference LOPs that read a publish (`find_publish_layers`, `logic.parse_publish_path`: an absolute path
+  `<project>/01_assets/_<group>/<asset>/<dept>/publish/vNNN/<file>` or `02_shots/<shot>/...`; a path with a
+  variable or an expression is not read) show in the manager's "sublayers" group with their status. Update moves
+  the vNNN in the path to the newest version holding the file (a vNNN in the file name follows). Upgrade (the same
+  action as for old loaders, one button and one menu item: Convert and Upgrade confused the user) makes a
+  MonoFX Loader on Source Asset in its place (same name, place, wires; lookdev or model at the version it read,
+  groom and hide off): the loader puts the asset under /<prim>, so prim patterns of the nodes after it up to the
+  first merge / graft move there, and `lopinputprims('.', 0)` (the env scene's xforms) becomes the explicit list of
+  the layer's root prims under /<prim> (a group-level move acts in another frame); other parms naming those prims
+  are listed, not changed. Checked on env_Envi lookdev v005: its 10 sublayers converted, 1040 meshes, 1040
+  bindings, identical bounds.
+- Manager details (the user's asks, 2026-11-17): the list never drops a column, it scrolls sideways (the column header
+  follows the scroll); the inspector slides in 160 ms OutCubic / out 120 ms InCubic (Monos motion) beside the list,
+  just shows when stacked; it is a real slide: `_SlideClip` keeps the panel at full width while its clip widens from
+  the right edge (no reflow); the Geo column is a shot's anim or an asset's model; the result line is two lines at most, details in its tooltip (`Controller.details`);
+  double-click selects the node and frames it in the Network Editor; menus are square (`STYLE_MENU_SQ`) with
+  separators between groups; a Source Asset whose lookdev holds the geometry reads "–" for its model (scan).
+- The inspector's meshes table runs edge to edge, its name column fills what the others leave (wider only when
+  dragged), its scroll bars are thin and inside it, shown when needed (the user's ask). Houdini 22's style paints a
+  tree's rows and branch area grey (#303030 / #3a3a3a) whatever its palette or alternate-background-color says, a
+  `::item` background beats an item's own and an almost transparent one wiped what was under it; offscreen grabs
+  show none of it. So `_MeshDelegate` paints every cell (row colour, hover, lines, elided text) like the main list,
+  `_MeshTree` the branch area and the group chevron, and no `::item` rule is left. Check a tree's colours in the live
+  window (sample its pixels), not offscreen. The table shows every level of the hierarchy (Geo > Base_grp >
+  Body_grp > Geo_Body, as the scene graph does); a group sums its meshes. The name column's width is kept only
+  when the artist drags it (mouse down), never from Qt's own resizes.
+  One background for every row (the user's "too many colours", 2026-11-17): no zebra, no band per group level; a
+  group reads as one by its quieter text and chevron, a selected row by the selection colour.
+- Inspector layout B (the user's pick of three mockups, 2026-11-17), then its toggles (the user's ask the same day):
+  each prim row has three toggles first, before its name (narrow, no lines between them; the tree's branches stay
+  in the name column, `setTreePosition(0)`), as Blender's outliner: the eye (visibility), viewport and
+  render (purpose: both on default, viewport only proxy, render only render, both off guide). Inheritance is
+  Houdini's / USD's: hiding a prim hides everything under it and each child keeps its own eye for when the parent
+  shows again (drawn dimmed meanwhile); a prim without its own purpose follows its parent. One look per state (the
+  user's report: blue and white for one state read as two): a dot under the icon marks the shot's override, what
+  Remove the shot's overrides takes off (not the publish's or the loader's own values: a dot that stayed after a
+  Remove read as a bug); who set a value (this shot, the publish, the loader's Hide Prims / Show in Viewport) is in
+  the tooltip. A toggle that is on draws filled (`_filled_pixmap`: the pupil / lens cut out so any row colour shows
+  through), off is the outline with its slash; 13 px icons in 21 px columns. A click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the
+  selection, one undo step; every click changes the state (`logic.toggle_edits`: the rule comes off only when the
+  wanted value is the one the row has without it, `PrimShow.base_visible` / `base_purpose`; taking it off whenever
+  the value was "on" left a prim the loader hides hidden, two clicks to show it). A toggle re-reads only that loader
+  (`Controller.refresh_detail`, `_run_detail`): a full refresh after each click walked the Dropbox project again
+  (~10,000 stat calls, ~1 s on env_Envi, the user's report of a slow, stuck window); now 0.13-0.23 s on Cliff04's
+  780 rows.
+- Inspector with several loaders selected (the user's ask): one tree, a branch per loader (`show_rows`, the loader's
+  own row has the pattern "**" = all its prims, and the toggles of the instance's root prim /<instance>: a show rule
+  on `logic.ROOT` ".", which every prim under it inherits; hiding it hides the asset); every row carries its loader (`ROLE_LOADER`), so toggles, the
+  menu's subdivision / dicing / Remove act on each row's own loader, and a toggle over several loaders is one undo
+  step (`set_show_many`); Same overrides only for one loader. A filter field above the tree (`_apply_filter`) keeps
+  the rows whose name holds the text, everything under a matching group, and the groups above (opened).
+  Right-click the tree's header: which columns show (the toggles, Faces, From, Scheme, Dice; the name always),
+  remembered per viewer in the prefs (`inspector_hidden_columns`; Faces and From off until picked, the user's ask); Dice still shows only when some prim has dicing. The header shows no icons
+  (the user's ask); the right-click menu's Display submenu says each toggle as a verb (Hide / Show, Stop drawing
+  in the viewport, Stop rendering) and runs the same toggle. Rules live in the hidden
+  `mx_show_rules` (JSON {pattern = one prim under the instance, "vis": invisible | inherited, "purpose"}; the first
+  form {"show": ...} still reads), authored by the HDA's `show_rules` Python LOP after Hide Prims
+  (`adapter.author_show`; no MakeVisible: hiding prunes, the user's rule), so a rule wins over Hide Prims and the
+  groom's render purpose; bake writes them as data (`BAKED_SHOW_CODE`). The panel's state comes from the files on
+  the worker thread (`shown_for`, `logic.prim_shows`: publish visibility / purpose, Hide Prims, Show in Viewport,
+  rules), checked against the stage with hython on sh025. The groom's curves are rows under Groom
+  (`groom_curve_counts`, first frame of a cache; not `groom_curves`, the cache's own paths that refresh uses: a second
+  function of that name broke every groom loader). Remove the shot's overrides clears subdivision and show rules;
+  Same overrides copies both; a change keeps the table's scroll, selection and folds. A camera has "On the loader":
+  clipping, aperture, ratio, guide scale as parm fields (Enter sets the parm, one undo step).
+- hython: `hou.hda.installFile` goes into the open hip's library list, which `hipFile.load` replaces: install
+  after the load (and `setIsPreferred`) or the scene runs the installed MonoFX's loader, or no loader at all.
+  Each row starts with its prim type's icon from Houdini's Scene Graph Tree (`SCENEGRAPH_primtype_xform` for a group,
+  `_mesh` for a mesh; `_prim_icon`, Lucide outside Houdini); groups are drawn as Xforms, their real type is not read.
+  The meshes' right-click menu (the user's "cryptic", 2026-11-17): verbs (Use the publish's subdivision, Turn
+  subdivision off, Subdivide (Catmull-Clark), Remove the shot's overrides, Copy these overrides to every <asset>), an
+  icon on every row and no checkable actions (their check column pushed rows in): the current choice shows a check icon.
+  Dicing is a submenu of steps (publish's, 0.25 to 4), not a field. A submenu is made as `QMenu(title, menu)`:
+  `addMenu(icon, title)`'s submenu was deleted with its Python wrapper.
+  Its first row is what it acts on, a band (`_menu_head`: lighter background, firm line under it, the name at the
+  items' size, regular, italic, in the label colour: bold and bright stood out too much), not a greyed-out item. "Same subdivision on the other N <asset> loaders" (`subd_to_asset`: this loader's whole rule set onto the
+  asset's other loaders) shows only when the scene has other loaders of that asset.
+- Inspector of a shot loader (the user's ask, 2026-11-17): Frames and Fps from the anim publish's `publish_meta.json`
+  (`Controller.timeline`; an asset loader has none). A camera adds its lens from the loader's stage at the current
+  frame (`adapter.camera_info`): USD lens values are tenths of a scene unit (sh025, 1 m a unit: 35 mm is 0.35), so
+  they are turned into mm, distances into m; f-stop 0 is USD's "no depth of field" and reads "Depth of field off".
+- No "·"-joined facts anywhere in the manager (the user's dislike, 2026-11-17): the inspector is a property list
+  (`_Props`: label left, value right) of Node, Kind, Shot / Asset, each part's version, Textures, Subdivision,
+  Viewport polygons; a NEWER VERSION section lists the part and version ("V001, first version"), Published, Work
+  file by, and only real changes (outputs added / removed, frames, fps, meshes added / removed; never a file size).
+  Both sections fold from their titles (`_Section`, view state kept per viewer in the prefs as
+  `inspector_details` / `inspector_news`). The list's side margins are 6 px (`LIST_PAD`).
+- Manager type: bold only for the inspector's name, the shot crumb and the primary; list names, headers, bands and
+  the status line are regular (the user's ask). Icons are drawn for every device-pixel ratio (`_crisp_icon`):
+  scaling a small pixmap up broke the search icon; icon-only buttons centre their icon.
 - Props and environments publish a complete asset as their lookdev (`def` meshes and materials, root prims at the
   top, e.g. prop_Cliff01: 12 meshes), the UV publish being another mesh (`_uv_publish_Low` / `_zHigh`). Source Asset
   loads such a lookdev alone (`lookdev_defines_geometry`), never with the UV publish (that doubled the geometry);
+  subdivision and the inspector's table read its meshes from that lookdev too (`geometry_file`; read from the model,
+  Cliff01's 12 meshes were listed as none and none got a scheme);
   Helen's lookdev only overrides, so her UV model stays under it. Checked on env_Envi lookdev v005: its 14
   hand-placed props rebuilt with loaders + the same xform nodes give the same 1040 meshes and the same bounds.
 - A locked LOP HDA makes its inner nodes on first cook: `node.children()` is empty before.

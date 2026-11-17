@@ -3,6 +3,21 @@
 ## [Unreleased]
 
 
+## [0.1.34] - 2026-11-17
+
+### Houdini
+- **MonoFX Loaders** manager, inspector: each prim has three toggles, as in Blender's outliner: show / hide, drawn in the viewport, rendered. Hiding a group hides what is under it and each child keeps its own setting for when the group shows again; viewport and render follow the parent unless a child has its own. A dot marks what this shot overrides, which **Remove the shot's overrides** takes off (who set a value is in the tooltip). A click takes ~0.2 s and reads only that loader again (it used to rescan the project, ~1 s). The right-click menu's **Display** says the same toggles in words.
+- **MonoFX Loaders** manager, inspector: the prims show every level of the hierarchy as the scene graph does (Geo, Base_grp, Body_grp, Geo_Body), with Houdini's Xform / Mesh / Curves icons, the groom's curves under Groom; with several loaders selected their prims share one tree, a branch each (the loader's own row hides or shows the whole asset). A filter field narrows the tree by prim name; right-click the column titles to choose the columns (Faces and From are off by default).
+- **MonoFX Loaders** manager, inspector: the right-click menu says what each item does ("Use the publish's subdivision", "Turn subdivision off", "Subdivide (Catmull-Clark)", "Remove the shot's overrides", "Same overrides on the other N char_Helen loaders"), each item with an icon; dicing is picked from a submenu of steps.
+- **MonoFX Loaders** manager, inspector: a camera shows its lens (focal length in mm, aperture and ratio, clipping in m, f-stop and focus distance or "Depth of field: off") and edits the loader's clipping, aperture, ratio and guide scale; a shot's loader shows its frame range and fps. Details are a list of labels and values in sections that fold; picking another loader no longer draws its details over the last one's.
+- **MonoFX Loader**: a prop whose lookdev holds the whole asset (env_Envi's cliffs) lists its meshes in the inspector and gets their subdivision from the loader; before, Cliff01 and Cliff06 listed none and their meshes got no scheme from the loader.
+- **MonoFX Loaders** manager: one **Upgrade** turns old loaders (Anim Loader 2.2 and 2.1, Character Loader) and Sublayer / Reference nodes reading a publish into MonoFX Loaders, keeping the node's place and wires (env_Envi lookdev: 10 sublayers, the same meshes and bounds). The manager reads 2.2 nodes like MonoFX Loaders and lists publish sublayers with their versions.
+- **MonoFX Loaders** manager: **Bake to plain nodes** (hand-off menu, right-click) turns loaders into plain Houdini subnets that open without MonoFX, for someone with Houdini only; **Upgrade** turns them back.
+- **MonoFX Loaders** manager: fewer words and lighter type: the top bar is flat icon buttons, Hand off / Undo / Upgrade are icons with tooltips, the inspector runs the full height and slides in and out, the list scrolls sideways instead of dropping columns, double-click selects the node and shows it in the Network Editor, the result line keeps to two lines.
+- **MonoFX Loader**: Draw Hulls Only and Frame find the Scene Viewer inside Houdini 22's Context Viewer pane; before, they said "No viewer shows /stage" while one did.
+- **MonoFX Loaders** manager: a part with nothing published when the loader was made and a version now shows as newer ("+V001") with Update, not as missing; a prop whose lookdev holds the whole asset shows "–" for its model; Textures has its own column.
+
+
 ## [0.1.33] - 2026-11-17
 
 ### Houdini

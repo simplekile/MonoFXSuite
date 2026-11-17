@@ -678,8 +678,11 @@ def upgrade(nodes: list) -> list:
     from apps.houdini.solaris_adapter import undo_group
 
     done = []
-    with undo_group("Upgrade anim loaders to 2.2"):
+    with undo_group("Upgrade to MonoFX Loaders"):
         for node in nodes:
+            if _is_baked(node):  # a baked loader: the MonoFX Loader again
+                done.append(restore_baked(node))
+                continue
             if _is_character_loader(node):
                 new = _upgrade_character_loader(node)
                 if new is not None:
@@ -832,7 +835,7 @@ def set_viewport_part(part: str, on: bool) -> int:
     n = 0
     with undo_group(f"{part.title()} in viewport {'on' if on else 'off'}"):
         for node in find_loaders():
-            if node.type().name() != config.HDA_TYPE:
+            if node.type().name() not in (config.HDA_TYPE, config.OLD_TYPE):
                 continue
             value = int(node.evalParm(config.P_VIEWPORT))
             new = (value | bit) if on else (value & ~bit)
@@ -844,8 +847,8 @@ def set_viewport_part(part: str, on: bool) -> int:
 
 def viewport_part_on(part: str) -> bool:
     bit = config.VIEWPORT_BITS[part]
-    nodes = [n for n in find_loaders() if n.type().name() == config.HDA_TYPE]
-    return bool(nodes) and all(int(n.evalParm(config.P_VIEWPORT)) & bit for n in nodes)
+    nodes = [n for n in find_loaders() if n.type().name() in (config.HDA_TYPE, config.OLD_TYPE)]
+    return all(int(n.evalParm(config.P_VIEWPORT)) & bit for n in nodes)  # no loader: nothing is hidden
 
 
 def frame(path: str) -> bool:
@@ -854,9 +857,7 @@ def frame(path: str) -> bool:
     inst = _s(node, config.P_INSTANCE) if node else ""
     if not inst:
         return False
-    for pane in hou.ui.paneTabs():
-        if pane.type() != hou.paneTabType.SceneViewer:
-            continue
+    for pane in scene_viewers():
         try:
             if pane.pwd() != node.parent():
                 pane.setPwd(node.parent())
@@ -869,7 +870,10 @@ def frame(path: str) -> bool:
 
 
 def publish_folder(path: str) -> str:
-    """The folder of the loader's anim (or model) file, else its asset or shot folder."""
+    """The folder of the loader's anim (or model) file, else its asset or shot folder; a layer row's version folder."""
+    if LAYER_SEP in path:
+        _node, _i, ref = _layer(path)
+        return (ref.publish_dir() / ref.version).as_posix() if ref is not None else ""
     node = hou.node(path)
     if node is None:
         return ""
@@ -1023,6 +1027,370 @@ def handoff(paths: list[str], out_dir: str) -> list[str]:
     return lines
 
 
+# --- Sublayer / Reference LOPs that read a publish (the user's ask, 2026-11-17) --------------------------------
+
+LAYER_TYPES = ("sublayer", "reference::2.0", "reference")
+LAYER_SEP = "#"  # a layer row's path: <node path>#<file index>
+
+
+def find_publish_layers(root=None) -> list[tuple[Any, int, logic.PublishRef]]:
+    """(node, file index, publish) for every Sublayer / Reference LOP file that reads a publish, outside locked
+    HDAs (a loader's own sublayers are its business). Paths with a variable or an expression are not read."""
+    prefix = (root.path().rstrip("/") + "/") if root is not None else "/"
+    out = []
+    for name in LAYER_TYPES:
+        t = hou.nodeType(hou.lopNodeTypeCategory(), name)
+        for node in (t.instances() if t is not None else ()):
+            if not node.path().startswith(prefix) or node.isInsideLockedHDA():
+                continue
+            n = node.parm("num_files")
+            for i in range(1, (n.eval() if n is not None else 1) + 1):
+                p = node.parm(f"filepath{i}")
+                ref = logic.parse_publish_path(p.unexpandedString()) if p is not None else None
+                if ref is not None:
+                    out.append((node, i, ref))
+    return sorted(out, key=lambda x: (x[0].path(), x[1]))
+
+
+def _layer(path: str) -> tuple[Any, int, logic.PublishRef | None]:
+    node_path, _, index = path.partition(LAYER_SEP)
+    node = hou.node(node_path)
+    i = int(index or 1)
+    p = node.parm(f"filepath{i}") if node is not None else None
+    return node, i, (logic.parse_publish_path(p.unexpandedString()) if p is not None else None)
+
+
+def update_layers(paths: list[str]) -> list[str]:
+    """Each layer file to the newest version of its publish that holds the same file; one undo step."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    lines = []
+    with undo_group("Update sublayers"):
+        for path in paths:
+            node, i, ref = _layer(path)
+            if ref is None:
+                continue
+            found = logic.ref_versions(ref)
+            newest = found[-1] if found else ""
+            if newest and logic._vnum(newest) > logic._vnum(ref.version):
+                node.parm(f"filepath{i}").set(ref.path_in(newest))
+                lines.append(f"{node.name()}: {ref.word} {ref.version} -> {newest}")
+    return lines
+
+
+def _layer_roots(path: str) -> list[str]:
+    from pxr import Sdf
+
+    layer = Sdf.Layer.FindOrOpen(path)
+    return [p.name for p in layer.rootPrims] if layer is not None else []
+
+
+def _branch_after(node) -> list:
+    """Nodes downstream of ``node`` up to the first node that joins branches (merge, graft): the ones whose prim
+    patterns still name the layer's root prims."""
+    out, todo, seen = [], list(node.outputs()), set()
+    while todo:
+        n = todo.pop(0)
+        if n.path() in seen:
+            continue
+        seen.add(n.path())
+        out.append(n)
+        if n.type().name().split("::")[0] in ("merge", "graftstages", "graftbranches"):
+            continue
+        todo.extend(n.outputs())
+    return out
+
+
+def convert_layers(paths: list[str]) -> tuple[list[str], list[str]]:
+    """Sublayer / Reference LOPs of one publish file -> MonoFX Loaders on Source Asset (same name, place, wires;
+    lookdev or model at the version the node read, nothing else turned on). The loader puts the asset under
+    /<prim>, so prim patterns of the nodes after it in its branch are moved there (xform and the like); a node
+    further on that names those prims is listed, not changed. One undo step. (what was converted, notes)"""
+    from apps.houdini.solaris_adapter import manual_update, undo_group
+
+    done, notes = [], []
+    with undo_group("Convert sublayers to MonoFX Loaders"), manual_update():
+        for path in paths:
+            node, i, ref = _layer(path)
+            if ref is None or node is None:
+                continue
+            n_files = node.parm("num_files").eval() if node.parm("num_files") else 1
+            if n_files != 1 or ref.kind != "asset":
+                notes.append(f"{node.name()}: not converted ({'several files' if n_files != 1 else 'a shot file'})")
+                continue
+            root = Path(ref.root)
+            state = logic.initial_asset_state(root, ref.entity)
+            if ref.part == "lookdev":
+                state = dataclasses.replace(state, versions={**state.versions, "lookdev": ref.version})
+            else:  # a model publish: that file, no lookdev (the node read none)
+                state = dataclasses.replace(state, model_version=ref.version, model_file=ref.file,
+                                            enabled={**state.enabled, "lookdev": False})
+            state = dataclasses.replace(state, enabled={**state.enabled, "groom": False})
+            parent, name = node.parent(), node.name()
+            prim = re.sub(r"[^0-9A-Za-z_]+", "_", name).strip("_") or ref.entity
+            roots = _layer_roots(ref.publish_dir().joinpath(ref.version, ref.file).as_posix())
+            ins = [(c.inputIndex(), c.inputNode(), c.outputIndex()) for c in node.inputConnections()]
+            outs = [(c.outputNode(), c.inputIndex()) for c in node.outputConnections()]
+            display, pos = node.isDisplayFlagSet(), node.position()
+            branch = _branch_after(node)
+            node.setName(_unique_name(parent, name + "_sublayer"))
+            loader = parent.createNode(config.HDA_TYPE, name)
+            loader.setPosition(pos)
+            write_state(loader, dataclasses.replace(state, instance_name=prim))
+            _set(loader, "mx_hide_enable", 0)  # the sublayer showed every prim: the loader hides none either
+            refresh(loader)
+            for index, src, out_index in ins:
+                loader.setInput(index, src, out_index)
+            for dst, index in outs:
+                dst.setInput(index, loader)
+            if display:
+                loader.setDisplayFlag(True)
+            node.destroy()
+            moved, named = [], []
+            for n in branch:
+                for p in n.parms():
+                    if p.parmTemplate().type() != hou.parmTemplateType.String or p.isLocked():
+                        continue
+                    raw = p.unexpandedString()
+                    if "lopinputprims" in raw and ("primpattern" in p.name() or "primpath" in p.name()):
+                        # "every root prim of my input" meant the layer's root prims; the input's root is now
+                        # /<prim>: name them under it, or the node would move the whole group in another frame
+                        p.set(" ".join(f"/{prim}/{r}" for r in roots))
+                        moved.append(n.name())
+                        continue
+                    if not any(f"/{r}" in raw for r in roots):
+                        continue
+                    if "primpattern" in p.name() or "primpath" in p.name():
+                        new = logic.root_patterns_moved(raw, roots, prim)
+                        if new != raw:
+                            p.set(new)
+                            moved.append(n.name())
+                    else:
+                        named.append(f"{n.name()}.{p.name()}")
+            done.append(f"{name} -> /{prim}" + (f" (moved {', '.join(sorted(set(moved)))})" if moved else ""))
+            if named:
+                notes.append(f"{name}: check {', '.join(named[:4])} (they name the old prim paths)")
+            tail = [n.name() for n in branch if n.type().name().split("::")[0] in ("graftstages", "graftbranches")]
+            if tail:
+                notes.append(f"{name}: after {tail[0]} its prims sit one level deeper, under /{prim}")
+    return done, notes
+
+
+# --- Bake to plain nodes, and back (the user's ask, 2026-11-17) -----------------------------------------------
+# A loader becomes a plain subnet anyone with Houdini opens: the loader's own network copied in, its parms as spare
+# parms without callbacks or menus, the subdivision Python LOP holding its plan as data (no MonoFX import). The
+# subnet keeps the loader's parm values and a mark, so Upgrade turns it back into a MonoFX Loader.
+
+BAKED_USER_DATA = "monofx_baked_loader"  # JSON {"type": <loader type>}: a baked loader, Upgrade restores it
+
+BAKED_SHOW_CODE = """hda = hou.pwd().parent()
+stage = hou.pwd().editableStage()
+from pxr import UsdGeom
+inst = hda.evalParm("mx_instance_name")
+# Each prim's own visibility and purpose, baked from the MonoFX Loader
+RULES = %s
+for rule in RULES if inst else []:
+    prim = stage.GetPrimAtPath("/" + inst + ("" if rule["pattern"] == "." else "/" + rule["pattern"]))
+    if not prim or not prim.IsA(UsdGeom.Imageable):
+        continue
+    img = UsdGeom.Imageable(prim)
+    if "vis" in rule:
+        img.CreateVisibilityAttr().Set(rule["vis"])
+    if "purpose" in rule:
+        img.CreatePurposeAttr().Set(rule["purpose"])
+"""
+
+BAKED_SUBD_CODE = """hda = hou.pwd().parent()
+stage = hou.pwd().editableStage()
+from pxr import Sdf, Usd, UsdGeom
+inst = hda.evalParm("mx_instance_name")
+root = stage.GetPrimAtPath("/" + inst) if inst else None
+vp = hda.evalParm("mx_viewport")
+look_vp, groom_vp = vp & 1, vp & 2
+# Subdivision per mesh, baked from the MonoFX Loader (shot rule > lookdev > anim > none): mesh -> (scheme, dicing)
+PLAN = %s
+if root:
+    for mesh, (scheme, dicing) in PLAN.items():
+        prim = stage.GetPrimAtPath("/" + inst + mesh)
+        if not prim:
+            continue
+        UsdGeom.Mesh(prim).GetSubdivisionSchemeAttr().Set(scheme)
+        if dicing is not None:
+            UsdGeom.PrimvarsAPI(prim).CreatePrimvar("karma:object:dicingquality", Sdf.ValueTypeNames.Float,
+                                                    UsdGeom.Tokens.constant).Set(dicing)
+    for prim in Usd.PrimRange(root):
+        if not look_vp:
+            rel = prim.GetRelationship("material:binding")
+            targets = rel.GetTargets() if rel else []
+            if targets:
+                prim.CreateRelationship("material:binding:full", False).SetTargets(targets)
+                rel.SetTargets([])
+        if not groom_vp and prim.IsA(UsdGeom.BasisCurves):
+            UsdGeom.Imageable(prim).CreatePurposeAttr().Set(UsdGeom.Tokens.render)
+"""
+
+
+def _plain_templates(group) -> "hou.ParmTemplateGroup":
+    """The loader's parms without what needs MonoFX: buttons go, callbacks and menu scripts are cleared."""
+    out = hou.ParmTemplateGroup()
+
+    def clean(t):
+        if t.type() == hou.parmTemplateType.Button:
+            return None
+        if t.type() == hou.parmTemplateType.Folder:
+            kids = [k for k in (clean(c) for c in t.parmTemplates()) if k is not None]
+            t.setParmTemplates(kids)
+            return t
+        if hasattr(t, "setScriptCallback"):
+            t.setScriptCallback("")
+        if hasattr(t, "itemGeneratorScript") and t.itemGeneratorScript():
+            t.setItemGeneratorScript("")
+            if hasattr(t, "setMenuType"):
+                t.setMenuType(hou.menuType.StringReplace)
+        return t
+
+    for t in group.entries():
+        c = clean(t)
+        if c is not None:
+            out.append(c)
+    return out
+
+
+def _copy_parm_values(src, dst) -> None:
+    for p in src.parms():
+        q = dst.parm(p.name())
+        if q is None or q.isLocked():
+            continue
+        try:
+            if p.parmTemplate().type() == hou.parmTemplateType.String:
+                q.set(p.unexpandedString())  # $F stays a variable
+            elif not p.keyframes():
+                q.set(p.eval())
+        except (hou.OperationFailed, TypeError):
+            continue
+
+
+def _replace(old, new) -> None:
+    """``new`` takes ``old``'s name, place, wires and display flag; ``old`` goes."""
+    parent, name = old.parent(), old.name()
+    ins = [(c.inputIndex(), c.inputNode(), c.outputIndex()) for c in old.inputConnections()]
+    outs = [(c.outputNode(), c.inputIndex()) for c in old.outputConnections()]
+    display, pos = old.isDisplayFlagSet(), old.position()
+    old.setName(_unique_name(parent, name + "_old"))
+    new.setName(name)
+    new.setPosition(pos)
+    for index, src, out_index in ins:
+        new.setInput(index, src, out_index)
+    for dst, index in outs:
+        dst.setInput(index, new)
+    if display:
+        new.setDisplayFlag(True)
+    old.destroy()
+
+
+def bake_loaders(paths: list[str]) -> tuple[list[str], list[str]]:
+    """MonoFX Loaders -> plain subnets that need no MonoFX (see above); one undo step. (baked, notes)"""
+    from apps.houdini.solaris_adapter import manual_update, undo_group
+
+    done, notes = [], []
+    with undo_group("Bake loaders to plain nodes"), manual_update():
+        for path in paths:
+            node = hou.node(path)
+            if node is None or node.type().name() not in (config.HDA_TYPE, config.OLD_TYPE):
+                continue
+            node.cook(force=True)  # a locked LOP HDA makes its inner nodes on first cook
+            plan, _faces = node_subd_plan(node)
+            parent = node.parent()
+            sub = parent.createNode("subnet", _unique_name(parent, node.name() + "_baked"))
+            for child in sub.children():  # its own output0: the loader's comes with the copy
+                child.destroy()
+            group = sub.parmTemplateGroup()
+            for t in _plain_templates(node.parmTemplateGroup()).entries():
+                group.append(t)
+            sub.setParmTemplateGroup(group)
+            _copy_parm_values(node, sub)
+            kids = node.children()
+            copies = hou.copyNodesTo(kids, sub)
+            by_name = {c.name(): c for c in copies}
+            for orig in kids:  # wires from the subnet's input were not copied
+                for i, conn in enumerate(orig.inputConnections()):
+                    if conn.subnetIndirectInput() is not None:
+                        by_name[orig.name()].setInput(conn.inputIndex(), sub.indirectInputs()[conn.subnetIndirectInput().number()])
+                if orig.isDisplayFlagSet():
+                    by_name[orig.name()].setDisplayFlag(True)
+            subd = by_name.get("render_only")
+            if subd is not None:
+                data = {m: (c.scheme, c.dicing) for m, c in plan.items()}
+                subd.parm("python").set(BAKED_SUBD_CODE % repr(data))
+            show = by_name.get("show_rules")
+            if show is not None:
+                show.parm("python").set(BAKED_SHOW_CODE % repr(logic.parse_show_rules(_s(node, config.P_SHOW_RULES))))
+            sub.setUserData(BAKED_USER_DATA, json.dumps({"type": node.type().name()}))
+            sub.setComment("baked MonoFX Loader: no MonoFX needed; Upgrade in the manager restores the loader")
+            name = node.name()
+            _replace(node, sub)
+            done.append(name)
+    return done, notes
+
+
+def _is_baked(node) -> bool:
+    return bool(node.userData(BAKED_USER_DATA)) if node is not None else False
+
+
+def find_baked(root=None) -> list:
+    """Subnets made by bake_loaders, in every LOP network."""
+    prefix = (root.path().rstrip("/") + "/") if root is not None else "/"
+    t = hou.nodeType(hou.lopNodeTypeCategory(), "subnet")
+    return sorted((n for n in (t.instances() if t else ()) if n.path().startswith(prefix) and _is_baked(n)),
+                  key=lambda n: n.path())
+
+
+def restore_baked(node):
+    """A baked subnet -> the MonoFX Loader again, from the loader parms it kept (edits made inside are lost)."""
+    loader = node.parent().createNode(config.HDA_TYPE, _unique_name(node.parent(), node.name() + "_loader"))
+    _copy_parm_values(node, loader)
+    refresh(loader)
+    _replace(node, loader)
+    return loader
+
+
+def camera_info(path: str) -> dict:
+    """The camera a loader puts on the stage, at the current frame (what renders: the loader's own settings applied):
+    prim, focal length (and whether it is animated), apertures, clipping, f-stop, focus distance. {} without one."""
+    from pxr import Usd, UsdGeom
+
+    node = hou.node(path)
+    if node is None:
+        return {}
+    try:
+        stage = node.stage()
+    except hou.OperationFailed:
+        return {}
+    if stage is None:
+        return {}
+    t = Usd.TimeCode(hou.frame())
+    cam = next((p for p in stage.Traverse() if p.IsA(UsdGeom.Camera)), None)
+    if cam is None:
+        return {}
+    c = UsdGeom.Camera(cam)
+
+    mpu = UsdGeom.GetStageMetersPerUnit(stage) or 0.01
+
+    def get(attr, scale=1.0):
+        v = attr.Get(t) if attr else None
+        return None if v is None else float(v) * scale
+
+    # USD lens values are tenths of a scene unit (sh025, 1 m a unit: 35 mm is 0.35), distances are scene units:
+    # the inspector says mm and m
+    mm, m = mpu * 100.0, mpu
+    focal = c.GetFocalLengthAttr()
+    clip = c.GetClippingRangeAttr().Get(t)
+    return {"prim": cam.GetPath().pathString, "focal": get(focal, mm), "focal_animated": focal.GetNumTimeSamples() > 1,
+            "h_aperture": get(c.GetHorizontalApertureAttr(), mm), "v_aperture": get(c.GetVerticalApertureAttr(), mm),
+            "clip": (clip[0] * m, clip[1] * m) if clip is not None else None, "fstop": get(c.GetFStopAttr()),
+            "focus": get(c.GetFocusDistanceAttr(), m)}
+
+
 # --- the manager window's backend --------------------------------------------------------------------
 
 class HoudiniBackend:
@@ -1036,14 +1404,33 @@ class HoudiniBackend:
 
         out = []
         for n in find_loaders():
-            legacy = n.type().name() != config.HDA_TYPE  # 2.1, or a Character Loader 3.2
-            out.append(LoaderInfo(n.path(), None if legacy else read_state(n), legacy, n.name(),
-                                  "" if legacy else _s(n, config.P_SUBD_RULES)))
+            kind = n.type().name()
+            legacy = kind != config.HDA_TYPE  # 2.2, 2.1, or a Character Loader 3.2: offered for Upgrade
+            readable = kind in (config.HDA_TYPE, config.OLD_TYPE)  # 2.2 has the same parms: its state is real
+            out.append(LoaderInfo(n.path(), read_state(n) if readable else None, legacy, n.name(),
+                                  _s(n, config.P_SUBD_RULES) if readable else "",
+                                  show=_show_settings(n) if readable else None))
+        for n in find_baked():  # baked loaders: Upgrade restores them
+            out.append(LoaderInfo(n.path(), None, True, n.name(), "", None, True))
+        for node, i, ref in find_publish_layers():  # Sublayer / Reference LOPs reading a publish
+            many = (node.parm("num_files").eval() if node.parm("num_files") else 1) > 1
+            out.append(LoaderInfo(f"{node.path()}{LAYER_SEP}{i}", None, False,
+                                  f"{node.name()} {i}" if many else node.name(), "", ref))
         return out
 
     @staticmethod
     def scan(infos):
-        return {i.path: logic.status(i.state) for i in infos if i.state is not None}
+        out = {i.path: logic.status(i.state) for i in infos if i.state is not None}
+        for i in infos:  # Source Asset with a complete lookdev: the UV publish is not loaded, so not "missing"
+            st = i.state
+            if st is not None and logic.is_asset(st) and st.enabled.get("lookdev"):
+                look = logic.resolve(st).lookdev
+                if look and lookdev_defines_geometry(look):
+                    out[i.path] = {**out[i.path], "anim": (logic.STATUS_OFF, None)}
+        for i in infos:
+            if getattr(i, "layer", None) is not None:
+                out[i.path] = {i.layer.part: logic.ref_status(i.layer)}
+        return out
 
     @staticmethod
     def subd(infos):
@@ -1054,8 +1441,14 @@ class HoudiniBackend:
             if st is None or st.kind != "geo":
                 continue
             r = logic.resolve(st)
-            plan, faces = plan_for(r.anim, r.lookdev if st.enabled.get("lookdev") else "", i.subd_rules)
-            out[i.path] = {"plan": plan, "faces": faces}
+            look = r.lookdev if st.enabled.get("lookdev") else ""
+            geo = geometry_file(r.anim, look, logic.is_asset(st))
+            plan, faces = plan_for(geo, look, i.subd_rules)
+            groom = logic.first_frame_path(r.groom, r.frames.get("groom", (None,))[0]) \
+                if st.enabled.get("groom") and r.groom else ""
+            curves = groom_curve_counts(groom)
+            out[i.path] = {"plan": plan, "faces": faces, "curves": curves,
+                           "shown": shown_for(list(plan), list(curves), geo, look, getattr(i, "show", None))}
         return out
 
     @staticmethod
@@ -1078,18 +1471,65 @@ class HoudiniBackend:
             node.parm(config.P_SUBD_RULES).set(json.dumps(left) if left else "")
 
     @staticmethod
+    def set_show(path, edits):
+        """(pattern, "vis" | "purpose", value or None) edits of the shot's show rules; one undo step."""
+        from apps.houdini.solaris_adapter import undo_group
+
+        node = hou.node(path)
+        rules = logic.parse_show_rules(_s(node, config.P_SHOW_RULES))
+        left = logic.set_show_rules(rules, list(edits))
+        with undo_group(f"Show {node.name()}"):
+            node.parm(config.P_SHOW_RULES).set(json.dumps(left) if left else "")
+
+    @staticmethod
+    def set_show_many(by_loader):
+        """{loader: edits} of one toggle click over several loaders; one undo step."""
+        from apps.houdini.solaris_adapter import undo_group
+
+        with undo_group("Show"):
+            for path, edits in by_loader.items():
+                node = hou.node(path)
+                if node is None:
+                    continue
+                left = logic.set_show_rules(logic.parse_show_rules(_s(node, config.P_SHOW_RULES)), list(edits))
+                node.parm(config.P_SHOW_RULES).set(json.dumps(left) if left else "")
+
+    @staticmethod
+    def clear_overrides(path, patterns):
+        """The shot's subdivision and show rules for those rows (None: all of them); one undo step."""
+        from apps.houdini.solaris_adapter import undo_group
+
+        node = hou.node(path)
+        subd = logic.clear_subd_rules(logic.parse_subd_rules(_s(node, config.P_SUBD_RULES)), patterns)
+        show = logic.parse_show_rules(_s(node, config.P_SHOW_RULES))
+        show = logic.clear_show_rules(show, patterns)
+        with undo_group(f"Clear overrides {node.name()}"):
+            node.parm(config.P_SUBD_RULES).set(json.dumps(subd) if subd else "")
+            node.parm(config.P_SHOW_RULES).set(json.dumps(show) if show else "")
+
+    @staticmethod
     def subd_to_asset(path):
-        """The loader's rules on every other 2.2 loader of the same asset; returns how many."""
+        """The loader's subdivision and show rules on every other loader of the same asset; returns how many."""
         from apps.houdini.solaris_adapter import undo_group
 
         src = hou.node(path)
-        asset, text = _s(src, config.P_ASSET), _s(src, config.P_SUBD_RULES)
+        asset = _s(src, config.P_ASSET)
+        subd, show = _s(src, config.P_SUBD_RULES), _s(src, config.P_SHOW_RULES)
         others = [n for n in find_loaders() if n.type().name() == config.HDA_TYPE and n.path() != path
                   and asset and _s(n, config.P_ASSET) == asset]
-        with undo_group(f"Subdivision to every {asset}"):
+        with undo_group(f"Overrides to every {asset}"):
             for n in others:
-                n.parm(config.P_SUBD_RULES).set(text)
+                n.parm(config.P_SUBD_RULES).set(subd)
+                n.parm(config.P_SHOW_RULES).set(show)
         return len(others)
+
+    @staticmethod
+    def cam_parms(path):
+        return cam_parms(path)
+
+    @staticmethod
+    def set_cam_parm(path, name, value):
+        return set_cam_parm(path, name, value)
 
     @staticmethod
     def thumbnail(state) -> str:
@@ -1121,9 +1561,22 @@ class HoudiniBackend:
 
     @staticmethod
     def select(path):
-        node = hou.node(path)
-        if node is not None:
-            node.setSelected(True, clear_all_selected=True)
+        """Selects the node and brings it into view in the Network Editor (its network, framed)."""
+        node = hou.node(path.partition(LAYER_SEP)[0])
+        if node is None:
+            return
+        node.setSelected(True, clear_all_selected=True)
+        node.setCurrent(True, clear_all_selected=False)
+        for pane in hou.ui.paneTabs():
+            if pane.type() != hou.paneTabType.NetworkEditor:
+                continue
+            try:
+                if pane.pwd() != node.parent():
+                    pane.cd(node.parent().path())
+                pane.homeToSelection()
+            except (AttributeError, hou.OperationFailed):
+                continue
+            break
 
     @staticmethod
     def undo():
@@ -1187,10 +1640,10 @@ class HoudiniBackend:
         news, weight = {}, {}
         for i in infos:
             st = i.state
-            if st is None or st.kind != "geo":
+            if st is None:
                 continue
             items = []
-            for part in ("anim", *logic.PARTS):
+            for part in (("anim",) if st.kind == "cam" else ("anim", *logic.PARTS)):
                 w = logic.whats_new(st, part)
                 if w is None:
                     continue
@@ -1210,6 +1663,22 @@ class HoudiniBackend:
                 and not logic.is_asset(i.state)}
         gaps = logic.shot_gaps(target_root, target_shot, have) if target_root and target_shot else ("", [])
         return {"news": news, "weight": weight, "gaps": gaps}
+
+    @staticmethod
+    def camera_info(path):
+        return camera_info(path)
+
+    @staticmethod
+    def bake(paths):
+        return bake_loaders(list(paths))
+
+    @staticmethod
+    def update_layers(paths):
+        return update_layers(list(paths))
+
+    @staticmethod
+    def convert_layers(paths):
+        return convert_layers(list(paths))
 
     @staticmethod
     def project_and_shot() -> tuple[str, str]:
@@ -1257,10 +1726,19 @@ def plan_for(anim: str, lookdev: str, rules_text: str) -> tuple[dict, dict[str, 
     return logic.subd_plan(meshes, look_ops, anim_ops, logic.parse_subd_rules(rules_text)), faces
 
 
+def geometry_file(anim: str, lookdev: str, asset_source: bool) -> str:
+    """The file whose meshes the loader puts on the stage: a prop's complete lookdev (it defines the meshes and is
+    loaded alone, `lookdev_defines_geometry`), else the anim / model publish. Subdivision and the inspector's table
+    read their meshes from it: read from the model, Cliff01's 12 lookdev meshes were listed as none and got no
+    subdivisionScheme (USD's catmullClark fallback)."""
+    return lookdev if asset_source and lookdev and lookdev_defines_geometry(lookdev) else anim
+
+
 def node_subd_plan(node) -> tuple[dict, dict[str, int]]:
-    """The subdivision plan of a loader (logic.subd_plan) and the anim meshes' face counts."""
+    """The subdivision plan of a loader (logic.subd_plan) and its meshes' face counts."""
     look = _s(node, config.P_PATH["lookdev"]) if node.evalParm(config.P_ENABLE["lookdev"]) else ""
-    return plan_for(_s(node, config.P_ANIM_PATH), look, _s(node, config.P_SUBD_RULES))
+    asset = _s(node, config.P_SOURCE) == config.SOURCE_ASSET
+    return plan_for(geometry_file(_s(node, config.P_ANIM_PATH), look, asset), look, _s(node, config.P_SUBD_RULES))
 
 
 def author_subd(node, stage) -> None:
@@ -1281,6 +1759,118 @@ def author_subd(node, stage) -> None:
                                                     UsdGeom.Tokens.constant).Set(choice.dicing)
 
 
+# --- what each prim shows (visibility, purpose: the user's pick, layout B, 2026-11-17) --------------------------
+
+_SHOW_CACHE: dict = {}
+_CURVES_CACHE: dict = {}
+
+
+def _show_settings(node) -> dict:
+    """What the worker thread needs, read on the main thread: the shot's rules, Hide Prims, Show in Viewport."""
+    return {"rules": _s(node, config.P_SHOW_RULES), "hide_on": bool(node.evalParm(config.P_HIDE_ENABLE)),
+            "hide": _s(node, config.P_HIDE_PATTERN), "viewport": int(node.evalParm(config.P_VIEWPORT))}
+
+
+def show_opinions(path: str) -> dict[str, dict]:
+    """{prim (no leading "/"): {"visibility", "purpose"}} authored in a publish file and its sublayers (cached by
+    modification time; lookdev holds overs, read with TraverseAll)."""
+    import os
+
+    from pxr import Usd
+
+    if not path or not os.path.isfile(path):
+        return {}
+    key = (path, os.path.getmtime(path))
+    if key not in _SHOW_CACHE:
+        stage = Usd.Stage.Open(path, Usd.Stage.LoadNone)
+        out: dict[str, dict] = {}
+        for prim in stage.TraverseAll():
+            for name in ("visibility", "purpose"):
+                attr = prim.GetAttribute(name)
+                if attr and attr.HasAuthoredValue():
+                    v = attr.Get(Usd.TimeCode.EarliestTime()) if attr.GetNumTimeSamples() else attr.Get()
+                    out.setdefault(prim.GetPath().pathString.strip("/"), {})[name] = str(v)
+        _SHOW_CACHE.clear() if len(_SHOW_CACHE) > 64 else None
+        _SHOW_CACHE[key] = out
+    return _SHOW_CACHE[key]
+
+
+def groom_curve_counts(path: str) -> dict[str, int]:  # not groom_curves (the cache's own paths, refresh)
+    """{path under the instance ("/Groom/<name>"): control points} of the groom file's curves (its first frame for a
+    sequence), where the loader puts them (logic.groom_targets)."""
+    import os
+
+    from pxr import Usd, UsdGeom
+
+    if not path or not os.path.isfile(path):
+        return {}
+    key = (path, os.path.getmtime(path))
+    if key not in _CURVES_CACHE:
+        stage = Usd.Stage.Open(path, Usd.Stage.LoadNone)
+        counts = {}
+        for prim in stage.TraverseAll():
+            if prim.IsA(UsdGeom.BasisCurves):
+                pts = UsdGeom.BasisCurves(prim).GetPointsAttr()
+                v = pts.Get(Usd.TimeCode.EarliestTime()) if pts.GetNumTimeSamples() else pts.Get()
+                counts[prim.GetPath().pathString] = len(v) if v is not None else 0
+        _CURVES_CACHE.clear() if len(_CURVES_CACHE) > 32 else None
+        _CURVES_CACHE[key] = {dst: counts[src] for src, dst in logic.groom_targets(list(counts))}
+    return _CURVES_CACHE[key]
+
+
+def shown_for(meshes: list[str], curves: list[str], anim: str, lookdev: str, show: dict | None) -> dict:
+    """logic.prim_shows for a loader's meshes and curves, from its publish files and settings (no hou)."""
+    show = show or {}
+    prims = [p.strip("/") for p in meshes + curves]
+    groups = {"/".join(p.split("/")[:i]) for p in prims for i in range(1, p.count("/") + 1)}
+    publish = {**show_opinions(anim), **show_opinions(lookdev)}
+    hidden = logic.hide_targets(show.get("hide", ""), sorted(groups | set(prims))) if show.get("hide_on") else []
+    render_only = [c.strip("/") for c in curves] if not (show.get("viewport", 3) & 2) else []
+    return logic.prim_shows(prims, publish, hidden, render_only, logic.parse_show_rules(show.get("rules", "")))
+
+
+def author_show(node, stage) -> None:
+    """Called by the HDA's show_rules Python LOP, last: what the shot shows of each prim it names."""
+    from pxr import UsdGeom
+
+    inst = _s(node, config.P_INSTANCE)
+    if not inst:
+        return
+    # each prim's own eye and purpose, as Houdini authors them: hiding prunes (the children keep their own
+    # visibility for when the parent shows again), purpose inherits where a prim has none of its own
+    for rule in logic.parse_show_rules(_s(node, config.P_SHOW_RULES)):
+        prim = stage.GetPrimAtPath(f"/{inst}" if rule["pattern"] == logic.ROOT else f"/{inst}/{rule['pattern']}")
+        if not prim or not prim.IsA(UsdGeom.Imageable):
+            continue
+        img = UsdGeom.Imageable(prim)
+        if "vis" in rule:
+            img.CreateVisibilityAttr().Set(rule["vis"])
+        if "purpose" in rule:
+            img.CreatePurposeAttr().Set(rule["purpose"])
+
+
+# --- the camera's settings on the loader (layout B: edited from the inspector) ---------------------------------
+CAM_PARMS = ("clippingRange1", "clippingRange2", "horizontalAperture", "aspectratiox", "aspectratioy",
+             "xn__houdiniguidescale_s3a")
+
+
+def cam_parms(path: str) -> dict[str, float]:
+    node = hou.node(path)
+    return {n: node.parm(n).eval() for n in CAM_PARMS if node is not None and node.parm(n) is not None}
+
+
+def set_cam_parm(path: str, name: str, value: float) -> bool:
+    """One of the loader's camera settings; one undo step."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    node = hou.node(path)
+    if node is None or name not in CAM_PARMS or node.parm(name) is None:
+        return False
+    with undo_group(f"Camera {node.name()}"):
+        node.parm(name).set(float(value))
+    return True
+
+
 def shot_subd_load() -> list[tuple[str, int]]:
     """(loader, estimated viewport subdivision polygons) for every 2.2 geo loader in the scene."""
     out = []
@@ -1296,11 +1886,30 @@ def heavy_message() -> str | None:
     return logic.heavy_shot_message(shot_subd_load())
 
 
+def scene_viewers() -> list:
+    """Every Scene Viewer of the UI: its own pane tabs, and the one inside each Context Viewer (Houdini 22's
+    default layouts wrap the viewer in a ContextViewer pane, which paneTabType.SceneViewer alone misses: Draw
+    Hulls Only said "No viewer shows /stage" while one did, the user's report 2026-11-17)."""
+    out = []
+    for p in hou.ui.paneTabs():
+        kind = p.type()
+        if kind == hou.paneTabType.SceneViewer:
+            out.append(p)
+        elif kind == getattr(hou.paneTabType, "ContextViewer", None):
+            try:
+                viewer = p.sceneViewer()
+            except (AttributeError, hou.OperationFailed):
+                viewer = None
+            if viewer is not None:
+                out.append(viewer)
+    return out
+
+
 def _stage_viewers() -> list:
     """Scene Viewers showing a LOP network: /stage has display options of its own, so a setting made while a
     viewer shows /obj does not reach the stage (measured: hulls set before switching to /stage was off)."""
-    return [p for p in hou.ui.paneTabs() if p.type() == hou.paneTabType.SceneViewer
-            and p.pwd() is not None and p.pwd().childTypeCategory() == hou.lopNodeTypeCategory()]
+    return [p for p in scene_viewers()
+            if p.pwd() is not None and p.pwd().childTypeCategory() == hou.lopNodeTypeCategory()]
 
 
 def set_hulls_only(enable: bool = True) -> int:

@@ -500,7 +500,10 @@ def status(state: LoaderState) -> dict[str, tuple[str, str | None]]:
             later = _newer(state.versions.get(part, ""), found)
             if not getattr(r, part):
                 named = state.versions.get(part, "")
-                out[part] = (STATUS_MISSING, later) if (named or found) else (STATUS_NONE, None)
+                if not named and found:  # nothing picked when the node was made; now there is: newer
+                    out[part] = (STATUS_NEWER, found[-1])
+                else:
+                    out[part] = (STATUS_MISSING, later) if named else (STATUS_NONE, None)
             else:
                 out[part] = (STATUS_NEWER, later) if later else (STATUS_OK, None)
     return out
@@ -924,6 +927,186 @@ def clear_subd_rules(rules: list[dict], patterns: list[str] | None) -> list[dict
     return [] if patterns is None else [r for r in rules if r["pattern"] not in patterns]
 
 
+# --- what each prim shows: visibility and purpose, apart (the user's ask, 2026-11-17: three toggles as Blender's
+# outliner, inheritance as Houdini / USD) ------------------------------------------------------------------------
+# A rule names one prim under the instance and sets either or both:
+#   "vis":     "invisible" | "inherited"   the eye; hiding a prim hides everything under it, and each child keeps
+#                                          its own setting for when the parent shows again
+#   "purpose": "default" | "proxy" | "render" | "guide"   the viewport and render toggles: both on = default,
+#                                          viewport only = proxy, render only = render, both off = guide; a prim
+#                                          without its own purpose follows its parent's
+PURPOSES = ("default", "proxy", "render", "guide")
+PURPOSE_TOGGLES = {"default": (True, True), "proxy": (True, False), "render": (False, True), "guide": (False, False)}
+TOGGLES_PURPOSE = {v: k for k, v in PURPOSE_TOGGLES.items()}
+_OLD_SHOW = {"hidden": {"vis": "invisible"}, "render": {"vis": "inherited", "purpose": "render"},
+             "proxy": {"vis": "inherited", "purpose": "proxy"}, "both": {"vis": "inherited", "purpose": "default"}}
+
+
+@dataclass(frozen=True)
+class PrimShow:
+    """What a prim shows: its own eye and the result under its parents, and its purpose."""
+
+    own_visible: bool        # its own eye, remembered under a hidden parent
+    visible: bool            # its parents and itself all visible
+    vis_source: str          # where its own eye comes from: "shot" | "loader" | "publish" | "" (not authored)
+    purpose: str             # the purpose it ends up with (its own, else its parent's)
+    purpose_source: str      # "shot" | "loader" | "publish" | "" (inherited)
+    base_visible: bool = True        # its own eye without the shot's rule (the publish's or the loader's, else on)
+    base_purpose: str = "default"    # its purpose without the shot's rule on it (own, else its parent's)
+
+    @property
+    def viewport(self) -> bool:
+        return PURPOSE_TOGGLES.get(self.purpose, (True, True))[0]
+
+    @property
+    def render(self) -> bool:
+        return PURPOSE_TOGGLES.get(self.purpose, (True, True))[1]
+
+
+def parse_show_rules(text: str) -> list[dict]:
+    """The loader's JSON show rules, well-formed ones only; the first form ({"show": hidden | render | proxy | both})
+    reads as its visibility and purpose."""
+    import json
+
+    try:
+        raw = json.loads(text) if text else []
+    except ValueError:
+        return []
+    out = []
+    for r in raw if isinstance(raw, list) else []:
+        if not isinstance(r, dict) or not isinstance(r.get("pattern"), str) or not r["pattern"].strip("/ "):
+            continue
+        rule = {"pattern": r["pattern"].strip("/ "), **_OLD_SHOW.get(r.get("show"), {})}
+        if r.get("vis") in ("invisible", "inherited"):
+            rule["vis"] = r["vis"]
+        if r.get("purpose") in PURPOSES:
+            rule["purpose"] = r["purpose"]
+        if len(rule) > 1:
+            out.append(rule)
+    return out
+
+
+ROOT = "."  # the instance's own root prim (/<instance>): a loader's row in the inspector
+
+
+def show_target(pattern: str) -> str:
+    """The prim a row's pattern names (a group's ``X/**`` is the group ``X``; a loader's own row, ``**``, is the
+    instance's root, ``.``)."""
+    p = pattern.strip("/")
+    if p in ("", "**", ROOT):
+        return ROOT
+    return p[:-3] if p.endswith("/**") else p
+
+
+def set_show_rules(rules: list[dict], edits: list[tuple[str, str, object]]) -> list[dict]:
+    """Rules after (pattern, field, value) edits: field "vis" or "purpose", value None takes that field off the
+    prim's rule (it inherits again); a rule left with nothing is dropped."""
+    by = {r["pattern"]: dict(r) for r in rules}
+    order = [r["pattern"] for r in rules]
+    for pattern, field, value in edits:
+        t = show_target(pattern)
+        rule = by.setdefault(t, {"pattern": t})
+        if t not in order:
+            order.append(t)
+        if value is None:
+            rule.pop(field, None)
+        else:
+            rule[field] = value
+    return [by[t] for t in order if len(by[t]) > 1]
+
+
+def clear_show_rules(rules: list[dict], patterns: list[str] | None) -> list[dict]:
+    """Rules without those rows' (None: none at all)."""
+    if patterns is None:
+        return []
+    targets = {show_target(p) for p in patterns}
+    return [r for r in rules if r["pattern"] not in targets]
+
+
+def prim_shows(prims: list[str], publish: dict[str, dict], hidden: list[str], render_only: list[str],
+               rules: list[dict]) -> dict[str, PrimShow]:
+    """What each prim (paths under the instance, no leading "/"; the groups above them are added) shows, by USD's
+    rules: visibility prunes (a prim under a hidden one is hidden, its own setting kept), purpose inherits unless
+    the prim has its own. Opinions, weakest first: the publish files' own (``publish``: {prim: {"visibility",
+    "purpose"}}), the loader's Hide Prims (``hidden``) and groom shown for render only (``render_only``), then the
+    shot's rules."""
+    rule_at = {r["pattern"]: r for r in rules}
+    hidden_set, render_set = set(hidden), set(render_only)
+    every = set(prims)
+    for p in prims:
+        bits = p.split("/")
+        every.update("/".join(bits[:i]) for i in range(1, len(bits)))
+    # the instance's root first: hiding it hides the asset, its purpose is what the top prims inherit
+    root_rule = rule_at.get(ROOT, {})
+    root_vis = root_rule.get("vis", "inherited") != "invisible"
+    out: dict[str, PrimShow] = {ROOT: PrimShow(root_vis, root_vis, "shot" if "vis" in root_rule else "",
+                                               root_rule.get("purpose", "default"),
+                                               "shot" if "purpose" in root_rule else "", True, "default")}
+    for p in sorted(every, key=lambda x: (x.count("/"), x)):
+        parent = out.get(p.rsplit("/", 1)[0]) if "/" in p else out[ROOT]
+        own_vis, vis_src, own_pur, pur_src = True, "", None, ""
+        op = publish.get(p, {})
+        if op.get("visibility") in ("invisible", "inherited"):
+            own_vis, vis_src = op["visibility"] != "invisible", "publish"
+        if op.get("purpose") in PURPOSES:
+            own_pur, pur_src = op["purpose"], "publish"
+        if p in hidden_set:
+            own_vis, vis_src = False, "loader"
+        if p in render_set:
+            own_pur, pur_src = "render", "loader"
+        inherited_pur = parent.purpose if parent else "default"
+        base_vis, base_pur = own_vis, own_pur if own_pur is not None else inherited_pur
+        rule = rule_at.get(p, {})
+        if "vis" in rule:
+            own_vis, vis_src = rule["vis"] != "invisible", "shot"
+        if "purpose" in rule:
+            own_pur, pur_src = rule["purpose"], "shot"
+        out[p] = PrimShow(own_vis, own_vis and (parent.visible if parent else True), vis_src,
+                          own_pur if own_pur is not None else inherited_pur, pur_src, base_vis, base_pur)
+    return out
+
+
+def toggle_edits(rows: list[tuple[str, PrimShow, PrimShow | None]], which: str) -> list[tuple[str, str, object]]:
+    """Rule edits for one click on a toggle ("eye", "viewport" or "render") over rows (pattern, the row, its
+    parent). The clicked row, first, decides the new value for all, as in Blender, and every click changes what the
+    row shows: a value the row has anyway without the shot's rule (``base_visible`` / ``base_purpose``: the publish,
+    the loader, else its parent) takes the rule off, so it inherits again; any other value is the shot's rule.
+    (Taking the rule off whenever the value was "on" left a prim the loader hides hidden: two clicks to show it.)"""
+    if not rows:
+        return []
+    first = rows[0][1]
+    edits: list[tuple[str, str, object]] = []
+    if which == "eye":
+        on = not first.own_visible
+        for pattern, row, _parent in rows:
+            value = "inherited" if on else "invisible"
+            edits.append((pattern, "vis", None if on == row.base_visible else value))
+        return edits
+    flip_view = which == "viewport"
+    on = not (first.viewport if flip_view else first.render)
+    for pattern, row, _parent in rows:
+        pair = (on, row.render) if flip_view else (row.viewport, on)
+        purpose = TOGGLES_PURPOSE[pair]
+        edits.append((pattern, "purpose", None if purpose == row.base_purpose else purpose))
+    return edits
+
+
+def hide_targets(pattern: str, prims: list[str]) -> list[str]:
+    """The prims the loader's Hide Prims pattern names (space-separated, wildcards as Houdini reads them)."""
+    out = []
+    for part in (pattern or "").split():
+        rx = _pattern_re(part.strip("/"))
+        out += [p for p in prims if rx.match(p)]
+    return out
+
+
+def first_frame_path(path: str, first: int | None) -> str:
+    """A ``$F<pad>`` sequence path at its first frame (the file whose prims stand for the sequence)."""
+    if "$F" not in path or first is None:
+        return path
+    return re.sub(r"\$F(\d*)", lambda m: str(first).zfill(int(m.group(1) or 1)), path)
+
+
 def mesh_groups(meshes: list[str]) -> dict[str, list[str]]:
     """Meshes by their first two path levels (``Geo/Base_grp``), as the manager's tree shows them."""
     groups: dict[str, list[str]] = {}
@@ -991,7 +1174,7 @@ class WhatsNew:
     new: str
     date: str = ""            # date of the version folder
     author: str = ""          # Monos work file author of the new version, "" when unknown
-    lines: tuple[str, ...] = ()
+    lines: tuple[tuple[str, str], ...] = ()  # (what, how): ("Frames", "1-48 → 1-60"); sizes are not news
     old_path: str = ""        # the files a mesh comparison reads (adapter, pxr)
     new_path: str = ""
 
@@ -1006,7 +1189,9 @@ def _folder_date(folder: Path) -> str:
 
 
 def size_word(n: int) -> str:
-    return f"{n / 1e9:.1f} GB" if n >= 1e9 else f"{n / 1e6:.1f} MB"
+    if n >= 1e9:
+        return f"{n / 1e9:.1f} GB"
+    return f"{n / 1e6:.1f} MB" if n >= 1e6 else f"{max(n / 1e3, 0.1):.1f} KB"
 
 
 def whats_new(state: LoaderState, part: str) -> WhatsNew | None:
@@ -1042,12 +1227,16 @@ def whats_new(state: LoaderState, part: str) -> WhatsNew | None:
         author = work_author(root / "02_shots" / state.shot, PART_DEPARTMENT["anim"], newer)
         old_out = {o.file for o in read_outputs(pub / current)}
         new_out = {o.file for o in read_outputs(pub / newer)}
-        lines += [f"+ {f}" for f in sorted(new_out - old_out)] + [f"- {f}" for f in sorted(old_out - new_out)]
+        added, removed = sorted(new_out - old_out), sorted(old_out - new_out)
+        if added:
+            lines.append(("Outputs added", ", ".join(added)))
+        if removed:
+            lines.append(("Outputs removed", ", ".join(removed)))
         a, b = read_timeline(pub / current), read_timeline(pub / newer)
         if a and b and (a[1], a[2]) != (b[1], b[2]):
-            lines.append(f"Frames {a[1]}-{a[2]} -> {b[1]}-{b[2]}")
+            lines.append(("Frames", f"{a[1]}-{a[2]} \u2192 {b[1]}-{b[2]}"))
         if a and b and a[0] != b[0]:
-            lines.append(f"fps {a[0]:g} -> {b[0]:g}")
+            lines.append(("Fps", f"{a[0]:g} \u2192 {b[0]:g}"))
     else:
         geo = _geo_count(root, state)
         old_p, new_p = _part_path(root, state, part, current, geo)[0], _part_path(root, state, part, newer, geo)[0]
@@ -1056,26 +1245,19 @@ def whats_new(state: LoaderState, part: str) -> WhatsNew | None:
         asset_dir = _asset_dir(root, state)
         if asset_dir is not None and (part == "lookdev" or is_asset(state)):
             author = work_author(asset_dir, PART_DEPARTMENT[part], newer)
-    try:
-        if "$F" not in str(new_f):
-            a_size, b_size = old_f.stat().st_size, new_f.stat().st_size
-            if a_size != b_size:
-                lines.append(f"{size_word(a_size)} -> {size_word(b_size)}")
-    except OSError:
-        pass
     mesh_files = part == "anim" and "$F" not in str(new_f)
     return WhatsNew(word, current, newer, _folder_date(folder), author[0] if author else "", tuple(lines),
                     old_f.as_posix() if mesh_files else "", new_f.as_posix() if mesh_files else "")
 
 
-def mesh_change_lines(old: list[str], new: list[str], limit: int = 4) -> list[str]:
-    """"+ 2 meshes: Fin_L, Fin_R" / "- 1 mesh: Tail" from two mesh path lists."""
+def mesh_change_lines(old: list[str], new: list[str], limit: int = 4) -> list[tuple[str, str]]:
+    """("Meshes added", "Fin_L, Fin_R") / ("Meshes removed", "Tail") from two mesh path lists."""
     out = []
-    for sign, names in (("+", sorted(set(new) - set(old))), ("-", sorted(set(old) - set(new)))):
+    for what, names in (("Meshes added", sorted(set(new) - set(old))), ("Meshes removed", sorted(set(old) - set(new)))):
         if names:
             leaf = [n.rsplit("/", 1)[-1] for n in names]
-            more = f", +{len(leaf) - limit} more" if len(leaf) > limit else ""
-            out.append(f"{sign} {len(leaf)} mesh{'es' if len(leaf) != 1 else ''}: {', '.join(leaf[:limit])}{more}")
+            more = f" and {len(leaf) - limit} more" if len(leaf) > limit else ""
+            out.append((what, ", ".join(leaf[:limit]) + more))
     return out
 
 
@@ -1126,3 +1308,102 @@ def asset_catalog(project_root: str, group: str = "", search: str = "", with_mod
 def handoff_name(instance: str) -> str:
     """The package folder of one instance: ``<instance>_handoff``."""
     return f"{instance}_handoff"
+
+
+# --- Sublayer / Reference LOPs that read a publish (the user's ask, 2026-11-17) --------------------------------
+# A scene built by hand (env_Envi lookdev: 10 Sublayers of prop lookdev publishes) shows in the manager: what it
+# reads, whether a newer version exists, Update (the vNNN in the path) and Convert to a MonoFX Loader.
+
+_PUBLISH_RE = re.compile(
+    r"^(?P<root>.*?)[\\/](?:(?P<assets>01_assets)[\\/](?P<group>_[^\\/]+)[\\/](?P<asset>[^\\/]+)"
+    r"|(?P<shots>02_shots)[\\/](?P<shot>[^\\/]+))[\\/](?P<dept>.+?)[\\/]publish[\\/](?P<ver>[vV]\d+)[\\/]"
+    r"(?P<file>.+)$")
+
+
+@dataclass(frozen=True)
+class PublishRef:
+    """A file path read as a publish: project, asset (or shot), department folder, version, file under it."""
+
+    root: str
+    kind: str          # "asset" or "shot"
+    entity: str        # asset or shot name
+    dept: str          # department folder, e.g. "05_lookdev", "01_modelling/03_uv", "01_anim"
+    version: str
+    file: str          # path under the version folder (may hold a sub folder)
+
+    @property
+    def part(self) -> str:
+        """The manager's column for it: lookdev, groom, cloth, else anim (a model or an anim file)."""
+        d = self.dept.replace("\\", "/").lower()
+        if "lookdev" in d:
+            return "lookdev"
+        if "groom" in d:
+            return "groom"
+        if "cloth" in d:
+            return "cloth"
+        return "anim"
+
+    @property
+    def word(self) -> str:
+        d = self.dept.replace("\\", "/").lower()
+        return {"anim": "model" if "modelling" in d else "anim"}.get(self.part, self.part)
+
+    def publish_dir(self) -> Path:
+        base = Path(self.root) / ("01_assets" if self.kind == "asset" else "02_shots")
+        if self.kind == "asset":
+            folder = next((p for p in (base.glob(f"_*/{self.entity}")) if p.is_dir()), None)
+            base = folder if folder is not None else base / "_" / self.entity
+        else:
+            base = base / self.entity
+        return base / self.dept / "publish"
+
+    def file_in(self, version: str) -> str:
+        """The file's name in another version: a vNNN in the file name follows the version (MushroomHuge_uv_v003)."""
+        cur = self.version
+        return re.sub(re.escape(cur), version, self.file, flags=re.IGNORECASE) if re.search(
+            re.escape(cur), self.file, flags=re.IGNORECASE) else self.file
+
+    def path_in(self, version: str) -> str:
+        return (self.publish_dir() / version / self.file_in(version)).as_posix()
+
+
+def parse_publish_path(path: str) -> PublishRef | None:
+    """A publish file path (``<project>/01_assets/_<group>/<asset>/<dept>/publish/vNNN/<file>`` or
+    ``<project>/02_shots/<shot>/<dept>/publish/vNNN/<file>``) read into its parts; None for anything else (a path
+    with a variable or an expression is not read)."""
+    if not path or "$" in path or "`" in path:
+        return None
+    m = _PUBLISH_RE.match(path.strip())
+    if not m:
+        return None
+    if m["assets"]:
+        return PublishRef(m["root"].replace("\\", "/"), "asset", m["asset"], m["dept"].replace("\\", "/"),
+                          m["ver"], m["file"].replace("\\", "/"))
+    return PublishRef(m["root"].replace("\\", "/"), "shot", m["shot"], m["dept"].replace("\\", "/"), m["ver"],
+                      m["file"].replace("\\", "/"))
+
+
+def ref_versions(ref: PublishRef) -> list[str]:
+    """Versions of the publish that hold this file (its name followed to each version), oldest first."""
+    pub = ref.publish_dir()
+    return [v for v in list_versions(pub) if (pub / v / ref.file_in(v)).is_file()]
+
+
+def ref_status(ref: PublishRef) -> tuple[str, str | None]:
+    """(status, newer version or None) of a publish path, as the loaders' parts say it."""
+    found = ref_versions(ref)
+    newer = _newer(ref.version, found)
+    if not (ref.publish_dir() / ref.version / ref.file).is_file():
+        return STATUS_MISSING, newer
+    return (STATUS_NEWER, newer) if newer else (STATUS_OK, None)
+
+
+def root_patterns_moved(pattern: str, roots: list[str], prim: str) -> str:
+    """A prim pattern after its layer moved under ``/<prim>``: every token that names one of the layer's root prims
+    (``/Cliff01_Low``, ``/Cliff01_Low/**``) gets the prefix; other tokens stay."""
+    out = []
+    for tok in pattern.split():
+        body = tok.lstrip("/")
+        head = body.split("/", 1)[0]
+        out.append(f"/{prim}/{body}" if tok.startswith("/") and head in roots else tok)
+    return " ".join(out)

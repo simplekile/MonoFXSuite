@@ -27,6 +27,9 @@ class LoaderInfo:
     legacy: bool
     legacy_name: str = ""
     subd_rules: str = ""
+    layer: Any = None  # a Sublayer / Reference file reading a publish (logic.PublishRef); its node is no loader
+    baked: bool = False  # a loader baked to plain nodes: Upgrade restores it
+    show: Any = None  # {"rules", "hide_on", "hide", "viewport"}: what the worker needs for the SHOWN column
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,8 @@ class Row:
     subd: tuple[int, int] | None = None  # (subdivided meshes, estimated viewport polygons)
     asset_source: bool = False  # Source Asset: the asset's model (no shot); Load shot and Retarget leave it
     weight: int = 0  # bytes of the files its lookdev pulls (textures), 0 when unknown
+    layer: str = ""  # a Sublayer / Reference reading a publish: what it reads ("lookdev v001 of prop_Cliff01")
+    baked: bool = False  # a loader baked to plain nodes (no MonoFX inside); Upgrade restores it
 
     @property
     def behind(self) -> bool:
@@ -75,7 +80,8 @@ class Controller:
     def __init__(self, backend: Any) -> None:
         self.backend = backend
         self.selection: list[str] = []
-        self.message = ""
+        self.message = ""   # the result line: one short sentence
+        self.details = ""   # everything behind it (the result line's tooltip)
         self._infos: list[LoaderInfo] = []
         self._status: dict[str, Status] = {}
         self._token = 0
@@ -125,9 +131,15 @@ class Controller:
         rows = []
         for info in self._infos:
             st = info.state
+            ref = getattr(info, "layer", None)
+            if ref is not None:  # a Sublayer / Reference reading a publish: kind "layer"
+                rows.append(Row(info.path, "", info.legacy_name or info.path.rsplit("/", 1)[-1], "layer", ref.entity,
+                                self._status.get(info.path, {}), False, "", {ref.part: ref.version},
+                                layer=f"{ref.word} {ref.version} of {ref.entity}"))
+                continue
             if st is None:
                 rows.append(Row(info.path, "", info.legacy_name or info.path.rsplit("/", 1)[-1], "geo", None,
-                                legacy=True))
+                                legacy=True, baked=getattr(info, "baked", False)))
                 continue
             asset_source = logic.is_asset(st)
             rows.append(Row(info.path, "" if asset_source else st.shot, st.instance_name, st.kind, st.asset,
@@ -135,7 +147,8 @@ class Controller:
                             (self._thumbs or {}).get(info.path, ""), {"anim": logic.main_version(st), **st.versions},
                             self._subd_summary(info.path), asset_source,
                             self._extras.get("weight", {}).get(info.path, 0)))
-        return sorted(rows, key=lambda r: (r.legacy, r.shot, r.kind == "cam", r.instance.lower()))
+        return sorted(rows, key=lambda r: (r.legacy, r.kind == "layer", r.asset_source, r.shot, r.kind == "cam",
+                                           r.instance.lower()))
 
     def rows(self) -> list[Row]:
         return list(self._rows)
@@ -149,7 +162,9 @@ class Controller:
                 and (only is None or r.node_path in only)]
 
     def legacy_paths(self) -> list[str]:
-        return [r.node_path for r in self._rows if r.legacy]
+        """Everything Upgrade turns into a MonoFX Loader: old loaders (2.2, 2.1, Character Loader) and Sublayers /
+        References reading a publish. One action, not Upgrade and Convert (the user's call, 2026-11-17)."""
+        return [r.node_path for r in self._rows if r.legacy or r.kind == "layer"]
 
     def headline(self) -> str:
         behind = len(self.behind_paths())
@@ -159,11 +174,11 @@ class Controller:
             return "No loaders in the scene"
         parts = [f"{behind} behind"] if behind else []
         if legacy and not behind:
-            parts.append(_plural(legacy, "old loader") + " to upgrade")
+            parts.append(f"{legacy} to upgrade")
         if asset:
             parts.append(f"{asset} {'needs' if asset == 1 else 'need'} an asset")
         if legacy and behind:
-            parts.append(_plural(legacy, "old loader"))
+            parts.append(f"{legacy} to upgrade")
         action = self.primary_action()
         if action and action[0] == "retarget":  # the headline says what the primary button does
             paths = set(self.retarget_paths())
@@ -220,14 +235,23 @@ class Controller:
         return f"Update {n} behind" if n else "Nothing to update"
 
     def upgrade_label(self) -> str:
-        return f"Upgrade {len(self.legacy_paths())} old"
+        return f"Upgrade {len(self.legacy_paths())}"
 
     # --- commands ---------------------------------------------------------------------------------
+    def layer_paths(self, only: list[str] | None = None) -> list[str]:
+        return [r.node_path for r in self._rows if r.kind == "layer" and (only is None or r.node_path in only)]
+
     def _update(self, paths: list[str]) -> None:
         if not paths:
             self.message = "Nothing to update."
             return
-        lines = self.backend.update(paths, ALL_PARTS)
+        layers = set(self.layer_paths(paths))
+        lines = []
+        if layers and hasattr(self.backend, "update_layers"):
+            lines += self.backend.update_layers([p for p in paths if p in layers])
+        rest = [p for p in paths if p not in layers]
+        if rest:
+            lines += self.backend.update(rest, ALL_PARTS)
         self.message = "; ".join(lines) if lines else "Already up to date."
 
     def update_all(self) -> None:
@@ -261,10 +285,22 @@ class Controller:
         created, kept = self.backend.load_shot(root, shot, version)
         self.message = f"Loaded {shot} {version}: created {len(created)}, kept {len(kept)}."
 
+    def upgrade_paths(self, paths: list[str]) -> None:
+        """Old loaders and publish sublayers among ``paths`` -> MonoFX Loaders, one sentence for both."""
+        layers = set(self.layer_paths(paths))
+        old = [p for p in paths if p not in layers]
+        n = self.backend.upgrade(old) if old else 0
+        done, notes = (self.backend.convert_layers(sorted(layers)) if layers and hasattr(self.backend, "convert_layers")
+                       else ([], []))
+        total = n + len(done)
+        moved = sum(1 for d in done if "(moved " in d)
+        self.message = (f"Upgraded {total} to MonoFX Loader" + (f", {moved} with their xforms" if moved else "")
+                        + (f", {_plural(len(notes), 'note')} (hover)" if notes else "")) if total \
+            else (notes[0] if notes else "Nothing to upgrade.")
+        self.details = "\n".join(done + notes)
+
     def upgrade_all(self) -> None:
-        paths = self.legacy_paths()
-        n = self.backend.upgrade(paths) if paths else 0
-        self.message = f"Upgraded {_plural(n, 'loader')} to 2.2." if n else "No old loaders."
+        self.upgrade_paths(self.legacy_paths())
 
     def retarget(self, paths: list[str] | None = None) -> None:
         paths = paths if paths is not None else self.retarget_paths()
@@ -274,11 +310,41 @@ class Controller:
         moved, left = self.backend.retarget(paths, self.target_shot)
         self.message = "; ".join([f"Retargeted {len(moved)} to {self.target_shot}", *left])
 
+    def convert_layers(self, paths: list[str]) -> None:
+        """Publish sublayers -> MonoFX Loaders: the same Upgrade as for old loaders."""
+        self.upgrade_paths(self.layer_paths(paths))
+
+    def bake(self, paths: list[str]) -> None:
+        """MonoFX Loaders -> plain subnets that need no MonoFX (for people with Houdini only); Upgrade undoes it."""
+        paths = [r.node_path for r in self._rows if r.node_path in paths and not r.legacy and r.kind in ("geo", "cam")]
+        if not paths:
+            self.message = "Pick the loaders to bake."
+            return
+        done, notes = self.backend.bake(paths)
+        self.message = (f"Baked {_plural(len(done), 'loader')} to plain nodes: no MonoFX needed to open them"
+                        if done else (notes[0] if notes else "Nothing baked."))
+        self.details = "\n".join(done + notes)
+
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)
         self.message = f"{path.rsplit('/', 1)[-1]} is now {asset}."
 
     # --- manager A: add, view, links, what is new, hand off (the user's pick, 2026-11-17) ---------------------
+    def timeline(self, path: str) -> tuple[float, int, int] | None:
+        """(fps, first, last) of a shot loader's anim publish (publish_meta.json), None for an asset or unknown."""
+        from pathlib import Path
+
+        from tools.fx.anim_loader import logic as lg
+
+        st = next((i.state for i in self._infos if i.path == path and i.state is not None), None)
+        if st is None or lg.is_asset(st) or not (st.project_root and st.shot and st.anim_version):
+            return None
+        return lg.read_timeline(lg.anim_publish_dir(Path(st.project_root), st.shot) / st.anim_version)
+
+    def camera(self, path: str) -> dict:
+        fn = getattr(self.backend, "camera_info", None)
+        return fn(path) if fn else {}
+
     def news(self, path: str) -> list:
         """What is new for a loader (logic.WhatsNew per behind part), as the last scan read it."""
         return list(self._extras.get("news", {}).get(path, []))
@@ -293,8 +359,7 @@ class Controller:
             return ""
         names = ", ".join(o.file.rsplit(".", 1)[0].removeprefix("geo_").removeprefix("cam_") for o in missing[:3])
         more = f" +{len(missing) - 3}" if len(missing) > 3 else ""
-        return (f"{self.target_shot} {version} has {_plural(len(missing), 'output')} not in the scene: "
-                f"{names}{more}")
+        return f"+{len(missing)} in {self.target_shot} {version}: {names}{more}"
 
     def add_missing(self) -> None:
         version, missing = self.gaps()
@@ -374,6 +439,17 @@ class Controller:
         n = sum(1 for c in d["plan"].values() if c.scheme != SUBD_NONE)
         return (n, subd_polygons(d["faces"], d["plan"])) if n else None
 
+    def refresh_detail(self, path: str) -> None:
+        """One loader's inspector data again, after a change that moves no version (a show toggle): its settings read
+        again and its prims worked out from the publish files the last scan read (cached), no rescan of the project
+        (a toggle took ~1 s, most of it the Dropbox folder walk of the full scan, the user's report)."""
+        fresh = [i for i in self.backend.loaders() if i.path == path]
+        if not fresh:
+            return
+        self._infos = [fresh[0] if i.path == path else i for i in self._infos]
+        if fresh[0].state is not None and fresh[0].state.kind == "geo" and hasattr(self.backend, "subd"):
+            self._subd.update(self.backend.subd(fresh))
+
     def subd_detail(self, path: str) -> dict | None:
         """{"plan": {mesh: SubdChoice}, "faces": {mesh: n}} of a loader, as the last scan read it."""
         return self._subd.get(path)
@@ -391,9 +467,40 @@ class Controller:
         self.message = f"{path.rsplit('/', 1)[-1]}: {', '.join(parts)} on {what} (shot override)."
 
     def clear_subd(self, path: str, patterns: list[str] | None) -> None:
-        self.backend.clear_subd(path, patterns)
-        self.message = f"{path.rsplit('/', 1)[-1]}: overrides cleared, lookdev / publish decide again."
+        """The shot's overrides of those rows, subdivision and what they show alike."""
+        clear = getattr(self.backend, "clear_overrides", None)
+        (clear or self.backend.clear_subd)(path, patterns)
+        self.message = f"{path.rsplit('/', 1)[-1]}: the shot's overrides removed, the publish decides again."
+
+    def set_show(self, path: str, edits: list[tuple[str, str, Any]], what: str) -> None:
+        """(pattern, "vis" | "purpose", value or None) edits from one toggle click; ``what`` says it in words."""
+        self.backend.set_show(path, edits)
+        pats = [e[0] for e in edits]
+        names = ", ".join(p.removesuffix("/**").rsplit("/", 1)[-1] for p in pats[:3])
+        more = f" +{len(pats) - 3}" if len(pats) > 3 else ""
+        self.message = f"{names}{more}: {what}."
+
+    def set_show_many(self, by_loader: dict[str, list], what: str) -> None:
+        """One toggle click over rows of several loaders: one undo step when the backend can."""
+        many = getattr(self.backend, "set_show_many", None)
+        if many is not None:
+            many(by_loader)
+        else:
+            for path, edits in by_loader.items():
+                self.backend.set_show(path, edits)
+        pats = [e[0] for edits in by_loader.values() for e in edits]
+        names = ", ".join(p.removesuffix("/**").rsplit("/", 1)[-1] for p in pats[:3])
+        more = f" +{len(pats) - 3}" if len(pats) > 3 else ""
+        self.message = f"{names}{more}: {what}."
+
+    def camera_parms(self, path: str) -> dict:
+        fn = getattr(self.backend, "cam_parms", None)
+        return fn(path) if fn else {}
+
+    def set_camera_parm(self, path: str, name: str, label: str, value: float) -> None:
+        ok = self.backend.set_cam_parm(path, name, value)
+        self.message = f"{path.rsplit('/', 1)[-1]}: {label} {value:g}." if ok else "That setting is not on the node."
 
     def subd_to_asset(self, path: str) -> None:
         n = self.backend.subd_to_asset(path)
-        self.message = f"Subdivision overrides copied to {n} other instance{'s' if n != 1 else ''} of the asset."
+        self.message = f"Overrides copied to {n} other loader{'s' if n != 1 else ''} of the asset."
