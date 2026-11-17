@@ -2117,8 +2117,9 @@ class InspectorPanel(QWidget):
         head.setToolTip("Drag the edge of PRIM to widen it; right-click to choose the columns")
         head.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         head.customContextMenuRequested.connect(self._columns_menu)
-        self._hidden_cols = {int(c) for c in _load_prefs().get("inspector_hidden_columns", [])
-                             if str(c).isdigit() and 0 < int(c) < COLS}  # view state, per viewer
+        # view state, per viewer; Faces and From off until the artist picks (the user's ask: seldom needed)
+        self._hidden_cols = {int(c) for c in _load_prefs().get("inspector_hidden_columns", [1, 2])
+                             if str(c).isdigit() and 0 < int(c) < COLS}
         self._name_width = 0  # the width the artist dragged the name column to (kept across loaders)
         head.sectionResized.connect(lambda i, _old, new: setattr(self, "_name_width", new) if i == 0
                                     and QApplication.mouseButtons() != Qt.MouseButton.NoButton

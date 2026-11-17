@@ -679,11 +679,13 @@ def test_header_menu_shows_and_hides_columns_and_remembers(make):
     menu = p.columns_menu()
     names = [a.text() for a in menu.actions() if not a.isSeparator()]
     assert names == ["Show (eye)", "Viewport", "Render", "Faces", "From", "Scheme", "Dice"]
-    assert all(a.data() == "shown" for a in menu.actions() if not a.isSeparator())
-    _act(menu, "Faces").trigger()
-    _act(p.columns_menu(), "From").trigger()
+    # Faces and From are off by default (the user's ask)
+    assert [a.text() for a in menu.actions() if not a.isSeparator() and a.data() != "shown"] == ["Faces", "From"]
     assert p.tree.isColumnHidden(1) and p.tree.isColumnHidden(2) and not p.tree.isColumnHidden(3)
-    assert ui._load_prefs()["inspector_hidden_columns"] == [1, 2]
+    _act(menu, "Scheme").trigger()
+    assert p.tree.isColumnHidden(3)
+    assert ui._load_prefs()["inspector_hidden_columns"] == [1, 2, 3]
+    _act(p.columns_menu(), "Scheme").trigger()
     _select(w, ui, "/stage/a")
     _select(w, ui, "/stage/b")  # a new tree keeps the choice
     assert p.tree.isColumnHidden(1) and p.tree.isColumnHidden(2)
