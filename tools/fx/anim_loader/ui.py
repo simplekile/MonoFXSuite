@@ -28,7 +28,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEasingCurve, QEvent, QPropertyAnimation, QRect, QRectF, QSize, Qt, QTimer
+from PySide6.QtCore import QEasingCurve, QEvent, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1071,11 +1071,22 @@ class AnimLoaderManager(QWidget):
             clip.setVisible(show)
             panel.setVisible(show)
             return
-        anim = QPropertyAnimation(clip, b"maximumWidth", self)
+        # The splitter's sizes are driven frame by frame: a QSplitter does not grow a pane when its maximum width
+        # grows, so animating maximumWidth showed nothing and then jumped (the user's report, 2026-11-17)
+        anim = QVariantAnimation(self)
         clip._slide_anim = anim
         clip.setMinimumWidth(0)  # the 360 px floor would stop the slide; set again when it ends
         clip.full = full
         panel.setGeometry(0, 0, full, clip.height())
+        index = self.split.indexOf(clip)
+
+        def step(value):
+            sizes = self.split.sizes()
+            w = int(value)
+            sizes[0] = max(0, sizes[0] + sizes[index] - w)  # the list gives what the inspector takes
+            sizes[index] = w
+            self.split.setSizes(sizes)
+        anim.valueChanged.connect(step)
 
         def rest():
             clip.full = 0
@@ -1083,9 +1094,10 @@ class AnimLoaderManager(QWidget):
             clip.setMinimumWidth(self.px(360))
         if show:
             clip._sliding_out = False
-            clip.setMaximumWidth(0)
+            clip.setMaximumWidth(16777215)
             clip.setVisible(True)
             panel.setVisible(True)
+            step(0)
             anim.setDuration(self.DIALOG_IN_MS)
             anim.setStartValue(0)
             anim.setEndValue(full)
