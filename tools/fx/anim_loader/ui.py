@@ -316,7 +316,7 @@ class _ListDelegate(QStyledItemDelegate):
         p.fillRect(rect, QColor(fill))
         p.setPen(QColor(LINE))
         p.drawLine(rect.bottomLeft(), rect.bottomRight())
-        if wide:  # column separators, the same x as the header's
+        if wide and not row.legacy:  # column separators (an old loader's line spans the columns)
             cols_sep, name_sep = self.columns(rect)
             for x in [name_sep + pt.px(4)] + [cols_sep[k].left() - pt.px(4) for k, _, _ in COLUMNS[1:]]:
                 p.drawLine(x, rect.top(), x, rect.bottom())
@@ -336,7 +336,8 @@ class _ListDelegate(QStyledItemDelegate):
                                 line1.height()), tag, TEXT_LABEL, FS_SMALL)
         text, color = subd_cell(row)
         if row.kind != "cam" and not row.legacy:
-            self._text(p, cols["subd"], text if wide or row.subd else "", color, FS_SMALL)
+            self._text(p, cols["subd"], text if wide or row.subd else "", color, FS_SMALL,
+                       align=Qt.AlignmentFlag.AlignHCenter)  # every column but the name is centred
         if wide:
             cells = [(cols[part], part) for part in ALL_PARTS]
         else:  # the versions on a second line, under the column names of the first header
@@ -353,7 +354,7 @@ class _ListDelegate(QStyledItemDelegate):
                 text, color = part_cell(row, part)
                 if selected and color == ACCENT:  # 4.5:1 on the selected fill, and on selected + hover
                     color = "#86abff" if hover else ACCENT_ON_SELECTED
-                self._text(p, r, text, color, FS_SMALL)
+                self._text(p, r, text, color, FS_SMALL, align=Qt.AlignmentFlag.AlignHCenter)
         p.restore()
 
     def sizeHint(self, option, index) -> QSize:
@@ -390,17 +391,18 @@ class _ColumnHeader(QWidget):
         p.setFont(f)
         p.setPen(QColor(TEXT_LABEL))
         mid = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        centre = Qt.AlignmentFlag.AlignCenter  # every column but the name, like the cells under it
         if rect.width() >= pt.px(NARROW_ROW_PX):
             cols, name_end = self.delegate.columns(rect)
             p.drawText(QRect(pt.px(16), 0, name_end - pt.px(16), rect.height()), mid, "NAME")
             for key, label, _ in COLUMNS:
-                p.drawText(cols[key], mid, label.upper())
+                p.drawText(cols[key], centre, label.upper())
             p.setPen(QColor(LINE))
             for x in [name_end + pt.px(4)] + [cols[k].left() - pt.px(4) for k, _, _ in COLUMNS[1:]]:
                 p.drawLine(x, 0, x, rect.bottom())
         else:
             for cell, part in self.delegate.cells(rect):
-                p.drawText(cell, mid, PART_LABEL[part].upper())
+                p.drawText(cell, centre, PART_LABEL[part].upper())
         p.end()
 
 
