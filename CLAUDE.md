@@ -331,6 +331,14 @@
   function of that name broke every groom loader). Remove the shot's overrides clears subdivision and show rules;
   Same overrides copies both; a change keeps the table's scroll, selection and folds. A camera has "On the loader":
   clipping, aperture, ratio, guide scale as parm fields (Enter sets the parm, one undo step).
+- The HDA's PythonModule is `from apps.houdini.anim_loader_adapter import *`, which takes only `__all__`: every
+  `hou.phm().<name>` in `build_hda.py` must be in it (v0.1.36's Reload button raised AttributeError, cb_reload was
+  missing; `tests/test_anim_loader_hda_callbacks.py` checks it). A button is tested by `parm.pressButton()` in hython,
+  not by calling the adapter's function.
+- Hide Prims is off the parm pane (the user's ask, 2026-11-19): `mx_hide_enable` / `mx_hide_pattern` stay as hidden
+  parms, so the hair driver is still hidden by default and scenes keep what they had; the inspector's eye shows it.
+  Configure Primitive authors that visibility as a time sample at the current frame (its toggle is an expression):
+  read it at a frame, `ComputeVisibility(Usd.TimeCode(f))`; at the default time it reads inherited.
 - Reload from disk (the user's ask, 2026-11-19): the node's Reload button (beside Refresh) and the manager's row menu
   re-read every file a loader uses (`adapter.files_of`: main file, lookdev with its sublayers, every frame of groom /
   cloth, sublayer slots, groom topology; `logic.loader_files`) for a publish written again into the same version,

@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Houdini
+- **MonoFX Loader**: the **Reload** button works; in v0.1.36 every click raised "module object has no attribute 'cb_reload'" (the manager's Reload from disk was fine).
+- **MonoFX Loader**: **Hide Prims** is gone from the node's parameters: show and hide prims with the eye in the manager's inspector. The hair driver mesh stays hidden by default, as before; its eye shows it.
+
 
 ## [0.1.36] - 2026-11-19
 

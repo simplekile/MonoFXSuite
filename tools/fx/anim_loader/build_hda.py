@@ -321,12 +321,13 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     geo = T.FolderParmTemplate("f_geo", "Geometry", folder_type=T.folderType.Simple)
     geo.setConditional(T.parmCondType.HideWhen, geo_only)
     geo.addParmTemplate(T.FloatParmTemplate("scale", "Uniform Scale", 1, default_value=(1.0,), min=0, max=10))
+    # Hide Prims is off the pane (the user's ask, 2026-11-19): the inspector's eye shows and hides any prim now. The
+    # parms stay, hidden, so the hair driver is still hidden by default and scenes keep what they had; the eye on
+    # HairDriver_grp shows it.
     hide_on = T.ToggleParmTemplate("mx_hide_enable", "Hide", default_value=True)
-    hide_on.hideLabel(True)
-    hide_on.setJoinWithNext(True)
+    hide_on.hide(True)
     hide = T.StringParmTemplate("mx_hide_pattern", "Hide Prims", 1, default_value=("Geo/Groom_grp/HairDriver_grp",))
-    hide.setConditional(T.parmCondType.DisableWhen, "{ mx_hide_enable == 0 }")
-    hide.setHelp("Prims under the instance made invisible, e.g. the hair driver mesh.")
+    hide.hide(True)
     geo.addParmTemplate(hide_on)
     geo.addParmTemplate(hide)
     g.append(geo)

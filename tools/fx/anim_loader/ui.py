@@ -2360,7 +2360,7 @@ class InspectorPanel(QWidget):
     def _paint_toggles(self, item, ps) -> None:
         """The eye, viewport and render toggles of a row (logic.PrimShow): one look per state, a dot for the shot's
         override, dimmed under a hidden parent (it keeps its own setting for when the parent shows again)."""
-        where = {"shot": "set for this shot", "loader": "set on the loader (Hide Prims, Show in Viewport)",
+        where = {"shot": "set for this shot", "loader": "the loader's default (the hair driver hidden; Show in Viewport)",
                  "publish": "as published", "": ""}
         item.setData(0, ROLE_SHOW, ps)
         pruned = not ps.visible and ps.own_visible
