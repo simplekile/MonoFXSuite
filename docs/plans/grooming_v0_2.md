@@ -907,6 +907,16 @@ cm, Grey 0 / 0.5 / 1) bound by `grooming_paint_state.py`; every change goes thro
 `grooming_masks.set_brush(source="state")`, whose `HOOKS["brush"]` tells the panel (shown on its next poll,
 400 ms), and a change made in the panel does not come back.
 
+**Checked (t72, GUI by script, `tests/t72_workspace_paint/report.md`).** Desktop from the list on a fresh pref
+dir (viewport, panel `mono_grooming` on the node, network editor), back to Build unchanged, radial menu ours while
+the panel is shown and the user's after; the 9 radial entries leave the node as the panel's own widgets do; with
+no node they say so; the Paint state's HUD, bar and the panel agree after a change from the panel, the bar, the
+wheel, a Ctrl+Shift drag, F and the menu, each with no undo step and no cook, and a stroke after each moves the
+right way; strokes 0.21-0.35 s (limits 0.9-1.5 s), undo 0.04-0.05 s with the HUD on; Esc, another node, the node
+deleted, File > New while painting: no traceback, bar gone. The installer log holds the three folders;
+`accept_v02a_gui.py` 19 / 19. Left for the User look gate: a real hand on the wheel, drag, F, bar and menu, the
+pie menu with C, the layout; not built: hiding shelves per desk (needs a shelf set and the user's choice).
+
 **Spike first (the questions as asked, 2026-11-13).**
 1. Can the tool switch the viewport to its radial menu when the panel opens and put the user's back when
    it closes, by script, in Houdini 22? If not: the user picks it in the menu, and the panel says so once.
