@@ -8,7 +8,7 @@ import logging
 from typing import Sequence
 
 import numpy as np
-from pxr import Gf, Usd, UsdGeom, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt
 
 logger = logging.getLogger("monofx.anim_usd_cache")
 
@@ -61,6 +61,21 @@ class UsdAnimCacheMeshWriter:
             len(face_vertex_counts),
             len(face_vertex_indices),
         )
+
+    def write_uvs(self, mesh: UsdGeom.Mesh, name: str, uvs) -> None:
+        """Author one face-varying UV primvar (``(L, 2)`` per corner) at default time."""
+        arr = np.ascontiguousarray(uvs, dtype=np.float32).reshape(-1, 2)
+        primvar = UsdGeom.PrimvarsAPI(mesh).CreatePrimvar(
+            name, Sdf.ValueTypeNames.TexCoord2fArray, UsdGeom.Tokens.faceVarying
+        )
+        primvar.Set(Vt.Vec2fArray.FromNumpy(arr))
+
+    def write_normals(self, mesh: UsdGeom.Mesh, normals, frame: float) -> None:
+        """Author one face-varying normals time sample (``(L, 3)`` per corner)."""
+        arr = np.ascontiguousarray(normals, dtype=np.float32).reshape(-1, 3)
+        attr = mesh.GetNormalsAttr() or mesh.CreateNormalsAttr()
+        attr.Set(Vt.Vec3fArray.FromNumpy(arr), Usd.TimeCode(frame))
+        mesh.SetNormalsInterpolation(UsdGeom.Tokens.faceVarying)
 
     def write_frame(
         self,

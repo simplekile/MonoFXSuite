@@ -441,6 +441,17 @@ class MONOFX_OT_save_version(Operator):
         return {"FINISHED"}
 
 
+def _report_is_for_open_file(report: str) -> bool:
+    """The last Save Version message is stored in the file: show it only for that file.
+
+    ``Saved sh024_anim_v002.blend`` stays in the scene and showed in v004 later on.
+    """
+    if not report:
+        return False
+    name = bpy.path.basename(bpy.data.filepath)
+    return bool(name) and name in report
+
+
 class MONOFX_PT_scene(Panel):
     bl_label = "Scene"
     bl_idname = "MONOFX_PT_scene"
@@ -456,8 +467,11 @@ class MONOFX_PT_scene(Panel):
         addon_updater.draw_version_header(self.layout)
 
     def draw(self, context: Context) -> None:
+        from . import department
+
         layout = self.layout
         props = _pipeline_props(context)
+        department.draw_department_row(layout, context)
         box = layout.box()
 
         if not bpy.data.filepath:
@@ -473,7 +487,7 @@ class MONOFX_PT_scene(Panel):
             row.operator("wm.mono_fx_save_version", text="Save Version", icon="FILE_NEW")
             return
 
-        if props.save_version_report:
+        if _report_is_for_open_file(props.save_version_report):
             ui_style.status_label(box, props.save_version_report, ok=True)
 
         row = box.row(align=True)
