@@ -873,3 +873,8 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     each; a parm set from Python runs no callback, so the lookup toggle calls `on_lookup_changed(recorded=True)`,
     which writes the "on/off: set by hand" note INSIDE the step (the callback itself keeps undo off), and one undo
     puts back value and note.
+  - Fix round t71 (the checker's defects): the poll checks the node is alive first (`controller.node_alive`;
+    a deleted node raises on ANY call, `node.path()` included, so the old except handler raised too) and goes to
+    `node_gone` once; the panel's `is_alive` (closed, or its C++ object deleted) stops a poll queued through
+    hdefereval; the status delegate clips and elides to its own cell (a wider text was drawn over the name
+    column); `ui_layers._RowBar` switches to two lines by the width its content needs.

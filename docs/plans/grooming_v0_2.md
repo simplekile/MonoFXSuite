@@ -646,6 +646,13 @@ predates this model.
   automatic roots on the painted core -> 89, asked 91.8; undo 364, redo 89; eyes, D 0 -> 0, opacity 50 % -> 180,
   reorder, delete; panel and node agree at 13 of 13 points); `accept_v02a.py` 80 of 84 (the three failing by
   decision with main's rows, `s2` known, `s1` passing), `accept_v02a_gui.py` 19 of 19.
+- Fix round after the t71 check (2026-11-19, t70 `report.md` "Fix round (t71)"): an empty rename shows the node's
+  name again and says a layer needs a name; the settings page and `set_node_setting` clamp the two limits to
+  0.01-16 GB, typed or dragged; a node deleted (or File > New) under an open panel puts it in its no-node state
+  with one message instead of raising on every poll (v0.1's code); the status column elides inside its cell (it
+  was drawn over Automatic's name at 760 px); the row bar puts its values on a second line when the name and
+  values do not fit; a closed panel stops polling; Paint ended in the viewport says so. Left as decided:
+  duplicate layer names, a short Properties at 400 px (Fold), the two X-ray toggles while painting.
 
 **Done when.**
 - A layer of D painted white gives D: on the eight kinds of skin (whorl, top of the head, a lock start, stacked
