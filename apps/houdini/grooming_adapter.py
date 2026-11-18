@@ -2289,7 +2289,20 @@ def cook_frozen_regions(sop) -> None:
         geo.merge(frozen)
 
 
+def radial_on() -> bool:
+    """The viewport's radial menu becomes MONO Grooming while the panel is shown (grooming_workspace)."""
+    from apps.houdini import grooming_workspace
+    return grooming_workspace.radial_on()
+
+
+def radial_off() -> bool:
+    """The user's radial menu back once no panel is shown (grooming_workspace)."""
+    from apps.houdini import grooming_workspace
+    return grooming_workspace.radial_off()
+
+
 __all__ = [
+    "radial_on", "radial_off",
     "undo_cache_usage",
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",

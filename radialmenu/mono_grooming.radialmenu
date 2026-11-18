@@ -1,0 +1,124 @@
+[
+	"fileversion",
+	"22.0.466",
+	"name",
+	"mono_grooming",
+	"label",
+	"MONO Grooming",
+	"categories",
+	"MonoFX",
+	"submenu",
+	[
+		"submenu",
+		"label",
+		"MONO Grooming",
+		"top",
+		[
+			"script",
+			"label",
+			"Paint",
+			"icon",
+			"SOP_paint",
+			"check",
+			"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('paint')",
+			"script",
+			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('paint')"
+		],
+		"top_right",
+		[
+			"script",
+			"label",
+			"Erase",
+			"icon",
+			"SOP_paint",
+			"check",
+			"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('erase')",
+			"script",
+			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('erase')"
+		],
+		"right",
+		[
+			"script",
+			"label",
+			"Scalp X-ray",
+			"icon",
+			"VIEW_display_xray",
+			"check",
+			"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('scalp_xray')",
+			"script",
+			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('scalp_xray')"
+		],
+		"bottom_right",
+		[
+			"script",
+			"label",
+			"Update regions",
+			"icon",
+			"SOP_hairgen",
+			"script",
+			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('update_regions')"
+		],
+		"bottom",
+		[
+			"script",
+			"label",
+			"Detect locks",
+			"icon",
+			"SOP_hairgen",
+			"script",
+			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('detect')"
+		],
+		"bottom_left",
+		[
+			"script",
+			"label",
+			"Isolate selected locks",
+			"icon",
+			"VIEW_visualization_isolate",
+			"script",
+			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('isolate')"
+		],
+		"left",
+		[
+			"submenu",
+			"label",
+			"Display",
+			"top_left",
+			[
+				"script",
+				"label",
+				"Guides",
+				"icon",
+				"SOP_guidegroom",
+				"check",
+				"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('guide')",
+				"script",
+				"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('guide')"
+			],
+			"left",
+			[
+				"script",
+				"label",
+				"Hair preview",
+				"icon",
+				"SOP_hairgen",
+				"check",
+				"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('hair_preview')",
+				"script",
+				"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('hair_preview')"
+			],
+			"bottom_left",
+			[
+				"script",
+				"label",
+				"Hair",
+				"icon",
+				"SOP_hairgen",
+				"check",
+				"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('hair')",
+				"script",
+				"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('hair')"
+			]
+		]
+	]
+]

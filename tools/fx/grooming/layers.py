@@ -72,6 +72,7 @@ class LayersMixin:
     paint_layer_id: int | None = None
     _display_before_paint: str | None = None
     _hooks_set = False
+    _brush_dirty = False
 
     # ------------------------------------------------------------------
     # What the tree and Properties show
@@ -447,6 +448,7 @@ class LayersMixin:
         if hooks is not None:
             hooks["stroke"] = self._on_stroke
             hooks["exit"] = self._on_paint_exit
+            hooks["brush"] = self._on_brush
 
     def _on_stroke(self, node) -> None:
         """The state stored a stroke: cook in the panel's loading line (the state does not cook then)."""
@@ -454,6 +456,23 @@ class LayersMixin:
             pass
         layer = self.data().mask(self.paint_layer_id) if self.paint_layer_id is not None else None
         self.view.set_message(f"Stroke on {layer.name if layer else 'the layer'}: Ctrl+Z takes it back")
+
+    def _on_brush(self) -> None:
+        """The brush was changed in the viewport (the Paint state's bar, wheel, Ctrl+Shift drag, F, menu). The
+        panel's Properties follow on the next poll: a drag changes it at the mouse's rate, and rebuilding the
+        Properties for every move would slow the drag. A change made in the panel never comes back here."""
+        self._brush_dirty = True
+
+    def flush_brush(self) -> bool:
+        """Show the brush the viewport changed (called by the poll). True when something was shown."""
+        if not self._brush_dirty:
+            return False
+        self._brush_dirty = False
+        if hasattr(self.view, "set_paint_state"):
+            self.view.set_paint_state(self.paint_layer_id is not None, self.brush_state())
+        if self.node is not None and self.selection[0] == SEL_LAYER:
+            self.view.show_properties(self.properties(self.data()))
+        return True
 
     def _on_paint_exit(self) -> None:
         """Paint ended in the viewport (Esc, another tool, another node)."""
@@ -493,8 +512,9 @@ class LayersMixin:
         self.paint_layer_id = layer.id
         self._show_paint()
         if not quiet:
-            self.view.set_message(f"Painting {layer.name}: LMB paints, Ctrl the other way, Esc ends. Each stroke"
-                                  " is one undo step")
+            self.view.set_message(f"Painting {layer.name}: LMB paints, Ctrl+LMB the other way, F swaps, wheel or"
+                                  " Ctrl+Shift+drag sizes, Esc ends (the viewport's hints list every key;"
+                                  " Shift+F1 hides them). Each stroke is one undo step")
         return True
 
     def paint_off(self) -> bool:
@@ -526,7 +546,9 @@ class LayersMixin:
             self.view.show_properties(self.properties(data))
 
     def poll_paint(self) -> None:
-        """Paint may end without the panel (the hook covers it; this catches an adapter reloaded under it)."""
+        """Paint may end without the panel (the hook covers it; this catches an adapter reloaded under it).
+        A brush changed in the viewport shows here too (`flush_brush`)."""
+        self.flush_brush()
         read = getattr(self.adapter, "paint_layer", None)
         if read is None or self.node is None or self.paint_layer_id is None:
             return

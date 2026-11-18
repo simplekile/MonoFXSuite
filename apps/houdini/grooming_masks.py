@@ -1385,20 +1385,28 @@ def mask_rebake(node) -> bool:
 # ---------------------------------------------------------------------------
 
 # The panel's hooks (set by its controller): "stroke"(node) after a stroke is stored, to cook inside the
-# panel's loading line (None: the state cooks the node itself); "exit"() when Paint ends without the panel
-HOOKS: dict[str, Any] = {"stroke": None, "exit": None}
+# panel's loading line (None: the state cooks the node itself); "exit"() when Paint ends without the panel;
+# "brush"() after the brush was changed in the viewport (the state's bar, wheel, drag, F, menu): the panel
+# shows the new values (a change made in the panel does not call it back: no loop)
+HOOKS: dict[str, Any] = {"stroke": None, "exit": None, "brush": None}
 BRUSH: dict[str, Any] = {"radius_cm": config.BRUSH_RADIUS_CM, "value": config.BRUSH_VALUE,
                          "soft": config.BRUSH_SOFT, "erase": False, "xray": False, "view": "density"}
 PAINT: dict[str, Any] = {"node": None, "layer": None}    # node path and layer id while Paint is on
 
 
 def set_brush(radius_cm: float | None = None, value: float | None = None, soft: float | None = None,
-              erase: bool | None = None, xray: bool | None = None, view: str | None = None) -> dict:
+              erase: bool | None = None, xray: bool | None = None, view: str | None = None,
+              source: str = "panel") -> dict:
     """Brush settings of the session (not saved, no undo): radius in cm, the `value` painted into the mask
     (0..1: 1 white, the density layer applies; 0 black, it does not), the soft share of the radius, `erase` (take the layer's paint
     away), the scalp's X-ray, and what the scalp shows (`view`, config.MASK_VIEWS: the density as it is, the
     painted layer alone, or the roots as dots). Choosing "density" or "roots" counts the groom's roots, which
-    grows the locks the cache does not hold in full. Returns them all."""
+    grows the locks the cache does not hold in full. Returns them all.
+
+    One source for the panel's Properties and the Paint state's bar and hints (v0.2a last task): the state
+    is told of every change (its bar and hints follow); the panel's "brush" hook only of a change whose
+    `source` is not "panel" (the viewport's bar, wheel, Ctrl+Shift drag, F, right-click menu), so neither side
+    calls the other back. View state: no undo step, no cook (choosing a view may count roots, as before)."""
     if view is not None:
         if view not in config.MASK_VIEWS:
             raise ValueError(f"mask view {view!r}")
@@ -1417,6 +1425,10 @@ def set_brush(radius_cm: float | None = None, value: float | None = None, soft: 
     if hou is not None and hou.isUIAvailable():
         from apps.houdini import grooming_paint_state
         grooming_paint_state.brush_changed()
+    if source != "panel":
+        hook = HOOKS.get("brush")
+        if hook is not None:
+            hook()
     return dict(BRUSH)
 
 

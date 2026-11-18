@@ -19,7 +19,7 @@ import contextlib
 import math
 from typing import Any, Callable
 
-from tools.fx.grooming import config, logic, model
+from tools.fx.grooming import config, logic, model, workspace
 from tools.fx.grooming.layers import SEL_LAYER, LayersMixin
 
 # How often the panel reads the viewport selection and the node's data (ms)
@@ -173,6 +173,7 @@ class GroomController(LayersMixin):
         self._drag_origin_new = False
         self._drag_warned = False
         self._drag_factor: float | None = None   # the strand fraction a drag shows (logic.drag_factor)
+        self._radial_said = False   # the panel asked once to pick the radial menu by hand
         if node is not None:
             self.set_node(node)
 
@@ -1187,6 +1188,37 @@ class GroomController(LayersMixin):
             self.view.set_selection(self.selection)
         return True
 
+    # ------------------------------------------------------------------
+    # The workspace: the viewport's radial menu while the panel is shown (v0.2a last task)
+    # ------------------------------------------------------------------
+    def panel_shown(self) -> None:
+        """The panel shown (opened, or its desktop chosen): the viewport follows it again and its radial menu
+        (key C) becomes MONO Grooming; the user's is remembered (`adapter.radial_on`)."""
+        if self.node is not None:
+            self._sync_viewport()
+        call = getattr(self.adapter, "radial_on", None)
+        if call is None:
+            return
+        try:
+            ok = call()
+        except Exception:
+            ok = False
+        if not ok and not self._radial_said:
+            self._radial_said = True
+            self.view.set_message(workspace.RADIAL_BY_HAND)
+
+    def panel_hidden(self) -> None:
+        """The panel hidden (closed, or its desktop left): Paint off, every lock in its colour, and the user's
+        radial menu back once no panel is shown."""
+        self.paint_off()
+        self.focus_off()
+        call = getattr(self.adapter, "radial_off", None)
+        if call is not None:
+            try:
+                call()
+            except Exception:
+                pass
+
     def focus_off(self) -> None:
         """The panel closes or changes node: every lock in its colour again."""
         focus = getattr(self.adapter, "set_focus", None)
@@ -1562,6 +1594,22 @@ class GroomController(LayersMixin):
 # Houdini entry
 # ----------------------------------------------------------------------
 _PANELS: list = []  # (ui, controller) of open floating windows, so run() reuses one
+_LIVE: list = []    # (ui, controller) of every panel made, docked or floating (the radial menu finds them)
+
+
+def live_panels() -> list:
+    """(ui, controller) of the panels still open (a closed or deleted one is dropped)."""
+    alive = []
+    for ui, c in list(_LIVE):
+        try:
+            gone = not ui.is_alive() if hasattr(ui, "is_alive") else False
+        except RuntimeError:
+            gone = True
+        if gone:
+            _LIVE.remove((ui, c))
+        else:
+            alive.append((ui, c))
+    return alive
 
 
 def bind(ui: Any, controller: GroomController) -> None:
@@ -1584,8 +1632,8 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("isolate_off", controller.isolate_off)
     ui.on("escape", controller.escape)
     ui.on("undo", controller.undo)
-    ui.on("hidden", lambda: (controller.paint_off(), controller.focus_off()))
-    ui.on("shown", lambda: controller._sync_viewport() if controller.node is not None else None)
+    ui.on("hidden", controller.panel_hidden)
+    ui.on("shown", controller.panel_shown)
     ui.on("redo", lambda: controller.undo(redo=True))
     ui.on("xray", controller.toggle_xray)
     ui.on("frame", controller.frame)
@@ -1668,6 +1716,7 @@ def create_panel(adapter: Any = None, node: Any = None, docked: bool = False):
     else:
         ui.set_message("No MONO Grooming node in the scene: run the Grooming shelf tool", error=True)
     ui.start_polling(SELECTION_POLL_MS)
+    _LIVE.append((ui, controller))
     return ui, controller
 
 
@@ -1707,7 +1756,8 @@ def _dock(ui: Any) -> None:
 
     import hou
 
-    path = os.path.join(os.path.dirname(__file__), "mono_grooming.pypanel")
+    # the suite root's python_panels/ (on HOUDINI_PATH: Houdini loads it at start, the desktop uses it)
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "python_panels", "mono_grooming.pypanel")
     try:
         hou.pypanel.installFile(path)
         interface = hou.pypanel.interfaceByName(PYPANEL_NAME)
@@ -1728,5 +1778,5 @@ def _dock(ui: Any) -> None:
 
 __all__ = [
     "GroomController", "SELECTION_POLL_MS", "SETTING_RANGES", "SETTING_LABELS",
-    "bind", "create_panel", "run", "lock_color", "report_text",
+    "bind", "create_panel", "run", "lock_color", "report_text", "live_panels",
 ]

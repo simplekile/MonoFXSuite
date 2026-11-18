@@ -50,6 +50,10 @@ Source: "..\..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 ; Houdini reads OPmenu.xml from the root of each HOUDINI_PATH folder (MonoFX node menu)
 Source: "..\..\OPmenu.xml"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\otls\*"; DestDir: "{app}\otls"; Flags: ignoreversion recursesubdirs createallsubdirs
+; MONO Grooming workspace: Houdini reads desktop/, radialmenu/ and python_panels/ from each HOUDINI_PATH folder
+Source: "..\..\desktop\*"; DestDir: "{app}\desktop"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\radialmenu\*"; DestDir: "{app}\radialmenu"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\python_panels\*"; DestDir: "{app}\python_panels"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; MonoStudio version detection (optional): if MonoStudio is installed, drop VERSION into its tools folder.
 Source: "..\..\VERSION"; DestDir: "{code:GetMonoStudioToolsSuiteDir}"; Flags: ignoreversion; Check: ShouldInstallMonoStudioVersion
 ; Source: "..\..\README.md"; DestDir: "{app}"; Flags: ignoreversion
