@@ -34,18 +34,35 @@ SWAP_KEY = "f"
 LMB, CTRL_LMB, DRAG_KEY = "LMB", "Ctrl + LMB", "Ctrl + Shift + LMB"
 
 
-def clamp_radius(radius_cm: float) -> float:
-    return min(max(float(radius_cm), RADIUS_MIN_CM), RADIUS_MAX_CM)
+STEPS_MAX = 200.0     # wheel notches / drag doublings taken at once at most: past it the radius is at a limit anyway
+
+
+def _finite(x, default: float) -> float:
+    try:
+        x = float(x)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return x if math.isfinite(x) else (default if math.isnan(x) else math.copysign(1e300, x))
+
+
+def clamp_radius(radius_cm) -> float:
+    """A radius inside the brush's limits, finite whatever comes in (NaN: the default radius; +-inf: a limit)."""
+    return min(max(_finite(radius_cm, config.BRUSH_RADIUS_CM), RADIUS_MIN_CM), RADIUS_MAX_CM)
+
+
+def _scaled(radius_cm, base: float, power) -> float:
+    p = min(max(_finite(power, 0.0), -STEPS_MAX), STEPS_MAX)
+    return clamp_radius(clamp_radius(radius_cm) * base ** p)
 
 
 def wheel_radius(radius_cm: float, notches: float) -> float:
     """The radius after `notches` wheel notches (Houdini gives +1 / -1 a notch; up = larger)."""
-    return clamp_radius(float(radius_cm) * WHEEL_STEP ** float(notches))
+    return _scaled(radius_cm, WHEEL_STEP, notches)
 
 
 def drag_radius(start_cm: float, dx_px: float) -> float:
     """Ctrl+Shift+LMB drag: the radius from the one at the press and how far the mouse went right (px)."""
-    return clamp_radius(float(start_cm) * 2.0 ** (float(dx_px) / DRAG_DOUBLE_PX))
+    return _scaled(start_cm, 2.0, _finite(dx_px, 0.0) / DRAG_DOUBLE_PX)
 
 
 def mode_name(erase: bool) -> str:
@@ -60,8 +77,9 @@ def hud_template() -> dict:
             {"id": "layer", "label": "Layer", "value": ""},
             {"id": "mode", "label": "Mode", "key": SWAP_KEY.upper(), "value": "Paint"},
             {"id": "mode_g", "type": "choicegraph", "count": 2},
-            {"id": "radius", "label": "Radius", "key": "mousewheel / " + DRAG_KEY, "value": ""},
+            {"id": "radius", "label": "Radius", "key": "mousewheel", "value": ""},
             {"id": "radius_g", "type": "bargraph", "value": 0.0},
+            {"id": "radius_drag", "label": "Radius, by drag", "key": DRAG_KEY},
             {"id": "soft", "label": "Softness", "value": ""},
             {"id": "grey", "label": "Grey", "value": ""},
             {"type": "divider"},
@@ -80,7 +98,7 @@ def radius_text(radius_cm: float) -> str:
 def hud_values(brush: dict, layer_name: str = "") -> dict:
     """The HUD's values for these brush settings (strings, as hudInfo takes them; graphs 0..1 / an index)."""
     erase = bool(brush.get("erase"))
-    radius = float(brush.get("radius_cm", config.BRUSH_RADIUS_CM))
+    radius = clamp_radius(brush.get("radius_cm", config.BRUSH_RADIUS_CM))
     return {
         "layer": layer_name,
         "mode": mode_name(erase),
@@ -109,8 +127,11 @@ def field_change(parm: str, value, brush: dict) -> dict:
     if field == "erase":
         new = bool(value) if not isinstance(value, str) else value.lower() in ("1", "on", "true")
         return {} if new == bool(brush.get("erase")) else {"erase": new}
-    new = float(value)
-    return {} if math.isclose(new, float(brush.get(field, 0.0)), abs_tol=1e-6) else {field: new}
+    new = _finite(value, math.nan)
+    if math.isnan(new):
+        return {}                     # nothing a brush can take: the bar is written back from the brush
+    new = clamp_radius(new) if field == "radius_cm" else min(max(new, 0.0), 1.0)
+    return {} if math.isclose(new, _finite(brush.get(field, 0.0), 0.0), abs_tol=1e-6) else {field: new}
 
 
 def menu_items() -> list[tuple[str, str, str]]:
@@ -124,7 +145,7 @@ def menu_items() -> list[tuple[str, str, str]]:
 
 def menu_fields(item: str, brush: dict) -> dict:
     """`set_brush` keywords for a right-click menu item (or the F hotkey), {} for an item it does not know."""
-    radius = float(brush.get("radius_cm", config.BRUSH_RADIUS_CM))
+    radius = clamp_radius(brush.get("radius_cm", config.BRUSH_RADIUS_CM))
     if item == SWAP:
         return {"erase": not bool(brush.get("erase"))}
     if item == "radius_down":
@@ -133,10 +154,10 @@ def menu_fields(item: str, brush: dict) -> dict:
         return {"radius_cm": clamp_radius(radius * 1.25)}
     for prefix, field in (("radius_", "radius_cm"), ("grey_", "value")):
         if item.startswith(prefix):
-            try:
-                return {field: float(item[len(prefix):])}
-            except ValueError:
+            value = _finite(item[len(prefix):], math.nan)
+            if math.isnan(value):
                 return {}
+            return {field: clamp_radius(value) if field == "radius_cm" else min(max(value, 0.0), 1.0)}
     return {}
 
 

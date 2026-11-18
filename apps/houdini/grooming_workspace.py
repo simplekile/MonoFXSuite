@@ -89,12 +89,35 @@ def radial(entry: str) -> bool:
         if c is None:
             _status(ws.NO_NODE, error=True)
             return False
-        return ws.run(c, entry)
+        return _said(c, lambda: ws.run(c, entry))
     except Exception as e:
         _kept()["errors"] = (_kept()["errors"] + [traceback.format_exc()])[-10:]
         label = next((e[1] for e in ws.ENTRIES if e[0] == entry), entry)
         _status(f"MONO Grooming: {label} failed: {e}", error=True)
         return False
+
+
+def _said(c, call):
+    """Run a radial entry with what the panel says also put on the status line: the artist is looking at the
+    viewport, not at the panel (t73: Paint with a lock selected said nothing where it was used)."""
+    view = c.view
+    own = getattr(view, "set_message", None)
+    if own is None or isinstance(view, StatusView):
+        return call()
+
+    def both(text, error=False, *a, **k):
+        own(text, error, *a, **k)
+        if text:
+            _status("MONO Grooming: " + text if not text.startswith("MONO Grooming") else text, error)
+    had_own = "set_message" in getattr(view, "__dict__", {})   # set on the instance before (a test's spy)
+    view.set_message = both
+    try:
+        return call()
+    finally:
+        if had_own:
+            view.set_message = own
+        else:
+            del view.set_message           # the class's own method again
 
 
 def checked(entry: str) -> bool:

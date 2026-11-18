@@ -50,8 +50,10 @@ def test_hud_shows_the_keys_and_the_live_brush() -> None:
     assert v["soft"] == "40 %" and v["grey"] == "0.5"
     assert v["lmb"] == {"label": "Erase"} and v["ctrl_lmb"] == {"label": "Paint"}   # Ctrl paints the other way
     keys = {r.get("key") for r in t["rows"]}
-    assert {"F", "LMB", "Ctrl + LMB", "RMB", "esc"} <= keys
-    assert any("mousewheel" in (k or "") and "Ctrl + Shift + LMB" in (k or "") for k in keys)
+    assert {"F", "LMB", "Ctrl + LMB", "RMB", "esc", "mousewheel", "Ctrl + Shift + LMB"} <= keys
+    rows = {r.get("id"): r for r in t["rows"]}
+    assert rows["radius"]["key"] == "mousewheel"            # the wheel on its own row (t73: it was not shown)
+    assert rows["radius_drag"]["key"] == "Ctrl + Shift + LMB"
     assert bk.hud_values({"radius_cm": 40.0})["radius_g"] == 1.0
 
 
@@ -159,7 +161,7 @@ def test_every_radial_entry_leaves_the_node_as_its_panel_button(entry) -> None:
     results = []
     for how in ("radial", "button"):
         adapter, view, c, ids = _panel_env()
-        if entry == "paint":
+        if entry in ("paint", "erase"):              # the panel's Paint and Eraser sit on a paint layer
             c.select(SEL_LAYER, (ids["crown"],))
         elif entry == "isolate":
             c.select(ctl.SEL_LOCKS, (1, 2))
@@ -301,3 +303,75 @@ def test_a_grey_pick_shows_only_itself_checked() -> None:
     c.select(SEL_LAYER, (ids["crown"],))
     c.set_brush(value=0.5)
     assert view.props["brush"]["value"] == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Fix round t73
+# ---------------------------------------------------------------------------
+def _selections(ids):
+    """(name, selection) for every kind of selection the panel has, the paint layer last."""
+    return [("nothing", (ctl.SEL_NONE, ())), ("all_locks", (ctl.SEL_DEFAULTS, ())), ("group", (ctl.SEL_GROUP, ("fringe",))),
+            ("lock", (ctl.SEL_LOCKS, (1,))), ("several_locks", (ctl.SEL_LOCKS, (1, 3))),
+            # the panel keeps one layer of several rows picked: the one clicked last (here the fill layer)
+            ("several_layer_rows", (SEL_LAYER, (ids["soften"], ids["crown"]))),
+            ("lock_and_group_rows", (ctl.SEL_LOCKS, (1, 2))),
+            ("density_layer", (SEL_LAYER, (ids["crown_thin"],))), ("fill_layer", (SEL_LAYER, (ids["soften"],))),
+            ("automatic", (SEL_LAYER, (config.MASK_BASE_ID,))), ("paint_layer", (SEL_LAYER, (ids["crown"],)))]
+
+
+@pytest.mark.parametrize("entry", ["paint", "erase"])
+def test_radial_paint_and_erase_say_what_is_needed_for_every_selection(entry) -> None:
+    from tools.fx.grooming.layers import PAINT_NEEDS
+    for name, sel in _selections(_panel_env()[3]):
+        adapter, view, c, ids = _panel_env()
+        c.select(*sel)
+        before = (adapter.text, list(adapter.writes), dict(adapter.BRUSH), adapter.painting)
+        n = len(view.messages)
+        ok = ws.run(c, entry)
+        said = view.messages[n:]
+        if name == "paint_layer":
+            assert ok, name
+            assert (adapter.painting == ids["crown"]) if entry == "paint" else adapter.BRUSH["erase"] is True
+            continue
+        assert ok is False, name
+        assert said and said[-1][1] is True and said[-1][0].startswith(PAINT_NEEDS), (name, said)
+        # no state entered, no scene write, brush unchanged
+        assert (adapter.text, list(adapter.writes), dict(adapter.BRUSH), adapter.painting) == before, name
+        assert c.paint_layer_id is None, name
+    # what it names
+    adapter, view, c, ids = _panel_env()
+    c.select(SEL_LAYER, (ids["crown_thin"],))
+    assert "a density layer is selected" in c.paint_needs()
+    c.select(SEL_LAYER, (config.MASK_BASE_ID,))
+    assert "Automatic is selected" in c.paint_needs()
+    c.selection = (SEL_LAYER, (ids["crown"], ids["soften"]))     # held directly: the panel never sends it
+    assert "several rows" in c.paint_needs()
+
+
+def test_erase_while_painting_needs_no_paint_layer_selected() -> None:
+    adapter, view, c, ids = _panel_env()
+    c.select(SEL_LAYER, (ids["crown"],))
+    assert ws.run(c, "paint")
+    c.selection = (ctl.SEL_LOCKS, (1,))          # the selection moved on (Paint is still on)
+    assert ws.run(c, "erase") and adapter.BRUSH["erase"] is True
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf"), 1e308, -1e308, "x", None])
+def test_brush_keys_give_a_finite_clamped_radius_for_absurd_input(bad) -> None:
+    for got in (bk.wheel_radius(1.0, bad), bk.wheel_radius(bad, 1), bk.drag_radius(1.0, bad), bk.drag_radius(bad, 10),
+                bk.clamp_radius(bad), bk.wheel_radius(bad, bad), bk.drag_radius(bad, bad)):
+        assert math.isfinite(got) and bk.RADIUS_MIN_CM <= got <= bk.RADIUS_MAX_CM, (bad, got)
+    v = bk.hud_values({"radius_cm": bad})
+    assert v["radius"].endswith(" cm") and 0.0 <= v["radius_g"] <= 1.0
+    assert bk.menu_fields("radius_up", {"radius_cm": bad}).get("radius_cm", 1.0) <= bk.RADIUS_MAX_CM
+    change = bk.field_change("radius", bad, {"radius_cm": 1.0})
+    assert change == {} or (math.isfinite(change["radius_cm"])
+                            and bk.RADIUS_MIN_CM <= change["radius_cm"] <= bk.RADIUS_MAX_CM)
+
+
+def test_huge_wheel_and_drag_land_on_the_limits() -> None:
+    assert bk.wheel_radius(1.0, 1e9) == bk.RADIUS_MAX_CM and bk.wheel_radius(1.0, -1e9) == bk.RADIUS_MIN_CM
+    assert bk.drag_radius(1.0, 1e12) == bk.RADIUS_MAX_CM and bk.drag_radius(1.0, -1e12) == bk.RADIUS_MIN_CM
+    assert bk.field_change("grey", 7.0, {"value": 1.0}) == {}          # clamped to 1: what the brush has
+    assert bk.field_change("soft", -3.0, {"soft": 0.5}) == {"soft": 0.0}
+    assert bk.menu_fields("radius_1e400", {"radius_cm": 1.0}) == {"radius_cm": bk.RADIUS_MAX_CM}

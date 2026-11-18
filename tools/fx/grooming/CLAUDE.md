@@ -915,3 +915,12 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     HOUDINI_PATH (`run_gui.sh` in t72), so the user's desktops and radial menus are never touched.
   - Paint ended by a deleted node or File > New: the state's exit hook (`_on_paint_exit`) reads nothing from
     the node (`node_alive` first); it raised `hou.ObjectWasDeleted` inside `_came_back` (t72 gui1).
+  - Fix round t73 (the checker's findings): Paint and the radial Erase need ONE paint layer selected
+    (`layers.paint_needs`, text `PAINT_NEEDS` + what is selected); without it they say so and change nothing
+    (no state, no write, brush as it was). The panel never holds several layer rows (the one clicked last is
+    the selection). A radial entry's message also goes to the status line (`grooming_workspace._said`). The
+    HUD shows the wheel on the Radius row and the drag on its own row (a key spec "mousewheel / Ctrl + Shift +
+    LMB" drew only the drag). `brush_keys` takes NaN / inf / huge / non-numbers: always a finite radius in the
+    limits (steps capped at `STEPS_MAX`). Known, not changed: F reaches the state only while the viewport has
+    the keyboard focus (Houdini's hotkeys), and a pane the user closed in the desktop stays closed when they
+    switch back (Houdini keeps a desktop's changes for the session).

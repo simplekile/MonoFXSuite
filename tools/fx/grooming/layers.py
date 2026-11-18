@@ -38,6 +38,9 @@ NODE_SETTING_LABELS = {SETTING_LOOKUP: "Fit lookup per lock", SETTING_UNDO: "Und
 GB_RANGE = (0.01, 16.0)   # what the settings page offers for the two limits, typed or dragged (t71 defect 2)
 
 
+PAINT_NEEDS = "The brush paints only into a paint layer: select one in the tree, or add one to a density layer"
+
+
 def owner_key(layer: model.MaskLayer) -> tuple:
     """The lock-tree row a density layer sits under: ("all",), ("group", gid), ("locks", first lock id)."""
     if layer.scope == "group":
@@ -491,15 +494,32 @@ class LayersMixin:
         # the line said "Painting ..." (t71 note 3)
         self.view.set_message("Paint ended in the viewport (Esc, another tool or another node)")
 
-    def paint_on(self, layer_id: int | None = None, quiet: bool = False) -> bool:
-        enter = self._call("paint_enter")
+    def paint_needs(self, layer_id: int | None = None) -> str:
+        """Why the brush cannot paint on what is selected ("" when it can): one paint
+        layer must be the selection. Said by Paint and the radial menu's Paint / Erase (t73: with a lock, a group
+        or nothing selected they did nothing and said nothing)."""
+        kind, ids = self.selection
+        if layer_id is None and kind == SEL_LAYER and len(ids) > 1:
+            return PAINT_NEEDS + " (several rows are selected: select one)"
         data = self.data()
         layer = data.mask(layer_id) if layer_id is not None else self._selected_layer(data)
-        if enter is None or layer is None:
-            return False
+        if layer is None:
+            return PAINT_NEEDS
         if layer.kind != "paint":
-            self.view.set_message("The brush paints only into a paint layer: select one (or add one)", error=True)
+            what = {"base": "Automatic", "density": "a density layer", "fill": "a fill layer"}.get(layer.kind, layer.kind)
+            return f"{PAINT_NEEDS} ({what} is selected)"
+        return ""
+
+    def paint_on(self, layer_id: int | None = None, quiet: bool = False) -> bool:
+        enter = self._call("paint_enter")
+        if enter is None or self.node is None:
             return False
+        problem = self.paint_needs(layer_id)
+        if problem:
+            self.view.set_message(problem, error=True)
+            return False
+        data = self.data()
+        layer = data.mask(layer_id) if layer_id is not None else self._selected_layer(data)
         self._install_hooks()
         if self.paint_layer_id is None and self.display_mode == "hair":
             # while painting the panel shows Hair preview: the brush draws on the skin under the hair

@@ -57,6 +57,12 @@ def run(controller: Any, entry: str) -> bool:
     if entry == "paint":
         return bool(controller.toggle_paint())
     if entry == "erase":
+        # the panel's Eraser sits on a paint layer's Properties: the radial one asks for the same (t73)
+        needs = getattr(controller, "paint_needs", None)
+        problem = needs() if needs is not None and getattr(controller, "paint_layer_id", None) is None else ""
+        if problem:
+            controller.view.set_message(problem, error=True)
+            return False
         controller.set_brush(erase=not bool(controller.brush_state().get("erase")))
         return True
     if entry == "scalp_xray":
