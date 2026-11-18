@@ -1,4 +1,5 @@
-## [0.1.35] - 2026-11-19
+## [0.1.36] - 2026-11-19
 
-### Blender
-- **Anim USD export**: a rig whose meshes are named with a digit first (veh_Spaceship v003: `01_Pipe_Rubber`) exports again; its prims are named `_01_Pipe_Rubber`, as in the asset's lookdev and UV publish. Before, the export stopped with "Path must be an absolute path" and a headless export hung. An export that cannot start now ends with its error instead of waiting forever.
+### Houdini
+- **MonoFX Loader**: a groom cache keeps moving after a Graft Stages downstream (the shot layout's graft_anim); before, the groom stood still at its first frame there, in any shot.
+- **MonoFX Loader**: **Reload** (on the node beside Refresh, and Reload from disk on the manager's right-click menu) reads every file the loader uses again from disk, for a publish written again into the same version; Houdini kept showing the old content. Versions do not change.
