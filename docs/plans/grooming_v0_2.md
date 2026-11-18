@@ -594,7 +594,8 @@ the hair. The final model gives every layer its own number and keeps the 0..1 ma
   locks the cache does not hold in full (Guides display: the whole groom once, ~12 s).
 - Also from the user's try: Paint records no undo step of its own, and says so on the status bar when the layer
   being painted is undone; a stroke in Guides display grows no hair; the painted colour is the final density map.
-- Still open: the result is not shown as hair while the button is down; a pen's pressure, radius by drag, mirror.
+- Still open: the result is not shown as hair while the button is down; a pen's pressure, mirror. (Radius by drag
+  closes in v0.2a's last task: wheel and Ctrl+Shift+LMB drag, decided 2026-11-19.)
 
 **Panel (for the panel task; not built here).** The lock tree has three levels, as Substance Painter's layer
 stack with masks: **lock row (All locks / a group / a lock) > its density layers > each layer's mask layers**,
@@ -848,6 +849,18 @@ after the mask panel, since the pie menu's entries are that panel's commands. On
   code path). In the Paint state: brush hotkeys and a right-click menu (radius, value) belong to the
   viewer state.
 - Installer: `MonoFXSuite.iss` ships `desktop/` and `radialmenu/` (in the same change).
+
+**Paint state like Attribute Paint (decided 2026-11-19, built in this task).** The user looked at Houdini's
+Attribute Paint and asked for the same in our Paint state:
+- (a) a hint overlay (HUD) in the viewport, top left, listing the keys and the current brush values (radius,
+  softness, grey, paint / erase); Houdini's own Shift+F1 hides it, like every state's hints;
+- (b) a parameter bar above the viewport with Radius, Softness, Grey and Eraser, two-way with the panel's
+  Properties: one source, `grooming_masks.BRUSH` through `set_brush`; a change on either side shows on the
+  other, with no feedback loop; a brush change is view state (no undo step, no cook);
+- (c) the mouse wheel and Ctrl+Shift+LMB drag change the radius;
+- (d) F swaps paint / erase; Ctrl+LMB (erase while painting) and Esc (leave) stay.
+- Not in this task: smooth (Shift), sample a value, pen pressure, mirror. They are new mask features, a later
+  part.
 
 **Spike first (OPEN).**
 1. Can the tool switch the viewport to its radial menu when the panel opens and put the user's back when
