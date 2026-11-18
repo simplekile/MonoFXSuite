@@ -878,3 +878,40 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     `node_gone` once; the panel's `is_alive` (closed, or its C++ object deleted) stops a poll queued through
     hdefereval; the status delegate clips and elides to its own cell (a wider text was drawn over the name
     column); `ui_layers._RowBar` switches to two lines by the width its content needs.
+- Workspace and Paint keys (v0.2a last task, t72, 2026-11-19; plan section "v0.2a, last task"; sandbox
+  `tests/t72_workspace_paint/`, `report.md`):
+  - Shipped at the suite root (the package `hpath`), each in the installer: `desktop/MONO_Grooming.desk`,
+    `radialmenu/mono_grooming.radialmenu`, `python_panels/mono_grooming.pypanel` (moved from this folder:
+    Houdini loads `python_panels/` at start, which the desk needs; `_dock` installs it from there). The radial
+    file is MADE from `workspace.ENTRIES` (`workspace.radial_menu_text()`); a test fails when they differ:
+    change the entries, then write the file again. Its scripts call `apps/houdini/grooming_workspace.radial`,
+    and a check script is a body with `return` (as SideFX's own `.radialmenu` files write it).
+  - A radial entry calls the controller function the panel's button fires (`workspace.run`): the open panel's
+    controller (`controller.live_panels()`, every panel made, docked or floating), else one on the scene's
+    node with a `StatusView` (messages to the status line), else the status line says there is no node.
+  - The radial menu is switched by the PANEL (`controller.panel_shown` / `panel_hidden`, through the adapter's
+    `radial_on` / `radial_off`): `hou.ui._setActiveRadialMenu` (private in H22; the panel asks once to pick it
+    by hand when missing). A desk's `radial menu set` line was tried and not used: going back to the user's
+    desktop left ours on. What was the user's is kept on `hou.session`, so a module reload keeps it.
+  - Paint state like Attribute Paint: `brush_keys.py` is the pure part (HUD rows / values, bar, wheel x1.1 a
+    notch, Ctrl+Shift drag x2 per 120 px, menu items), `grooming_paint_state.py` binds it. One source:
+    `grooming_masks.set_brush(..., source=)`; "panel" (the default) tells only the state, anything else also
+    calls `HOOKS["brush"]`, which marks the panel dirty and its poll (`flush_brush`) shows it: a drag changes the
+    radius at the mouse's rate and rebuilding the Properties per move would slow it. The state writes HUD and
+    bar deferred and coalesced (`_queue_show`): Houdini ignores a bar write made from `onMouseEvent`, and a
+    write from code fires no `onParmChangeEvent` (so no loop; `field_change` also drops a value the brush
+    has). The bar is written BOTH ways (t72 gui2 / gui3): the kept `state_parms` dict alone reached the bar on
+    the next callback only (the bar one change late), `viewer._setCurrentStateParm` alone was put back by that
+    dict on the next callback (the bar stuck at its first value). A radius / grey / softness / mode change recounts and recolours nothing (`view_shown`): only a view
+    change does. F is a hotkey of the state's menu (`bindHotkeyDefinitions`), so Houdini's frame-on-F does not
+    run; `onKeyEvent` must return False for it. The wheel is consumed while painting (no dolly).
+  - What GUI tests can and cannot do here: the bar and HUD are Houdini's own UI, not Qt and not in a flipbook
+    (grab the main window); `_evalCurrentStateParm` reads the bar, nothing reads the HUD back (the state keeps
+    what it sent in `STATS["hud"]`); a change typed in the bar is simulated as `_setCurrentStateParm` + the
+    state's `onParmChangeEvent` (Houdini's own call is not triggered by a script); a menu item is chosen by
+    calling `onMenuAction` (RMB opening the menu is seen through `onMenuPreOpen`); a synthetic wheel reaches
+    the state only when sent to the `RE_Window` widget (the GL widget's grandparent).
+  - GUI tests of the workspace run Houdini on their own `HOUDINI_USER_PREF_DIR` with the suite on
+    HOUDINI_PATH (`run_gui.sh` in t72), so the user's desktops and radial menus are never touched.
+  - Paint ended by a deleted node or File > New: the state's exit hook (`_on_paint_exit`) reads nothing from
+    the node (`node_alive` first); it raised `hou.ObjectWasDeleted` inside `_came_back` (t72 gui1).

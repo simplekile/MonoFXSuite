@@ -379,15 +379,26 @@ class MaskPaint(object):
         if self.session is None or LIVE.get("state") is not self:
             return
         brush = dict(gm.BRUSH)
-        self.scene_viewer.hudInfo(values=bk.hud_values(brush, self.layer_name()))
-        if self.parms is not None:
-            for name, value in bk.bar_values(brush).items():
+        values = bk.hud_values(brush, self.layer_name())
+        self.scene_viewer.hudInfo(values=values)
+        STATS["hud"] = values             # what the HUD was given last (tests: Houdini cannot read it back)
+        put = getattr(self.scene_viewer, "_setCurrentStateParm", None)
+        for name, value in bk.bar_values(brush).items():
+            # both (t72): a write to the kept state_parms dict reaches the bar only on the next callback (one
+            # change late), and the viewer's own call alone is put back by that dict on the next callback.
+            # Neither calls onParmChangeEvent
+            if self.parms is not None:
                 try:
-                    now = self.parms[name]["value"]
+                    if self.parms[name]["value"] != value:
+                        self.parms[name]["value"] = value
                 except (KeyError, TypeError):
-                    continue
-                if now != value:
-                    self.parms[name]["value"] = value
+                    pass
+            if put is not None and self.scene_viewer.currentState() == STATE:
+                text = ("1" if value else "0") if isinstance(value, bool) else repr(float(value))
+                try:
+                    put(name, text)
+                except hou.Error:
+                    pass
         STATS["shown"] = STATS.get("shown", 0) + 1
 
     def _queue_show(self) -> None:
@@ -414,6 +425,9 @@ class MaskPaint(object):
             self.set_brush(**bk.field_change(kwargs["parm_name"], kwargs["parm_value"], gm.BRUSH))
         except Exception:
             _note(traceback.format_exc())
+
+    def onMenuPreOpen(self, kwargs):
+        STATS["menu_opened"] = STATS.get("menu_opened", 0) + 1
 
     def onMenuAction(self, kwargs):
         try:

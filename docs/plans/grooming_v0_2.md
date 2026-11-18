@@ -862,7 +862,52 @@ Attribute Paint and asked for the same in our Paint state:
 - Not in this task: smooth (Shift), sample a value, pen pressure, mirror. They are new mask features, a later
   part.
 
-**Spike first (OPEN).**
+**Spike (ANSWERED 2026-11-19, t72, Houdini 22.0.466 in GUI on its own `HOUDINI_USER_PREF_DIR`; sandbox
+`tests/t72_workspace_paint/spike/`).**
+1. Radial menu by script: YES, through `hou.ui._getActiveRadialMenu()` / `hou.ui._setActiveRadialMenu(name)`
+   (underscore: not documented, present in H22's `hou.py`; set and read back `t72spike`, then `main` again; no
+   pref file written). A `.radialmenu` in a HOUDINI_PATH folder's `radialmenu/` is listed by
+   `hou.ui.radialMenus()`. A desk's `radial menu set <name>` line also switches it, but switching back to Build
+   left ours on: a desk does not put the user's back. So the PANEL switches it: shown -> ours (the user's
+   remembered), the last panel hidden (closed, or its desktop left) -> the user's, unless they picked another
+   meanwhile. Fallback kept for a build without the calls: the panel says once to pick it by hand.
+2. `.desk` with the Python panel: YES. A hand-written desk in a HOUDINI_PATH folder's `desktop/` is listed
+   (`hou.ui.desktopNames()`), and its `pythonpanel -n mono_grooming` tab opens our interface on a fresh pref dir
+   (the stand-in for another machine), provided `python_panels/mono_grooming.pypanel` is on HOUDINI_PATH: it
+   moved from `tools/fx/grooming/` to the suite root's `python_panels/` (Houdini loads it at start; Dock still
+   installs it by path). Build update: the desk is the same plain hscript SideFX's own desks use
+   (`SolarisLookDev.desk` names four Python panels the same way), written by hand, not saved by a build, so
+   nothing build-specific is in it; a missing interface leaves an empty Python Panel tab, not an error. No
+   shelf-tool layout.
+3. Viewer state API in H22 (docs `hom.zip`: state_parameters, hud_info, state_events, state_menus): the
+   parameter bar (`bindParameter`, the "Operation Toolbox" above the viewport) and the HUD (`hudInfo(template=)`
+   then `hudInfo(values=)`, "Press Shift+F1 to hide hints" drawn by Houdini) work; a flipbook does NOT include
+   either (they are Houdini's UI over the GL view): pictures of them are offscreen grabs of the main window.
+   Writing a state parm from code (`_setCurrentStateParm`, or the `state_parms` dict kept from `onEnter`) calls
+   no `onParmChangeEvent` (no loop); a write from `onMouseEvent` does not reach the bar (read-only callback, as
+   documented), so the state writes the bar deferred. `onMouseWheelEvent` gets +-1 a notch; consumed (True)
+   the camera does not move (a synthetic wheel moved it in neither case, so the camera's own wheel is the
+   user's to try). Ctrl+Shift+LMB reaches `onMouseEvent` with both modifiers, the camera does not move. F:
+   `bindHotkeyDefinitions` + a menu item with that hotkey -> `onMenuAction("swap")`, and Houdini's own F
+   (frame) is not run; `onKeyEvent` still sees "f" first and must not consume it. RMB opens the state's
+   `bindMenu` menu (`onMenuPreOpen` called; it is Houdini's own menu, not a Qt one). A synthetic wheel reaches
+   the state only when sent to the viewport's `RE_Window` widget (the GL widget's grandparent).
+
+**Built (2026-11-19, t72).** `desktop/MONO_Grooming.desk` (viewport 70 % left; right: the MONO Grooming panel
+with a Parameters tab, network editor under it; the shelves as Build has them: hiding shelves per desk was
+not done, see the t72 report), `radialmenu/mono_grooming.radialmenu` (made from `tools/fx/grooming/workspace.py`
+`ENTRIES`; a test holds the file to it: Paint top, Erase top right, Scalp X-ray right, Update regions bottom
+right, Detect locks bottom, Isolate bottom left, Display submenu left with Guides / Hair preview / Hair; check
+marks on the toggles), `python_panels/mono_grooming.pypanel`; the installer ships the three folders. Each entry
+is `apps/houdini/grooming_workspace.radial(entry)` -> `workspace.run(controller, entry)` -> the controller
+function the panel's button fires; without a panel a controller on the scene's node reports to the status
+line; with no node the status line says so. Paint state: `tools/fx/grooming/brush_keys.py` (HUD rows and values,
+bar, wheel x1.1 a notch, drag x2 every 120 px right, menu: Paint / Erase (F), Radius smaller / larger / 0.25-4
+cm, Grey 0 / 0.5 / 1) bound by `grooming_paint_state.py`; every change goes through
+`grooming_masks.set_brush(source="state")`, whose `HOOKS["brush"]` tells the panel (shown on its next poll,
+400 ms), and a change made in the panel does not come back.
+
+**Spike first (the questions as asked, 2026-11-13).**
 1. Can the tool switch the viewport to its radial menu when the panel opens and put the user's back when
    it closes, by script, in Houdini 22? If not: the user picks it in the menu, and the panel says so once.
 2. Does a `.desk` file keep the Python panel (by its interface name) on another machine and survive a

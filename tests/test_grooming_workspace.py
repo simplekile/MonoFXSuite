@@ -277,3 +277,27 @@ def test_radius_steps_are_geometric() -> None:
     for _ in range(10):
         r = bk.wheel_radius(r, 1)
     assert math.isclose(r, 1.1 ** 10)
+
+
+def test_paint_ended_by_a_deleted_node_reads_nothing() -> None:
+    """The node deleted (or File > New) while painting: the state's exit hook must not touch it (t72: it raised
+    hou.ObjectWasDeleted inside the state's _came_back)."""
+    adapter, view, c, ids = _panel_env()
+    c.select(SEL_LAYER, (ids["crown"],))
+    assert c.toggle_paint()
+
+    class Gone:
+        def path(self):
+            raise RuntimeError("ObjectWasDeleted")
+
+    c.node = Gone()
+    adapter.read_data = lambda node: (_ for _ in ()).throw(RuntimeError("ObjectWasDeleted"))
+    adapter.HOOKS["exit"]()                        # what the state calls when Paint is over
+    assert c.paint_layer_id is None and view.paint[0] is False
+
+
+def test_a_grey_pick_shows_only_itself_checked() -> None:
+    adapter, view, c, ids = _panel_env()
+    c.select(SEL_LAYER, (ids["crown"],))
+    c.set_brush(value=0.5)
+    assert view.props["brush"]["value"] == 0.5

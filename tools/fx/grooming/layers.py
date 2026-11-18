@@ -479,6 +479,13 @@ class LayersMixin:
         if self.paint_layer_id is None:
             return
         self.paint_layer_id = None
+        if not self.node_alive():
+            # the node was deleted, or File > New, while painting (t72): Houdini raises on any call to it, so
+            # nothing is read or put back; the poll's node_gone says what happened
+            self._display_before_paint = None
+            if hasattr(self.view, "set_paint_state"):
+                self.view.set_paint_state(False, self.brush_state())
+            return
         self._restore_display()
         self._show_paint()
         # the line said "Painting ..." (t71 note 3)
@@ -539,7 +546,7 @@ class LayersMixin:
     def _show_paint(self) -> None:
         if hasattr(self.view, "set_paint_state"):
             self.view.set_paint_state(self.paint_layer_id is not None, self.brush_state())
-        if self.node is not None:
+        if self.node is not None and self.node_alive():
             data = self.data()
             self.view.show_tree(self.tree_rows(data))
             self.view.set_selection(self.selection)
@@ -583,6 +590,9 @@ class LayersMixin:
         state = self._run(what, lambda: put(**fields)) if view else put(**fields)
         if hasattr(self.view, "set_paint_state"):
             self.view.set_paint_state(self.paint_layer_id is not None, self.brush_state())
+        if "value" in fields and self.node is not None and self.selection[0] == SEL_LAYER:
+            # the Grey picks are buttons: only the one now in use stays checked (t72: the old one stayed too)
+            self.view.show_properties(self.properties(self.data()))
         if view == "roots":
             self.view.set_message("Scalp shows a dot a root of the full groom")
         elif view == "layer":
