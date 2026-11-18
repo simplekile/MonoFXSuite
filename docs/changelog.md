@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Blender
+- **MonoFX tab by department**: the tab shows the tools of the department the .blend is saved in (`01_modelling` Model, `02_rigging` Rig, `NN_anim` Anim); Scene has an Auto / Model / Rig / Anim switch to pick another. A file outside a project shows Model and Anim as before.
+- **Rig publish** (new Rig panel): Publish Rig writes `02_rigging/<task>/publish/vNNN/<asset>_rig_publish.blend` holding only the rig's publish collection (other collections and scenes left out, orphans purged); the open file is not changed. Anim > Link finds it as before.
+- **UV maps and normals in publish**: Publish Asset and Publish Anim ask in their confirm dialog (Include: UV Maps, Normals). Model publish keeps both on by default, anim publish leaves both off (points only, as before); with them on, anim UVs are written once (the render UV as `st`) and normals on every frame.
+- **Anim > Link** also takes a publish collection named with a dash (`CHAR_HELEN_RIG-PUBLISH`), which it refused before.
+
 
 ## [0.1.36] - 2026-11-19
 

@@ -210,3 +210,62 @@ def test_publish_version_from_scene_file_none_without_valid_suffix():
     assert _pp.publish_version_from_scene_file(Path("sh002_anim.blend")) is None
     assert _pp.publish_version_from_scene_file(Path("sh002_anim_v000.blend")) is None
     assert _pp.publish_version_from_scene_file(None) is None
+
+
+_PROJECT = r"D:\Dropbox\Job\260826_grn_vp97"
+
+
+def _p(rel: str) -> Path:
+    return Path(_PROJECT + "\\" + rel)
+
+
+def test_department_from_scene_path():
+    assert _pp.department_from_scene(
+        _p(r"01_assets\_characters\char_Ata\01_modelling\03_uv\blender\work\char_Ata_uv_v001.blend")
+    ) == "MODEL"
+    assert _pp.department_from_scene(
+        _p(r"01_assets\_characters\char_Ata\02_rigging\02_build_rig\blender\work\char_Ata_rig_v009.blend")
+    ) == "RIG"
+    assert _pp.department_from_scene(
+        _p(r"02_shots\sh025\01_anim\blender\work\sh025_anim_v003.blend")
+    ) == "ANIM"
+    assert _pp.department_from_scene(
+        _p(r"01_assets\_characters\char_Ata\06_anim\blender\work\char_Ata_anim_v001.blend")
+    ) == "ANIM"
+    assert _pp.department_from_scene(Path(r"C:\temp\untitled.blend")) is None
+    assert _pp.department_from_scene(None) is None
+
+
+def test_rig_publish_target_from_work_file():
+    blend = _p(r"01_assets\_characters\char_Ata\02_rigging\02_build_rig\blender\work\char_Ata_rig_v009.blend")
+    root = _pp.resolve_rig_publish_root_from_scene(blend)
+    assert root is not None
+    assert root.parts[-3:] == ("02_rigging", "02_build_rig", "publish")
+    assert _pp.rig_publish_basename(blend) == "char_Ata_rig_publish"
+
+
+def test_rig_publish_target_needs_a_rigging_task_folder():
+    assert _pp.resolve_rig_publish_root_from_scene(
+        _p(r"01_assets\_characters\char_Ata\02_rigging\char_Ata_rig_v001.blend")
+    ) is None
+    assert _pp.resolve_rig_publish_root_from_scene(
+        _p(r"01_assets\_characters\char_Ata\01_modelling\03_uv\blender\work\a.blend")
+    ) is None
+
+
+def test_rig_publish_file_is_found_by_the_rig_library():
+    """The name the rig publish writes is the one Anim > Link scans for."""
+    name = _pp.rig_publish_basename(
+        _p(r"01_assets\_characters\char_Ata\02_rigging\02_build_rig\blender\work\char_Ata_rig_v009.blend")
+    )
+    s = name.lower()
+    assert "_rig_" in s and "_publish" in s
+
+
+def test_publish_collection_names():
+    assert _pp.is_publish_collection_name("CHAR_ATA_RIG_PUBLISH")
+    assert _pp.is_publish_collection_name("CHAR_HELEN_RIG-PUBLISH")
+    assert _pp.is_publish_collection_name("Rig_char_Ata_publish")
+    assert not _pp.is_publish_collection_name("character1_rig")
+    assert not _pp.is_publish_collection_name("publisher_notes")
+    assert not _pp.is_publish_collection_name("")

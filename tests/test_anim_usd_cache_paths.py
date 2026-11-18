@@ -220,3 +220,14 @@ def test_single_top_level_prim_name_empty_or_root_only():
     assert _paths.single_top_level_prim_name([]) == ""
     assert _paths.single_top_level_prim_name(["/"]) == ""
     assert _paths.single_top_level_prim_name(["", "  "]) == ""
+
+
+def test_uv_primvar_names_active_render_is_st():
+    assert _paths.uv_primvar_names(["UVMap", "Detail"], 0) == ["st", "Detail"]
+    assert _paths.uv_primvar_names(["UVMap", "Detail"], 1) == ["UVMap", "st"]
+
+
+def test_uv_primvar_names_are_valid_and_unique():
+    assert _paths.uv_primvar_names(["UV Map.001", "st", "2nd"], 0) == ["st", "st_1", "_2nd"]
+    assert _paths.uv_primvar_names([], -1) == []
+    assert _paths.uv_primvar_names(["a"], -1) == ["a"]

@@ -185,8 +185,12 @@
   `<asset>_<task>_publish.usd`; several -> the collection name after `publish`, words joined with a
   capital each (`char_Helen_uv_publish_GeoHelen.usd`).
 - Version mode File (default for new scenes): the publish version is the open work file's `_vNNN`.
-- Anim USD caches points only, never normals (subdivision scheme: next note); per-frame normals cost
-  ~5x the file size (Helen 313 MB -> 1.53 GB). Static meshes and transforms keep only first/last samples
+- Anim USD caches points only by default (subdivision scheme: next note); per-frame normals cost
+  ~5x the file size (Helen 313 MB -> 1.53 GB). The confirm dialog's Include row (and the settings) turns on
+  UV maps (`anim_usd_export_uvs`: face-varying primvars at default time, the render-active map named `st`,
+  `uv_primvar_names`) and normals (`anim_usd_export_normals`: face-varying, per frame, through the same
+  `PointSampleFilter`); both off unless the artist picks them (the user's call, 2026-11-19). Model publish has
+  the same Include row (`export_uvmaps` / `export_normals`), both on by default (the user's call). Static meshes and transforms keep only first/last samples
   (`PointSampleFilter`); a layer with one top-level prim sets it as `defaultPrim`.
 - Every anim USD mesh authors `subdivisionScheme` (USD's fallback is catmullClark: Houdini GL subdivided
   sh025 to >45 GB). Rule (`anim_usd_cache_subdiv`, Blender's `wm.usd_export` BEST_MATCH, which model
@@ -197,6 +201,28 @@
   and the scheme is `none`. Check in Blender: `tests/blender/accept_anim_usd_subdiv.py`.
 - `draw()` never writes scene properties (Blender 5.2 raises "Writing to ID classes in this context is not
   allowed"): `_summarize_publish_plan(..., sync=False)` from draw, sync only in `invoke`.
+
+## Blender add-on tab and rig publish (`department.py`, `rig_publish.py`)
+
+- The MonoFX tab shows one department's panel (the user's pick, 2026-11-19: the tab held too much):
+  Auto reads it from the .blend's folder (`publish_paths.department_from_scene`: `NN_modelling` Model,
+  `NN_rigging` Rig, `NN_anim` Anim), the Scene panel's switch picks another. The pick is a WindowManager
+  property: not saved in the file, back to Auto in a new session. No department in the path -> Model and Anim.
+  Model / Rig / Anim are sub-panels of Scene (`bl_parent_id = "MONOFX_PT_scene"`): as panels of their own,
+  showing one and hiding another reordered the tab (partly by the order saved in the file), Scene jumped
+  above / below, and the switch moved from under the cursor, so a click (or Blender's drag over enum buttons)
+  landed on another department (the user's report, 2026-11-19).
+  One row, no hint line: `Auto (Rig) | Model | Rig | Anim` (`prop_enum` with the found department in Auto's text).
+  The add-on version shows on the Scene panel's header only. Save Version's last message is stored in the scene,
+  so it shows only while it names the open file (`_report_is_for_open_file`: v004 showed "Saved ..._v002").
+- Rig publish (the user's pick: a cleaned .blend): `<asset>/02_rigging/<NN_task>/publish/vNNN/<asset>_rig_publish.blend`,
+  next version, the folder and name Anim > Link scans (`rig_library`: `_rig_` and `_publish` in the stem). The
+  work file must hold exactly one publish collection (`is_publish_collection_name`: `_publish` or `-publish`,
+  e.g. `CHAR_ATA_RIG_PUBLISH`) with an armature; Link links that collection. The session is saved as a copy
+  (`.partial`, not scanned) in the version folder so relative paths stay right, then `blender -b --factory-startup`
+  keeps only that collection in the scene, drops other scenes, purges orphans (custom shapes stay: bones use them),
+  makes paths relative and saves the final name without `.blend1`. The open file is never changed; a failure
+  removes what it made. Before this, riggers saved publishes by hand (char_Ata v001-v005).
 
 ## MONO Grooming (Houdini, `tools/fx/grooming/` + `apps/houdini/grooming_adapter.py`)
 

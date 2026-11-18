@@ -505,3 +505,65 @@ def relative_publish_display(scene_path: Path, usd_path: Path) -> str:
     if task:
         return f"{task}/publish/{p.parent.name}/{p.name}"
     return p.name
+
+
+# --- Department and rig publish -------------------------------------------------
+
+_RIGGING_DEPT_RE = re.compile(r"^\d{2}_rigging$", re.IGNORECASE)
+_MODELLING_DEPT_RE = re.compile(r"^\d{2}_modelling$", re.IGNORECASE)
+_PUBLISH_COLLECTION_RE = re.compile(r"[_-]publish(?![a-z])", re.IGNORECASE)
+
+
+def department_from_scene(scene_path: Optional[Path]) -> Optional[str]:
+    """``MODEL`` / ``RIG`` / ``ANIM`` from where the .blend is saved, ``None`` outside a project.
+
+    ``.../01_modelling/...`` -> MODEL, ``.../02_rigging/...`` -> RIG, ``.../NN_anim/...`` -> ANIM.
+    """
+    if scene_path is None:
+        return None
+    for seg in Path(scene_path).parts:
+        if _MODELLING_DEPT_RE.match(seg):
+            return "MODEL"
+        if _RIGGING_DEPT_RE.match(seg):
+            return "RIG"
+        if _ANIM_TASK_RE.match(seg):
+            return "ANIM"
+    return None
+
+
+def resolve_rig_publish_root_from_scene(scene_path: Path) -> Optional[Path]:
+    """``.../02_rigging/<NN_task>/publish`` from a rig work file.
+
+    ``.../02_rigging/02_build_rig/blender/work/char_Ata_rig_v009.blend``
+    -> ``.../02_rigging/02_build_rig/publish`` (the folder Anim > Link scans).
+    """
+    parts = list(Path(scene_path).parts)
+    for i, seg in enumerate(parts):
+        if not _RIGGING_DEPT_RE.match(seg):
+            continue
+        if i + 1 >= len(parts) - 1:
+            return None
+        task = parts[i + 1]
+        if not _TASK_CODE_RE.match(task):
+            return None
+        return Path(*parts[: i + 2]) / "publish"
+    return None
+
+
+def rig_publish_basename(scene_path: Path) -> str:
+    """``<asset>_rig_publish`` (asset = the folder under ``01_assets/<group>/``)."""
+    parts = list(Path(scene_path).parts)
+    low = [p.casefold() for p in parts]
+    asset = ""
+    if "01_assets" in low:
+        i = low.index("01_assets")
+        if i + 2 < len(parts):
+            asset = parts[i + 2]
+    if not asset:
+        asset = asset_name_from_blend_stem(Path(scene_path).stem, "rig") or "asset"
+    return f"{asset}_rig_publish"
+
+
+def is_publish_collection_name(name: str) -> bool:
+    """The rig's publish collection: ``CHAR_ATA_RIG_PUBLISH``, ``..._RIG-PUBLISH``, ``Rig_X_publish``."""
+    return bool(_PUBLISH_COLLECTION_RE.search(name or ""))
