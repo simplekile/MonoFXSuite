@@ -386,7 +386,12 @@
   at `/Groom`. A shot groom cache is moved there by name (`logic.groom_targets`): the branch's `groom_topology`
   Python LOP copies each curves prim from the first frame (or each frame's file without time samples, `$F` in
   `mx_groom_topo`), and the clips after the graft read the cache's own path (clip `primPath`, tokens `src=dst` in
-  `mx_groom_roots`); spike S3 checked blur and binding.
+  `mx_groom_roots`); spike S3 checked blur and binding. With clips (a cache with time samples) `groom_topology` then takes the copied
+  frame's animated values off (every attribute with time samples loses them and its default; counts, type, basis
+  stay): a Graft Stages after the loader (the shot layout's graft_anim) flattens that copy and the clip metadata into
+  one layer, where the first frame's samples won and the groom stood still; a default in a stronger layer beats a clip
+  too (measured), so only removing them makes every merge / graft safe. Check: hython
+  `tests/houdini/anim_loader/accept_groom_graft.py` (a time-sampled copy of the fake project through Merge and Graft).
 - Subdivision per mesh (the user's decision, 2026-11-17; `logic.subd_plan`, `adapter.author_subd` from the
   `render_only` Python LOP): a shot rule on the loader (hidden `mx_subd_rules`, JSON `pattern` from `/<instance>`,
   `scheme` publish / none / catmullClark, `dicing`; a later rule wins) > lookdev publish > anim publish > `none`.
