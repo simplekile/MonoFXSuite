@@ -1,22 +1,22 @@
 """
-GitHub Releases updater for the installable Blender add-on (ZIP distribution).
+MonoFX Suite updates from inside Blender.
 
-Checks https://github.com/simplekile/MonoFXSuite/releases/latest for
-``monofx_pipeline_blender_v*.zip``, compares ``bl_info`` versions, and can
-download + extract into the active add-ons folder.
+The add-on comes with the suite: ``MonoFXSuite_Setup.exe`` installs Houdini's tools and this add-on into every
+Blender 5+, and a release ships only that installer (the user's call, 2026-11-19; the add-on ZIP is gone). So
+Check for Updates compares the installed suite's version (``suite_updates.installed_suite_version``) with the latest
+GitHub release, and Download MonoFX Setup fetches the installer and starts it: close Blender, then finish it.
+``bl_info``'s version, which releases never moved, no longer decides (Blender always said up to date).
 """
 
 from __future__ import annotations
 
 import importlib
-import io
 import json
-import re
-import shutil
+import os
+import sys
 import tempfile
 import urllib.error
 import urllib.request
-import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
@@ -24,33 +24,25 @@ from typing import Callable, Optional
 import bpy
 from bpy.types import Context, Operator
 
-GITHUB_REPO = "simplekile/MonoFXSuite"
-RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-ASSET_PREFIX = "monofx_pipeline_blender_v"
-ASSET_SUFFIX = ".zip"
-ZIP_ROOT = "monofx_pipeline_blender"
-USER_AGENT = "MonoFX-Blender-Addon-Updater"
+from . import suite_updates as su
 
-_VERSION_RE = re.compile(
-    r'"version":\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)'
-)
+USER_AGENT = "MonoFX-Blender-Addon-Updater"
 
 
 @dataclass(frozen=True)
 class UpdateInfo:
-    current: tuple[int, int, int]
-    remote: tuple[int, int, int]
+    installed: Optional[su.Version]
+    latest: su.Version
     release_tag: str
-    asset_name: str
     download_url: str
 
     @property
-    def has_update(self) -> bool:
-        return self.remote > self.current
+    def state(self) -> str:
+        return su.compare(self.installed, self.latest)
 
     @property
-    def is_ahead(self) -> bool:
-        return self.current > self.remote
+    def has_update(self) -> bool:
+        return self.state in ("update", "unknown")  # unknown: an add-on copied by hand, the Setup makes it known
 
 
 @dataclass(frozen=True)
@@ -62,34 +54,7 @@ class UpdateResult:
 
 _last_check: Optional[UpdateInfo] = None
 _last_error: str = ""
-_cached_zip_bytes: Optional[bytes] = None
-_cached_asset_name: str = ""
-_restart_required: bool = False
-_pending_version: str = ""
-
-
-def format_version(version: tuple[int, int, int]) -> str:
-    return ".".join(str(x) for x in version)
-
-
-def current_addon_version() -> tuple[int, int, int]:
-    pkg = importlib.import_module(__package__)
-    return tuple(pkg.bl_info.get("version", (0, 0, 0)))
-
-
-def version_label() -> str:
-    """Short installed version for panel headers, e.g. ``v0.9.134``."""
-    try:
-        return f"v{format_version(current_addon_version())}"
-    except Exception:
-        return ""
-
-
-def draw_version_header(layout) -> None:
-    """Show the installed add-on version in a panel header."""
-    text = version_label()
-    if text:
-        layout.label(text=text)
+_setup_started: str = ""  # the release tag whose installer was started
 
 
 def addon_package_dir() -> Path:
@@ -97,61 +62,40 @@ def addon_package_dir() -> Path:
     return Path(__file__).resolve().parent
 
 
-def addons_install_dir() -> Path:
-    """Parent of the installed ``monofx_pipeline_blender`` package folder."""
-    return addon_package_dir().parent
+def current_addon_version() -> tuple[int, int, int]:
+    pkg = importlib.import_module(__package__)
+    return tuple(pkg.bl_info.get("version", (0, 0, 0)))
 
 
-def purge_bytecode(addon_root: Path) -> None:
-    """Drop stale ``__pycache__`` so the next Blender start loads fresh code."""
-    if not addon_root.is_dir():
-        return
-    for cache_dir in addon_root.rglob("__pycache__"):
-        shutil.rmtree(cache_dir, ignore_errors=True)
-    for pyc in addon_root.rglob("*.pyc"):
-        try:
-            pyc.unlink()
-        except OSError:
-            pass
+def installed_suite_version() -> Optional[su.Version]:
+    return su.installed_suite_version(su.version_files(addon_package_dir()))
 
 
-def parse_version_from_init_text(text: str) -> Optional[tuple[int, int, int]]:
-    match = _VERSION_RE.search(text)
-    if not match:
-        return None
-    return int(match.group(1)), int(match.group(2)), int(match.group(3))
-
-
-def parse_version_from_zip_bytes(data: bytes) -> Optional[tuple[int, int, int]]:
+def version_label() -> str:
+    """Short installed version for panel headers: the suite's (``MonoFX v0.1.38``), else the add-on's."""
     try:
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            init_name = f"{ZIP_ROOT}/__init__.py"
-            if init_name not in zf.namelist():
-                return None
-            text = zf.read(init_name).decode("utf-8", errors="replace")
-    except (zipfile.BadZipFile, KeyError, OSError):
-        return None
-    return parse_version_from_init_text(text)
+        suite = installed_suite_version()
+        if suite is not None:
+            return f"MonoFX v{su.format_version(suite)}"
+        return "v" + su.format_version(current_addon_version())
+    except Exception:
+        return ""
+
+
+def draw_version_header(layout) -> None:
+    """Show the installed version in a panel header."""
+    text = version_label()
+    if text:
+        layout.label(text=text)
 
 
 def _github_request(url: str, timeout: float = 60.0) -> tuple[bool, str, Optional[bytes]]:
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": USER_AGENT,
-            "Accept": "application/vnd.github+json",
-        },
-    )
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT, "Accept": "application/vnd.github+json"})
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return True, "", response.read()
     except urllib.error.HTTPError as exc:
-        body = ""
-        try:
-            body = exc.read().decode("utf-8", errors="replace")
-        except Exception:
-            pass
-        return False, f"HTTP {exc.code}: {body or exc.reason}", None
+        return False, f"HTTP {exc.code}: {exc.reason}", None
     except urllib.error.URLError as exc:
         return False, f"Network error: {exc.reason}", None
     except TimeoutError:
@@ -160,128 +104,56 @@ def _github_request(url: str, timeout: float = 60.0) -> tuple[bool, str, Optiona
         return False, str(exc), None
 
 
-def _pick_blender_asset(assets: list) -> Optional[dict]:
-    matches = [
-        asset
-        for asset in assets
-        if isinstance(asset, dict)
-        and str(asset.get("name", "")).startswith(ASSET_PREFIX)
-        and str(asset.get("name", "")).endswith(ASSET_SUFFIX)
-    ]
-    if not matches:
-        return None
-    matches.sort(key=lambda item: str(item.get("name", "")).lower(), reverse=True)
-    return matches[0]
-
-
 def check_for_updates() -> UpdateResult:
-    global _last_check, _last_error, _cached_zip_bytes, _cached_asset_name
+    """The latest release against the installed suite (no download: only the release's description)."""
+    global _last_check, _last_error
 
-    current = current_addon_version()
-    ok, err, payload = _github_request(RELEASE_API_URL)
+    ok, err, payload = _github_request(su.RELEASE_API_URL)
     if not ok or payload is None:
-        _last_check = None
-        _last_error = err
-        _cached_zip_bytes = None
-        _cached_asset_name = ""
+        _last_check, _last_error = None, err
         return UpdateResult(ok=False, message=err)
-
     try:
         release = json.loads(payload.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        _last_check = None
-        _last_error = f"Invalid GitHub response: {exc}"
-        _cached_zip_bytes = None
-        _cached_asset_name = ""
+        _last_check, _last_error = None, f"Invalid GitHub response: {exc}"
+        return UpdateResult(ok=False, message=_last_error)
+    tag = str(release.get("tag_name") or "").strip()
+    latest = su.parse_version(tag)
+    asset = su.pick_setup_asset(release.get("assets") or [])
+    if latest is None or asset is None or not asset.get("browser_download_url"):
+        _last_check, _last_error = None, f"The latest release ({tag or '?'}) has no {su.SETUP_ASSET}."
         return UpdateResult(ok=False, message=_last_error)
 
-    assets = release.get("assets") or []
-    asset = _pick_blender_asset(assets)
-    if asset is None:
-        _last_check = None
-        _last_error = "Latest release has no Blender add-on ZIP asset."
-        _cached_zip_bytes = None
-        _cached_asset_name = ""
-        return UpdateResult(ok=False, message=_last_error)
-
-    download_url = str(asset.get("browser_download_url") or "").strip()
-    asset_name = str(asset.get("name") or "").strip()
-    release_tag = str(release.get("tag_name") or "").strip()
-    if not download_url or not asset_name:
-        _last_check = None
-        _last_error = "Release asset is missing a download URL."
-        _cached_zip_bytes = None
-        _cached_asset_name = ""
-        return UpdateResult(ok=False, message=_last_error)
-
-    ok, err, zip_bytes = _github_request(download_url, timeout=180.0)
-    if not ok or zip_bytes is None:
-        _last_check = None
-        _last_error = err
-        _cached_zip_bytes = None
-        _cached_asset_name = ""
-        return UpdateResult(ok=False, message=err)
-
-    remote = parse_version_from_zip_bytes(zip_bytes)
-    if remote is None:
-        _last_check = None
-        _last_error = f"Could not read version from {asset_name}."
-        _cached_zip_bytes = None
-        _cached_asset_name = ""
-        return UpdateResult(ok=False, message=_last_error)
-
-    info = UpdateInfo(
-        current=current,
-        remote=remote,
-        release_tag=release_tag,
-        asset_name=asset_name,
-        download_url=download_url,
-    )
-    _last_check = info
-    _last_error = ""
-    _cached_zip_bytes = zip_bytes
-    _cached_asset_name = asset_name
-
-    if info.has_update:
-        message = (
-            f"Update available: v{format_version(current)} -> "
-            f"v{format_version(remote)}."
-        )
-    elif info.is_ahead:
-        message = (
-            f"Installed v{format_version(current)} is newer than the published "
-            f"add-on v{format_version(remote)}."
-        )
+    info = UpdateInfo(installed_suite_version(), latest, tag, str(asset["browser_download_url"]))
+    _last_check, _last_error = info, ""
+    latest_text = su.format_version(latest)
+    if info.state == "update":
+        message = f"MonoFX {tag} is out (installed v{su.format_version(info.installed)})."
+    elif info.state == "unknown":
+        message = f"MonoFX {tag} is out; this add-on was not installed by the Setup."
+    elif info.state == "ahead":
+        message = f"Installed v{su.format_version(info.installed)} is newer than the release v{latest_text}."
     else:
-        message = f"Already up to date (v{format_version(current)})."
+        message = f"MonoFX is up to date (v{latest_text})."
     return UpdateResult(ok=True, message=message, info=info)
 
 
-def download_release_zip(
-    download_url: str,
-    dest: Path,
-    *,
-    progress_callback: Optional[Callable[[int, int], None]] = None,
-) -> tuple[bool, str]:
-    request = urllib.request.Request(
-        download_url,
-        headers={"User-Agent": USER_AGENT},
-    )
+def download(url: str, dest: Path, progress: Optional[Callable[[int, int], None]] = None) -> tuple[bool, str]:
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     try:
         with urllib.request.urlopen(request, timeout=300.0) as response:
             total = int(response.headers.get("Content-Length") or 0)
             read = 0
-            chunk_size = 256 * 1024
             dest.parent.mkdir(parents=True, exist_ok=True)
             with dest.open("wb") as handle:
                 while True:
-                    chunk = response.read(chunk_size)
+                    chunk = response.read(256 * 1024)
                     if not chunk:
                         break
                     handle.write(chunk)
                     read += len(chunk)
-                    if progress_callback is not None:
-                        progress_callback(read, total if total > 0 else read)
+                    if progress is not None:
+                        progress(read, total if total > 0 else read)
     except urllib.error.HTTPError as exc:
         return False, f"Download failed (HTTP {exc.code})."
     except urllib.error.URLError as exc:
@@ -290,144 +162,60 @@ def download_release_zip(
         return False, "Download timed out."
     except OSError as exc:
         return False, f"Could not write {dest}: {exc}"
-    except Exception as exc:
-        return False, str(exc)
-    return True, ""
-
-
-def extract_release_zip(zip_path: Path, addons_dir: Path) -> tuple[bool, str]:
-    try:
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            root_entries = {name.split("/", 1)[0] for name in zf.namelist() if name}
-            if ZIP_ROOT not in root_entries:
-                return False, f"ZIP does not contain a {ZIP_ROOT}/ folder."
-            for member in zf.namelist():
-                if member.endswith("/"):
-                    continue
-                target = addons_dir / member
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member) as src, target.open("wb") as dst:
-                    dst.write(src.read())
-    except zipfile.BadZipFile:
-        return False, "Downloaded file is not a valid ZIP archive."
-    except OSError as exc:
-        return False, f"Could not install into {addons_dir}: {exc}"
-    except Exception as exc:
-        return False, str(exc)
-    return True, ""
-
-
-def extract_release_zip_bytes(data: bytes, addons_dir: Path) -> tuple[bool, str]:
-    try:
-        with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            root_entries = {name.split("/", 1)[0] for name in zf.namelist() if name}
-            if ZIP_ROOT not in root_entries:
-                return False, f"ZIP does not contain a {ZIP_ROOT}/ folder."
-            for member in zf.namelist():
-                if member.endswith("/"):
-                    continue
-                target = addons_dir / member
-                target.parent.mkdir(parents=True, exist_ok=True)
-                with zf.open(member) as src, target.open("wb") as dst:
-                    dst.write(src.read())
-    except zipfile.BadZipFile:
-        return False, "Downloaded file is not a valid ZIP archive."
-    except OSError as exc:
-        return False, f"Could not install into {addons_dir}: {exc}"
-    except Exception as exc:
-        return False, str(exc)
     return True, ""
 
 
 def _redraw_preferences() -> None:
     screen = getattr(bpy.context, "screen", None)
-    if screen is None:
-        return
-    for area in screen.areas:
+    for area in getattr(screen, "areas", []) or []:
         if area.type == "PREFERENCES":
             area.tag_redraw()
 
 
-def mark_check_up_to_date() -> None:
-    """Refresh UI state after a successful install without another network fetch."""
-    global _last_check
-    if _last_check is None:
-        return
-    _last_check = UpdateInfo(
-        current=_last_check.remote,
-        remote=_last_check.remote,
-        release_tag=_last_check.release_tag,
-        asset_name=_last_check.asset_name,
-        download_url=_last_check.download_url,
-    )
-
-
 def draw_preferences(layout) -> None:
     box = layout.box()
-    box.label(text="Add-on Updates (GitHub Releases)")
-    current = current_addon_version()
-    box.label(text=f"Installed: v{format_version(current)}")
-
-    if _restart_required:
+    box.label(text="MonoFX Updates (GitHub Releases)")
+    installed = installed_suite_version()
+    box.label(text=f"Installed MonoFX: v{su.format_version(installed)}" if installed
+              else "Installed MonoFX: unknown (this add-on was not installed by the Setup)")
+    if _setup_started:
         row = box.row()
         row.alert = True
-        row.label(
-            text=f"Restart Blender to finish update to v{_pending_version}.",
-            icon="ERROR",
-        )
-
+        row.label(text=f"Close Blender, then finish the MonoFX {_setup_started} installer.", icon="ERROR")
     if _last_error:
         row = box.row()
         row.alert = True
         row.label(text=_last_error, icon="ERROR")
-
     if _last_check is not None:
-        remote_text = format_version(_last_check.remote)
-        if _last_check.has_update:
-            row = box.row()
-            row.alert = True
-            row.label(text=f"Published add-on: v{remote_text}", icon="IMPORT")
-        elif _last_check.is_ahead:
-            row = box.row()
-            row.label(
-                text=f"Published add-on: v{remote_text} (you are ahead)",
-                icon="INFO",
-            )
-        else:
-            box.label(text=f"Published add-on: v{remote_text}", icon="CHECKMARK")
-        if _last_check.release_tag:
-            box.label(
-                text=f"From MonoFX Suite release {_last_check.release_tag}",
-                icon="NONE",
-            )
-
+        latest = su.format_version(_last_check.latest)
+        icon = {"update": "IMPORT", "unknown": "IMPORT", "ahead": "INFO"}.get(_last_check.state, "CHECKMARK")
+        row = box.row()
+        row.alert = _last_check.has_update
+        row.label(text=f"Latest release: v{latest}", icon=icon)
     row = box.row(align=True)
     row.operator("wm.mono_fx_addon_check_updates", text="Check for Updates", icon="FILE_REFRESH")
-    row.operator("wm.mono_fx_addon_install_update", text="Update Now", icon="IMPORT")
+    row.operator("wm.mono_fx_addon_install_update", text="Download MonoFX Setup", icon="IMPORT")
 
 
 class MONOFX_OT_addon_check_updates(Operator):
     bl_idname = "wm.mono_fx_addon_check_updates"
     bl_label = "Check for Updates"
-    bl_description = "Check GitHub Releases for a newer MonoFX Pipeline Blender build"
+    bl_description = "Check GitHub Releases for a newer MonoFX Suite"
     bl_options = {"REGISTER"}
 
     def execute(self, _context: Context) -> set[str]:
         result = check_for_updates()
-        if result.ok:
-            self.report({"INFO"}, result.message)
-        else:
-            self.report({"ERROR"}, result.message)
+        self.report({"INFO"} if result.ok else {"ERROR"}, result.message)
         _redraw_preferences()
         return {"FINISHED"}
 
 
 class MONOFX_OT_addon_install_update(Operator):
     bl_idname = "wm.mono_fx_addon_install_update"
-    bl_label = "Update Add-on"
+    bl_label = "Download MonoFX Setup"
     bl_description = (
-        "Download and install the latest release from GitHub. "
-        "Restart Blender when finished."
+        "Download MonoFXSuite_Setup.exe of the latest release and start it. It updates Houdini's tools and this "
+        "add-on: close Blender, then finish the installer"
     )
     bl_options = {"REGISTER"}
 
@@ -439,83 +227,33 @@ class MONOFX_OT_addon_install_update(Operator):
         return context.window_manager.invoke_confirm(self, event)
 
     def execute(self, context: Context) -> set[str]:
-        global _restart_required, _pending_version
+        global _setup_started
 
         if _last_check is None or not _last_check.has_update:
             self.report({"WARNING"}, "No update available. Check for updates first.")
             return {"CANCELLED"}
-
+        if sys.platform != "win32":
+            self.report({"ERROR"}, f"{su.SETUP_ASSET} runs on Windows only: download it from the release page.")
+            return {"CANCELLED"}
         wm = context.window_manager
-        addons_dir = addons_install_dir()
-        addon_root = addon_package_dir()
-        zip_path: Optional[Path] = None
-        use_cache = bool(
-            _cached_zip_bytes and _cached_asset_name == _last_check.asset_name
-        )
-
+        dest = Path(tempfile.gettempdir()) / f"MonoFXSuite_Setup_{_last_check.release_tag}.exe"
         wm.progress_begin(0, 100)
         try:
-            context.window.cursor_set("WAIT")
-        except Exception:
-            pass
-
-        try:
-            if not use_cache:
-                zip_path = Path(tempfile.gettempdir()) / _last_check.asset_name
-
-                def on_progress(read: int, total: int) -> None:
-                    if total > 0:
-                        wm.progress_update(int(read * 100 / total))
-
-                ok, err = download_release_zip(
-                    _last_check.download_url,
-                    zip_path,
-                    progress_callback=on_progress,
-                )
-                if not ok:
-                    self.report({"ERROR"}, err)
-                    return {"CANCELLED"}
-
-            if use_cache:
-                assert _cached_zip_bytes is not None
-                ok, err = extract_release_zip_bytes(_cached_zip_bytes, addons_dir)
-            else:
-                assert zip_path is not None
-                ok, err = extract_release_zip(zip_path, addons_dir)
-
-            if not ok:
-                self.report({"ERROR"}, err)
-                return {"CANCELLED"}
-
-            purge_bytecode(addon_root)
-            try:
-                bpy.ops.wm.save_userpref()
-            except Exception:
-                pass
+            ok, err = download(_last_check.download_url, dest,
+                               lambda read, total: wm.progress_update(int(read * 100 / total)) if total else None)
         finally:
-            if zip_path is not None:
-                try:
-                    zip_path.unlink(missing_ok=True)
-                except OSError:
-                    pass
-            try:
-                wm.progress_end()
-            except Exception:
-                pass
-            try:
-                context.window.cursor_set("DEFAULT")
-            except Exception:
-                pass
-
-        mark_check_up_to_date()
-        _restart_required = True
-        _pending_version = format_version(_last_check.remote)
+            wm.progress_end()
+        if not ok:
+            self.report({"ERROR"}, err)
+            return {"CANCELLED"}
+        try:
+            os.startfile(str(dest))  # noqa: S606 (the installer the user asked for, from the project's own release)
+        except OSError as exc:
+            self.report({"ERROR"}, f"Could not start {dest}: {exc}")
+            return {"CANCELLED"}
+        _setup_started = _last_check.release_tag
         _redraw_preferences()
-
-        self.report(
-            {"INFO"},
-            f"Installed v{_pending_version}. Restart Blender to apply the update.",
-        )
+        self.report({"INFO"}, f"MonoFX {_setup_started} installer started: close Blender, then finish it.")
         return {"FINISHED"}
 
 

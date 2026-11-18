@@ -25,27 +25,17 @@ if (Test-Path $VersionFile) {
 }
 Write-Host "Version: $Version"
 
-# Blender add-on ZIP first: it vendors monofx_pipeline_common into the add-on folder, which the
-# installer ships too (task "blenderaddon" copies it into each Blender 5.0+ and enables it).
+# The Blender add-on's own build first: it vendors monofx_pipeline_common into the add-on folder, which the
+# installer ships (task "blenderaddon" copies it into each Blender 5.0+ and enables it). A release ships only the
+# installer (the add-on ZIP is no longer published): the add-on checks the suite's version, stamped here.
 $BlenderBuild = Join-Path $ProjectRoot "tools\fx\monofx_pipeline_blender\build.ps1"
 if (Test-Path $BlenderBuild) {
-    Write-Host "Building MonoFX Pipeline Blender add-on ZIP..."
+    Write-Host "Preparing the Blender add-on..."
     & $BlenderBuild
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-    $BlenderReleases = Join-Path $ProjectRoot "tools\fx\monofx_pipeline_blender\releases"
-    $latestZip = Get-ChildItem -Path $BlenderReleases -Filter "monofx_pipeline_blender_v*.zip" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-    if ($latestZip) {
-        New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
-        $destZip = Join-Path $OutputDir $latestZip.Name
-        Copy-Item -Path $latestZip.FullName -Destination $destZip -Force
-        Write-Host "Blender add-on ZIP: $destZip"
-    } else {
-        Write-Warning "Blender ZIP not found under $BlenderReleases"
-    }
 }
+$AddonDir = Join-Path $ProjectRoot "tools\fx\monofx_pipeline_blender\monofx_pipeline_blender"
+[System.IO.File]::WriteAllText((Join-Path $AddonDir "SUITE_VERSION"), $Version, [System.Text.UTF8Encoding]::new($false))
 
 Write-Host "Building MonoFX Suite installer..."
 & $Iscc "/DMyAppVersion=$Version" $IssPath

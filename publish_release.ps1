@@ -11,14 +11,6 @@ $ChangelogPath = Join-Path $ProjectRoot "docs\changelog.md"
 $ExePath = Join-Path $ProjectRoot "build\output\MonoFXSuite_Setup.exe"
 $OutputDir = Join-Path $ProjectRoot "build\output"
 
-function Get-BlenderAddonZipPath {
-    $zip = Get-ChildItem -Path $OutputDir -Filter "monofx_pipeline_blender_v*.zip" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-    if ($zip) { return $zip.FullName }
-    return $null
-}
-
 if (-not (Test-Path $VersionFile)) {
     Write-Error "VERSION file not found: $VersionFile"
     exit 1
@@ -65,14 +57,9 @@ try {
         exit 1
     }
 
-    $BlenderZipPath = Get-BlenderAddonZipPath
-    if (-not $BlenderZipPath) {
-        Write-Error "Blender add-on ZIP not found in build\output. Run .\build\build.ps1 (builds installer + Blender ZIP)."
-        exit 1
-    }
-
+    # The installer only: it installs the Blender add-on too, and the add-on's Check for Updates offers it
     Write-Host "Creating GitHub Release: $Tag"
-    Write-Host "Assets: MonoFXSuite_Setup.exe, $(Split-Path $BlenderZipPath -Leaf)"
+    Write-Host "Assets: MonoFXSuite_Setup.exe"
     # --notes-file must be absolute path on Windows for gh to read correctly
     $NotesPathFull = [System.IO.Path]::GetFullPath($NotesPath)
     # Create with the notes only, then upload the assets: created together, gh left the body empty
@@ -82,9 +69,9 @@ try {
         Write-Host "Release may already exist. Try: gh release delete $Tag then run again."
         exit 1
     }
-    gh release upload $Tag $ExePath $BlenderZipPath
+    gh release upload $Tag $ExePath
     if ($LASTEXITCODE -ne 0) {
-        Write-Host "Asset upload failed: gh release upload $Tag `"$ExePath`" `"$BlenderZipPath`" --clobber"
+        Write-Host "Asset upload failed: gh release upload $Tag `"$ExePath`" --clobber"
         exit 1
     }
     # Check the body; set it again (a few tries, GitHub can lag) if it came out empty

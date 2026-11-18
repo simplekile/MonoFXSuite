@@ -41,3 +41,6 @@ desktop.ini
 tools/fx/monofx_pipeline_blender/releases/
 tools/fx/monofx_pipeline_blender/archive/
 tools/fx/monofx_pipeline_blender/monofx_pipeline_blender/vendor/
+
+# Stamped by build/build.ps1 from VERSION (the Blender add-on checks the suite version)
+tools/fx/monofx_pipeline_blender/monofx_pipeline_blender/SUITE_VERSION

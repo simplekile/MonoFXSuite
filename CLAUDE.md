@@ -166,8 +166,14 @@
   `%APPDATA%\Blender Foundation\Blender\X.Y\scripts\addons`: as an extension its module would become
   `bl_ext.user_default.monofx_pipeline_blender` and lose its saved preferences and the scripts importing it.
   Every `Program Files\Blender Foundation\Blender X.Y\blender.exe` with X >= 5 (bl_info "blender": (5, 0, 0)).
-  `build.ps1` builds the add-on ZIP first: that vendors `monofx_pipeline_common` into the add-on folder the
-  installer ships.
+  `build.ps1` runs the add-on's own build first: that vendors `monofx_pipeline_common` into the add-on folder the
+  installer ships, and stamps the suite's VERSION there as `SUITE_VERSION` (git-ignored).
+- A release ships only `MonoFXSuite_Setup.exe` (the user's call, 2026-11-19): the add-on ZIP is no longer published,
+  the Setup installs Blender too. The add-on's Check for Updates (`addon_updater`, logic in bpy-free `suite_updates`)
+  compares the installed suite's version (the add-on folder's `SUITE_VERSION`, else the installer's VERSION for Monos
+  under `%LOCALAPPDATA%`) with the latest release tag and offers Download MonoFX Setup, which fetches the installer and
+  starts it (close Blender, then finish it). `bl_info`'s version no longer decides: releases never moved it, so the
+  old ZIP updater always said up to date (0.9.146 from v0.1.35 to v0.1.37).
 
 ## Blender add-on USD publish (`tools/fx/monofx_pipeline_blender/`)
 
