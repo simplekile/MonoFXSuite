@@ -584,7 +584,13 @@ class _StatusDelegate(QStyledItemDelegate):
             parts.append(("root flipped", TEXT_LABEL))
         if row.get("excluded"):
             parts.append(("excluded", TEXT_LABEL))
+        painter.setClipRect(option.rect)   # never over the name column (t71 defect 4)
+        left = option.rect.left() + z.px(4)
         for text, color in parts:
+            room = x - left
+            if room < metrics.horizontalAdvance("…") + z.px(2):
+                break
+            text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, room)
             w = metrics.horizontalAdvance(text)
             c = QColor(color)
             if dim:
@@ -1600,6 +1606,10 @@ class GroomingUI(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        if getattr(self, "_closed", False):   # closed, then shown again by the shelf tool
+            self._closed = False
+            if self._timer is not None and getattr(self, "_poll_ms", None):
+                self._timer.start(self._poll_ms)
         self._fire("shown")
 
     def hideEvent(self, event) -> None:  # noqa: N802
@@ -1615,8 +1625,26 @@ class GroomingUI(QWidget):
         cb = self._callbacks.get(event)
         return cb(*args) if cb is not None else None
 
+    def is_alive(self) -> bool:
+        """False once the window was closed or its C++ object deleted: a poll queued before that (hdefereval)
+        must not touch its widgets (t71 defect 7)."""
+        if getattr(self, "_closed", False):
+            return False
+        try:
+            import shiboken6
+            return bool(shiboken6.isValid(self))
+        except Exception:
+            return True
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._closed = True
+        if self._timer is not None:
+            self._timer.stop()
+        super().closeEvent(event)
+
     def start_polling(self, ms: int) -> None:
         """Read the viewport selection and the node's data while the panel is up (no Houdini callback)."""
+        self._poll_ms = ms
         if self._timer is None:
             self._timer = QTimer(self)
             self._timer.timeout.connect(lambda: self._fire("poll") if self.isVisible() else None)

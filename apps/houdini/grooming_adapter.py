@@ -1554,6 +1554,7 @@ NODE_SETTING_PARMS = {"lookup": LOOKUP_PARM, "undo_cache_gb": config.UNDO_CACHE_
                       "undo_deform_gb": config.UNDO_DEFORM_PARM}
 NODE_SETTING_LABELS = {"lookup": "Fit lookup per lock", "undo_cache_gb": "Undo cache, GB",
                        "undo_deform_gb": "Deformed undo, GB"}
+NODE_SETTING_GB = (0.01, 16.0)   # the two limits from the panel are clamped to this (a typo of 99999 GB lifted the cap)
 
 
 def node_settings(node) -> dict:
@@ -1576,7 +1577,8 @@ def set_node_setting(node, key: str, value) -> None:
     keys of NODE_SETTING_PARMS (anything else: KeyError). The lookup toggle also records that the artist chose it
     (`on_lookup_changed(recorded=True)`: "on/off: set by hand", in the same undo step; a parm set from Python runs
     no callback). The undo limits are not in a lock's cache key (setting them regrows nothing); the lookup is in
-    every lock's key. A lowered "Deformed undo, GB" frees nothing until the next deformed state is stored."""
+    every lock's key. A lowered "Deformed undo, GB" frees nothing until the next deformed state is stored. The two
+    limits are clamped to NODE_SETTING_GB (0.01-16)."""
     if key not in NODE_SETTING_PARMS:
         raise KeyError(f"not a node setting the panel sets: {key!r}")
     name = NODE_SETTING_PARMS[key]
@@ -1588,7 +1590,7 @@ def set_node_setting(node, key: str, value) -> None:
             p.set(1 if value else 0)
             on_lookup_changed(node, recorded=True)
         else:
-            p.set(max(float(value), 0.01))
+            p.set(min(max(float(value), NODE_SETTING_GB[0]), NODE_SETTING_GB[1]))
 
 
 def on_created(node) -> None:

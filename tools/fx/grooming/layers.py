@@ -35,6 +35,7 @@ SETTING_LOOKUP, SETTING_UNDO, SETTING_DEFORM_UNDO = "lookup", "undo_cache_gb", "
 NODE_SETTINGS = (SETTING_LOOKUP, SETTING_UNDO, SETTING_DEFORM_UNDO)
 NODE_SETTING_LABELS = {SETTING_LOOKUP: "Fit lookup per lock", SETTING_UNDO: "Undo cache, GB",
                        SETTING_DEFORM_UNDO: "Deformed undo, GB"}
+GB_RANGE = (0.01, 16.0)   # what the settings page offers for the two limits, typed or dragged (t71 defect 2)
 
 
 def owner_key(layer: model.MaskLayer) -> tuple:
@@ -404,6 +405,13 @@ class LayersMixin:
     def rename_layer(self, layer_id: int, name: str) -> bool:
         name = (name or "").strip()
         if not name:
+            # the row was edited to "": show the node's name again (t71 defect 1); nothing is written
+            data = self.data()
+            layer = data.mask(layer_id)
+            self.view.show_tree(self.tree_rows(data))
+            self.view.set_selection(self.selection)
+            self.view.set_message(f"A layer needs a name: it stays {layer.name}" if layer else "A layer needs a name",
+                                  error=True)
             return False
         return self.set_layer(layer_id, name=name)
 
@@ -454,6 +462,8 @@ class LayersMixin:
         self.paint_layer_id = None
         self._restore_display()
         self._show_paint()
+        # the line said "Painting ..." (t71 note 3)
+        self.view.set_message("Paint ended in the viewport (Esc, another tool or another node)")
 
     def paint_on(self, layer_id: int | None = None, quiet: bool = False) -> bool:
         enter = self._call("paint_enter")
@@ -607,6 +617,8 @@ class LayersMixin:
         if put is None or self.node is None:
             return False
         label = NODE_SETTING_LABELS[name]
+        if name != SETTING_LOOKUP:
+            value = min(max(float(value), GB_RANGE[0]), GB_RANGE[1])
         if self._run(f"{config.HDA_LABEL}: {label}", lambda: put(self.node, name, value) or True) is None:
             return False
         shown = ("on" if value else "off") if name == SETTING_LOOKUP else f"{float(value):g}"

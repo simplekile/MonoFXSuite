@@ -638,3 +638,165 @@ def test_panel_settings_page_and_back(app, prefs) -> None:
     app.processEvents()
     assert not ui._settings_open and ui._props["layer"]["name"] == "Crown thin"
     ui.close()
+
+
+# ---------------------------------------------------------------------------
+# t71 fix round (the checker's defects 1, 2, 3, 4, 6, 7 and note 3)
+# ---------------------------------------------------------------------------
+def test_t71_1_empty_rename_keeps_the_nodes_name_and_says_so(env) -> None:
+    adapter, view, c = env
+    ids = _layered(adapter)
+    view.tree = []
+    assert not c.rename_layer(ids["crown_thin"], "   ")
+    assert adapter.calls == []                                   # nothing written
+    assert _row(view.tree, "defaults", "")["layers"][1]["name"] == "Crown thin"   # the tree shown again
+    assert view.messages[-1] == ("A layer needs a name: it stays Crown thin", True)
+    assert not any(t.startswith("Renamed") for t, _e in view.messages)
+
+
+def test_t71_2_node_settings_clamp_typed_values(env) -> None:
+    adapter, _view, c = env
+    c.set_node_setting("undo_cache_gb", 99999)
+    c.set_node_setting("undo_deform_gb", -5)
+    c.set_node_setting("undo_cache_gb", 0)
+    assert adapter.calls == [("node", "undo_cache_gb", 16.0), ("node", "undo_deform_gb", 0.01),
+                             ("node", "undo_cache_gb", 0.01)]
+
+
+class _DyingNode:
+    def __init__(self) -> None:
+        self.dead = False
+
+    def path(self) -> str:
+        if self.dead:
+            raise RuntimeError("Attempt to access an object that no longer exists in Houdini.")
+        return "/obj/char_Helen/mono_grooming1"
+
+
+def test_t71_3_node_deleted_under_the_panel(env) -> None:
+    adapter = LayerAdapter()
+    adapter.node = _DyingNode()
+    ids = _layered(adapter)
+    _a, view, c = _env(adapter)
+    c.select(SEL_LAYER, (ids["crown"],))
+    c.paint_on()
+
+    def dead_read(node):
+        raise RuntimeError("Attempt to access an object that no longer exists in Houdini.")
+    adapter.node.dead = True
+    adapter.read_data = dead_read
+    before = len(view.messages)
+    c.poll()                                                      # no exception
+    assert c.node is None and c.paint_layer_id is None and c.selection == ("none", ())
+    assert view.tree == [] and view.node == ("", "") and view.paint[0] is False
+    said = view.messages[before:]
+    assert len(said) == 1 and said[0][1] is True
+    assert said[0][0].startswith("/obj/char_Helen/mono_grooming1 no longer exists")
+    for _ in range(5):                                            # no repeat per tick
+        c.poll()
+    assert len(view.messages) == before + 1
+
+
+def test_t71_note3_paint_ended_outside_says_so(env) -> None:
+    adapter, view, c = env
+    ids = _layered(adapter)
+    c.select(SEL_LAYER, (ids["crown"],))
+    c.paint_on()
+    adapter.painting = None
+    adapter.HOOKS["exit"]()
+    assert view.messages[-1][0].startswith("Paint ended in the viewport")
+
+
+def test_t71_1_qt_empty_rename_puts_the_name_back(app, prefs) -> None:
+    from tools.fx.grooming.ui import COL_NAME
+
+    adapter, ui, c, ids = _qt_panel(app)
+    item = ui._rows[(SEL_LAYER, ids["crown_thin"])]
+    item.setText(COL_NAME, "")
+    for _ in range(3):
+        app.processEvents()
+    assert ui._rows[(SEL_LAYER, ids["crown_thin"])].text(COL_NAME) == "Crown thin"
+    assert ui.message() == "A layer needs a name: it stays Crown thin"
+    assert adapter.read_data(None).mask(ids["crown_thin"]).name == "Crown thin"
+    ui.close()
+
+
+def test_t71_2_qt_settings_field_clamps(app, prefs) -> None:
+    from PySide6.QtWidgets import QLineEdit
+    from tools.fx.grooming import ui_layers
+
+    adapter, ui, c, ids = _qt_panel(app)
+    ui.show_settings(c.settings_info())
+    app.processEvents()
+    rows = [r for r in ui._props_widget.findChildren(ui_layers._ValueRow)]
+    assert len(rows) == 2
+    field = rows[0].findChild(QLineEdit)
+    field.setText("99999")
+    field.editingFinished.emit()
+    assert adapter.calls[-1] == ("node", "undo_cache_gb", 16.0) and field.text() == "16"
+    ui.close()
+
+
+def test_t71_4_status_never_drawn_over_the_name(app, prefs) -> None:
+    from PySide6.QtGui import QColor, QImage, QPainter
+    from PySide6.QtWidgets import QStyleOptionViewItem
+    from tools.fx.grooming.ui import COL_STATUS
+
+    adapter, ui, c, ids = _qt_panel(app)
+    ui.resize(760, 820)
+    for _ in range(4):
+        app.processEvents()
+    tree = ui._tree
+    item = ui._rows[(SEL_LAYER, -1)]                              # Automatic: "each lock's Density"
+    tree.scrollToItem(item)
+    app.processEvents()
+    index = tree.indexFromItem(item, COL_STATUS)
+    rect = tree.visualRect(index)
+    assert rect.width() > 0
+    img = QImage(tree.viewport().size(), QImage.Format.Format_ARGB32)
+    img.fill(QColor(0, 0, 0, 0))
+    p = QPainter(img)
+    opt = QStyleOptionViewItem()
+    opt.rect = rect
+    tree.itemDelegateForColumn(COL_STATUS).paint(p, opt, index)
+    p.end()
+    drawn_left = [x for x in range(0, rect.left()) for y in range(rect.top(), rect.bottom() + 1)
+                  if img.pixelColor(x, y).alpha() > 0]
+    assert drawn_left == []
+    ui.close()
+
+
+def test_t71_6_row_bar_keeps_the_name_whole_when_narrow(app, prefs) -> None:
+    from PySide6.QtWidgets import QBoxLayout
+
+    adapter, ui, c, ids = _qt_panel(app)
+    c.select(SEL_LAYER, (ids["crown"],))
+    ui.set_selection(c.selection)
+    for width in (760, 1100):
+        ui.resize(width, 820)
+        for _ in range(4):
+            app.processEvents()
+        bar = ui._row_bar
+        name = bar.name
+        whole = name.fontMetrics().horizontalAdvance(name.text())
+        assert name.width() >= whole, (width, name.width(), whole)
+        if bar.width() < bar.needed():
+            assert bar._outer.direction() == QBoxLayout.Direction.TopToBottom
+    ui.close()
+
+
+def test_t71_7_closed_panel_stops_polling_and_starts_again_when_shown(app, prefs) -> None:
+    adapter, ui, c, ids = _qt_panel(app)
+    ui.start_polling(400)
+    assert ui._timer.isActive() and ui.is_alive()
+    ui.close()
+    assert not ui._timer.isActive() and not ui.is_alive()
+    shown = []
+    ui.show_node = lambda *a: shown.append(a)                     # a queued poll after the close
+    c._last_json = None
+    c.poll()
+    assert shown == []
+    ui.show()
+    app.processEvents()
+    assert ui._timer.isActive() and ui.is_alive()
+    ui.close()

@@ -32,7 +32,7 @@ from PySide6.QtWidgets import (
 
 from tools.fx.auto_material.ui import ACCENT, LUCIDE, TEXT_LABEL, TEXT_META, TEXT_PRIMARY, _lucide_icon
 from tools.fx.grooming import logic
-from tools.fx.grooming.layers import MODE_LABELS, MODE_SHORT, SEL_LAYER, VIEW_LABELS
+from tools.fx.grooming.layers import GB_RANGE, MODE_LABELS, MODE_SHORT, SEL_LAYER, VIEW_LABELS
 
 LUCIDE.update({
     "brush": '<path d="m9.06 11.9 8.07-8.06a2.85 2.85 0 1 1 4.03 4.03l-8.06 8.08"/><path d="M7.07 14.94c-1.66 0-3 1.35-3'
@@ -189,13 +189,51 @@ def update_tree_tools(ui, props: dict) -> None:
     tools["density"].setEnabled(not (props.get("kind") == "locks" and len(props.get("state", {}).get("ids", ())) > 1))
 
 
+class _RowBar(QWidget):
+    """The row bar: the layer's icon and name, then its quick values. When the name and the values do not fit on
+    one line (the tree pane is ~270 px at 760 px wide) the values go to a second line, so the name keeps the
+    pane's width (t71 defect 6: it was cut to 4 characters)."""
+
+    def __init__(self, ui) -> None:
+        super().__init__()
+        from PySide6.QtWidgets import QBoxLayout
+        self._ui = ui
+        self.setObjectName("RowBar")
+        self._outer = QBoxLayout(QBoxLayout.Direction.LeftToRight, self)
+        self._outer.setContentsMargins(4, 0, 2, 0)
+        self._outer.setSpacing(6)
+        self.head = QWidget()
+        self.head_lay = QHBoxLayout(self.head)
+        self.head_lay.setContentsMargins(0, 0, 0, 0)
+        self.head_lay.setSpacing(6)
+        self.tools = QWidget()
+        self.tools_lay = QHBoxLayout(self.tools)
+        self.tools_lay.setContentsMargins(0, 0, 0, 0)
+        self.tools_lay.setSpacing(6)
+        self._outer.addWidget(self.head, stretch=1)
+        self._outer.addWidget(self.tools)
+        self.name = None
+
+    def needed(self) -> int:
+        """Width of everything on one line: icon, the whole name, the values."""
+        name = self.name.fontMetrics().horizontalAdvance(self.name.text()) if self.name is not None else 0
+        return self._ui.z.px(15) + 6 + name + 6 + self.tools.sizeHint().width() + 8
+
+    def fit(self, width: int | None = None) -> None:
+        from PySide6.QtWidgets import QBoxLayout
+        width = width if width is not None else self.width()
+        one = width >= self.needed()
+        self._outer.setDirection(QBoxLayout.Direction.LeftToRight if one else QBoxLayout.Direction.TopToBottom)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        self.fit(event.size().width())
+        super().resizeEvent(event)
+
+
 def build_row_bar(ui) -> QWidget:
-    bar = QWidget()
-    bar.setObjectName("RowBar")
-    lay = QHBoxLayout(bar)
-    lay.setContentsMargins(4, 0, 2, 0)
-    lay.setSpacing(6)
-    ui._row_bar_lay = lay
+    bar = _RowBar(ui)
+    ui._row_bar = bar
+    ui._row_bar_lay = bar.tools_lay     # the values (tests find the fields through it)
     bar.setVisible(False)
     return bar
 
@@ -219,13 +257,14 @@ def _field(ui, text: str, width: int, tip: str, commit) -> QLineEdit:
 def show_row_bar(ui, props: dict) -> None:
     """The selected layer's quick values above the tree (Photoshop's blend / opacity bar)."""
     U = _ui()
-    bar = ui._row_bar_lay.parentWidget()
-    lay = ui._row_bar_lay
-    while lay.count():
-        w = lay.takeAt(0).widget()
-        if w is not None:
-            w.hide()
-            w.deleteLater()
+    bar = ui._row_bar
+    for lay in (bar.head_lay, bar.tools_lay):
+        while lay.count():
+            w = lay.takeAt(0).widget()
+            if w is not None:
+                w.hide()
+                w.deleteLater()
+    bar.name = None
     layer = props.get("layer") if props.get("kind") == SEL_LAYER else None
     bar.setVisible(layer is not None)
     if layer is None:
@@ -234,16 +273,18 @@ def show_row_bar(ui, props: dict) -> None:
     icon = QLabel()
     name = {"base": "lock", "density": "layers", "fill": "paint-bucket", "paint": "brush"}[layer["layer"]]
     icon.setPixmap(U._lucide_pixmap(name, z.px(15), ACCENT if layer.get("painting") else TEXT_LABEL))
-    lay.addWidget(icon)
+    bar.head_lay.addWidget(icon)
     title = U._label(layer["name"], "name")
     title.setMinimumWidth(1)
     title.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-    lay.addWidget(title, stretch=1)
+    title.setToolTip(layer["name"])
+    bar.head_lay.addWidget(title, stretch=1)
+    bar.name = title
+    lay = bar.tools_lay
     lid = layer["id"]
     if layer["layer"] == "base":
         lay.addWidget(U._label("nothing to blend", "small"))
-        return
-    if layer["layer"] == "density":
+    elif layer["layer"] == "density":
         lay.addWidget(_field(ui, f"{layer['density']:g}", 64, "D: strands / cm² where the mask is white",
                              lambda v: ui._fire("set_layer", lid, density=v)))
         lay.addWidget(U._label("/cm²", "small"))
@@ -256,8 +297,10 @@ def show_row_bar(ui, props: dict) -> None:
         combo.setToolTip("How this layer blends with the mask under it")
         combo.currentIndexChanged.connect(lambda _i: ui._fire("set_layer", lid, mode=combo.currentData()))
         lay.addWidget(combo)
-    lay.addWidget(_field(ui, f"{round(layer['opacity'] * 100)}%", 62, "Opacity, %",
-                         lambda v: ui._fire("set_layer", lid, opacity=max(0.0, min(100.0, v)) / 100.0)))
+    if layer["layer"] != "base":
+        lay.addWidget(_field(ui, f"{round(layer['opacity'] * 100)}%", 62, "Opacity, %",
+                             lambda v: ui._fire("set_layer", lid, opacity=max(0.0, min(100.0, v)) / 100.0)))
+    bar.fit()
 
 
 # ---------------------------------------------------------------------------
@@ -267,8 +310,9 @@ class _ValueRow(QWidget):
     """Name, slider, value: a drag writes once on release (one undo step), a typed value on Enter."""
 
     def __init__(self, ui, label: str, value: float, lo: float, hi: float, commit, unit: str = "",
-                 shown_scale: float = 1.0, tip: str = "", label_w: int = 0) -> None:
+                 shown_scale: float = 1.0, tip: str = "", label_w: int = 0, clamp: bool = False) -> None:
         super().__init__()
+        self._clamp = clamp      # a typed value is kept inside lo..hi too, not only the slider (t71 defect 2)
         U = _ui()
         z = ui.z
         self._lo, self._hi, self._scale, self._commit_cb = lo, hi, shown_scale, commit
@@ -322,6 +366,9 @@ class _ValueRow(QWidget):
         except ValueError:
             self.field.setText(self._text(self._value))
             return
+        if self._clamp:
+            v = min(max(v, self._lo), self._hi)
+            self.field.setText(self._text(v))
         self._commit(v)
 
     def _commit(self, v: float) -> None:
@@ -503,7 +550,7 @@ def layer_props(ui, props: dict) -> None:
         return
     if kind == "fill":
         lay.addWidget(_ValueRow(ui, "Value", layer["value"], 0.0, 1.0, lambda v: ui._fire("set_layer", lid, value=v),
-                                tip="The grey of this fill layer over all the skin: 1 white, 0 black"))
+                                tip="The grey of this fill layer over all the skin: 1 white, 0 black", clamp=True))
         lay.addWidget(_buttons_row(ui, [(f"{p:g}", abs(p - layer["value"]) < 1e-9, f"Value {p:g}",
                                          (lambda _c=False, p=p: ui._fire("set_layer", lid, value=p)))
                                         for p in props.get("value_picks", [])], label="Quick picks"))
@@ -549,7 +596,7 @@ def layer_props(ui, props: dict) -> None:
                             lambda v: ui._fire("set_brush", radius_cm=v), unit="cm"))
     lay.addWidget(_ValueRow(ui, "Softness", float(brush.get("soft", 0.5)), 0.0, 1.0,
                             lambda v: ui._fire("set_brush", soft=v), unit="%", shown_scale=100.0,
-                            tip="Share of the radius over which a dab fades out"))
+                            tip="Share of the radius over which a dab fades out", clamp=True))
     lay.addSpacing(z.px(8))
     clear = {"armed": False}
     row = QHBoxLayout()
@@ -815,8 +862,10 @@ def show_settings(ui, info: dict) -> None:
     for key, label, deformed in (("undo_cache_gb", "Undo cache, GB", False),
                                  ("undo_deform_gb", "Deformed undo, GB", True)):
         if key in info:
-            row = _ValueRow(ui, label, float(info[key]), 0.0, 16.0,
-                            lambda v, k=key: ui._fire("set_node_setting", k, max(v, 0.01)), label_w=110 if ui._narrow else 150)
+            lo, hi = GB_RANGE
+            row = _ValueRow(ui, label, float(info[key]), lo, hi, lambda v, k=key: ui._fire("set_node_setting", k, v),
+                            label_w=110 if ui._narrow else 150, clamp=True,
+                            tip=f"{lo:g} to {hi:g} GB; a typed value outside is brought inside")
             row.setEnabled(editable)
             lay.addWidget(row)
         lay.addWidget(_note(ui, LayersMixin.usage_text(use, deformed=deformed)))

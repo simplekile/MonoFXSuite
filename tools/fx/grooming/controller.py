@@ -183,6 +183,7 @@ class GroomController(LayersMixin):
         self.paint_off()
         self.focus_off()
         self.node = node
+        self._path = self.node_path() if node is not None else ""   # said when the node is gone
         self._node_lost = False
         self.selection = (SEL_NONE, ())
         self._viewport_ids = []
@@ -241,6 +242,43 @@ class GroomController(LayersMixin):
     def node_path(self) -> str:
         path = getattr(self.node, "path", None)
         return path() if callable(path) else str(self.node or "")
+
+    def node_alive(self) -> bool:
+        """False once the node was deleted (or File > New): Houdini raises on any call to it then."""
+        if self.node is None:
+            return False
+        try:
+            self.node_path()
+        except Exception:
+            return False
+        return True
+
+    def node_gone(self) -> None:
+        """The node is gone: the panel shows no node, says so once, and the poll stops reading it (the poll
+        returns at once while there is no node). Nothing is called on the dead node."""
+        path = getattr(self, "_path", "") or "The MONO Grooming node"
+        self.paint_layer_id = None
+        self._display_before_paint = None
+        exit_ = getattr(self.adapter, "paint_exit", None)
+        if exit_ is not None:
+            try:
+                exit_(None)   # the brush state, not the node
+            except Exception:
+                pass
+        self.node = None
+        self._data = None
+        self._last_json = None
+        self.selection = (SEL_NONE, ())
+        self._viewport_ids = []
+        self.view.show_node("", "")
+        self.view.show_tree([])
+        self.view.set_selection(self.selection)
+        self.view.show_properties({"kind": SEL_NONE, "title": "", "settings": [], "measured": [],
+                                   "overview": [], "attribs": "", "shortcuts": SHORTCUTS})
+        if hasattr(self.view, "set_paint_state"):
+            self.view.set_paint_state(False, self.brush_state())
+        self.view.set_message(f"{path} no longer exists (deleted, or a new scene): run the Grooming shelf tool"
+                              " to open the panel on a MONO Grooming node", error=True)
 
     def refresh(self, data: model.GroomData | None = None) -> None:
         """Show the node again: tree, properties, warnings. Measured values are read from the cook."""
@@ -1462,6 +1500,12 @@ class GroomController(LayersMixin):
         """Timer tick: the node's data changed outside (undo, the HDA's parms) → show it again; the
         viewport selection changed → select those locks here."""
         if self.node is None:
+            return
+        alive = getattr(self.view, "is_alive", None)
+        if alive is not None and not alive():   # a poll queued (hdefereval) before the panel was closed
+            return
+        if not self.node_alive():
+            self.node_gone()
             return
         self.poll_paint()
         if self._drag_origin is not None:
