@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 _SANITIZE_RE = re.compile(r"[^A-Za-z0-9_]")
 
@@ -220,6 +220,31 @@ def existing_output_paths(paths: Iterable[str | Path]) -> list[Path]:
     return found
 
 
+def uv_primvar_names(uv_names: Sequence[str], active_render: int) -> list[str]:
+    """USD primvar name for each Blender UV map, as Blender's own USD export names them.
+
+    The render-active map becomes ``st`` (what lookdev reads); the others keep their name,
+    made a valid identifier and never a second ``st``.
+    """
+    out: list[str] = []
+    used: set[str] = set()
+    if 0 <= active_render < len(uv_names):
+        used.add("st")
+    for i, raw in enumerate(uv_names):
+        if i == active_render:
+            out.append("st")
+            continue
+        base = _valid_identifier(_SANITIZE_RE.sub("_", (raw or "").strip()).strip("_")) or "uv"
+        name = base
+        n = 1
+        while name in used:
+            name = f"{base}_{n}"
+            n += 1
+        used.add(name)
+        out.append(name)
+    return out
+
+
 __all__ = [
     "build_prim_path_segments",
     "dedupe_sibling_segment",
@@ -236,4 +261,5 @@ __all__ = [
     "segments_to_prim_path",
     "single_top_level_prim_name",
     "strip_blender_namespace",
+    "uv_primvar_names",
 ]

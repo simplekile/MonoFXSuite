@@ -51,6 +51,7 @@ from .anim_usd_cache_paths import (
     segments_to_prim_path,
     single_top_level_prim_name,
     strip_blender_namespace,
+    uv_primvar_names,
 )
 from .anim_usd_cache_visibility import (
     filter_object_names_for_export,
@@ -1115,6 +1116,32 @@ def _extract_topology(mesh: bpy.types.Mesh) -> _MeshTopology:
     return _MeshTopology(face_vertex_counts=counts, face_vertex_indices=indices)
 
 
+def _extract_uvs(mesh: bpy.types.Mesh) -> list[tuple[str, np.ndarray]]:
+    """Every UV map as ``(primvar name, (loops, 2) array)``; the render-active one is ``st``."""
+    layers = list(getattr(mesh, "uv_layers", []) or [])
+    if not layers:
+        return []
+    active = next((i for i, uv in enumerate(layers) if getattr(uv, "active_render", False)), 0)
+    names = uv_primvar_names([uv.name for uv in layers], active)
+    out: list[tuple[str, np.ndarray]] = []
+    loops = len(mesh.loops)
+    for name, uv in zip(names, layers):
+        flat = np.empty(loops * 2, dtype=np.float32)
+        uv.uv.foreach_get("vector", flat)
+        out.append((name, flat.reshape(-1, 2)))
+    return out
+
+
+def _extract_corner_normals(mesh: bpy.types.Mesh) -> Optional[np.ndarray]:
+    """Per-corner normals ``(loops, 3)`` in object space (Blender 4.1+ ``corner_normals``)."""
+    corner = getattr(mesh, "corner_normals", None)
+    if corner is None or len(corner) != len(mesh.loops):
+        return None
+    flat = np.empty(len(mesh.loops) * 3, dtype=np.float32)
+    corner.foreach_get("vector", flat)
+    return flat.reshape(-1, 3)
+
+
 def _extract_local_mesh_points(
     mesh: bpy.types.Mesh,
     *,
@@ -1238,8 +1265,12 @@ class UsdAnimCacheExportSession:
         write_publish_meta: bool = True,
         job_label: str = "",
         camera_filepath: Optional[str] = None,
+        export_uvs: bool = False,
+        export_normals: bool = False,
     ) -> None:
         self.context = context
+        self.export_uvs = bool(export_uvs)
+        self.export_normals = bool(export_normals)
         self.filepath = str(filepath)
         self.frame_start = int(frame_start)
         self.frame_end = int(frame_end)
@@ -1277,6 +1308,7 @@ class UsdAnimCacheExportSession:
         self._mesh_prims: dict[str, UsdGeom.Mesh] = {}
         self._reference_topology: dict[str, _MeshTopology] = {}
         self._point_filters: dict[str, PointSampleFilter] = {}
+        self._normal_filters: dict[str, PointSampleFilter] = {}
         self._degenerate_warned: set[str] = set()
         self._xform_filters: dict[str, PointSampleFilter] = {}
         self._xform_op_cache = MatrixXformOpCache()
@@ -1391,6 +1423,9 @@ class UsdAnimCacheExportSession:
                     topo.face_vertex_counts,
                     topo.face_vertex_indices,
                 )
+                if self.export_uvs:
+                    for uv_name, uvs in _extract_uvs(mesh_data):
+                        self._writer.write_uvs(self._mesh_prims[mesh_obj.name], uv_name, uvs)
             elif not topo.same_as(self._reference_topology[mesh_obj.name]):
                 msg = (
                     f"Frame {frame}: topology changed on "
@@ -1426,6 +1461,16 @@ class UsdAnimCacheExportSession:
                     sample_points,
                     sample_frame,
                 )
+            if self.export_normals:
+                normals = _extract_corner_normals(mesh_data)
+                if normals is not None:
+                    normal_filter = self._normal_filters.setdefault(
+                        mesh_obj.name, PointSampleFilter()
+                    )
+                    for sample_frame, sample in normal_filter.push(float(frame), normals):
+                        self._writer.write_normals(
+                            self._mesh_prims[mesh_obj.name], sample, sample_frame
+                        )
         finally:
             _release_evaluated_mesh(eval_obj, needs_clear)
         return None
@@ -1440,6 +1485,12 @@ class UsdAnimCacheExportSession:
                 continue
             for sample_frame, sample_points in point_filter.flush():
                 self._writer.write_frame(prim, sample_points, sample_frame)
+        for name, normal_filter in self._normal_filters.items():
+            prim = self._mesh_prims.get(name)
+            if prim is None:
+                continue
+            for sample_frame, sample in normal_filter.flush():
+                self._writer.write_normals(prim, sample, sample_frame)
         for name, xform_filter in self._xform_filters.items():
             prim = (
                 self._mesh_prims[name].GetPrim()
@@ -1902,8 +1953,12 @@ class UsdAnimCacheMultiExportSession:
         strict_topology: bool = True,
         export_camera: bool = True,
         camera_filepath: Optional[str] = None,
+        export_uvs: bool = False,
+        export_normals: bool = False,
     ) -> None:
         self.context = context
+        self.export_uvs = bool(export_uvs)
+        self.export_normals = bool(export_normals)
         self.jobs = list(jobs)
         self.frame_start = int(frame_start)
         self.frame_end = int(frame_end)
@@ -1962,6 +2017,8 @@ class UsdAnimCacheMultiExportSession:
             export_camera=self._is_last_job() and self._export_camera,
             write_publish_meta=False,
             job_label=job.publish_name,
+            export_uvs=self.export_uvs,
+            export_normals=self.export_normals,
             camera_filepath=(
                 str(self._camera_filepath_override)
                 if self._is_last_job() and self._camera_filepath_override is not None

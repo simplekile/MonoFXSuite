@@ -51,17 +51,14 @@ def shows(context: Context, dept: str) -> bool:
 
 
 def draw_department_row(layout, context: Context) -> None:
+    """One row: ``Auto (Rig) | Model | Rig | Anim``; Auto names what it found in the path."""
     wm = context.window_manager
+    found = detected_department()
     row = layout.row(align=True)
-    row.prop(wm, _PROP, expand=True)
-    if str(getattr(wm, _PROP, "AUTO")) == "AUTO":
-        found = detected_department()
-        hint = layout.row()
-        hint.enabled = False
-        if found:
-            hint.label(text=f"{_LABELS[found]}, from the file's folder", icon="FILE_FOLDER")
-        else:
-            hint.label(text="No department in this file's path", icon="INFO")
+    auto = f"Auto ({_LABELS[found]})" if found else "Auto"
+    row.prop_enum(wm, _PROP, "AUTO", text=auto)
+    for key in ("MODEL", "RIG", "ANIM"):
+        row.prop_enum(wm, _PROP, key)
 
 
 def register() -> None:

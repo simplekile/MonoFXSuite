@@ -80,6 +80,16 @@ def draw_anim_usd_publish_settings(layout: UILayout, props) -> None:
     layout.prop(props, "anim_usd_merge_by_link", text="Merge Same Link")
     layout.prop(props, "anim_usd_add_selected_mode", text="Add Selected")
     layout.prop(props, "anim_usd_skip_view_hidden", text="Skip Hidden / Excluded")
+    draw_anim_usd_include(layout, props)
+
+
+def draw_anim_usd_include(layout: UILayout, props) -> None:
+    """UV maps and normals for the anim USD (both off by default: points only)."""
+    inc = layout.column(align=True)
+    inc.label(text="Include", icon="MESH_DATA")
+    row = inc.row(align=True)
+    row.prop(props, "anim_usd_export_uvs", toggle=True)
+    row.prop(props, "anim_usd_export_normals", toggle=True)
 
 
 def draw_anim_usd_cache_tab(layout: UILayout, context: Context) -> None:

@@ -107,6 +107,12 @@ def _draw_anim_export_confirm_dialog(layout, context: Context) -> None:
         if line.startswith("  "):
             row.scale_y = 0.9
         row.label(text=line.strip())
+    layout.separator()
+    inc = layout.column(align=True)
+    inc.label(text="Include", icon="MESH_DATA")
+    row = inc.row(align=True)
+    row.prop(props, "anim_usd_export_uvs", toggle=True)
+    row.prop(props, "anim_usd_export_normals", toggle=True)
 
 
 class MONOFX_OT_export_anim_usd_cache(Operator):
@@ -301,6 +307,8 @@ class MONOFX_OT_export_anim_usd_cache(Operator):
                 write_publish_meta=True,
                 job_label=job.publish_name,
                 camera_filepath=cam_filepath if export_camera else None,
+                export_uvs=bool(props.anim_usd_export_uvs),
+                export_normals=bool(props.anim_usd_export_normals),
             )
         else:
             self._session = UsdAnimCacheMultiExportSession(
@@ -313,6 +321,8 @@ class MONOFX_OT_export_anim_usd_cache(Operator):
                 strict_topology=True,
                 export_camera=export_camera,
                 camera_filepath=cam_filepath if export_camera else None,
+                export_uvs=bool(props.anim_usd_export_uvs),
+                export_normals=bool(props.anim_usd_export_normals),
             )
 
         try:

@@ -1013,8 +1013,16 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         description="USD root prim path for wm.usd_export (e.g. / or /Asset)",
         default=config.DEFAULT_USD_ROOT_PRIM_PATH,
     )
-    export_uvmaps: BoolProperty(default=True)
-    export_normals: BoolProperty(default=True)
+    export_uvmaps: BoolProperty(
+        name="UV Maps",
+        description="Write the meshes' UV maps into the published USD",
+        default=True,
+    )
+    export_normals: BoolProperty(
+        name="Normals",
+        description="Write the meshes' normals into the published USD",
+        default=True,
+    )
     export_materials: BoolProperty(default=True)
     generate_preview_surface: BoolProperty(
         name="USD Preview Surface Network",
@@ -1586,6 +1594,19 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         name="Root Prim",
         description="Optional root prim name override (e.g. Char). Leave empty to use Blender root object name",
         default="",
+    )
+    anim_usd_export_uvs: BoolProperty(
+        name="UV Maps",
+        description="Write the meshes' UV maps into the anim USD (once, not per frame)",
+        default=False,
+    )
+    anim_usd_export_normals: BoolProperty(
+        name="Normals",
+        description=(
+            "Write the meshes' normals into the anim USD on every frame "
+            "(about 5x the file size)"
+        ),
+        default=False,
     )
     anim_usd_merge_by_link: BoolProperty(
         name="Merge Same Link",
@@ -3026,6 +3047,12 @@ def _draw_publish_confirm_dialog(layout: bpy.types.UILayout, context: Context) -
         if line.startswith("  "):
             row.scale_y = 0.9
         row.label(text=line.strip())
+    layout.separator()
+    inc = layout.column(align=True)
+    inc.label(text="Include", icon="MESH_DATA")
+    row = inc.row(align=True)
+    row.prop(props, "export_uvmaps", toggle=True)
+    row.prop(props, "export_normals", toggle=True)
 
 
 def _execute_publish_usd(op: Operator, context: Context) -> set[str]:
@@ -3569,15 +3596,15 @@ class MONOFX_PT_model(Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "MonoFX"
+    # A sub-panel of Scene: it always sits under the department switch. As a panel of its own,
+    # showing / hiding it reordered the tab and moved the switch from under the cursor.
+    bl_parent_id = "MONOFX_PT_scene"
     bl_order = 0
     bl_description = "Geo preparation, USD bake, and Geo USD publish"
 
     @classmethod
     def poll(cls, context: Context) -> bool:
         return department.shows(context, "MODEL")
-
-    def draw_header(self, context: Context) -> None:
-        addon_updater.draw_version_header(self.layout)
 
     def draw(self, context: Context) -> None:
         prefs = preferences.get_addon_prefs(context)
@@ -3600,15 +3627,15 @@ class MONOFX_PT_anim(Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "MonoFX"
+    # A sub-panel of Scene: it always sits under the department switch. As a panel of its own,
+    # showing / hiding it reordered the tab and moved the switch from under the cursor.
+    bl_parent_id = "MONOFX_PT_scene"
     bl_order = 2
     bl_description = "Animation tools, rig linking, and USD publish"
 
     @classmethod
     def poll(cls, context: Context) -> bool:
         return department.shows(context, "ANIM")
-
-    def draw_header(self, context: Context) -> None:
-        addon_updater.draw_version_header(self.layout)
 
     def draw(self, context: Context) -> None:
         prefs = preferences.get_addon_prefs(context)
@@ -3633,15 +3660,15 @@ class MONOFX_PT_rig(Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "MonoFX"
+    # A sub-panel of Scene: it always sits under the department switch. As a panel of its own,
+    # showing / hiding it reordered the tab and moved the switch from under the cursor.
+    bl_parent_id = "MONOFX_PT_scene"
     bl_order = 1
     bl_description = "Rig publish for Anim > Link"
 
     @classmethod
     def poll(cls, context: Context) -> bool:
         return department.shows(context, "RIG")
-
-    def draw_header(self, context: Context) -> None:
-        addon_updater.draw_version_header(self.layout)
 
     def draw(self, context: Context) -> None:
         rig_publish.draw_rig_publish(self.layout, context)
