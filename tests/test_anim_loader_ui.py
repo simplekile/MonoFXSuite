@@ -691,3 +691,23 @@ def test_header_menu_shows_and_hides_columns_and_remembers(make):
     assert p.tree.isColumnHidden(1) and p.tree.isColumnHidden(2)
     _act(p.columns_menu(), "Faces").trigger()
     assert not p.tree.isColumnHidden(1)
+
+
+def test_reload_from_disk_lists_every_file_and_is_on_the_row_menu(make):
+    """The user's ask: reload a publish written again into the same version (Houdini keeps the file it opened)."""
+    from tools.fx.anim_loader import logic as lg
+
+    assert lg.sequence_files("c/g.$F4.usd", 1, 3) == ["c/g.0001.usd", "c/g.0002.usd", "c/g.0003.usd"]
+    assert lg.sequence_files("a.usd", None, None) == ["a.usd"]
+    files = lg.loader_files({"anim": "a.usd", "lookdev": "l.usd", "groom": "g.$F2.usd", "cloth": ""},
+                            {"groom": (1, 2)}, ["l.usd", "", "topo.$F2.usd"])
+    assert files == ["a.usd", "l.usd", "g.01.usd", "g.02.usd", "topo.01.usd", "topo.02.usd"]
+    w, ui = make
+    win = w()
+    b = win.backend
+    b.reload_from_disk = lambda paths: b.calls.append(("reload", tuple(paths))) or (len(paths), 7)
+    item = next(win.list_view.item(i) for i in range(win.list_view.count())
+                if (r := win.list_view.item(i).data(ui.ROLE_ROW)) and r.node_path == "/stage/a")
+    _act(win.row_menu(item), "Reload from disk").trigger()
+    assert ("reload", ("/stage/a",)) in b.calls
+    assert win.ctl.message.startswith("Reloaded 7 files of 1 loader")

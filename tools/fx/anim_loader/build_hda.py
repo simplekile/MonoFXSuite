@@ -69,7 +69,26 @@ if path and pairs:
                     spec.typeName = "Xform"
                 spec = layer.GetPrimAtPath(spec.path.GetParentPath())
             Sdf.CopySpec(src, a, layer, c)
-'''
+        if hda.evalParm("@MODE@") == "clip":
+            # The clips give every animated value: take the copied frame's own values off (time samples and the
+            # default) so nothing in this layer can beat a clip. A Graft Stages after the loader (the shot layout's
+            # graft_anim) flattens this copy and the clip metadata into one layer, where its first-frame samples
+            # won and the groom stood still; a default in a stronger layer beats a clip as well. Values without
+            # samples (counts, type, basis) are the topology and stay.
+            def strip(spec):
+                for attr in spec.attributes:
+                    if layer.GetNumTimeSamplesForPath(attr.path):
+                        for t in list(layer.ListTimeSamplesForPath(attr.path)):
+                            layer.EraseTimeSample(attr.path, t)
+                        attr.ClearDefaultValue()
+                for child in spec.nameChildren:
+                    strip(child)
+
+            for a, c in pairs:
+                spec = layer.GetPrimAtPath(c)
+                if spec is not None:
+                    strip(spec)
+'''.replace("@MODE@", config.P_FX["groom"]["mode"])
 
 # Heavy parts render only (the user's call, 2026-11-17: Helen's lookdev pulls 956 EXR UDIM tiles, 2.1 GB, and the
 # viewport took 27 GB and hung). Houdini GL reads preview / all-purpose bindings and default / proxy purpose; Karma
@@ -224,8 +243,13 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                      "Every loader of the shot: versions, update, load shot, subdivision.")
     manager.setJoinWithNext(True)  # two buttons fit a 420 px pane; Timeline sits with the anim it reads
     g.append(manager)
-    g.append(button("mx_refresh", "Refresh", "hou.phm().cb_refresh(kwargs)",
-                    "Read the publish folders again. Never changes a version."))
+    refresh = button("mx_refresh", "Refresh", "hou.phm().cb_refresh(kwargs)",
+                     "Read the publish folders again. Never changes a version.")
+    refresh.setJoinWithNext(True)
+    g.append(refresh)
+    g.append(button("mx_reload", "Reload", "hou.phm().cb_reload(kwargs)",
+                    "Read every file this loader uses again from disk (a publish written again into the same "
+                    "version). Never changes a version."))
     status = read_only(T.StringParmTemplate(config.P_STATUS, "Status", 1))
     status.setConditional(T.parmCondType.HideWhen, '{ %s == "" }' % config.P_STATUS)
     status.setHelp("What needs you: a missing file, an unknown asset, a note. Newer versions show in the menus.")

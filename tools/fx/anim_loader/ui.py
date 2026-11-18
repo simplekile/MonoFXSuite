@@ -1413,6 +1413,11 @@ class AnimLoaderManager(QWidget):
             n = f" ({len(paths)})" if len(paths) > 1 else ""
             menu.addAction(f"Switch to Source {other.title()}{n}",
                            self._run(lambda: self.ctl.set_source(other, list(paths))))
+        if not row.legacy and row.kind in ("geo", "cam"):
+            paths = self.ctl.selection if row.node_path in self.ctl.selection else [row.node_path]
+            n = f" ({len(paths)})" if len(paths) > 1 else ""
+            act = menu.addAction(f"Reload from disk{n}", self._run(lambda: self.ctl.reload_from_disk(list(paths))))
+            act.setToolTip("Read the files again, for a publish written again into the same version")
         if not row.legacy:
             menu.addSeparator()
             menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))

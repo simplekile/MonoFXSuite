@@ -331,6 +331,14 @@
   function of that name broke every groom loader). Remove the shot's overrides clears subdivision and show rules;
   Same overrides copies both; a change keeps the table's scroll, selection and folds. A camera has "On the loader":
   clipping, aperture, ratio, guide scale as parm fields (Enter sets the parm, one undo step).
+- Reload from disk (the user's ask, 2026-11-19): the node's Reload button (beside Refresh) and the manager's row menu
+  re-read every file a loader uses (`adapter.files_of`: main file, lookdev with its sublayers, every frame of groom /
+  cloth, sublayer slots, groom topology; `logic.loader_files`) for a publish written again into the same version,
+  then press the inner Sublayer LOPs' own `reload`: `hou.lop.reloadLayer` re-read the file and the inner Sublayer
+  showed it, but the graft's flattened copy stayed old and `cook(force=True)` on the HDA does not cook its
+  children. Versions never move. On Windows a file USD has open (a crate is memory-mapped) cannot be overwritten in
+  place, but one written elsewhere and renamed over can (USD's export, so Blender's publish); checked with hython
+  (`assemble/reload_check.py`: points +100 shown only after Reload).
 - hython: `hou.hda.installFile` goes into the open hip's library list, which `hipFile.load` replaces: install
   after the load (and `setIsPreferred`) or the scene runs the installed MonoFX's loader, or no loader at all.
   Each row starts with its prim type's icon from Houdini's Scene Graph Tree (`SCENEGRAPH_primtype_xform` for a group,
@@ -378,7 +386,12 @@
   at `/Groom`. A shot groom cache is moved there by name (`logic.groom_targets`): the branch's `groom_topology`
   Python LOP copies each curves prim from the first frame (or each frame's file without time samples, `$F` in
   `mx_groom_topo`), and the clips after the graft read the cache's own path (clip `primPath`, tokens `src=dst` in
-  `mx_groom_roots`); spike S3 checked blur and binding.
+  `mx_groom_roots`); spike S3 checked blur and binding. With clips (a cache with time samples) `groom_topology` then takes the copied
+  frame's animated values off (every attribute with time samples loses them and its default; counts, type, basis
+  stay): a Graft Stages after the loader (the shot layout's graft_anim) flattens that copy and the clip metadata into
+  one layer, where the first frame's samples won and the groom stood still; a default in a stronger layer beats a clip
+  too (measured), so only removing them makes every merge / graft safe. Check: hython
+  `tests/houdini/anim_loader/accept_groom_graft.py` (a time-sampled copy of the fake project through Merge and Graft).
 - Subdivision per mesh (the user's decision, 2026-11-17; `logic.subd_plan`, `adapter.author_subd` from the
   `render_only` Python LOP): a shot rule on the loader (hidden `mx_subd_rules`, JSON `pattern` from `/<instance>`,
   `scheme` publish / none / catmullClark, `dicing`; a later rule wins) > lookdev publish > anim publish > `none`.

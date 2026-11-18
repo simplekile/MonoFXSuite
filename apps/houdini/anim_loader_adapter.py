@@ -1673,6 +1673,10 @@ class HoudiniBackend:
         return bake_loaders(list(paths))
 
     @staticmethod
+    def reload_from_disk(paths):
+        return reload_from_disk(list(paths))
+
+    @staticmethod
     def update_layers(paths):
         return update_layers(list(paths))
 
@@ -1869,6 +1873,67 @@ def set_cam_parm(path: str, name: str, value: float) -> bool:
     with undo_group(f"Camera {node.name()}"):
         node.parm(name).set(float(value))
     return True
+
+
+# --- Reload from disk (the user's ask, 2026-11-19): a file rewritten in the same version ---------------------------
+# Refresh only works the paths out again; Houdini keeps every USD file it opened, so a publish written again into
+# the same vNNN kept showing the old content. hou.lop.reloadLayer re-reads a file and dirties the LOP nodes using it.
+
+def files_of(node) -> list[str]:
+    """Every file the loader reads now (main file, parts with every frame, sublayer slots, groom topology)."""
+    import os
+
+    state = read_state(node)
+    r = logic.resolve(state) if state is not None else None
+    if r is None:
+        return []
+    paths = {"anim": r.anim, "lookdev": r.lookdev, "groom": r.groom, "cloth": r.cloth}
+    extra = [_s(node, p) for p in config.P_LAYERS] + [_s(node, config.P_GROOM_TOPO)]
+    return [p for p in logic.loader_files(paths, r.frames, extra) if os.path.isfile(p)]
+
+
+def reload_from_disk(paths: list[str]) -> tuple[int, int]:
+    """Re-read every file these loaders use from disk (lookdev's own sublayers too), then cook them again.
+    Versions do not move. Returns (loaders, files)."""
+    loaders, files = 0, set()
+    for path in paths:
+        node = hou.node(path)
+        if node is None or node.type().name() not in (config.HDA_TYPE, config.OLD_TYPE):
+            continue
+        mine = files_of(node)
+        for f in mine:
+            if f in files:
+                continue
+            try:
+                hou.lop.reloadLayer(f, True)  # recursive: a lookdev's sublayers, a file's references
+            except hou.OperationFailed:
+                continue
+            files.add(f)
+        _SUBD_CACHE.clear()  # the manager's own reads (meshes, schemes, shown states, curves) start again
+        _SHOW_CACHE.clear()
+        _CURVES_CACHE.clear()
+        # the inner Sublayer LOPs' own Reload: it dirties what follows them (graft, clips, rules); reloadLayer alone
+        # left the graft's flattened copy old, and cook(force) on the HDA does not cook its children again
+        for child in node.allSubChildren():
+            button = child.parm("reload")
+            if button is not None and button.parmTemplate().type() == hou.parmTemplateType.Button:
+                try:
+                    button.pressButton()
+                except hou.OperationFailed:
+                    pass
+        try:
+            node.cook(force=True)
+        except hou.OperationFailed:
+            pass
+        loaders += 1
+    return loaders, len(files)
+
+
+def cb_reload(kwargs: dict) -> None:
+    node = kwargs["node"]
+    n_loaders, n_files = reload_from_disk([node.path()])
+    _set(node, config.P_STATUS, f"Reloaded {n_files} file{'s' if n_files != 1 else ''} from disk." if n_files
+         else "Nothing to reload: no file on disk.")
 
 
 def shot_subd_load() -> list[tuple[str, int]]:

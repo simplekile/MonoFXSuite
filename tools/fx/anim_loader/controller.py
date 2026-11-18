@@ -325,6 +325,16 @@ class Controller:
                         if done else (notes[0] if notes else "Nothing baked."))
         self.details = "\n".join(done + notes)
 
+    def reload_from_disk(self, paths: list[str]) -> None:
+        """Every file these loaders read, read again from disk (a publish rewritten in the same version)."""
+        paths = [r.node_path for r in self._rows if r.node_path in paths and not r.legacy and r.kind in ("geo", "cam")]
+        if not paths:
+            self.message = "Pick the loaders to reload."
+            return
+        n_loaders, n_files = self.backend.reload_from_disk(paths)
+        self.message = (f"Reloaded {_plural(n_files, 'file')} of {_plural(n_loaders, 'loader')} from disk; "
+                        "versions unchanged." if n_files else "Nothing to reload: no file on disk.")
+
     def set_asset(self, path: str, asset: str) -> None:
         self.backend.set_asset(path, asset)
         self.message = f"{path.rsplit('/', 1)[-1]} is now {asset}."
