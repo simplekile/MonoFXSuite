@@ -11,6 +11,13 @@ from typing import Iterable, Optional
 _SANITIZE_RE = re.compile(r"[^A-Za-z0-9_]")
 
 
+def _valid_identifier(safe: str) -> str:
+    """A USD prim name cannot start with a digit; Blender's USD export prefixes ``_``."""
+    if safe and safe[0].isdigit():
+        return "_" + safe
+    return safe
+
+
 def strip_blender_namespace(name: str) -> str:
     """``rig:char:geo_Body`` / ``tachirig::Geo_Body`` → ``geo_Body`` / ``Geo_Body``."""
     text = (name or "").strip()
@@ -32,7 +39,7 @@ def namespace_prefix_from_name(name: str) -> str:
 def sanitize_namespace_segment(namespace: str) -> str:
     """USD path segment for a linked rig namespace prefix."""
     safe = _SANITIZE_RE.sub("_", (namespace or "").strip()).strip("_")
-    return safe or "rig"
+    return _valid_identifier(safe) or "rig"
 
 
 _CAMERA_COLLECTION_NAMES = frozenset({"cameras", "camera", "cam"})
@@ -88,10 +95,15 @@ def is_namespace_geo_branch_name(name: str) -> bool:
 
 
 def sanitize_prim_segment(name: str) -> str:
-    """Make a single USD path segment from a Blender object name."""
+    """
+    Make a single USD path segment from a Blender object name.
+
+    A name starting with a digit gets ``_`` in front (``01_Pipe`` -> ``_01_Pipe``),
+    as Blender's own USD export names it in the lookdev / UV publish.
+    """
     base = strip_blender_namespace(name)
     safe = _SANITIZE_RE.sub("_", base).strip("_")
-    return safe or "Prim"
+    return _valid_identifier(safe) or "Prim"
 
 
 def dedupe_sibling_segment(segment: str, used: set[str]) -> str:
