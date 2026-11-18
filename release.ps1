@@ -7,7 +7,7 @@
 #
 #   .\release.ps1 publish [-DryRun]
 #       On main as it is on origin (a detached checkout of origin/main works, e.g. in a worktree).
-#       Checks everything first, builds the installer and the Blender ZIP, and only then tags HEAD,
+#       Checks everything first, builds the installer, and only then tags HEAD,
 #       pushes the tag and creates the GitHub Release (publish_release.ps1). -DryRun stops after the build.
 #
 # Needs: git, gh (logged in), Python with pytest, Inno Setup 6.
@@ -114,11 +114,8 @@ Write-Host "Building..."
 & (Join-Path $Root "build\build.ps1") | Out-Null
 if ($LASTEXITCODE -ne 0) { Fail "build failed" }
 $exe = Get-Item (Join-Path $Root "build\output\MonoFXSuite_Setup.exe") -ErrorAction SilentlyContinue
-$zip = Get-ChildItem (Join-Path $Root "build\output") -Filter "monofx_pipeline_blender_v*.zip" |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1
 if (-not $exe -or $exe.LastWriteTime -lt $start) { Fail "installer was not rebuilt" }
-if (-not $zip -or $zip.LastWriteTime -lt $start) { Fail "Blender ZIP was not rebuilt" }
-Write-Host "  $($exe.Name) ($([math]::Round($exe.Length / 1MB, 1)) MB), $($zip.Name)"
+Write-Host "  $($exe.Name) ($([math]::Round($exe.Length / 1MB, 1)) MB)"
 
 if ($DryRun) {
     Write-Host ""
