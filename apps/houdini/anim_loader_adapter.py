@@ -21,7 +21,7 @@ from tools.fx.anim_loader import config, logic
 from tools.fx.anim_loader.logic import LoaderState, Output, Resolved
 
 __all__ = [
-    "read_state", "write_state", "refresh", "create_loader", "cb_parm_changed", "cb_refresh",
+    "read_state", "write_state", "refresh", "create_loader", "cb_parm_changed", "cb_refresh", "cb_reload",
     "cb_open_manager", "cb_apply_timeline", "apply_timeline", "menu_versions", "menu_anim_versions",
     "menu_anim_files", "menu_assets", "menu_shots", "menu_model_versions", "menu_model_files", "menu_asset_groups", "on_created", "find_loaders", "load_shot", "update", "set_asset",
     "upgrade", "LoadResult", "on_loaded", "check_heavy_shot",
