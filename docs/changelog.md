@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Houdini
+- **MonoFX Loader**: **Reload** (on the node beside Refresh, and Reload from disk on the manager's right-click menu) reads every file the loader uses again from disk, for a publish written again into the same version; Houdini kept showing the old content. Versions do not change.
+
 
 ## [0.1.35] - 2026-11-19
 

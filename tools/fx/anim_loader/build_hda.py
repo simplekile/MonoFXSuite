@@ -224,8 +224,13 @@ def _parm_templates() -> hou.ParmTemplateGroup:
                      "Every loader of the shot: versions, update, load shot, subdivision.")
     manager.setJoinWithNext(True)  # two buttons fit a 420 px pane; Timeline sits with the anim it reads
     g.append(manager)
-    g.append(button("mx_refresh", "Refresh", "hou.phm().cb_refresh(kwargs)",
-                    "Read the publish folders again. Never changes a version."))
+    refresh = button("mx_refresh", "Refresh", "hou.phm().cb_refresh(kwargs)",
+                     "Read the publish folders again. Never changes a version.")
+    refresh.setJoinWithNext(True)
+    g.append(refresh)
+    g.append(button("mx_reload", "Reload", "hou.phm().cb_reload(kwargs)",
+                    "Read every file this loader uses again from disk (a publish written again into the same "
+                    "version). Never changes a version."))
     status = read_only(T.StringParmTemplate(config.P_STATUS, "Status", 1))
     status.setConditional(T.parmCondType.HideWhen, '{ %s == "" }' % config.P_STATUS)
     status.setHelp("What needs you: a missing file, an unknown asset, a note. Newer versions show in the menus.")

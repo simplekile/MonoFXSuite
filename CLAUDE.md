@@ -331,6 +331,14 @@
   function of that name broke every groom loader). Remove the shot's overrides clears subdivision and show rules;
   Same overrides copies both; a change keeps the table's scroll, selection and folds. A camera has "On the loader":
   clipping, aperture, ratio, guide scale as parm fields (Enter sets the parm, one undo step).
+- Reload from disk (the user's ask, 2026-11-19): the node's Reload button (beside Refresh) and the manager's row menu
+  re-read every file a loader uses (`adapter.files_of`: main file, lookdev with its sublayers, every frame of groom /
+  cloth, sublayer slots, groom topology; `logic.loader_files`) for a publish written again into the same version,
+  then press the inner Sublayer LOPs' own `reload`: `hou.lop.reloadLayer` re-read the file and the inner Sublayer
+  showed it, but the graft's flattened copy stayed old and `cook(force=True)` on the HDA does not cook its
+  children. Versions never move. On Windows a file USD has open (a crate is memory-mapped) cannot be overwritten in
+  place, but one written elsewhere and renamed over can (USD's export, so Blender's publish); checked with hython
+  (`assemble/reload_check.py`: points +100 shown only after Reload).
 - hython: `hou.hda.installFile` goes into the open hip's library list, which `hipFile.load` replaces: install
   after the load (and `setIsPreferred`) or the scene runs the installed MonoFX's loader, or no loader at all.
   Each row starts with its prim type's icon from Houdini's Scene Graph Tree (`SCENEGRAPH_primtype_xform` for a group,

@@ -1100,6 +1100,30 @@ def hide_targets(pattern: str, prims: list[str]) -> list[str]:
     return out
 
 
+def sequence_files(pattern: str, first: int | None, last: int | None) -> list[str]:
+    """Every frame's file of a ``$F<pad>`` sequence (the pattern itself when it has no ``$F``)."""
+    if "$F" not in pattern:
+        return [pattern] if pattern else []
+    if first is None or last is None:
+        return []
+    return [re.sub(r"\$F(\d*)", lambda m, f=f: str(f).zfill(int(m.group(1) or 1)), pattern)
+            for f in range(int(first), int(last) + 1)]
+
+
+def loader_files(paths: dict[str, str], frames: dict[str, tuple[int, int]], extra: list[str]) -> list[str]:
+    """The files a loader reads, once each, in order: its main file and parts (``paths``: anim / model, lookdev,
+    groom, cloth; a groom or cloth sequence frame by frame from ``frames``), then ``extra`` (its sublayer slots,
+    the groom topology file)."""
+    out: list[str] = []
+    for part, path in paths.items():
+        first, last = frames.get(part, (None, None))
+        out += sequence_files(path, first, last)
+    for path in extra:
+        out += sequence_files(path, *frames.get("groom", (None, None))) if "$F" in path else [path] if path else []
+    seen: set[str] = set()
+    return [p for p in out if p and not (p in seen or seen.add(p))]
+
+
 def first_frame_path(path: str, first: int | None) -> str:
     """A ``$F<pad>`` sequence path at its first frame (the file whose prims stand for the sequence)."""
     if "$F" not in path or first is None:
