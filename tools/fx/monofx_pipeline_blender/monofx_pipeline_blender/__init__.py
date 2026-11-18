@@ -145,6 +145,8 @@ from . import geo_usd_publish_list
 from . import geo_usd_publish_paths_ui
 from . import anim_camera
 from . import scene_version
+from . import department
+from . import rig_publish
 from monofx_pipeline_common.version_description_presets import DEPARTMENT_ENUM_ITEMS
 from . import keymaps
 from . import addon_updater
@@ -761,6 +763,12 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         default=True,
     )
     clean_mesh_report: StringProperty(default="")
+    rig_publish_status: StringProperty(
+        name="Rig Publish Status",
+        description="Last rig publish message shown in the Rig panel",
+        default="",
+    )
+    rig_publish_ok: BoolProperty(default=False)
     publish_status_report: StringProperty(
         name="Publish Status",
         description="Last successful publish message shown in the UI",
@@ -3564,6 +3572,10 @@ class MONOFX_PT_model(Panel):
     bl_order = 0
     bl_description = "Geo preparation, USD bake, and Geo USD publish"
 
+    @classmethod
+    def poll(cls, context: Context) -> bool:
+        return department.shows(context, "MODEL")
+
     def draw_header(self, context: Context) -> None:
         addon_updater.draw_version_header(self.layout)
 
@@ -3588,8 +3600,12 @@ class MONOFX_PT_anim(Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "MonoFX"
-    bl_order = 1
+    bl_order = 2
     bl_description = "Animation tools, rig linking, and USD publish"
+
+    @classmethod
+    def poll(cls, context: Context) -> bool:
+        return department.shows(context, "ANIM")
 
     def draw_header(self, context: Context) -> None:
         addon_updater.draw_version_header(self.layout)
@@ -3609,6 +3625,26 @@ class MONOFX_PT_anim(Panel):
             rig_ui.draw_rig_link_tab(layout, context)
         elif prefs.ui_anim_tab == "USD":
             _draw_anim_publish(layout, context)
+
+
+class MONOFX_PT_rig(Panel):
+    bl_label = "Rig"
+    bl_idname = "MONOFX_PT_rig"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "MonoFX"
+    bl_order = 1
+    bl_description = "Rig publish for Anim > Link"
+
+    @classmethod
+    def poll(cls, context: Context) -> bool:
+        return department.shows(context, "RIG")
+
+    def draw_header(self, context: Context) -> None:
+        addon_updater.draw_version_header(self.layout)
+
+    def draw(self, context: Context) -> None:
+        rig_publish.draw_rig_publish(self.layout, context)
 
 
 classes = (
@@ -3669,7 +3705,9 @@ classes = (
     *scene_version.SCENE_VERSION_CLASSES,
     *anim_usd_cache_ops.ANIM_USD_OPERATOR_CLASSES,
     *anim_ops.ANIM_OPERATOR_CLASSES,
+    *rig_publish.CLASSES,
     MONOFX_PT_model,
+    MONOFX_PT_rig,
     anim_ui.MONOFX_PT_sine_amp_ramp,
     MONOFX_PT_anim,
     *rig_linking.RIG_OPERATOR_CLASSES,
@@ -3811,6 +3849,7 @@ def _safe_register_class(cls) -> None:
 
 def register() -> None:
     rig_ui.init_previews()
+    department.register()
     for cls in classes:
         _safe_register_class(cls)
     bpy.types.VIEW3D_MT_object_context_menu.append(rig_ui.draw_rig_context_menu)
@@ -3852,6 +3891,7 @@ def unregister() -> None:
     except Exception:
         pass
     rig_ui.clear_previews()
+    department.unregister()
     for handler, event in (
         (_mono_fx_on_load_post, bpy.app.handlers.load_post),
         (_mono_fx_on_save_post, bpy.app.handlers.save_post),

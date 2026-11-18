@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import bpy
 
-from . import rig_naming
+from . import publish_paths, rig_naming
 from monofx_pipeline_common.project_layout import find_project_root, parse_asset_from_project_path
 from monofx_pipeline_common.rig_library import suggest_namespace_from_asset
 
@@ -367,7 +367,7 @@ def _ensure_rig_visible(
 
 
 def _is_publish_override_name(name: str) -> bool:
-    return "_publish" in (name or "").lower()
+    return publish_paths.is_publish_collection_name(name)
 
 
 def _override_roots_for_scene_list() -> List[Tuple[bpy.types.Collection, bpy.types.Library]]:
@@ -638,7 +638,7 @@ def _pick_collection_name(filepath: str, namespace: str) -> str:
     if not names:
         raise RuntimeError(f"No collections found in rig file: {filepath}")
 
-    publish_names = [n for n in names if "_publish" in n.lower()]
+    publish_names = [n for n in names if publish_paths.is_publish_collection_name(n)]
     if not publish_names:
         raise RuntimeError(
             f"No *_publish* collection found in rig file: {filepath}. "

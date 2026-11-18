@@ -198,6 +198,21 @@
 - `draw()` never writes scene properties (Blender 5.2 raises "Writing to ID classes in this context is not
   allowed"): `_summarize_publish_plan(..., sync=False)` from draw, sync only in `invoke`.
 
+## Blender add-on tab and rig publish (`department.py`, `rig_publish.py`)
+
+- The MonoFX tab shows one department's panel (the user's pick, 2026-11-19: the tab held too much):
+  Auto reads it from the .blend's folder (`publish_paths.department_from_scene`: `NN_modelling` Model,
+  `NN_rigging` Rig, `NN_anim` Anim), the Scene panel's switch picks another. The pick is a WindowManager
+  property: not saved in the file, back to Auto in a new session. No department in the path -> Model and Anim.
+- Rig publish (the user's pick: a cleaned .blend): `<asset>/02_rigging/<NN_task>/publish/vNNN/<asset>_rig_publish.blend`,
+  next version, the folder and name Anim > Link scans (`rig_library`: `_rig_` and `_publish` in the stem). The
+  work file must hold exactly one publish collection (`is_publish_collection_name`: `_publish` or `-publish`,
+  e.g. `CHAR_ATA_RIG_PUBLISH`) with an armature; Link links that collection. The session is saved as a copy
+  (`.partial`, not scanned) in the version folder so relative paths stay right, then `blender -b --factory-startup`
+  keeps only that collection in the scene, drops other scenes, purges orphans (custom shapes stay: bones use them),
+  makes paths relative and saves the final name without `.blend1`. The open file is never changed; a failure
+  removes what it made. Before this, riggers saved publishes by hand (char_Ata v001-v005).
+
 ## MONO Grooming (Houdini, `tools/fx/grooming/` + `apps/houdini/grooming_adapter.py`)
 
 - Notes live in `tools/fx/grooming/CLAUDE.md`, the contract in `docs/plans/grooming_v0_1.md`. Read both

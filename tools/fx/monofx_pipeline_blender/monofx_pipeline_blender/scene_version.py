@@ -456,8 +456,11 @@ class MONOFX_PT_scene(Panel):
         addon_updater.draw_version_header(self.layout)
 
     def draw(self, context: Context) -> None:
+        from . import department
+
         layout = self.layout
         props = _pipeline_props(context)
+        department.draw_department_row(layout, context)
         box = layout.box()
 
         if not bpy.data.filepath:
