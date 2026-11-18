@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Houdini
+- **MonoFX Loader**: a groom whose lookdev publish holds its own values on the groom (Helen's) keeps moving after a Merge or a Graft Stages downstream; before, from the shot layout's merge_actors on, the groom stood still at the lookdev's values, with the lookdev's point count over the cache's topology (sh025_lighting_v004).
 - **MonoFX Loader**: the **Reload** button works; in v0.1.36 every click raised "module object has no attribute 'cb_reload'" (the manager's Reload from disk was fine).
 - **MonoFX Loader**: **Hide Prims** is gone from the node's parameters: show and hide prims with the eye in the manager's inspector. The hair driver mesh stays hidden by default, as before; its eye shows it.
 

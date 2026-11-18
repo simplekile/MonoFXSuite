@@ -24,7 +24,7 @@ SUITE = Path(__file__).resolve().parents[3]
 sys.path[:0] = [str(SUITE), str(SUITE / "packages/monofx_pipeline_common/src")]
 
 import hou  # noqa: E402
-from pxr import Usd, UsdGeom  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom, Vt  # noqa: E402
 
 from apps.houdini import anim_loader_adapter as ad  # noqa: E402
 from tools.fx.anim_loader import config  # noqa: E402
@@ -59,6 +59,18 @@ def time_sampled_copy() -> Path:
             stage.GetRootLayer().Export(path + ".tmp.usd")
             del stage
             os.replace(path + ".tmp.usd", path)
+    # the lookdev holds its own animated values on the groom prim, as Helen's does: points (a time sample, other
+    # values) and a primvar only it has; both used to win over the clips after a Merge
+    for look in glob.glob(str(root / "01_assets/*/char_Robot/05_lookdev/publish/*/char_Robot_lookdev_publish.usd")):
+        stage = Usd.Stage.Open(look)
+        prim = stage.OverridePrim("/Groom/hair")
+        prim.CreateAttribute("points", Sdf.ValueTypeNames.Point3fArray).Set(
+            Vt.Vec3fArray([Gf.Vec3f(0, 999, 0)] * 4), Usd.TimeCode(1))
+        prim.CreateAttribute("primvars:lookOnly", Sdf.ValueTypeNames.FloatArray).Set(Vt.FloatArray([0.5]),
+                                                                                    Usd.TimeCode(1))
+        stage.GetRootLayer().Export(look + ".tmp.usd")
+        del stage
+        os.replace(look + ".tmp.usd", look)
     return root
 
 
@@ -107,6 +119,11 @@ def main():
         layer.Traverse("/", lambda p: sampled.append(p.pathString)
                        if p.IsPropertyPath() and layer.GetNumTimeSamplesForPath(p) else None)
     check("the topology copy holds no animated value", topo is not None and not sampled, sampled[:3])
+    graft_prim = next(p for p in graft.stage().Traverse() if p.IsA(UsdGeom.BasisCurves)
+                      and "/char_Robot/" in p.GetPath().pathString)
+    look_only = graft_prim.GetAttribute("primvars:lookOnly")
+    check("a primvar only the lookdev has keeps its value", look_only and list(look_only.Get(Usd.TimeCode(first)) or [])
+          == [0.5], look_only.Get(Usd.TimeCode(first)) if look_only else None)
 
 
 try:

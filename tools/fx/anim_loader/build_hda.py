@@ -90,6 +90,48 @@ if path and pairs:
                     strip(spec)
 '''.replace("@MODE@", config.P_FX["groom"]["mode"])
 
+# Right after the graft, on the graft's own flattened layer: the groom's animated values come off for real (a
+# lookdev publish, Helen's, holds points and primvars on /Groom/<name> with a time sample, and widths as a default).
+# With clips nothing under them may hold such a value: a Merge or a Graft Stages after the loader puts this layer and
+# the clip metadata into one, where a sample (and a default) beats the clip: sh025_lighting_v004's groom stood still
+# at the lookdev's value from merge_actors on. A value block does not do it: in one layer it beats the clip too (the
+# groom lost its points). So: every time sample on the groom's prims, and the default of each attribute the cache
+# animates, erased; an attribute the cache does not have at all keeps its value as a default (a lookdev-only primvar),
+# counts, type, basis, bindings stay.
+GROOM_UNANIMATE_CODE = '''from pxr import Sdf
+hda = hou.pwd().parent()
+if hda.evalParm("@MODE@") == "clip":
+    layer = hou.pwd().editableLayer()
+    inst = hda.evalParm("mx_instance_name")
+    pairs = [t.partition("=") for t in hda.evalParm("mx_groom_roots").split()]
+    pairs = [(a, c) for a, b, c in pairs if b]
+    cache = Sdf.Layer.FindOrOpen(hda.evalParm("@TOPO@")) if hda.evalParm("@TOPO@") else None
+
+    def cache_attrs(path):
+        """(every attribute the cache has, the ones it animates) on a curves prim of its frame file"""
+        spec = cache.GetPrimAtPath(path) if cache is not None else None
+        attrs = list(spec.attributes) if spec else []
+        return {x.name for x in attrs}, {x.name for x in attrs if cache.GetNumTimeSamplesForPath(x.path)}
+
+    def unanimate(spec, has, animated):
+        for attr in spec.attributes:
+            samples = list(layer.ListTimeSamplesForPath(attr.path))
+            keep = layer.QueryTimeSample(attr.path, samples[0]) if samples and attr.name not in has else None
+            for t in samples:
+                layer.EraseTimeSample(attr.path, t)
+            if keep is not None:  # the lookdev's own (a primvar the cache lacks): kept as a value, not dropped
+                attr.default = keep
+            elif samples or attr.name in animated:
+                attr.ClearDefaultValue()
+        for child in spec.nameChildren:
+            unanimate(child, has, animated)
+
+    for a, c in pairs:
+        spec = layer.GetPrimAtPath("/" + inst + c) if inst else None
+        if spec is not None:
+            unanimate(spec, *cache_attrs(a))
+'''.replace("@MODE@", config.P_FX["groom"]["mode"]).replace("@TOPO@", config.P_GROOM_TOPO)
+
 # Heavy parts render only (the user's call, 2026-11-17: Helen's lookdev pulls 956 EXR UDIM tiles, 2.1 GB, and the
 # viewport took 27 GB and hung). Houdini GL reads preview / all-purpose bindings and default / proxy purpose; Karma
 # reads full bindings and render purpose. So, unless "Show in viewport" is on: every material binding of the
@@ -159,7 +201,8 @@ def build_network(sub) -> None:
     topo.setParmTemplateGroup(ptg)
     topo.parm("groom_file").setExpression(f'chs("../{config.P_GROOM_TOPO}")', hou.exprLanguage.Hscript)
     graft = _node(sub, "graftstages", "graft", (src, topo), primpath="/" + INST, destpath="")
-    new_layer = _node(sub, "configurelayer", "fx_layer", (graft,), startnewlayer=1)
+    unanimate = _node(sub, "pythonscript", "groom_unanimate", (graft,), python=GROOM_UNANIMATE_CODE)
+    new_layer = _node(sub, "configurelayer", "fx_layer", (unanimate,), startnewlayer=1)
     clips = _node(sub, "pythonscript", "fx_clips", (new_layer,), python=CLIP_CODE)
     purpose = _node(sub, "pythonscript", "render_only", (clips,), python=PURPOSE_CODE)
     geo_scale = _node(sub, "xform", "geo_scale", (purpose,), primpattern="/" + INST, scale='=ch("../scale")')

@@ -394,12 +394,17 @@
   at `/Groom`. A shot groom cache is moved there by name (`logic.groom_targets`): the branch's `groom_topology`
   Python LOP copies each curves prim from the first frame (or each frame's file without time samples, `$F` in
   `mx_groom_topo`), and the clips after the graft read the cache's own path (clip `primPath`, tokens `src=dst` in
-  `mx_groom_roots`); spike S3 checked blur and binding. With clips (a cache with time samples) `groom_topology` then takes the copied
-  frame's animated values off (every attribute with time samples loses them and its default; counts, type, basis
-  stay): a Graft Stages after the loader (the shot layout's graft_anim) flattens that copy and the clip metadata into
-  one layer, where the first frame's samples won and the groom stood still; a default in a stronger layer beats a clip
-  too (measured), so only removing them makes every merge / graft safe. Check: hython
-  `tests/houdini/anim_loader/accept_groom_graft.py` (a time-sampled copy of the fake project through Merge and Graft).
+  `mx_groom_roots`); spike S3 checked blur and binding. With clips (a cache with time samples) nothing under the clips may hold an animated value: a Merge or a
+  Graft Stages after the loader puts the loader's layers and the clip metadata into one, where a time sample (or a
+  default) beats the clip. Two sources: `groom_topology`'s copy of the first frame, which takes its own animated values
+  off, and the lookdev (Helen's holds points and primvars on /Groom/<name> with one sample, widths as a default):
+  sh025_lighting_v004's groom stood still at the lookdev's value from merge_actors on, with the lookdev's 1,884,595
+  points against the cache's 1,935,433-point topology. So `groom_unanimate`, a Python LOP right after the graft, on the
+  graft's own flattened layer, erases every time sample on the groom prims and the default of each attribute the cache
+  animates; an attribute the cache lacks keeps its value as a default (a lookdev-only primvar). Measured: a value block
+  from a stronger layer does not do it, in one layer it beats the clip too and the groom lost its points; a default in a
+  stronger layer beats a clip as well. Check: hython `tests/houdini/anim_loader/accept_groom_graft.py` (a time-sampled
+  copy of the fake project, its lookdev given samples on the groom, through Merge and Graft; fails with v0.1.36's HDA).
 - Subdivision per mesh (the user's decision, 2026-11-17; `logic.subd_plan`, `adapter.author_subd` from the
   `render_only` Python LOP): a shot rule on the loader (hidden `mx_subd_rules`, JSON `pattern` from `/<instance>`,
   `scheme` publish / none / catmullClark, `dicing`; a later rule wins) > lookdev publish > anim publish > `none`.
