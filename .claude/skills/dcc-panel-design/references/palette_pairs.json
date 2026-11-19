@@ -43,6 +43,8 @@
     {"label": "t74 TEXT_PRIMARY on a button under the mouse", "fg": "#ededf0", "bg": "#2e2e36", "kind": "text"},
     {"label": "t74 TEXT_LABEL icon on a filled button", "fg": "#a3a3ae", "bg": "#25252c", "kind": "ui"},
     {"label": "t74 TEXT_META on a disabled button", "fg": "#8e8e98", "bg": "#1c1c21", "kind": "ui"},
+    {"label": "t74 DISABLED_ICON on a disabled button (BUTTON_DISABLED)", "fg": "#45454e", "bg": "#1c1c21", "kind": "ui",
+     "known_fail": "1.79:1 by intent: a disabled control is exempt from WCAG 1.4.11 and the user asked that disabled buttons look clearly off (enabled TEXT_LABEL icon 7.16:1). Listed so a palette change shows here; a disabled icon must stay dimmer than an enabled one (tests/test_grooming_look.py)"},
     {"label": "t74 ACCENT icon on a checked toggle (CHECKED)", "fg": "#5b8cff", "bg": "#1f2a45", "kind": "ui"},
     {"label": "t74 ACCENT icon on checked + hover", "fg": "#5b8cff", "bg": "#22305a", "kind": "ui"},
     {"label": "t74 ACCENT icon on checked + pressed", "fg": "#5b8cff", "bg": "#1c2850", "kind": "ui"},

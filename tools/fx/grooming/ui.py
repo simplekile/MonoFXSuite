@@ -49,7 +49,7 @@ import os
 import sys
 from typing import Any, Callable
 
-from PySide6.QtCore import QPoint, QPointF, QRect, QSize, Qt, QTimer
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt, QTimer
 from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
                            QPixmap, QShortcut)
 from PySide6.QtWidgets import (
@@ -422,6 +422,57 @@ def _label(text: str, role: str, color: str | None = None) -> QLabel:
     if color:
         label.setStyleSheet(f"color: {color};")
     return label
+
+
+class _FitLabel(QLabel):
+    """One line that never shows cut words (t75: the tree head read "61 locks, 3 group"): the first of its forms
+    that fits ("61 locks, 3 groups", then "61 locks"), else the last one elided with "…"; a shorter form carries the
+    full text in its tooltip. It asks for the full text (plus SLACK px: Houdini's metrics ran one px wide) and can
+    shrink to an ellipsis, so the tools beside it never squeeze it into a cut."""
+
+    SLACK = 2
+
+    def __init__(self, role: str) -> None:
+        super().__init__()
+        self.setProperty("role", role)
+        self._forms = [""]
+
+    def set_forms(self, *forms: str) -> None:
+        self._forms = [f for f in forms if f] or [""]
+        self.updateGeometry()
+        self._fit()
+
+    def full_text(self) -> str:
+        return self._forms[0]
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        m = self.contentsMargins()
+        return QSize(self.fontMetrics().horizontalAdvance(self._forms[0]) + self.SLACK + m.left() + m.right(),
+                     super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self.fontMetrics().horizontalAdvance("…") * 3, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._fit()
+
+    def _fit(self) -> None:
+        metrics = self.fontMetrics()
+        room = self.contentsRect().width() - self.SLACK
+        shown = next((f for f in self._forms if metrics.horizontalAdvance(f) <= room), None)
+        if shown is None:
+            shown = metrics.elidedText(self._forms[-1], Qt.TextElideMode.ElideRight, max(room, 0))
+        if shown != self.text():
+            QLabel.setText(self, shown)
+        tip = self._forms[0] if shown != self._forms[0] else ""
+        if tip != self.toolTip():
+            self.setToolTip(tip)
 
 
 def _line(vertical: bool = False) -> QFrame:
@@ -1511,11 +1562,12 @@ class GroomingUI(QWidget):
         head = QHBoxLayout()
         head.setContentsMargins(6, 0, 0, 0)
         head.addWidget(_label("LOCKS", "caps"))
-        self._count_label = _label("", "small")
+        self._count_label = _FitLabel("small")
         head.addWidget(self._count_label)
         head.addStretch(1)
         L.build_tree_tools(self, head)
         lay.addLayout(head)
+        self._tree_head = head
 
         self._filter = QLineEdit()
         self._filter.setPlaceholderText("Filter: name, or new, check, hidden, edited, excluded")
@@ -1807,7 +1859,8 @@ class GroomingUI(QWidget):
     def _tree_width(self, width: int, share: bool = True) -> int:
         """The tree pane's width beside the settings: TREE_SHARE of the window, wider for the longest name (a
         300 px pane cut hair_back_01 to "ha…01" while the settings had 400 px to spare), at most half the window,
-        and never so wide that the settings scroll sideways."""
+        and never so wide that the settings scroll sideways. Undragged, also wide enough for the head's whole
+        count (`_FitLabel` shortens it when the window is not)."""
         z, tree = self.z, self._tree
         best, todo = 0, [(tree.topLevelItem(i), 1) for i in range(tree.topLevelItemCount())]
         while todo:
@@ -1821,7 +1874,8 @@ class GroomingUI(QWidget):
         # the settings' rows (name, slider, value, source, below) need ~540 px at scale 1 before they scroll
         props = max(self._props_widget.minimumSizeHint().width(), z.px(430)) +             self._scroll.verticalScrollBar().sizeHint().width()   # settings rows go compact under COMPACT_PX
         room = width - props - self._body.handleWidth() - 4
-        best = max(best, int(width * TREE_SHARE)) if share else best
+        if share:   # and the head's whole count beside its tools (t75: 1 px of slack docked at 1150 px)
+            best = max(best, int(width * TREE_SHARE), self._tree_head.sizeHint().width() + 8 + 8)
         return max(min(best, width // 2, room), min(z.px(260), room), 1)
 
     def _fit_tree(self) -> None:
@@ -1954,7 +2008,7 @@ class GroomingUI(QWidget):
             item.setExpanded(first or key in expanded or row["kind"] == SEL_DEFAULTS and key not in self._collapsed)
         L.expand_layers(self, self._collapsed)
         groups = sum(r["kind"] == SEL_GROUP for r in rows)
-        self._count_label.setText(f"{locks} locks, {groups} groups")
+        self._count_label.set_forms(f"{locks} locks, {groups} groups", f"{locks} locks")
         self._apply_filter()
         if current_key in self._rows:   # the Loader's _restore_tree_state: the current row too
             from PySide6.QtCore import QItemSelectionModel

@@ -969,5 +969,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     the divider (`_tree_user`): after that it only widens when a name no longer fits. Docked at ~1150 px it had
     ~350 px and cut the head's count. The status column has slack over its words (`status_width`): in Houdini
     "per lock" was cut to "per lo…" at the exact width.
+    The head's count is a `_FitLabel` (t75): it shows "61 locks, 3 groups", else "61 locks", else that elided
+    with "…", and a shorter form carries the full count in its tooltip; it asks for its full width + 2 px and can
+    shrink to an ellipsis, so the tree tools beside it never cut it (at 760 px it read "61 locks, 3 group"). An
+    undragged tree is also as wide as the head needs for the whole count (`_tree_width`, capped at half the window).
   - In Houdini a `ui.grab()` right after a scroll can show the tree's rows below the first two from the older
     scroll position (seen in t74 `gui_panel8` and later; not on screen): sample the top rows only.

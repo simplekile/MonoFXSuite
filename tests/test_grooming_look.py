@@ -262,20 +262,58 @@ def test_properties_read_as_an_inspector_with_sections_kept_per_viewer(app, pref
 
 
 def test_no_dot_joins_words_in_the_panel(app, prefs) -> None:
-    from PySide6.QtWidgets import QLabel
+    """No "·" in anything the panel shows (the user's ask, t74): label and button texts, tooltips of widgets and
+    tree cells, accessible names and descriptions, placeholders, the window title, the tree rows' parts and every
+    message the controller sends, over the panel's states (t75 widened it from the visible labels)."""
+    from PySide6.QtWidgets import QTreeWidgetItemIterator, QWidget
 
     adapter, ui, c, ids = _panel(app)
-    states = [lambda: c.select(SEL_LAYER, (ids["crown_thin"],)), lambda: c.select(SEL_LAYER, (ids["crown"],)),
-              lambda: c.paint_on(), lambda: c.select(SEL_LAYER, (-1,)), lambda: c.select_locks([3]),
-              lambda: c.select("group", ("fringe",)), lambda: ui.show_settings(c.settings_info())]
+    messages = []
+    shown = ui.set_message
+    ui.set_message = lambda text, *a, **k: (messages.append(text), shown(text, *a, **k))[1]
+
+    def strings():
+        for w in ui.findChildren(QWidget):
+            for getter in ("text", "toolTip", "accessibleName", "accessibleDescription", "placeholderText", "title"):
+                g = getattr(w, getter, None)
+                try:
+                    value = g() if callable(g) else None
+                except TypeError:
+                    value = None
+                if isinstance(value, str) and value:
+                    yield f"{type(w).__name__}.{getter}", value
+        yield "window", ui.windowTitle()
+        it = QTreeWidgetItemIterator(ui._tree)
+        while it.value():
+            item = it.value()
+            for col in range(ui._tree.columnCount()):
+                yield "cell", item.text(col)
+                yield "cell tooltip", item.toolTip(col)
+                row = item.data(col, ui_role()) or {}
+                for t, _c in (row.get("parts", []) if isinstance(row, dict) else []):
+                    yield "row part", t
+            it += 1
+
+    states = [lambda: c.select(SEL_LAYER, (ids["crown_thin"],)), lambda: c.select(SEL_LAYER, (ids["soften"],)),
+              lambda: c.select(SEL_LAYER, (ids["crown"],)), lambda: c.paint_on(), lambda: c.set_brush(view="layer"),
+              lambda: c.paint_off(), lambda: c.select(SEL_LAYER, (-1,)), lambda: c.select_locks([3]),
+              lambda: c.select_locks([1, 2, 3]), lambda: c.select("group", ("fringe",)),
+              lambda: c.select("defaults", ()), lambda: c.toggle_isolate(), lambda: c.isolate_off(),
+              lambda: c.toggle_xray(), lambda: c.select(SEL_LAYER, (ids["crown_thin"],)),
+              lambda: c.add_density_layer(), lambda: c.add_mask_layer("paint"), lambda: c.move_layer(True),
+              lambda: c.delete_layer(), lambda: c.set_visible(ctl.SEL_LOCKS, [1], False),
+              lambda: ui.show_settings(c.settings_info())]
+    seen = 0
     for go in states:
         go()
-        app.processEvents()
-        texts = [w.text() for w in ui.findChildren(QLabel) if w.isVisible()] + [ui.windowTitle()]
-        assert not [t for t in texts if "·" in t], [t for t in texts if "·" in t]
-        for item in ui._rows.values():
-            row = item.data(0, ui_role()) or {}
-            assert all("·" not in t for t, _c in row.get("parts", [])), row.get("parts")
+        for _ in range(2):
+            app.processEvents()
+        found = list(strings())
+        seen += len(found)
+        hits = [(where, t) for where, t in found if "·" in t]
+        assert not hits, hits
+    assert seen > 500 and len(messages) >= 5, (seen, messages)   # the scan reached the panel and its messages
+    assert not [m for m in messages if "·" in m], messages
     ui.close()
 
 
@@ -420,4 +458,31 @@ def test_tree_takes_its_share_of_a_wide_panel_until_the_user_drags(app, prefs) -
     from PySide6.QtGui import QFontMetrics
     need = QFontMetrics(ui.z.font("small")).horizontalAdvance("per lock") + ui.z.px(14)
     assert ui._tree.header().sectionSize(U.COL_STATUS) >= need + ui.z.px(8)   # slack for Houdini's metrics
+    ui.close()
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_tree_head_count_is_never_cut_without_an_ellipsis(app, prefs, scale, monkeypatch) -> None:
+    """t75 defect 1: at a 760 px panel the head read "61 locks, 3 group", cut with no ellipsis. At every width from
+    400 to 1100 px the count shows whole, a shorter form ("4 locks"), or ends in "…"; anything shorter than the full
+    text carries the full text in its tooltip."""
+    monkeypatch.setattr(prefs, "houdini_scale", lambda: scale)
+    adapter, ui, c, ids = _panel(app, 400)
+    c.select(SEL_LAYER, (ids["crown_thin"],))
+    label = ui._count_label
+    full = "4 locks, 2 groups"
+    for width in range(400, 1101, 20):
+        ui.resize(width, 820)
+        for _ in range(4):
+            app.processEvents()
+        shown = label.text()
+        metrics = label.fontMetrics()
+        assert metrics.horizontalAdvance(shown) <= label.contentsRect().width(), (width, shown, label.width())
+        assert shown in (full, "4 locks") or shown.endswith("…"), (width, shown)
+        if shown != full:
+            assert label.toolTip() == full, (width, shown, label.toolTip())
+    ui.resize(2000, 820)
+    for _ in range(4):
+        app.processEvents()
+    assert label.text() == full and label.toolTip() == ""     # a wide panel: the whole count
     ui.close()
