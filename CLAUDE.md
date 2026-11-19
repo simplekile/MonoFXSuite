@@ -461,6 +461,13 @@
   scheme none lowers it most (2.5 GB). It is set only on viewers showing a LOP network (`_stage_viewers`): /stage
   has its own display options, and a value set while the viewer showed /obj never reached it (that, and reading RAM
   at the peak, gave an earlier wrong "does not lower memory").
+- Loaders behind (the user's ask, 2026-11-19): on scene load (OnLoaded, `check_outdated`) a second non-modal prompt lists
+  the MonoFX Loaders with a newer publish (`logic.outdated`: part, version on the node -> newer; 2.2 / 2.1 nodes are
+  Upgrade's, left out), with Open manager and Update N (one undo step). Parms are read on the main thread, publishes on
+  a worker thread. It stacks above the heavy-shot prompt (`ui._restack`, bottom right; one moves down when the other
+  goes). Its "Don't show again for these versions" is per scene (`outdated_dismissed` in the prefs, keyed by the hip)
+  and holds only for the loader/part/version entries it listed (`logic.outdated_signature`): a newer publish shows it
+  again, a partly updated scene stays quiet, and a scene with nothing behind drops the dismissal.
 - Lookdev and groom have "Show in Viewport" (on by default). Off: bindings move to `material:binding:full` (Karma
   only) and groom curves get purpose `render`.
 - Manager layout R-A (the user's pick, 2026-11-17, after the Monos UI rules in `products/monos/monos/docs/`:

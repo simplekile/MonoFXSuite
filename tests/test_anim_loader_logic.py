@@ -636,3 +636,16 @@ def test_a_part_with_nothing_published_says_so(tmp_path):
     make(root, ["01_assets/_props/prop_Rock/01_modelling/03_uv/publish/v001/prop_Rock_uv_publish.usdc"])
     st = initial_asset_state(root, "prop_Rock")
     assert version_choices(st, "groom") == [("", "none published")]
+
+
+def test_outdated_lists_newer_parts_only():
+    from tools.fx.anim_loader import logic
+
+    st = logic.LoaderState("P", "sh025", "v005", "a.usd", "char_Helen", "char_Helen", "geo", {}, {})
+    status = {"anim": (logic.STATUS_NEWER, "v006"), "lookdev": (logic.STATUS_OK, None),
+              "groom": (logic.STATUS_OFF, None), "cloth": (logic.STATUS_MISSING, None)}
+    items = logic.outdated([("char_Helen", st, status), ("cam", st, {"anim": (logic.STATUS_OK, None)})])
+    assert items == [("char_Helen", [("anim", "v005", "v006")])]
+    assert logic.outdated_lines(items) == ["char_Helen: anim v005 \u2192 v006"]
+    assert logic.outdated_signature(items) == "char_Helen:anim:v006"
+    assert not logic.outdated_shows([], "")
