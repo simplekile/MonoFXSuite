@@ -36,59 +36,13 @@ def work_dir() -> Path:
 # --- facts --------------------------------------------------------------------------------------------------------
 
 def file_facts(path: str) -> pp.FileFacts:
-    """What the publish file says on its own: meshes, subdivisionScheme, fps, default prim kind, time samples."""
-    from pxr import Usd, UsdGeom
+    from monofx_pipeline_common.publish_checks import file_facts as _ff
 
-    facts = pp.FileFacts(Path(path).name)
-    try:
-        stage = Usd.Stage.Open(path, Usd.Stage.LoadAll)
-    except Exception as exc:  # a file USD cannot open is the first thing to say
-        facts.error = f"USD cannot open it ({str(exc).splitlines()[0][:120]})"
-        return facts
-    if stage is None:
-        facts.error = "USD cannot open it"
-        return facts
-    layer = stage.GetRootLayer()
-    if layer.HasFramesPerSecond():
-        facts.fps = float(layer.framesPerSecond)
-    elif layer.HasTimeCodesPerSecond():
-        facts.fps = float(layer.timeCodesPerSecond)
-    dp = stage.GetDefaultPrim()
-    if dp:
-        facts.default_prim = dp.GetPath().pathString
-        facts.kind = Usd.ModelAPI(dp).GetKind() or ""
-    for prim in stage.Traverse():
-        if prim.IsA(UsdGeom.Mesh):
-            facts.meshes += 1
-            if not UsdGeom.Mesh(prim).GetSubdivisionSchemeAttr().HasAuthoredValue():
-                facts.no_scheme.append(prim.GetPath().pathString)
-        if prim.IsA(UsdGeom.Camera):
-            facts.camera = True
-        if prim.IsA(UsdGeom.Xformable) and any(a.GetNumTimeSamples() > 1 for a in prim.GetAttributes()):
-            facts.animated += 1
-    return facts
-
-
-def _binding_targets(stage, prim) -> list[str]:
-    """Direct material bindings (any purpose) of a prim that point at no Material."""
-    from pxr import UsdShade
-
-    bad = []
-    for rel in prim.GetRelationships():
-        name = rel.GetName()
-        if not name.startswith("material:binding") or ":collection:" in name or name.endswith(":collection"):
-            continue
-        for target in rel.GetForwardedTargets():
-            tp = stage.GetPrimAtPath(target)
-            if not tp or not tp.IsA(UsdShade.Material):
-                bad.append(f"{prim.GetPath()} -> {target}")
-    return bad
+    return _ff(path)
 
 
 def stage_facts(stage, nodes: list) -> pp.StageFacts:
     """What the loaded stage shows: meshes, bindings to no Material, the nodes' errors and status notes."""
-    from pxr import UsdGeom
-
     facts = pp.StageFacts()
     for node in nodes:
         for err in node.errors():
@@ -98,13 +52,9 @@ def stage_facts(stage, nodes: list) -> pp.StageFacts:
         status = node.parm(config.P_STATUS)
         if status is not None and status.evalAsString().strip():
             facts.notes.append(f"{node.name()}: {status.evalAsString().strip()}")
-    if stage is None:
-        return facts
-    for prim in stage.Traverse():
-        if prim.IsA(UsdGeom.Mesh):
-            facts.meshes += 1
-        facts.broken.extend(_binding_targets(stage, prim))
-    return facts
+    from monofx_pipeline_common.publish_checks import usd_stage_facts
+
+    return usd_stage_facts(stage, facts)
 
 
 # --- the scene ----------------------------------------------------------------------------------------------------
@@ -214,7 +164,7 @@ def build(kind: str, path: str, parent=None) -> dict:
         files = list(plan.files)
     ff = [file_facts(f) for f in files]
     line, ok = pp.check_line(plan.title, kind, ff, sf)
-    note = pp.note_text(plan.title, kind, ff, sf, "")
+    note = pp.note_text(plan.title, kind, ff, sf, "", pp.SAVE_HINT)
     _sticky(parent, note, display)
     return {"line": line, "ok": ok, "note": note, "display": display, "plan": plan,
             "files": [f.__dict__ for f in ff], "stage": sf.__dict__}

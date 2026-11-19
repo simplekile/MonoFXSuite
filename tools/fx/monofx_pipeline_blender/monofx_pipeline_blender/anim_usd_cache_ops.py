@@ -201,9 +201,9 @@ class MONOFX_OT_export_anim_usd_cache(Operator):
         if result.camera_filepath:
             status += f" (+ {Path(result.camera_filepath).name})"
         props.anim_usd_status_report = status
-        from . import houdini_launch, houdini_test_ops
+        from . import publish_check_launch, publish_check_ops
 
-        houdini_test_ops.remember(context, "anim", houdini_launch.anim_test_path(
+        publish_check_ops.remember(context, "anim", publish_check_launch.anim_test_path(
             [*geo_paths, result.camera_filepath or ""]))
         for path in self._overwrite_paths[:5]:
             self.report({"WARNING"}, f"Overwrote existing file: {path.name}")

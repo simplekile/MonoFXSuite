@@ -15,9 +15,9 @@ PKG = SUITE / "tools/fx/monofx_pipeline_blender/monofx_pipeline_blender"
 
 
 def _mod():
-    spec = importlib.util.spec_from_file_location("houdini_launch", PKG / "houdini_launch.py")
+    spec = importlib.util.spec_from_file_location("publish_check_launch", PKG / "publish_check_launch.py")
     mod = importlib.util.module_from_spec(spec)
-    sys.modules["houdini_launch"] = mod  # dataclasses look the module up while the class is made
+    sys.modules["publish_check_launch"] = mod  # dataclasses look the module up while the class is made
     spec.loader.exec_module(mod)
     return mod
 
@@ -57,7 +57,7 @@ def test_command_line_puts_the_publish_in_env(tmp_path):
     else:
         raise AssertionError("rig is not a kind")
     assert (PKG / ht.STARTUP_SCRIPT).is_file()
-    assert ht.work_dir(str(tmp_path)) == tmp_path / "MonoFX" / "houdini_test"
+    assert ht.work_dir(str(tmp_path)) == tmp_path / "MonoFX" / "houdini_test"  # houdini by default
 
 
 def test_publishes_offered_newest_first(tmp_path):
@@ -122,3 +122,27 @@ def test_check_line():
     assert pp.problems("anim", [cam], pp.StageFacts()) == []  # a camera alone has no mesh, and that is fine
     note = pp.note_text("t", "model", [bad], pp.StageFacts(meshes=2), "plain Sublayer")
     assert "PROBLEM  2 meshes without subdivisionScheme" in note and "plain Sublayer" in note
+
+
+def test_blender_command_and_work_dir(tmp_path):
+    ht = _mod()
+    script = ht.startup_script(PKG, "blender")
+    assert script.name == "blender_test_startup.py" and script.is_file()
+    argv, env = ht.launch_command(Path("C:/B/blender.exe"), script, "anim", "E:/p/v002", base_env={}, app="blender")
+    assert argv[1:] == ["--python", str(script)]  # no --factory-startup: the artist's add-ons and prefs come along
+    assert env[ht.ENV_KIND] == "anim" and Path(env[ht.ENV_PATH]) == Path("E:/p/v002")
+    assert ht.work_dir(str(tmp_path), "blender") == tmp_path / "MonoFX" / "blender_test"
+    try:
+        ht.launch_command(Path("b"), script, "model", "x", app="maya")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("maya is not an app")
+
+
+def test_checks_are_shared_with_blender():
+    from monofx_pipeline_common import publish_checks as pc
+
+    assert pp.check_line is pc.check_line and pp.FileFacts is pc.FileFacts
+    note = pc.note_text("t", "model", [], pc.StageFacts(meshes=1), save_hint="Not saved.")
+    assert note.endswith("Not saved.")
