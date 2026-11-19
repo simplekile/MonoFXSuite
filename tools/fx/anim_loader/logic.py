@@ -899,6 +899,54 @@ def heavy_shot_message(loads: list[tuple[str, int]], threshold: int = HEAVY_SUBD
     return f"Heavy shot: ~{total / 1e6:.1f} M subdivision polygons ({', '.join(names)})"
 
 
+# --- scene opened with loaders behind (the user's ask, 2026-11-19) -----------------------------------------
+# A prompt stacked with the heavy-shot one. Its "Don't show again" holds for what it named only: the signature of
+# the loaders, parts and newer versions it listed. A newer publish, or the same one after the scene was brought up to
+# date (the dismissal is dropped then), shows it again.
+
+Outdated = list[tuple[str, list[tuple[str, str, str]]]]  # (node name, [(part, on the node, newer)])
+
+
+def outdated(loaders: list[tuple[str, LoaderState, dict[str, tuple[str, str | None]]]]) -> Outdated:
+    """(node name, [(part, version on the node, newer version)]) of every loader with a newer publish."""
+    out = []
+    for name, state, st in loaders:
+        bits = []
+        for part, (s, newer) in st.items():
+            if s != STATUS_NEWER or not newer:
+                continue
+            word = ("model" if is_asset(state) else "anim") if part == "anim" else part
+            have = main_version(state) if part == "anim" else state.versions.get(part, "")
+            bits.append((word, have or "-", newer))
+        if bits:
+            out.append((name, bits))
+    return sorted(out, key=lambda x: x[0].lower())
+
+
+def outdated_title(items: Outdated) -> str:
+    n = len(items)
+    return f"{n} loader{'' if n == 1 else 's'} behind: newer publishes found"
+
+
+def outdated_lines(items: Outdated, limit: int = 4) -> list[str]:
+    lines = [f"{name}: " + ", ".join(f"{p} {a} → {b}" for p, a, b in bits) for name, bits in items[:limit]]
+    if len(items) > limit:
+        lines.append(f"+{len(items) - limit} more")
+    return lines
+
+
+def outdated_signature(items: Outdated) -> str:
+    """What a "Don't show again" was given for: loaders, parts and the newer versions."""
+    return ";".join(f"{name}:{p}:{b}" for name, bits in items for p, _a, b in bits)
+
+
+def outdated_shows(items: Outdated, dismissed: str) -> bool:
+    """True when something behind was not in what "Don't show again" was given for (a loader updated since keeps
+    the rest quiet; a newer version than the one dismissed shows it)."""
+    gone = set(filter(None, (dismissed or "").split(";")))
+    return bool(items) and not set(outdated_signature(items).split(";")) <= gone
+
+
 KEEP = object()  # set_subd_rules: leave this field as the pattern's rule has it
 
 
