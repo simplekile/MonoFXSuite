@@ -1883,36 +1883,36 @@ STEPS = [("s1", s1_stroke_speed), ("s2", s2_stroke_speed_lookup_off), ("u1", u1_
          ("r1", r1_states), ("r2", r2_counts), ("r3", r3_qc), ("q1", q1_painted_qc),
          ("p4", p4_migration)]
 
-for tag, fn in STEPS:
-    if wanted(tag):
-        C.log("---- " + tag)
-        try:
-            fn()
-        except Exception:
-            C.add(tag + "_raised", False, traceback.format_exc()[-2500:], note="the check raised")
+C.meta["step_s"] = {}       # wall time of each step, also on its "----" lines in the log (the run takes ~40 min)
+RUN_START = time.time()
+
+
+def run_step(tag: str, fn, raised: str, after_error=None) -> None:
+    start = time.time()
+    C.log(f"---- {tag}  start {time.strftime('%H:%M:%S')}  (+{start - RUN_START:.0f} s)")
+    try:
+        fn()
+    except Exception:
+        C.add(raised, False, traceback.format_exc()[-2500:], note="the check raised")
+        if after_error:
             try:
-                clear_layers()
+                after_error()
             except Exception:
                 pass
+    took = time.time() - start
+    C.meta["step_s"][tag] = round(took, 1)
+    C.log(f"---- {tag}  took {took:.1f} s")
+
+
+for tag, fn in STEPS:
+    if wanted(tag):
+        run_step(tag, fn, tag + "_raised", clear_layers)
 if wanted("p1") or wanted("p2") or wanted("p3"):
-    C.log("---- p1 p2 p3")
-    try:
-        trio = p1_persist()
-        p3_orphan(*trio)
-    except Exception:
-        C.add("p1_p3_raised", False, traceback.format_exc()[-2500:], note="the check raised")
+    run_step("p1 p2 p3", lambda: p3_orphan(*p1_persist()), "p1_p3_raised")
 if wanted("r5"):
-    C.log("---- r5")
-    try:
-        r5_fullcook()
-    except Exception:
-        C.add("r5_raised", False, traceback.format_exc()[-2500:], note="the check raised")
+    run_step("r5", r5_fullcook, "r5_raised")
 if wanted("r6"):
-    C.log("---- r6")
-    try:
-        r6_old_scene_and_new_node()
-    except Exception:
-        C.add("r6_raised", False, traceback.format_exc()[-2500:], note="the check raised")
+    run_step("r6", r6_old_scene_and_new_node, "r6_raised")
 if K.own_checked:     # only when a density check assigned roots (not under --only s1, say)
   C.add("z_roots_stand_on_their_own_locks_skin", K.own_extra_over == 0,
       {"roots_checked": K.own_checked, "over_2e-5_cm": K.own_extra_over, "worst_cm": K.own_extra_worst},
@@ -1928,6 +1928,8 @@ C.add("z_no_error_on_the_node", not errors, errors, "no node of the HDA holds an
 C.meta["warnings"] = lib.node_warnings(node)
 C.meta["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
 C.write(done=True)
+C.log(f"total {time.time() - RUN_START:.0f} s, slowest:",
+      ", ".join(f"{t} {v:.0f} s" for t, v in sorted(C.meta["step_s"].items(), key=lambda kv: -kv[1])[:5]))
 C.log("DONE", "passed" if all(i["pass"] is not False for i in C.items) else "FAILED", len(C.items), "checks",
       sum(1 for i in C.items if i["pass"] is None), "known")
 sys.stdout.flush()
