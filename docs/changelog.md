@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Houdini
+- **MONO Grooming** panel, density layers: the lock tree shows each owner's density layers (All locks, a group, a lock) with their paint and fill mask layers under them; **New density layer**, **New paint layer**, Move up / down and Delete sit at the tree's head (right click for a fill layer, rename, move). A density layer's row shows its value ("75", the unit in the tooltip); the bar under the tree sets D and opacity, or a mask layer's blend and opacity. Properties show the selected layer's details, values with quick picks (0, 75, 150, 300) and its owner. Every change is one undo step.
+- **MONO Grooming** Paint: **Paint** on a paint layer turns the viewport's tool into a brush like Attribute Paint: LMB paints, Ctrl+LMB the other way, F swaps, the wheel or Ctrl+Shift+drag sizes, Esc ends; each stroke is one undo step. The viewport shows the brush's values in a HUD, a bar above the viewport and the panel's Brush section show the same values (Grey 0 / 0.5 / 1, Radius, Softness, Painting / Eraser). The Scalp view shows Result, the painted Layer alone, or Roots, with a density ramp in roots per cm².
+- **MONO Grooming desktop**: Houdini's desktop **MONO_Grooming** puts the panel alone in its own pane on the left, the viewport beside it, the parameter editor over the network editor. While the panel shows, the viewport's radial menu (C) is the grooming one (Paint, Erase, Detect locks, Update regions, Isolate, X-ray and more), the user's own radial comes back after.
+- **MONO Grooming** panel looks like the MonoFX Loader: rows with an eye, the name and the value between thin column lines, hover and selection over the whole row, filled buttons (fields stay inset), icon buttons with their name in the tooltip, disabled buttons clearly dimmed, an inspector with folding Details / Values / Brush / Layer sections. Docked wide, the tree takes 40 % of the panel; its count reads whole at any width (the tree tools move under it when short).
+
 
 ## [0.1.38] - 2026-11-19
 
