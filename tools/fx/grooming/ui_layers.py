@@ -76,7 +76,8 @@ def layer_parts(row: dict) -> list[tuple[str, str]]:
     if kind == "base":
         parts.append(("per lock", TEXT_LABEL))   # the tooltip has the sentence (it was cut to "each lock's D…")
     elif kind == "density":
-        text = f"{_fmt_d(row['density'])} /cm²" + (f", {round(row['opacity'] * 100)}%" if row["opacity"] < 1 else "")
+        # the value alone (the column is narrow: "40.4 /c…" was cut); the unit is in the cell's tooltip
+        text = _fmt_d(row['density']) + (f", {round(row['opacity'] * 100)}%" if row["opacity"] < 1 else "")
         parts.append((text, TEXT_PRIMARY))
     else:
         short = MODE_SHORT.get(row["mode"], "")
@@ -110,6 +111,8 @@ def make_layer_item(ui, row: dict) -> QTreeWidgetItem:
         icon = _lucide_icon("layers", z.px(15), TEXT_META if off else TEXT_LABEL)
         item.setToolTip(U.COL_NAME, f"Density layer: {row['density']:g} strands / cm² where its mask is white"
                                     " (double click or F2 renames)")
+        item.setToolTip(U.COL_STATUS, f"Density: {row['density']:g} strands / cm² where its mask is white, opacity"
+                                      f" {round(row['opacity'] * 100)}%")
     elif kind == "fill":
         v = max(0.0, min(1.0, float(row["value"])))
         icon = U._swatch((v, v, v), z.px(14), 0.35 if off else 1.0)
@@ -253,7 +256,9 @@ def _field(ui, text: str, width: int, tip: str, commit) -> QLineEdit:
 
 
 def show_row_bar(ui, props: dict) -> None:
-    """The selected layer's quick values above the tree (Photoshop's blend / opacity bar)."""
+    """The selected layer's quick values under the tree (Photoshop's blend / opacity bar). Under, not above: shown
+    on a click, a bar above pushed every row down under the mouse. The tree gets shorter at its bottom instead,
+    and the current row is scrolled into view when the bar would cover it."""
     U = _ui()
     bar = ui._row_bar
     for lay in (bar.head_lay, bar.tools_lay):
@@ -264,10 +269,21 @@ def show_row_bar(ui, props: dict) -> None:
                 w.deleteLater()
     bar.name = None
     layer = props.get("layer") if props.get("kind") == SEL_LAYER else None
+    was = not bar.isHidden()
     bar.setVisible(layer is not None)
     line = getattr(ui, "_row_bar_line", None)
     if line is not None:
         line.setVisible(layer is not None)
+    tree = getattr(ui, "_tree", None)
+    if layer is not None and not was and tree is not None:
+        def keep() -> None:
+            try:
+                cur = tree.currentItem()
+            except RuntimeError:   # the panel is gone
+                return
+            if cur is not None:
+                tree.scrollToItem(cur, tree.ScrollHint.EnsureVisible)
+        QTimer.singleShot(0, keep)
     if layer is None:
         return
     z = ui.z

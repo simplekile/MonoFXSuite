@@ -322,14 +322,14 @@ def _sheet(z: Sz) -> str:
     QSplitter::handle:hover {{ background: {TEXT_META}; }}
 
     QPushButton, QToolButton {{
-        background: transparent; color: {TEXT_PRIMARY}; border: {b}px solid #34343c; border-radius: {p(7)}px;
+        background: {K.BUTTON}; color: {TEXT_PRIMARY}; border: {b}px solid #393942; border-radius: {p(7)}px;
         padding: {p(6)}px {p(12)}px; font-size: {p(16)}px;
     }}
-    QPushButton:hover, QToolButton:hover {{ background: {BG_HOVER}; border-color: #44444e; }}
-    QPushButton:pressed, QToolButton:pressed {{ background: {K.PRESSED}; }}
-    QPushButton:disabled, QToolButton:disabled {{ color: {TEXT_META}; border-color: {LINE}; }}
+    QPushButton:hover, QToolButton:hover {{ background: {K.BUTTON_HOVER}; border-color: #4a4a55; }}
+    QPushButton:pressed, QToolButton:pressed {{ background: {K.BUTTON_PRESSED}; }}
+    QPushButton:disabled, QToolButton:disabled {{ background: {K.BUTTON_DISABLED}; color: {TEXT_META}; border-color: {LINE}; }}
     QToolButton::menu-indicator {{ image: none; width: 0; }}
-    QToolButton[flat="true"] {{ border: none; padding: {p(4)}px; border-radius: {p(6)}px; }}
+    QToolButton[flat="true"] {{ background: transparent; border: none; padding: {p(4)}px; border-radius: {p(6)}px; }}
     QToolButton[flat="true"]:hover {{ background: {K.FLAT_HOVER}; }}
     QToolButton[flat="true"]:pressed {{ background: {K.FLAT_PRESSED}; }}
     QToolButton[flat="true"]:checked {{ background: {K.CHECKED}; }}
@@ -1519,7 +1519,6 @@ class GroomingUI(QWidget):
                                 " hidden, edited, excluded, flipped")
         self._filter.textChanged.connect(lambda _t: self._apply_filter())
         lay.addWidget(self._filter)
-        lay.addWidget(L.build_row_bar(self))   # the selected layer's blend / opacity or D / opacity
 
         # New / to-check locks: one line with Confirm all, instead of a word on every row
         self._review = QWidget()
@@ -1560,9 +1559,6 @@ class GroomingUI(QWidget):
         self._banner.setVisible(False)
         lay.addWidget(self._banner)
 
-        self._row_bar_line = _line()   # the selected layer's values are not a row of the tree
-        self._row_bar_line.setVisible(False)
-        outer.addWidget(self._row_bar_line)
         lay = outer
         tree = _LayerTree(self)
         tree.setColumnCount(COL_EYE + 1)
@@ -1596,6 +1592,14 @@ class GroomingUI(QWidget):
                                  if self._props.get("kind") == SEL_LAYER else None)
         self._tree = tree
         lay.addWidget(tree, stretch=1)
+        # The selected layer's blend / opacity or D / opacity, UNDER the tree: above it, showing it on a click
+        # pushed every row down and the row under the mouse moved (picking a density layer jumped, t74)
+        self._row_bar_line = _line()   # the selected layer's values are not a row of the tree
+        self._row_bar_line.setVisible(False)
+        lay.addWidget(self._row_bar_line)
+        bar = L.build_row_bar(self)
+        bar.setContentsMargins(6, 4, 8, 4)
+        lay.addWidget(bar)
         self._drop_label = _label("", "small", WARN)
         self._drop_label.setVisible(False)
         self._drop_label.setContentsMargins(0, 0, 8, 6)

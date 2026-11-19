@@ -25,6 +25,13 @@ LUCIDE.setdefault("chevron-down", '<path d="m6 9 6 6 6-6"/>')
 
 # Monos states (the Loader's STATES_*): pressed a step past hover, selected + hover brighter than selected
 PRESSED = "#26262d"         # a ghost / bordered button held down
+# A bordered button is FILLED, a field is not (the user, t74: quick picks "0 75 150 300" read as fields). Fields
+# stay BG_RAISED #18181d, inset; buttons sit above the pane: fill, a lighter hover, a darker press.
+BUTTON = "#25252c"
+DISABLED_ICON = "#45454e"   # an icon that cannot be used now (TEXT_LABEL #a3a3ae when it can); WCAG exempts it
+BUTTON_HOVER = "#2e2e36"
+BUTTON_PRESSED = "#1d1d23"
+BUTTON_DISABLED = "#1c1c21"
 FLAT_HOVER = "#1f1f25"      # BG_HOVER: a flat icon button under the mouse
 FLAT_PRESSED = "#2c2c34"
 CHECKED = "#1f2a45"         # a checked toggle: the accent over the pane, opaque (ACCENT on it 4.50:1)
@@ -70,6 +77,9 @@ def _crisp_icon(name: str, size: int, color: str) -> QIcon:
             pm = _lucide_pixmap(name, size, color, ratio)
             icon.addPixmap(pm, QIcon.Mode.Normal)
             icon.addPixmap(pm, QIcon.Mode.Selected)
+            # Disabled: our own dim pixmap. Houdini's style drew the Normal one, so "+ up down delete" looked the
+            # same whether they could be used or not (the user, t74)
+            icon.addPixmap(_lucide_pixmap(name, size, DISABLED_ICON, ratio), QIcon.Mode.Disabled)
         _crisp_cache[key] = icon
     return _crisp_cache[key]
 
@@ -202,7 +212,7 @@ class _Section(QPushButton):
         self.body.setVisible(on)
 
 
-__all__ = ["CHECKED", "CHECKED_HOVER", "CHECKED_PRESSED", "FLAT_HOVER", "FLAT_PRESSED", "PRESSED", "PRIMARY_PRESSED",
+__all__ = ["BUTTON", "BUTTON_DISABLED", "BUTTON_HOVER", "BUTTON_PRESSED", "CHECKED", "DISABLED_ICON", "CHECKED_HOVER", "CHECKED_PRESSED", "FLAT_HOVER", "FLAT_PRESSED", "PRESSED", "PRIMARY_PRESSED",
            "SELECTED_HOVER", "_Props", "_Section", "_border_px", "_crisp_icon", "_filled_pixmap", "eye_pixmap",
            "round_borders", "scale_css"]
 _ = TEXT_PRIMARY

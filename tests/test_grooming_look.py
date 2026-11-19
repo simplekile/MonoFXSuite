@@ -311,3 +311,87 @@ def test_a_faint_eye_is_lighter_on_a_selected_row(app, prefs) -> None:
     assert plain <= QColor(U.FAINT).lightness() + 2
     assert selected >= QColor(U.FAINT_ON_SELECTED).lightness() - 12 and selected > plain + 15
     ui.close()
+
+
+# ---------------------------------------------------------------------------
+# The user's asks on the docked panel (2026-11-19)
+# ---------------------------------------------------------------------------
+def test_picking_a_density_layer_does_not_move_the_rows(app, prefs) -> None:
+    """The row bar sits UNDER the tree: above it, showing it on the click pushed the clicked row down."""
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app, 760, 820)
+    tree = ui._tree
+    c.select(ctl.SEL_LOCKS, (1,))
+    for _ in range(4):
+        app.processEvents()
+    assert ui._row_bar.isHidden()
+    item = ui._rows[(SEL_LAYER, ids["crown_thin"])]
+
+    def y() -> int:
+        return tree.viewport().mapTo(ui, tree.visualItemRect(item).topLeft()).y()
+    before = y()
+    c.select(SEL_LAYER, (ids["crown_thin"],))
+    for _ in range(4):
+        app.processEvents()
+    item = ui._rows[(SEL_LAYER, ids["crown_thin"])]
+    assert not ui._row_bar.isHidden()
+    assert y() == before
+    bar_top = ui._row_bar.mapTo(ui, ui._row_bar.rect().topLeft()).y()
+    assert bar_top >= tree.mapTo(ui, tree.rect().bottomLeft()).y()     # under the tree
+    ui.close()
+
+
+def test_density_status_shows_the_value_and_its_unit_in_the_tooltip(app, prefs) -> None:
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app)
+    item = ui._rows[(SEL_LAYER, ids["crown_thin"])]
+    row = item.data(U.COL_NAME, U.ROLE_ROW)
+    assert row["parts"][-1][0] == "75"                   # "75 /cm²" was cut to "75 /c…"
+    assert "strands / cm²" in item.toolTip(U.COL_STATUS) and "100%" in item.toolTip(U.COL_STATUS)
+    ui.close()
+
+
+def test_buttons_are_filled_and_fields_are_not(app, prefs) -> None:
+    """Quick picks read as fields when both were outlined on the pane: a button has a fill, a field stays inset."""
+    from PySide6.QtWidgets import QLineEdit, QToolButton
+
+    from tools.fx.grooming import ui_look as K
+
+    adapter, ui, c, ids = _panel(app)
+    c.select(SEL_LAYER, (ids["crown_thin"],))
+    for _ in range(4):
+        app.processEvents()
+    pick = next(b for b in ui._props_widget.findChildren(QToolButton) if b.text().strip() == "150")
+    field = next(f for f in ui.findChildren(QLineEdit) if f.isVisible() and f is not ui._filter)
+    b = pick.grab().toImage()
+    f = field.grab().toImage()
+    inset = ui.z.px(6)
+    assert b.pixelColor(inset, b.height() // 2).name() == K.BUTTON
+    assert f.pixelColor(inset, f.height() // 2).name() != K.BUTTON
+    ui.close()
+
+
+def test_a_disabled_icon_button_looks_disabled(app, prefs) -> None:
+    """Up / Down / Delete with nothing to act on drew like the usable ones in Houdini (the user, t74)."""
+    from tools.fx.grooming import ui_look as K
+
+    adapter, ui, c, ids = _panel(app)
+    c.select(ctl.SEL_LOCKS, (1,))
+    for _ in range(4):
+        app.processEvents()
+    tools = ui._layer_tools
+    assert not tools["delete"].isEnabled() and tools["density"].isEnabled()
+
+    whole = ui.grab().toImage()          # a button grabbed alone has no pane behind it
+
+    def brightest(b) -> int:
+        dpr = whole.devicePixelRatio()
+        o = b.mapTo(ui, b.rect().topLeft())
+        return max(whole.pixelColor(int((o.x() + x) * dpr), int((o.y() + y) * dpr)).lightness()
+                   for x in range(b.width()) for y in range(b.height()))
+    from PySide6.QtGui import QColor
+    assert brightest(tools["delete"]) <= QColor(K.DISABLED_ICON).lightness() + 8
+    assert brightest(tools["density"]) > QColor(K.DISABLED_ICON).lightness() + 40
+    ui.close()

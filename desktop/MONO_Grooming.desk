@@ -5,17 +5,21 @@ shelf        -1
 menubar      -1
 statusbar    -1
 root {
-    split 0.70 H {
+    split 0.30 H {
         tabs 0 1 {
-            pane panetab1 -a 0 -l 10 -H /obj/ -T OBJ -m sceneview
+            pane panetab2 -a 0 -l 10 -H /obj/ -T OBJ -m pythonpanel
         }
-        split 0.68 V {
+        split 0.72 H {
             tabs 0 1 {
-                pane panetab2 -a 0 -l 10 -H /obj/ -T OBJ -m pythonpanel
-                pane panetab3 -a 0 -l 10 -H /obj/ -T OBJ -m parmeditor
+                pane panetab1 -a 0 -l 10 -H /obj/ -T OBJ -m sceneview
             }
-            tabs 0 1 {
-                pane panetab4 -a 0 -l 10 -H /obj/ -T OBJ -m neteditor
+            split 0.45 V {
+                tabs 0 1 {
+                    pane panetab3 -a 0 -l 10 -H /obj/ -T OBJ -m parmeditor
+                }
+                tabs 0 1 {
+                    pane panetab4 -a 0 -l 10 -H /obj/ -T OBJ -m neteditor
+                }
             }
         }
     }

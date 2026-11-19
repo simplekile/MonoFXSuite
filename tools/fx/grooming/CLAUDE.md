@@ -957,3 +957,13 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     hover #2c395b, branch area the same as its row, separators #26262d, covered on hover / selection.
   - Tests: `tests/test_grooming_look.py` (delegate states by pixels, separators, icon buttons' tooltips and
     accessible names, the eye, the status width, the two-line result line, the sections, no "·").
+  - The user on the docked panel (t74, 2026-11-19): the row bar (a layer's D / opacity or blend / opacity) is UNDER
+    the tree: above it, showing it on a click pushed every row down and picking a density layer jumped; the tree
+    gets shorter at its bottom and the current row is scrolled into view. A layer's status cell shows the value
+    alone ("75", "75, 50%"), the unit in the cell's tooltip ("75 /c…" was cut). Bordered buttons are FILLED
+    (`ui_look.BUTTON` #25252c, hover / pressed / disabled), fields stay inset (BG_RAISED): quick picks read as
+    fields. Icons carry their own Disabled pixmap (`DISABLED_ICON` #45454e, `_crisp_icon`): Houdini drew the
+    Normal one, so disabled + / up / down / delete looked usable. The desk `MONO_Grooming` gives the panel its own
+    pane on the left (30 %), alone: viewport, then parameter editor over network editor.
+  - In Houdini a `ui.grab()` right after a scroll can show the tree's rows below the first two from the older
+    scroll position (seen in t74 `gui_panel8` and later; not on screen): sample the top rows only.

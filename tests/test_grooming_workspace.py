@@ -375,3 +375,16 @@ def test_huge_wheel_and_drag_land_on_the_limits() -> None:
     assert bk.field_change("grey", 7.0, {"value": 1.0}) == {}          # clamped to 1: what the brush has
     assert bk.field_change("soft", -3.0, {"soft": 0.5}) == {"soft": 0.0}
     assert bk.menu_fields("radius_1e400", {"radius_cm": 1.0}) == {"radius_cm": bk.RADIUS_MAX_CM}
+
+
+def test_desk_gives_the_panel_its_own_pane_on_the_left() -> None:
+    """The user (t74, docked): MONO Grooming alone in the left pane, not a tab beside the parameter editor."""
+    import re
+
+    with open(os.path.join(ROOT, "desktop", ws.DESK_NAME + ".desk"), encoding="utf-8") as fh:
+        desk = fh.read()
+    root = desk[desk.index("root {"):]
+    tabs = re.findall(r"tabs \d+ \d+ \{(.*?)\}", root, re.S)
+    first = [line.strip() for line in tabs[0].strip().splitlines()]
+    assert len(first) == 1 and "-m pythonpanel" in first[0]
+    assert root.index("-m pythonpanel") < root.index("-m sceneview")       # left of the viewport
