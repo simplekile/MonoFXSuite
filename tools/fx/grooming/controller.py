@@ -121,7 +121,7 @@ def report_text(counts: dict[str, int]) -> str:
         parts.append(f"{counts['new']} new")
     if counts.get("orphaned"):
         parts.append(f"{counts['orphaned']} missing (kept with their settings)")
-    return f"Detect locks: {total} lock{'s' if total != 1 else ''} · " + " · ".join(parts)
+    return f"Detect locks: {total} lock{'s' if total != 1 else ''}, " + ", ".join(parts)
 
 
 def _fmt(value: float) -> str:
@@ -468,13 +468,15 @@ class GroomController(LayersMixin):
                 "tip": SETTING_TIPS.get(key, ""),
             })
         if kind == SEL_DEFAULTS:
-            title, subtitle = ALL_LOCKS, f"{len(data.locks)} locks · a group or a lock can set its own value"
+            title, subtitle = ALL_LOCKS, f"{len(data.locks)} locks, a group or a lock can set its own value"
+            details = [("Locks", f"{len(data.locks)}"), ("Below", "a group or a lock can set its own value")]
             infos = list(self._infos.values())
         elif kind == SEL_GROUP:
             g = data.group(ids[0])
             title = (g.name if g else ids[0]) or "(no group)"
             members = [lk for lk in data.locks if lk.group == ids[0]]
-            subtitle = f"Group · {len(members)} locks"
+            subtitle = f"Group, {len(members)} locks"
+            details = [("Kind", "Group"), ("Locks", f"{len(members)}")]
             infos = [self._infos[lk.id] for lk in members if lk.id in self._infos]
         else:
             locks = [data.lock(i) for i in ids]
@@ -482,16 +484,20 @@ class GroomController(LayersMixin):
             groups = sorted({lk.group for lk in locks})
             g = data.group(groups[0])
             in_group = (g.name if g else groups[0]) if len(groups) == 1 else f"{len(groups)} groups"
-            subtitle = ("Lock · " if len(locks) == 1 else "Locks · ") + in_group
+            subtitle = ("Lock, " if len(locks) == 1 else "Locks, ") + in_group
+            details = [("Kind", "Lock" if len(locks) == 1 else f"{len(locks)} locks"),
+                       ("Group" if len(groups) == 1 else "Groups", in_group)]
             if len(locks) == 1 and (locks[0].match == "unsure" or (locks[0].match == "new" and data.orphans)):
-                subtitle += f" · {MATCH_LABELS.get(locks[0].match, locks[0].match)}"
+                subtitle += f", {MATCH_LABELS.get(locks[0].match, locks[0].match)}"
+                details.append(("Match", MATCH_LABELS.get(locks[0].match, locks[0].match)))
             infos = [self._infos[i] for i in ids if i in self._infos]
         state = self._state(data, kind, ids)
         if state.get("note"):
-            subtitle += f" · {state['note']}"
+            subtitle += f", {state['note']}"
+            details.append(("Viewport", state["note"]))
         measured, attribs = self._with_geometry(self._measured(kind, infos),
                                                 None if kind == SEL_DEFAULTS else self.lock_ids_of(data, self.selection))
-        return {"kind": kind, "title": title, "subtitle": subtitle, "own": own, "state": state,
+        return {"kind": kind, "title": title, "subtitle": subtitle, "details": details, "own": own, "state": state,
                 "settings": settings, "measured": measured, "attribs": attribs}
 
     def _with_geometry(self, measured: list[tuple[str, str]], lock_ids) -> tuple[list[tuple[str, str]], str]:
@@ -514,7 +520,7 @@ class GroomController(LayersMixin):
         attribs = st.get("attribs") or {}
         # what a reader of the publish gets: the deform capture and viewport hints stay out of the list
         shown = {cls: [n for n in names if not n.startswith(("pCapt", "gl_"))] for cls, names in attribs.items()}
-        line = " · ".join(f"{cls}: {', '.join(names)}" for cls, names in shown.items() if names)
+        line = "; ".join(f"{cls}: {', '.join(names)}" for cls, names in shown.items() if names)
         return cells, line
 
     def _below(self, data: model.GroomData, key: str) -> dict | None:
@@ -752,7 +758,7 @@ class GroomController(LayersMixin):
             degrees = "°" if key == "twist_add" else ""
             below = self._below(self.data(), key)
             keep = (below["groups"] + below["locks"]) if below else []
-            note = (f" · {_names(keep)} keep their own (Reset there to follow)" if keep else "")
+            note = (f"; {_names(keep)} keep their own (Reset there to follow)" if keep else "")
             self.view.set_message(f"{SETTING_LABELS[key]} = {_fmt(shown)}{degrees} on {holder['name']}{note}")
         return ok
 
@@ -978,12 +984,12 @@ class GroomController(LayersMixin):
         else:
             text = report_text(c)
         if getattr(report, "floating", None):
-            text += " · " + logic.floating_text(report.floating)
+            text += "; " + logic.floating_text(report.floating)
         if self.data().regions_stale:
-            text += " · regions out of date: Update regions"
+            text += "; regions out of date: Update regions"
         warnings = self._preflight().get("warnings", [])
         if warnings:
-            text += " · Check: " + "; ".join(warnings)
+            text += ". Check: " + "; ".join(warnings)
         self.view.set_message(text, error=bool(warnings))
         return report
 
@@ -1105,7 +1111,7 @@ class GroomController(LayersMixin):
             parts.append(f"isolated on {len(self.isolated or ())} lock{'s' if len(self.isolated or ()) != 1 else ''}")
         if not parts:
             return ""
-        return " · ".join(parts) + ": Publish writes every lock as it is now. Click again to publish"
+        return "; ".join(parts) + ": Publish writes every lock as it is now. Click again to publish"
 
     def publish(self, version: str | None) -> logic.PublishResult | None:
         """Publish always writes every lock. When some are hidden or the view is isolated, the first click
@@ -1155,7 +1161,7 @@ class GroomController(LayersMixin):
         if len(groups) == 1 and all(lk.id in self.isolated for lk in data.locks if lk.group in groups):
             gid = next(iter(groups))
             g = data.group(gid)
-            return f"Isolated: {(g.name if g else gid) or gid} · {len(names)} lock{'s' if len(names) != 1 else ''}"
+            return f"Isolated: {(g.name if g else gid) or gid}, {len(names)} lock{'s' if len(names) != 1 else ''}"
         return f"Isolated: {_names(names)}"
 
     def toggle_isolate(self) -> bool:
@@ -1426,8 +1432,8 @@ class GroomController(LayersMixin):
                         was = _fmt(next(iter(olds))) if len(olds) == 1 else "mixed"
                         now = _fmt(next(iter(new))) if len(new) == 1 else "mixed"
                         diffs.append(f"{SETTING_LABELS[key]} {was} → {now}")
-                text += (" · from the new group: " + ", ".join(diffs)) if diffs else " · settings unchanged"
-                text += " · regions out of date"
+                text += ("; from the new group: " + ", ".join(diffs)) if diffs else "; settings unchanged"
+                text += "; regions out of date"
             holder["text"] = text
 
         what = "group" if "group_id" in plan else self._count(SEL_LOCKS, plan["locks"])

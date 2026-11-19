@@ -600,7 +600,7 @@ def test_panel_paint_strip_and_properties_follow_paint(app, prefs) -> None:
     assert adapter.painting == ids["crown"] and not ui._paint_strip.isHidden()
     ui._view_buttons["roots"].click()
     assert adapter.BRUSH["view"] == "roots" and ui._legend.isHidden()
-    fold = next(b for b in ui._props_widget.findChildren(QToolButton) if b.text().strip() == "Fold")
+    fold = next(b for b in ui._props_widget.findChildren(QToolButton) if b.accessibleName() == "Fold")   # an icon (t74)
     fold.click()
     app.processEvents()
     assert any(b.text().strip() == "Show" for b in ui._props_widget.findChildren(QToolButton))
@@ -630,7 +630,9 @@ def test_panel_settings_page_and_back(app, prefs) -> None:
     ui.show_settings(c.settings_info())
     app.processEvents()
     texts = [w.text() for w in ui._props_widget.findChildren(type(ui._message_label))]
-    assert "Settings" in texts and any(t.startswith("Holds 1.52 of 2.00 GB") for t in texts)
+    from tools.fx.grooming.ui_look import _Props
+    holds = [p.rows().get("Holds", "") for p in ui._props_widget.findChildren(_Props)]   # label / value rows (t74)
+    assert "Settings" in texts and "1.52 of 2.00 GB" in holds
     c.refresh()                                           # a poll does not close the page
     assert ui._settings_open
     from tools.fx.grooming import ui_layers

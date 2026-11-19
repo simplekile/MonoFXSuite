@@ -74,9 +74,9 @@ def layer_parts(row: dict) -> list[tuple[str, str]]:
         parts.append(("painting", TEXT_PRIMARY))   # the word in the text colour: ACCENT on SELECTED is 3.95:1
     kind = row["layer"]
     if kind == "base":
-        parts.append(("each lock's Density", TEXT_LABEL))
+        parts.append(("per lock", TEXT_LABEL))   # the tooltip has the sentence (it was cut to "each lock's D…")
     elif kind == "density":
-        text = f"{_fmt_d(row['density'])} /cm²" + (f" · {round(row['opacity'] * 100)}%" if row["opacity"] < 1 else "")
+        text = f"{_fmt_d(row['density'])} /cm²" + (f", {round(row['opacity'] * 100)}%" if row["opacity"] < 1 else "")
         parts.append((text, TEXT_PRIMARY))
     else:
         short = MODE_SHORT.get(row["mode"], "")
@@ -122,11 +122,13 @@ def make_layer_item(ui, row: dict) -> QTreeWidgetItem:
         item.setForeground(U.COL_NAME, QColor(U.DIM))
     if kind == "base":
         item.setData(U.COL_EYE, U.ROLE_ICON, U._fixed_icon("lock", z.px(14), U.FAINT))
+        item.setData(U.COL_EYE, U.ROLE_EYE, ("lock", U.FAINT, z.px(14)))
         item.setToolTip(U.COL_EYE, "Automatic is always on")
     else:
         on = row.get("on", True)
         color = U.FAINT if on and not row.get("parent_on", True) else TEXT_LABEL
-        item.setData(U.COL_EYE, U.ROLE_ICON, U._fixed_icon("eye" if on else "eye-off", z.px(16), color))
+        item.setData(U.COL_EYE, U.ROLE_ICON, U._eye_icon(on, z.px(16), color))
+        item.setData(U.COL_EYE, U.ROLE_EYE, ("eye" if on else "eye-off", color, z.px(16)))
         item.setToolTip(U.COL_EYE, ("On: click to turn it off" if on else "Off: click to turn it on")
                         + ("" if row.get("parent_on", True) else " (its density layer is off)"))
     item.setData(U.COL_EYE, U.ROLE_QUIET, False)
@@ -155,23 +157,19 @@ def expand_layers(ui, collapsed: set) -> None:
 # ---------------------------------------------------------------------------
 def build_tree_tools(ui, head: QHBoxLayout) -> None:
     def tool(icon: str, tip: str, event: str, *args) -> QToolButton:
-        b = QToolButton()
-        b.setProperty("flat", True)
-        b.setToolTip(tip)
-        ui._icon(b, icon, TEXT_LABEL, 16)
-        b.setMinimumSize(ui.z.px(28), ui.z.px(28))
+        b = ui._icon_button(icon, tip)
         b.clicked.connect(lambda: ui._fire(event, *args))
         head.addWidget(b)
         return b
 
     ui._layer_tools = {
-        "density": tool("layers", "New density layer on the selected row (All locks, a group, one lock)",
+        "density": tool("layers", "New density layer: on the selected row (All locks, a group, one lock)",
                         "add_density_layer"),
-        "paint": tool("plus", "New paint layer in the selected density layer's mask (a fill layer: right click)",
+        "paint": tool("plus", "New paint layer: in the selected density layer's mask (a fill layer: right click)",
                       "add_mask_layer", "paint"),
-        "up": tool("chevron-up", "Move the layer up (the upper layer wins)", "move_layer", True),
-        "down": tool("chevron-down", "Move the layer down", "move_layer", False),
-        "delete": tool("trash", "Delete the layer (Del); a density layer goes with its mask. Ctrl+Z brings it back",
+        "up": tool("chevron-up", "Move up: the layer (the upper layer wins)", "move_layer", True),
+        "down": tool("chevron-down", "Move down: the layer", "move_layer", False),
+        "delete": tool("trash", "Delete: the layer (Del); a density layer goes with its mask. Ctrl+Z brings it back",
                        "delete_layer"),
     }
     update_tree_tools(ui, {})
@@ -267,6 +265,9 @@ def show_row_bar(ui, props: dict) -> None:
     bar.name = None
     layer = props.get("layer") if props.get("kind") == SEL_LAYER else None
     bar.setVisible(layer is not None)
+    line = getattr(ui, "_row_bar_line", None)
+    if line is not None:
+        line.setVisible(layer is not None)
     if layer is None:
         return
     z = ui.z
@@ -428,19 +429,15 @@ def _head(ui, props: dict, painting: bool) -> None:
     title.setWordWrap(True)
     row.addWidget(title, stretch=1)
     if painting:
-        fold = QToolButton()
-        fold.setProperty("flat", True)
-        fold.setText("  Fold")
-        fold.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        fold.setIcon(_lucide_icon("arrow-down", z.px(14), TEXT_LABEL))
-        fold.setToolTip("Fold the brush settings into one line: the tree gets the room (only while painting)")
+        fold = ui._icon_button("arrow-down", "Fold: the brush settings into one line, the tree gets the room (only"
+                                             " while painting)")
         fold.clicked.connect(lambda: set_folded(ui, True))
-        row.addWidget(fold)
+        row.addWidget(fold, alignment=Qt.AlignmentFlag.AlignTop)
     holder = QWidget()
     holder.setLayout(row)
     row.setContentsMargins(0, 0, 0, 0)
     lay.addWidget(holder)
-    if props.get("subtitle"):
+    if props.get("subtitle") and not props.get("details"):
         lay.addSpacing(z.px(2))
         sub = U._label(props["subtitle"], "meta")
         sub.setWordWrap(True)
@@ -485,18 +482,79 @@ def _folded_line(ui, props: dict) -> None:
     holder.setLayout(line)
     line.setContentsMargins(0, 0, 0, 0)
     lay.addWidget(holder)
-    erase = " · Eraser" if brush.get("erase") else ""
-    values = (f"Grey {brush.get('value', 1):g} · Radius {brush.get('radius_cm', 1):g} cm · Softness "
+    erase = ", Eraser" if brush.get("erase") else ""
+    values = (f"Grey {brush.get('value', 1):g}, Radius {brush.get('radius_cm', 1):g} cm, Softness "
               f"{round(brush.get('soft', 0.5) * 100)}%{erase}")
     lay.addWidget(_note(ui, values))
-    lay.addWidget(_note(ui, "LMB paints · Ctrl paints the other way · Esc ends · Ctrl+Z takes one stroke back"))
+    lay.addSpacing(z.px(4))
+    lay.addWidget(_rows(ui, KEYS_ROWS))
     lay.addStretch(1)
 
 
-def layer_props(ui, props: dict) -> None:
-    """Properties of the selected layer: only its own parms (plan v0.2a, "Panel")."""
+def _section(ui, title: str, key: str, default_open: bool = True) -> QVBoxLayout:
+    """A foldable section of Properties (the Loader's inspector, t74 "C"): its title with a chevron and a hairline,
+    then its body; folded or open is the viewer's, kept in the panel's prefs (`inspector_<key>`)."""
+    from tools.fx.grooming import ui_look as K
     U = _ui()
-    z, lay = ui.z, ui._props_lay
+    z = ui.z
+    body = QWidget()
+    lay = QVBoxLayout(body)
+    lay.setContentsMargins(0, z.px(4), 0, z.px(8))
+    lay.setSpacing(0)
+    head = K._Section(z, title, key, body, U.load_prefs, U.save_prefs, default_open)
+    ui._props_lay.addWidget(head)
+    ui._props_lay.addWidget(body)
+    head.apply()
+    return lay
+
+
+def _rows(ui, rows: list) -> QWidget:
+    from tools.fx.grooming import ui_look as K
+    w = K._Props(ui.z)
+    w.set_rows(rows)
+    return w
+
+
+KEYS_ROWS = [("LMB", "paints"), ("Ctrl", "paints the other way"), ("Esc", "ends Paint"),
+             ("Ctrl+Z", "takes one stroke back")]
+
+
+def _clear_button(ui) -> QToolButton:
+    """Clear: the first click asks (its text says so), the second clears; it disarms after CLEAR_ARM_MS."""
+    U = _ui()
+    clear = {"armed": False}
+    cl = QToolButton()
+    cl.setText("Clear")
+    cl.setProperty("toggle", True)
+    cl.setStyleSheet(f"color: {U.TEXT_ERROR};")
+    cl.setToolTip("Take all of this layer's paint away. The first click asks, the second clears (Ctrl+Z brings it back)")
+    timer = QTimer(cl)
+    timer.setSingleShot(True)
+
+    def disarm() -> None:
+        clear["armed"] = False
+        cl.setText("Clear")
+
+    def press() -> None:
+        if clear["armed"]:
+            timer.stop()
+            disarm()
+            ui._fire("paint_layer_action", "clear")
+            return
+        clear["armed"] = True
+        cl.setText("Clear: click again")
+        timer.start(CLEAR_ARM_MS)
+    timer.timeout.connect(disarm)
+    cl.clicked.connect(press)
+    return cl
+
+
+def layer_props(ui, props: dict) -> None:
+    """Properties of the selected layer, as the Loader's inspector (the user's pick "C", t74): information first
+    (Details, label / value rows), then what is set (Values / Brush), foldable sections remembered per viewer.
+    One-off layer commands (new paint / fill / density layer) are on the tree's tools and the row's right-click menu;
+    Paint, the brush and the whole-layer actions stay here (used on every stroke)."""
+    z = ui.z
     layer = props["layer"]
     lid = layer["id"]
     kind = layer["layer"]
@@ -505,29 +563,35 @@ def layer_props(ui, props: dict) -> None:
         _folded_line(ui, props)
         return
     _head(ui, props, painting)
+    lay = ui._props_lay
+    details = list(props.get("details", []))
     if kind == "base":
-        lay.addWidget(_note(ui, props.get("note", "")))
-        lay.addSpacing(z.px(10))
-        lay.addWidget(_buttons_row(ui, [("New density layer", None, "A density layer over the automatic groom",
-                                         lambda: ui._fire("add_density_layer"))]))
+        sec = _section(ui, "Details", "details")
+        sec.addWidget(_rows(ui, details))
+        lay.addSpacing(z.px(6))
+        lay.addWidget(_note(ui, "Change Density on All locks, or add a density layer: the tree's New density layer"
+                                " button, or right-click a row."))
         lay.addStretch(1)
         return
     if kind == "density":
+        sec = _section(ui, "Details", "details")
+        sec.addWidget(_rows(ui, details))
+        sec = _section(ui, "Values", "values")
         lo, hi = props.get("range", (0.0, 400.0))
-        lay.addWidget(_ValueRow(ui, "Density", layer["density"], lo, hi,
+        sec.addWidget(_ValueRow(ui, "Density", layer["density"], lo, hi,
                                 lambda v: ui._fire("set_layer", lid, density=v), unit="/cm²",
                                 tip="D: strands per cm² where the mask is white (0: no hair there)"))
-        lay.addWidget(_buttons_row(ui, [(f"{p:g}", abs(p - layer["density"]) < 1e-9, f"Density {p:g} / cm²",
+        sec.addWidget(_buttons_row(ui, [(f"{p:g}", abs(p - layer["density"]) < 1e-9, f"Density {p:g} / cm²",
                                          (lambda _c=False, p=p: ui._fire("set_layer", lid, density=p)))
                                         for p in props.get("picks", [])], label="Quick picks"))
-        owners = props.get("owners", [])
+        U = _ui()
         row = QHBoxLayout()
         row.setSpacing(z.px(8))
         name = U._label("Owner", "body")
         name.setFixedWidth(z.px(96 if ui._narrow else 120))
         row.addWidget(name)
         combo = U._Combo()
-        for text in owners:
+        for text in props.get("owners", []):
             combo.addItem(text)
         combo.setCurrentIndex(props.get("owner_index", 0))
         combo.setToolTip("The lock tree row this layer belongs to: All locks, a group or one lock")
@@ -536,30 +600,26 @@ def layer_props(ui, props: dict) -> None:
         holder = QWidget()
         holder.setLayout(row)
         row.setContentsMargins(z.px(4), z.px(4), 0, z.px(4))
-        lay.addWidget(holder)
-        lay.addWidget(_note(ui, props.get("owner_help", "")))
-        lay.addSpacing(z.px(8))
-        lay.addWidget(_note(ui, props.get("note", "")))
-        lay.addSpacing(z.px(10))
-        lay.addWidget(_buttons_row(ui, [
-            ("New paint layer", None, "A paint layer on top of this layer's mask", lambda: ui._fire("add_mask_layer", "paint")),
-            ("New fill layer", None, "A fill layer (one grey over all the skin) on top of this layer's mask",
-             lambda: ui._fire("add_mask_layer", "fill")),
-        ]))
+        sec.addWidget(holder)
+        sec.addWidget(_note(ui, props.get("owner_help", "")))
+        lay.addSpacing(z.px(6))
+        lay.addWidget(_note(ui, "Right-click a layer for a new paint or fill layer, to move, rename or delete it."))
         lay.addStretch(1)
         return
     if kind == "fill":
-        lay.addWidget(_ValueRow(ui, "Value", layer["value"], 0.0, 1.0, lambda v: ui._fire("set_layer", lid, value=v),
+        sec = _section(ui, "Values", "values")
+        sec.addWidget(_ValueRow(ui, "Value", layer["value"], 0.0, 1.0, lambda v: ui._fire("set_layer", lid, value=v),
                                 tip="The grey of this fill layer over all the skin: 1 white, 0 black", clamp=True))
-        lay.addWidget(_buttons_row(ui, [(f"{p:g}", abs(p - layer["value"]) < 1e-9, f"Value {p:g}",
+        sec.addWidget(_buttons_row(ui, [(f"{p:g}", abs(p - layer["value"]) < 1e-9, f"Value {p:g}",
                                          (lambda _c=False, p=p: ui._fire("set_layer", lid, value=p)))
                                         for p in props.get("value_picks", [])], label="Quick picks"))
-        lay.addSpacing(z.px(8))
-        lay.addWidget(_note(ui, props.get("note", "")))
+        sec = _section(ui, "Details", "details")
+        sec.addWidget(_rows(ui, details + [("Brush", "paints only into a paint layer")]))
         lay.addStretch(1)
         return
-    # a paint layer: Paint, the brush, and what can be done to the layer at once
+    # a paint layer: Paint and the brush first, the whole-layer actions folded, then its details
     brush = props.get("brush", {})
+    sec = _section(ui, "Brush", "brush")
     tools = QHBoxLayout()
     tools.setSpacing(z.px(6))
     paint = QToolButton()
@@ -586,22 +646,22 @@ def layer_props(ui, props: dict) -> None:
     holder = QWidget()
     holder.setLayout(tools)
     tools.setContentsMargins(0, 0, 0, z.px(4))
-    lay.addWidget(holder)
-    lay.addWidget(_buttons_row(ui, [(f"{p:g}", abs(p - float(brush.get("value", 1.0))) < 1e-9,
+    sec.addWidget(holder)
+    sec.addWidget(_buttons_row(ui, [(f"{p:g}", abs(p - float(brush.get("value", 1.0))) < 1e-9,
                                      "What the brush paints into the mask: 1 white (the layer applies), 0 black",
                                      (lambda _c=False, p=p: ui._fire("set_brush", value=p)))
                                     for p in props.get("value_picks", [])], label="Grey"))
     lo, hi = props.get("radius_range", (0.1, 5.0))
-    lay.addWidget(_ValueRow(ui, "Radius", float(brush.get("radius_cm", 1.0)), lo, hi,
+    sec.addWidget(_ValueRow(ui, "Radius", float(brush.get("radius_cm", 1.0)), lo, hi,
                             lambda v: ui._fire("set_brush", radius_cm=v), unit="cm"))
-    lay.addWidget(_ValueRow(ui, "Softness", float(brush.get("soft", 0.5)), 0.0, 1.0,
+    sec.addWidget(_ValueRow(ui, "Softness", float(brush.get("soft", 0.5)), 0.0, 1.0,
                             lambda v: ui._fire("set_brush", soft=v), unit="%", shown_scale=100.0,
                             tip="Share of the radius over which a dab fades out", clamp=True))
-    lay.addSpacing(z.px(8))
-    clear = {"armed": False}
+    sec.addSpacing(z.px(6))
+    sec.addWidget(_rows(ui, KEYS_ROWS))
+    sec = _section(ui, "Layer", "layer_actions", default_open=False)
     row = QHBoxLayout()
     row.setSpacing(z.px(6))
-    row.addWidget(U._label("Layer", "small"))
     for text, action, tip in (("Fill white", "fill", "Paint the whole layer white (one undo step)"),
                               ("Invert", "invert", "Invert the layer where it is painted")):
         b = QToolButton()
@@ -610,37 +670,14 @@ def layer_props(ui, props: dict) -> None:
         b.setToolTip(tip)
         b.clicked.connect(lambda _c=False, a=action: ui._fire("paint_layer_action", a))
         row.addWidget(b)
-    cl = QToolButton()
-    cl.setText("Clear")
-    cl.setProperty("toggle", True)
-    cl.setStyleSheet(f"color: {U.TEXT_ERROR};")
-    cl.setToolTip("Take all of this layer's paint away. The first click asks, the second clears (Ctrl+Z brings it back)")
-    timer = QTimer(cl)
-    timer.setSingleShot(True)
-
-    def disarm() -> None:
-        clear["armed"] = False
-        cl.setText("Clear")
-
-    def press() -> None:
-        if clear["armed"]:
-            timer.stop()
-            disarm()
-            ui._fire("paint_layer_action", "clear")
-            return
-        clear["armed"] = True
-        cl.setText("Clear: click again")
-        timer.start(CLEAR_ARM_MS)
-    timer.timeout.connect(disarm)
-    cl.clicked.connect(press)
-    row.addWidget(cl)
+    row.addWidget(_clear_button(ui))
     row.addStretch(1)
     holder = QWidget()
     holder.setLayout(row)
     row.setContentsMargins(z.px(4), 0, 0, 0)
-    lay.addWidget(holder)
-    lay.addSpacing(z.px(8))
-    lay.addWidget(_note(ui, "LMB paints · Ctrl paints the other way · Esc ends · Ctrl+Z takes one stroke back"))
+    sec.addWidget(holder)
+    sec = _section(ui, "Details", "details")
+    sec.addWidget(_rows(ui, details))
     lay.addStretch(1)
 
 
@@ -718,24 +755,25 @@ def build_paint_strip(ui) -> QWidget:
     group = QButtonGroup(strip)
     group.setExclusive(True)
     ui._view_buttons = {}
+    keys = list(VIEW_LABELS)
+    seg = QHBoxLayout()
+    seg.setSpacing(0)
     for key, text in VIEW_LABELS.items():
         b = QToolButton()
         b.setText(text)
         b.setProperty("toggle", True)
+        b.setProperty("seg", "left" if key == keys[0] else ("right" if key == keys[-1] else "mid"))
         b.setCheckable(True)
         b.setToolTip({"density": "The density the groom has now, roots / cm² (choosing it counts the roots)",
                       "layer": "The painted layer alone: white 1, black 0, dark where not painted",
                       "roots": "A dot a root of the full groom (grows locks the cache does not hold in full)"}[key])
         b.clicked.connect(lambda _c=False, k=key: ui._fire("set_brush", view=k))
         group.addButton(b)
-        top.addWidget(b)
+        seg.addWidget(b)
         ui._view_buttons[key] = b
-    xr = QToolButton()
-    xr.setText("  X-ray")
-    xr.setProperty("toggle", True)
-    xr.setCheckable(True)
-    xr.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-    xr.setToolTip("The scalp's colours through the hair (a wash)")
+    top.addLayout(seg)
+    top.addSpacing(z.px(4))
+    xr = ui._icon_button("contrast", "Scalp X-ray: the scalp's colours through the hair (a wash)", checkable=True)
     xr.clicked.connect(lambda on: ui._fire("set_brush", xray=bool(on)))
     ui._paint_xray = xr
     top.addWidget(xr)
@@ -764,21 +802,20 @@ def set_paint_state(ui, on: bool, brush: dict, reference: float | None = None) -
     for key, b in ui._view_buttons.items():
         b.setChecked(key == view)
     ui._paint_xray.setChecked(bool(brush.get("xray")))
-    ui._paint_xray.setIcon(_lucide_icon("contrast", z.px(14), ACCENT if brush.get("xray") else TEXT_LABEL))
+    ui._recolor_icon(ui._paint_xray, ACCENT if brush.get("xray") else TEXT_LABEL)
     if reference:
         ui._legend.reference = float(reference)
     ui._legend.view = view
     ui._legend.setVisible(view != "roots")
     ui._legend.update()
     ui._legend_caption.setText({
-        "density": f"roots / cm² · green {ui._legend.reference:g}",
+        "density": f"roots / cm², green = {ui._legend.reference:g}",
         "layer": "dark: not painted",
         "roots": "a dot a root of the full groom, on the plain scalp",
     }[view])
     ui._legend_caption.setToolTip("Green is the Density of All locks; the ramp's stops are 0, ½, 1, 2, 8 and 48"
                                   " times it" if view == "density" else "")
     ui._legend_caption.setWordWrap(view == "roots")
-    ui._paint_xray.setText("" if ui._narrow and ui.width() < z.px(560) else "  X-ray")
 
 
 # ---------------------------------------------------------------------------
@@ -828,11 +865,7 @@ def show_settings(ui, info: dict) -> None:
     ui._settings_open = True
     U.GroomingUI._clear_props(ui)
     head = QHBoxLayout()
-    back = QToolButton()
-    back.setProperty("flat", True)
-    back.setText("  Back")
-    back.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-    back.setIcon(_lucide_icon("arrow-left", z.px(14), TEXT_LABEL))
+    back = ui._icon_button("arrow-left", "Back: to the selection's Properties")
     back.clicked.connect(lambda: close_settings(ui))
     head.addWidget(back)
     head.addWidget(U._label("Settings", "title"), stretch=1)
@@ -841,8 +874,8 @@ def show_settings(ui, info: dict) -> None:
     head.setContentsMargins(0, 0, 0, 0)
     lay.addWidget(holder)
     lay.addSpacing(z.px(6))
-    lay.addWidget(_note(ui, "Font size and X-ray strength are yours (the ⚙ menu, saved per user). These belong to"
-                            " the node: saved with the scene, Ctrl+Z undoes them."))
+    lay.addWidget(_note(ui, "Font size and X-ray strength are yours (the Settings menu, saved per user). These"
+                            " belong to the node: saved with the scene, Ctrl+Z undoes them."))
     lay.addSpacing(z.px(12))
     lay.addWidget(U._label("THIS NODE", "caps"))
     lay.addWidget(U._line())
@@ -868,7 +901,9 @@ def show_settings(ui, info: dict) -> None:
                             tip=f"{lo:g} to {hi:g} GB; a typed value outside is brought inside")
             row.setEnabled(editable)
             lay.addWidget(row)
-        lay.addWidget(_note(ui, LayersMixin.usage_text(use, deformed=deformed)))
+        rows = _rows(ui, LayersMixin.usage_rows(use, deformed=deformed))
+        rows.setToolTip(LayersMixin.usage_text(use, deformed=deformed))
+        lay.addWidget(rows)
         lay.addSpacing(z.px(10))
     if not editable:
         lay.addWidget(_note(ui, "This adapter cannot set the node's values from the panel: set them on the node's"

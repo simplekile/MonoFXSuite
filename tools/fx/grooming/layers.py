@@ -132,7 +132,11 @@ class LayersMixin:
         props: dict[str, Any] = {"kind": SEL_LAYER, "layer": row, "title": layer.name, "settings": [],
                                  "measured": []}
         if layer.kind == "base":
-            props["subtitle"] = "Bottom of All locks · the automatic groom"
+            props["subtitle"] = "Bottom of All locks, the automatic groom"
+            # Properties show details as label / value rows, never joined by dots (t74; the user, 2026-11-19)
+            props["details"] = [("Kind", "Base layer, locked"), ("Density", "each lock's own Density setting"),
+                                ("Sits", "at the bottom of All locks, under every density layer"),
+                                ("Cannot", "be painted, moved, deleted or turned off")]
             props["note"] = ("Each lock grows its own Density setting here (All locks, or a group or lock that sets"
                              " its own). A density layer above changes it only where its mask is white. This row"
                              " cannot be painted, moved, deleted or turned off: change Density on All locks, or"
@@ -148,10 +152,18 @@ class LayersMixin:
                 owners.append((owner_name(data, layer), {"scope": layer.scope, "group": layer.group,
                                                          "locks": list(layer.locks)}))
                 index = len(owners) - 1
+            n_mask = len(data.mask_layers(layer.id))
+            mask_words = f"{n_mask} layer{'s' if n_mask != 1 else ''}"
+            names = [m.name for m in data.mask_layers(layer.id)]
             props.update({
-                "subtitle": f"{KIND_WORDS['density']} · {owner_name(data, layer)} · its mask: "
-                            f"{len(data.mask_layers(layer.id))} layer{'s' if len(data.mask_layers(layer.id)) != 1 else ''}"
-                            + (" · from an older build" if layer.legacy else ""),
+                "subtitle": f"{KIND_WORDS['density']}, {owner_name(data, layer)}, its mask: {mask_words}"
+                            + (", from an older build" if layer.legacy else ""),
+                "details": [("Kind", KIND_WORDS["density"] + (", from an older build" if layer.legacy else "")),
+                            ("Owner", owner_name(data, layer)),
+                            ("Mask", ", ".join(names) if names else "no layer yet (all black: it does not apply)"),
+                            ("Result", "below + (D − below) × mask × opacity"),
+                            ("Black", "this layer does not apply there, the density below shows"),
+                            ("No hair", "D 0 painted white")],
                 "owners": [label for label, _o in owners], "owner_index": index,
                 "owner_help": {"all": "every lock on the skin gives D together",
                                "group": "the group's locks on the skin give D together",
@@ -163,9 +175,13 @@ class LayersMixin:
             return props
         parent = data.mask(layer.parent) if layer.parent is not None else None
         props.update({
-            "subtitle": f"{KIND_WORDS[layer.kind]} · mask of {parent.name if parent else '?'}"
+            "subtitle": f"{KIND_WORDS[layer.kind]}, mask of {parent.name if parent else '?'}"
                         + (f" ({parent.density:g} / cm²)" if parent else "")
-                        + (f" · {owner_name(data, parent)}" if parent else ""),
+                        + (f", {owner_name(data, parent)}" if parent else ""),
+            "details": [("Kind", KIND_WORDS[layer.kind]),
+                        ("Mask of", (f"{parent.name}, {parent.density:g} / cm²" if parent else "?")),
+                        ("Blend", f"{MODE_LABELS.get(layer.mode, layer.mode)}, {round(layer.opacity * 100)}%")]
+                       + ([("Owner", owner_name(data, parent))] if parent else []),
             "modes": [(k, MODE_LABELS[k]) for k in config.MASK_MODES],
             "value_picks": list(config.MASK_VALUE_PICKS),
         })
@@ -662,6 +678,27 @@ class LayersMixin:
             text += f". {use['dropped']} dropped: an undo past them grows the hair again"
         return text
 
+    @staticmethod
+    def usage_rows(use: dict | None, deformed: bool = False) -> list[tuple[str, str]]:
+        """What `usage_text` says, as label / value rows for the settings page (no sentence joined by dots)."""
+        if not use:
+            return [("Holds", "nothing yet (the node has not cooked in this session)")]
+        if deformed:
+            held, limit, n = use.get("deformed_bytes", 0), use.get("deformed_limit_bytes", 0), use.get("deformed_states", 0)
+            rows = [("Holds", f"{_gb(held)} of {_gb(limit)} GB")]
+            rows.append(("States", f"{n} deformed state{'s' if n != 1 else ''} of the whole groom" if n
+                         else "none (Shot deform off, or not read yet)"))
+            rows.append(("Lowered", "frees nothing until the next deformed state is stored"))
+            return rows
+        rows = [("Holds", f"{_gb(use.get('bytes', 0))} of {_gb(use.get('limit_bytes', 0))} GB"),
+                ("Shown now", f"{_gb(use.get('live_bytes', 0))} GB"),
+                ("Earlier", f"{use.get('undo_states', 0)} states, {_gb(use.get('undo_bytes', 0))} GB")]
+        if use.get("capture_bytes"):
+            rows.append(("Captures", f"{_gb(use['capture_bytes'])} GB (outside the limit)"))
+        if use.get("dropped"):
+            rows.append(("Dropped", f"{use['dropped']}: an undo past them grows the hair again"))
+        return rows
+
     def set_node_setting(self, name: str, value) -> bool:
         if name not in NODE_SETTINGS:
             raise KeyError(name)
@@ -697,4 +734,4 @@ class LayersMixin:
         if info.get("lookup_kept") and info.get("lookup_text"):
             notes.append(info["lookup_text"][0].upper() + info["lookup_text"][1:])
         if notes:
-            self.view.set_message(" · ".join(notes), error=True)
+            self.view.set_message("; ".join(notes), error=True)
