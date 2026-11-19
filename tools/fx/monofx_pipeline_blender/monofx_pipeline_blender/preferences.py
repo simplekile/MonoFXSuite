@@ -20,6 +20,13 @@ class MonoFXPipelinePreferences(AddonPreferences):
         default="",
         subtype="DIR_PATH",
     )
+    houdini_path: StringProperty(
+        name="Houdini",
+        description="houdini.exe for Test in Houdini (or its install folder); empty = the newest "
+        "Side Effects Software install",
+        default="",
+        subtype="FILE_PATH",
+    )
 
     ui_model_tab: EnumProperty(
         name="Model Tab",
@@ -118,6 +125,7 @@ class MonoFXPipelinePreferences(AddonPreferences):
         layout.label(text="Sidebar UI state is saved automatically (tabs and sections).")
         layout.separator()
         layout.prop(self, "pipeline_project_root")
+        layout.prop(self, "houdini_path")
         layout.separator()
         addon_updater.draw_preferences(layout)
 

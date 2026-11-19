@@ -135,6 +135,9 @@ def draw_anim_usd_cache_tab(layout: UILayout, context: Context) -> None:
             ok=True,
             icon="SORTTIME" if props.anim_usd_export_running else "INFO",
         )
+    from . import houdini_test_ops
+
+    houdini_test_ops.draw_test_row(layout, context, "anim")
     ok_plan, summary, _rel, err_plan = path_ui.describe_anim_publish_target(props)
     if ok_plan:
         layout.label(text=summary, icon="FILE_TICK")

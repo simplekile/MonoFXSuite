@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Blender
+- **Test in Houdini** on the Model and Anim publish panels: opens what you just published, or any version on disk, in a new Houdini loaded by the MonoFX Loader as lighting reads it. One check line on Houdini's status bar (broken material bindings, meshes without subdivisionScheme, fps, kind component on a model, time samples on anim), the full list in a note in /stage. The scene is never saved in the project.
+
 
 ## [0.1.38] - 2026-11-19
 

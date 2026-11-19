@@ -208,6 +208,30 @@
 - `draw()` never writes scene properties (Blender 5.2 raises "Writing to ID classes in this context is not
   allowed"): `_summarize_publish_plan(..., sync=False)` from draw, sync only in `invoke`.
 
+## Test in Houdini (Blender add-on, `houdini_launch.py` + `houdini_test_ops.py`; Houdini `apps/houdini/publish_preview.py`)
+
+- The user's picks (2026-11-19): a NEW Houdini process every time, never a running Houdini; the action shows on the
+  Model / Anim publish panels as "Test in Houdini" for what this scene just published (a WindowManager value, not in
+  the file, shown only while it lies under the scene's publish root) and a picker of every version on disk.
+- Blender only starts `houdini.exe -foreground houdini_test_startup.py` (a file in the add-on folder, never imported by
+  Blender; newest `Program Files/Side Effects Software/Houdini X.Y.Z`, or the prefs' Houdini path) with
+  `MONOFX_TEST_KIND` (model / anim) and `MONOFX_TEST_PATH` (a model file, an anim version folder): houdini.exe passes
+  no arguments to a script. `MONOFX_TEST_SUITE` (a checkout) is tried first, then Houdini's MonoFX package, then
+  `MONOFX_SUITE`; an older suite without `publish_preview` says to run the Setup. `MONOFX_TEST_REPORT` also writes
+  the result as JSON (automation). The bpy-free module is `houdini_launch.py`, not `houdini_test.py`: pytest
+  collects `*_test.py`.
+- The Houdini side builds /stage as lighting reads it (`tools/fx/anim_loader/publish_preview.plan`): a `03_uv` model
+  publish -> a MonoFX Loader on Source Asset at that version and file, with the newest lookdev unless the lookdev
+  defines its own meshes (then the UV publish alone); a shot's `01_anim` version -> `load_shot` + `apply_timeline`;
+  anything else -> a plain Sublayer. A Houdini without the loader type gets the suite's own `otls/monofx_loader.hdalc`.
+- One check line on the status bar (never a dialog), the full list in a sticky note in /stage: loader errors, broken
+  material bindings (in the loaded stage), meshes without an authored `subdivisionScheme`, fps not authored or not
+  the same, the model's default prim not `kind = component`, anim files without time samples (read from each publish
+  file, not the loaded stage: the loader writes a scheme on every mesh). The hip is named into
+  `%TEMP%/MonoFX/houdini_test`, never saved in the project (Monos would take it for a work file).
+- Checks: `tests/test_houdini_launch.py`; hython `tests/houdini/anim_loader/accept_publish_preview.py <out>` (fake
+  project + two UV publishes, 18 checks).
+
 ## Blender add-on tab and rig publish (`department.py`, `rig_publish.py`)
 
 - The MonoFX tab shows one department's panel (the user's pick, 2026-11-19: the tab held too much):
