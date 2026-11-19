@@ -213,7 +213,8 @@
 
 - The user's picks (2026-11-19): a NEW process every time: never a running Houdini, and Test in Blender opens a new
   Blender file in its own process (the open work file is never touched). The Model / Anim publish panels draw one row,
-  `Test in Houdini | Test in Blender | menu`: what this scene just published (a WindowManager value, not in the file,
+  `Test in | Houdini | Blender | menu` ("Test in" once as a label: "Test in Houdini..." on each button was cut
+  off in the sidebar, the user's report 2026-11-19): what this scene just published (a WindowManager value, not in the file,
   shown only while it lies under the scene's publish root), else each button picks a version on disk; the menu picks
   another version for either.
 - The add-on only starts `houdini.exe -foreground houdini_test_startup.py` (newest `Program Files/Side Effects
