@@ -147,6 +147,7 @@ from . import anim_camera
 from . import scene_version
 from . import department
 from . import rig_publish
+from . import publish_check_ops
 from monofx_pipeline_common.version_description_presets import DEPARTMENT_ENUM_ITEMS
 from . import keymaps
 from . import addon_updater
@@ -2960,6 +2961,7 @@ def _finish_collection_publish_jobs(
     for job in jobs:
         _run_usd_export(props, job.objects, job.output_path)
     props.publish_status_report = f"Created version {published_version} · {len(jobs)} file(s)"
+    publish_check_ops.remember(bpy.context, "model", jobs[0].output_path if jobs else "")
     if str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT") == "NEXT":
         sync_geo_publish_output(props)
     elif props.output_preset == "uv":
@@ -3073,6 +3075,7 @@ def _execute_publish_usd(op: Operator, context: Context) -> set[str]:
         published_version = _version_folder(props)
         _run_usd_export(props, objs, out_path)
         props.publish_status_report = f"Created version {published_version}"
+        publish_check_ops.remember(bpy.context, "model", str(out_path))
         if str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT") == "NEXT":
             sync_geo_publish_output(props)
         op.report({"INFO"}, f"Published USD: {out_path}")
@@ -3112,6 +3115,7 @@ def _execute_publish_usd(op: Operator, context: Context) -> set[str]:
     published_version = _version_folder(props)
     _run_usd_export(props, objs, out_path)
     props.publish_status_report = f"Created version {published_version}"
+    publish_check_ops.remember(bpy.context, "model", str(out_path))
     if str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT") == "NEXT":
         sync_geo_publish_output(props)
     op.report({"INFO"}, f"Published USD: {out_path}")
@@ -3556,6 +3560,7 @@ def _draw_asset_publish(layout, context: Context) -> None:
 
     if props.publish_status_report:
         ui_style.status_label(layout, props.publish_status_report, ok=True)
+    publish_check_ops.draw_test_row(layout, context, "model")
     ok_plan, summary, _rel_path, err_plan = _describe_publish_target(props)
     if ok_plan:
         layout.label(text=summary, icon="FILE_TICK")
@@ -3676,6 +3681,7 @@ class MONOFX_PT_rig(Panel):
 
 classes = (
     preferences.MonoFXPipelinePreferences,
+    *publish_check_ops.CLASSES,
     MonoFXPresetNodeItem,
     *rig_linking.RIG_PROPERTY_GROUP_CLASSES,
     MONOFX_UL_preset_nodes,
@@ -3877,6 +3883,7 @@ def _safe_register_class(cls) -> None:
 def register() -> None:
     rig_ui.init_previews()
     department.register()
+    publish_check_ops.register()
     for cls in classes:
         _safe_register_class(cls)
     bpy.types.VIEW3D_MT_object_context_menu.append(rig_ui.draw_rig_context_menu)
@@ -3919,6 +3926,7 @@ def unregister() -> None:
         pass
     rig_ui.clear_previews()
     department.unregister()
+    publish_check_ops.unregister()
     for handler, event in (
         (_mono_fx_on_load_post, bpy.app.handlers.load_post),
         (_mono_fx_on_save_post, bpy.app.handlers.save_post),
