@@ -169,17 +169,20 @@ class MONOFX_MT_test_publish_pick(Menu):
 
 def draw_test_row(layout, context: Context, kind: str) -> None:
     """Test in Houdini / Test in Blender: what this scene just published, else a picker of the versions on disk;
-    the menu beside them picks another version for either."""
-    row = layout.row(align=True)
-    row.enabled = publish_root(kind) is not None
+    the menu beside them picks another version for either. "Test in" is said once, before the buttons, so the
+    buttons say only the app: "Test in Houdini..." twice was cut off in the sidebar at its default width (the user's
+    report, 2026-11-19); the tooltips say the rest."""
+    split = layout.split(factor=0.28, align=True)
+    split.enabled = publish_root(kind) is not None
+    split.label(text="Test in")
+    row = split.row(align=True)
     just = _just_published(context, kind)
     for app, name in _APP_NAME.items():
         if just:
-            op = row.operator(MONOFX_OT_test_in_houdini.bl_idname, text=f"Test in {name}", icon=_ICON[app])
+            op = row.operator(MONOFX_OT_test_in_houdini.bl_idname, text=name, icon=_ICON[app])
             op.kind, op.path, op.app = kind, just, app
         else:
-            op = row.operator(MONOFX_OT_test_publish_in_houdini.bl_idname, text=f"Test in {name}...",
-                              icon=_ICON[app])
+            op = row.operator(MONOFX_OT_test_publish_in_houdini.bl_idname, text=name, icon=_ICON[app])
             op.kind, op.app = kind, app
     if just:
         sub = row.row(align=True)
