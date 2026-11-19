@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Blender
+- **USD publish**: a model publish from a 24 fps scene now carries its fps (`timeCodesPerSecond` / `framesPerSecond` = 24). Before, Blender wrote none at 24 and the stamp took USD's default 24 for a written value, so a Houdini Sublayer LOP had no fps to read.
+
 
 ## [0.1.39] - 2026-11-19
 

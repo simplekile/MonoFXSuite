@@ -181,7 +181,8 @@
   decision, 2026-11-17): a move into `/<defaultPrim>/material` shipped in v0.1.26-v0.1.27 and was taken out.
   Whoever wants materials inside the root prim adds the root prim in Blender and exports as usual.
 - After `wm.usd_export`, `transform.usd_export` stamps the scene fps (`usd_stage_fps.stamp_fps`: a static
-  export keeps 24, and a Houdini Sublayer LOP copies it over the hip's fps) and, for a model publish
+  export keeps 24, and a Houdini Sublayer LOP copies it over the hip's fps; Blender 5.2 authors no fps at 24, so the
+  stamp checks `HasTimeCodesPerSecond()` / `HasFramesPerSecond()`, never the value alone, which reads USD's fallback 24) and, for a model publish
   (`asset_kind="component"` from `_run_usd_export`), marks the default prim `kind = component`
   (`usd_asset_kind`; not over a kind already there, not above a grouping kind). Neither ever fails the export.
   Both open the file with `Sdf.Layer.FindOrOpen` + `Reload(force=True)`: a layer still open in the session

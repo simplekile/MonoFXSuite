@@ -76,3 +76,36 @@ def test_file_overwritten_while_its_layer_is_open(tmp_path):
     text = path.read_text(encoding="utf-8")
     assert '"Geo"' in text and '"Old"' not in text
     assert held is not None
+
+
+_USDA_NO_FPS = """#usda 1.0
+(
+    defaultPrim = "Geo"
+)
+def Xform "Geo"
+{
+}
+"""
+
+
+def test_layer_without_fps_gets_24_authored(tmp_path):
+    # Blender 5.2's static model publish at 24 fps authors neither value; USD's fallback (24)
+    # read back as "already 24", so nothing was written and Houdini kept whatever it guessed.
+    path = _write(tmp_path, _USDA_NO_FPS)
+    layer = Sdf.Layer.FindOrOpen(path)
+    assert not layer.HasTimeCodesPerSecond() and not layer.HasFramesPerSecond()
+    assert fps_mod.stamp_fps(path, 24.0) is True
+    layer = Sdf.Layer.FindOrOpen(path)
+    layer.Reload(force=True)
+    assert layer.HasTimeCodesPerSecond() and layer.HasFramesPerSecond()
+    assert layer.timeCodesPerSecond == 24.0
+    assert layer.framesPerSecond == 24.0
+
+
+def test_only_one_value_authored_gets_both(tmp_path):
+    text = '#usda 1.0\n(\n    timeCodesPerSecond = 24\n)\ndef Xform "Geo" {}\n'
+    path = _write(tmp_path, text)
+    assert fps_mod.stamp_fps(path, 24.0) is True
+    layer = Sdf.Layer.FindOrOpen(path)
+    layer.Reload(force=True)
+    assert layer.HasFramesPerSecond() and layer.framesPerSecond == 24.0

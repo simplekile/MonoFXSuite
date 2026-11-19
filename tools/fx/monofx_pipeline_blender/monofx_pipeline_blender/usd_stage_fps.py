@@ -13,7 +13,8 @@ def stamp_fps(filepath: str, fps: float) -> bool:
     """Set ``timeCodesPerSecond`` and ``framesPerSecond`` to ``fps``. True if the file changed.
 
     Does nothing (False) for a missing file or a non-positive ``fps``, and does not rewrite a
-    layer that already has both values.
+    layer that already authors both values. A layer that authors neither (or one) gets both,
+    even at 24: an unauthored fps is only USD's fallback, not a stamp.
     """
     from pxr import Sdf
 
@@ -25,7 +26,14 @@ def stamp_fps(filepath: str, fps: float) -> bool:
         layer.Reload(force=True)  # a layer still open in this session would be the one from before the export
     if layer is None:
         return False
-    if layer.timeCodesPerSecond == fps and layer.framesPerSecond == fps:
+    # Read only what the layer authors: an unauthored value reads as USD's fallback (24), and
+    # Blender 5.2's static export at 24 fps authors neither, so comparing values alone never wrote.
+    if (
+        layer.HasTimeCodesPerSecond()
+        and layer.HasFramesPerSecond()
+        and layer.timeCodesPerSecond == fps
+        and layer.framesPerSecond == fps
+    ):
         return False
     layer.timeCodesPerSecond = fps
     layer.framesPerSecond = fps
