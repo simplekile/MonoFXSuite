@@ -486,3 +486,87 @@ def test_tree_head_count_is_never_cut_without_an_ellipsis(app, prefs, scale, mon
         app.processEvents()
     assert label.text() == full and label.toolTip() == ""     # a wide panel: the whole count
     ui.close()
+
+
+HELEN_COUNT = ("61 locks, 3 groups", "61 locks")
+HEAD_WIDTHS = range(400, 1241, 20)
+
+
+def _helen_panel(app, width: int, scale: float):
+    """Helen-sized (61 locks in 3 groups, a density layer selected) at `width` px, scale `scale`, shown fresh."""
+    from tools.fx.grooming import ui as U
+    from tools.fx.grooming.model import GroomData, Group, Lock
+
+    U.houdini_scale = lambda: scale
+    adapter = LayerAdapter()
+    locks, i = [], 1
+    for gid, n in (("bang", 20), ("base", 21), ("back", 20)):
+        for k in range(1, n + 1):
+            locks.append(Lock(id=i, name=f"hair_{gid}_{k:02d}", group=gid))
+            i += 1
+    data = GroomData(asset="char_Helen", groups=[Group(id=g, name=f"hair_{g}") for g in ("bang", "base", "back")],
+                     locks=locks)
+    layer = data.add_mask("Crown thin", kind="density", density=75.0).id
+    adapter.text = data.to_json()
+    ui = U.GroomingUI()
+    c = ctl.GroomController(adapter, ui)
+    ctl.bind(ui, c)
+    c.set_node(adapter.node)
+    c.select(SEL_LAYER, (layer,))
+    ui.resize(width, 820)
+    ui.show()
+    _settle(app)
+    return ui
+
+
+def _settle(app) -> None:
+    from PySide6.QtTest import QTest
+    for _ in range(6):
+        app.processEvents()
+    QTest.qWait(20)
+    for _ in range(6):
+        app.processEvents()
+
+
+def _head(ui) -> tuple[str, int]:
+    return ui._count_label.text(), ui._body.sizes()[0] if ui._narrow is False else -1
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_head_count_reads_whole_in_a_fresh_window_at_every_width(app, prefs, scale, monkeypatch) -> None:
+    """t75 recheck: a window opened at 700-800 px (scale 1) or 1050-1200 px (scale 1.5) read "6…" / "61…": the
+    room kept for the settings beat the head's need. Opened at any width from 400 to 1240 px, the count reads
+    "61 locks, 3 groups" or "61 locks", never elided, and the shorter form has the full count in its tooltip."""
+    from tools.fx.grooming import ui as U
+    monkeypatch.setattr(U, "houdini_scale", U.houdini_scale)
+    bad = []
+    for width in HEAD_WIDTHS:
+        ui = _helen_panel(app, width, scale)
+        text = ui._count_label.text()
+        if text not in HELEN_COUNT or (text != HELEN_COUNT[0] and ui._count_label.toolTip() != HELEN_COUNT[0]):
+            bad.append((width, text))
+        ui.close()
+    assert not bad, bad
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_head_count_and_tree_are_the_same_opened_or_resized(app, prefs, scale, monkeypatch) -> None:
+    """The same width gives the same count and tree width whether the window opens at it or is resized to it,
+    up from 400 px and back down."""
+    from tools.fx.grooming import ui as U
+    monkeypatch.setattr(U, "houdini_scale", U.houdini_scale)
+    fresh = {}
+    for width in HEAD_WIDTHS:
+        ui = _helen_panel(app, width, scale)
+        fresh[width] = _head(ui)
+        ui.close()
+    ui = _helen_panel(app, 400, scale)
+    bad = []
+    for width in [*HEAD_WIDTHS, *reversed(HEAD_WIDTHS)]:
+        ui.resize(width, 820)
+        _settle(app)
+        text, tree = _head(ui)
+        if text != fresh[width][0] or abs(tree - fresh[width][1]) > 1 or text not in HELEN_COUNT:
+            bad.append((width, (text, tree), fresh[width]))
+    ui.close()
+    assert not bad, bad

@@ -971,7 +971,16 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     "per lock" was cut to "per lo…" at the exact width.
     The head's count is a `_FitLabel` (t75): it shows "61 locks, 3 groups", else "61 locks", else that elided
     with "…", and a shorter form carries the full count in its tooltip; it asks for its full width + 2 px and can
-    shrink to an ellipsis, so the tree tools beside it never cut it (at 760 px it read "61 locks, 3 group"). An
-    undragged tree is also as wide as the head needs for the whole count (`_tree_width`, capped at half the window).
+    shrink to an ellipsis, so the tree tools beside it never cut it (at 760 px it read "61 locks, 3 group").
+    The head is a `_TreeHead` (t75 recheck): LOCKS, the count and the tools on one row while the whole count fits
+    beside the tools, else the tools on a row of their own under it, decided by its width alone. A window opened
+    at 700-800 px had read "6…" (the tree's room beat the head's need); the head no longer widens the tree.
+  - The tree's width (`_tree_width`) is a function of the window's width and the rows only, so a window opened at
+    a width and one resized to it match: Properties count as fixed numbers (the 40 % share yields to
+    `COMPACT_PX`, whole rows; the names may push them down to 430 px, compact rows), not their minimum as laid
+    out (it changed with the compact state); the status column counts its widest words (`_status_words`), not
+    its section as left by the last layout; `_after_resize` fits the tree again once the body is laid out (a
+    stacked -> side by side switch spread the splitter from its old size). Offscreen checks need
+    `QT_QPA_FONTDIR` (Windows fonts): without it Qt falls back to a font about twice as wide.
   - In Houdini a `ui.grab()` right after a scroll can show the tree's rows below the first two from the older
     scroll position (seen in t74 `gui_panel8` and later; not on screen): sample the top rows only.

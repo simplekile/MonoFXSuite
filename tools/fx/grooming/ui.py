@@ -475,6 +475,70 @@ class _FitLabel(QLabel):
             self.setToolTip(tip)
 
 
+class _TreeHead(QWidget):
+    """The tree's head: LOCKS, the count, the tree tools on one row while the whole count fits beside them, else
+    the tools on a row of their own under it (t75 recheck: a window opened at 700-800 px gave the count 39 px and
+    it read "6…"). Decided by its width alone, so a window opened at a width and one resized to it look the same;
+    the count then has the row and reads "61 locks, 3 groups" or "61 locks", never elided."""
+
+    def __init__(self, caps: QLabel, count: "_FitLabel") -> None:
+        super().__init__()
+        self._caps, self._count = caps, count
+        self._wrapped = False
+        col = QVBoxLayout(self)
+        col.setContentsMargins(6, 0, 0, 0)
+        col.setSpacing(4)
+        self._row1 = QHBoxLayout()
+        self._row1.setContentsMargins(0, 0, 0, 0)
+        self._row1.addWidget(caps)
+        self._row1.addWidget(count)
+        self._row1.addStretch(1)
+        self.tools = QWidget()
+        self.tools_row = QHBoxLayout(self.tools)
+        self.tools_row.setContentsMargins(0, 0, 0, 0)
+        self._row1.addWidget(self.tools)
+        col.addLayout(self._row1)
+        self._row2 = QWidget()
+        row2 = QHBoxLayout(self._row2)
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.addStretch(1)
+        self._row2.setVisible(False)
+        col.addWidget(self._row2)
+
+    def one_row(self) -> int:
+        """The width that holds LOCKS, the whole count and the tools on one row."""
+        gap = self._row1.spacing()
+        m = self.contentsMargins()
+        return (m.left() + m.right() + self._caps.sizeHint().width() + self._count.sizeHint().width()
+                + self.tools.sizeHint().width() + 3 * gap)   # caps, count, the stretch, the tools: three gaps
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self.one_row(), super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        m = self.contentsMargins()
+        short = self._caps.sizeHint().width() + self._row1.spacing() + self._count.minimumSizeHint().width()
+        return QSize(m.left() + m.right() + max(short, self.tools.sizeHint().width()),
+                     super().minimumSizeHint().height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.fit()
+
+    def fit(self) -> None:
+        wrap = self.width() < self.one_row()
+        if wrap == self._wrapped:
+            return
+        self._wrapped = wrap
+        if wrap:
+            self._row1.removeWidget(self.tools)
+            self._row2.layout().addWidget(self.tools)
+        else:
+            self._row2.layout().removeWidget(self.tools)
+            self._row1.addWidget(self.tools)
+        self._row2.setVisible(wrap)
+
+
 def _line(vertical: bool = False) -> QFrame:
     line = QFrame()
     line.setProperty("line", True)
@@ -1559,14 +1623,10 @@ class GroomingUI(QWidget):
         lay.setContentsMargins(0, 0, 8, 0)
         lay.setSpacing(6)
         outer.addWidget(top)
-        head = QHBoxLayout()
-        head.setContentsMargins(6, 0, 0, 0)
-        head.addWidget(_label("LOCKS", "caps"))
         self._count_label = _FitLabel("small")
-        head.addWidget(self._count_label)
-        head.addStretch(1)
-        L.build_tree_tools(self, head)
-        lay.addLayout(head)
+        head = _TreeHead(_label("LOCKS", "caps"), self._count_label)
+        L.build_tree_tools(self, head.tools_row)
+        lay.addWidget(head)
         self._tree_head = head
 
         self._filter = QLineEdit()
@@ -1785,6 +1845,9 @@ class GroomingUI(QWidget):
     def _after_resize(self) -> None:
         if not self.is_alive():
             return
+        # again once the body is laid out: right after a stacked -> side by side switch the splitter still had
+        # its old size and spread the tree to another width than a window opened at this size (t75 recheck)
+        self._fit_tree()
         self._fit_status()
         self._fit_message()
         compact = self._compact()
@@ -1793,15 +1856,22 @@ class GroomingUI(QWidget):
             if self._props and not self._settings_open:
                 self.show_properties(self._props)
 
+    def _status_words(self) -> int:
+        """The status column's width for its widest words (no cap): from the rows, not from the column as it is
+        now, so the tree's width rule does not depend on what the last layout left (t75 recheck)."""
+        cells = self._tree.itemDelegateForColumn(COL_STATUS)
+        if not isinstance(cells, _RowDelegate):
+            return self._tree.header().sectionSize(COL_STATUS)
+        return max((cells.status_width(item.data(COL_NAME, ROLE_ROW) or {}) for item in self._rows.values()),
+                   default=0)
+
     def _fit_status(self) -> None:
         """The status column: one width for the whole tree, its widest words, at most 40 % (so the vertical
         separators stand straight, the user's ask 2026-11-19); the name column takes the rest."""
         tree, z = self._tree, self.z
-        cells = tree.itemDelegateForColumn(COL_STATUS)
-        if not isinstance(cells, _RowDelegate):
+        if not isinstance(tree.itemDelegateForColumn(COL_STATUS), _RowDelegate):
             return
-        widest = max((cells.status_width(item.data(COL_NAME, ROLE_ROW) or {}) for item in self._rows.values()),
-                     default=0)
+        widest = self._status_words()
         room = max(tree.viewport().width(), 1) - tree.header().sectionSize(COL_EYE)
         tree.header().resizeSection(COL_STATUS, max(z.px(24), min(widest, int(room * 0.4))))
 
@@ -1859,8 +1929,8 @@ class GroomingUI(QWidget):
     def _tree_width(self, width: int, share: bool = True) -> int:
         """The tree pane's width beside the settings: TREE_SHARE of the window, wider for the longest name (a
         300 px pane cut hair_back_01 to "ha…01" while the settings had 400 px to spare), at most half the window,
-        and never so wide that the settings scroll sideways. Undragged, also wide enough for the head's whole
-        count (`_FitLabel` shortens it when the window is not)."""
+        and never so wide that the settings scroll sideways. The head does not widen it: its tools go to a row
+        of their own when the count would not fit beside them (`_TreeHead`)."""
         z, tree = self.z, self._tree
         best, todo = 0, [(tree.topLevelItem(i), 1) for i in range(tree.topLevelItemCount())]
         while todo:
@@ -1869,14 +1939,19 @@ class GroomingUI(QWidget):
             best = max(best, depth * tree.indentation() + z.px(16 + 12) + text)
             todo += [(item.child(k), depth + 1) for k in range(item.childCount())]
         header = tree.header()
-        best += header.sectionSize(COL_STATUS) + header.sectionSize(COL_EYE)
+        best += max(z.px(24), self._status_words()) + header.sectionSize(COL_EYE)
         best += tree.verticalScrollBar().sizeHint().width() + 16 + z.px(8)   # the pane's margins
-        # the settings' rows (name, slider, value, source, below) need ~540 px at scale 1 before they scroll
-        props = max(self._props_widget.minimumSizeHint().width(), z.px(430)) +             self._scroll.verticalScrollBar().sizeHint().width()   # settings rows go compact under COMPACT_PX
-        room = width - props - self._body.handleWidth() - 4
-        if share:   # and the head's whole count beside its tools (t75: 1 px of slack docked at 1150 px)
-            best = max(best, int(width * TREE_SHARE), self._tree_head.sizeHint().width() + 8 + 8)
-        return max(min(best, width // 2, room), min(z.px(260), room), 1)
+        # Fixed numbers for Properties, not their minimum as laid out now (it changed with their compact state, so a
+        # window opened at a width and one resized to it got other trees, t75 recheck): the TREE_SHARE only takes
+        # what Properties do not need for whole rows (COMPACT_PX); the names may take more, down to 430 px of
+        # Properties (compact rows). The head never widens the tree: its tools wrap (`_TreeHead`).
+        bar, gap = self._scroll.verticalScrollBar().sizeHint().width(), self._body.handleWidth() + 4
+        room_whole = width - z.px(self.COMPACT_PX) - bar - gap
+        room = width - z.px(430) - bar - gap
+        tree_w = min(best, width // 2, room)
+        if share:
+            tree_w = max(tree_w, min(int(width * TREE_SHARE), width // 2, room_whole))
+        return max(tree_w, min(z.px(260), room), 1)
 
     def _fit_tree(self) -> None:
         """Rows changed or the window resized: the tree takes its width (`_tree_width`) while the user has not
@@ -2009,6 +2084,7 @@ class GroomingUI(QWidget):
         L.expand_layers(self, self._collapsed)
         groups = sum(r["kind"] == SEL_GROUP for r in rows)
         self._count_label.set_forms(f"{locks} locks, {groups} groups", f"{locks} locks")
+        self._tree_head.fit()   # the count changed: one row or two
         self._apply_filter()
         if current_key in self._rows:   # the Loader's _restore_tree_state: the current row too
             from PySide6.QtCore import QItemSelectionModel
