@@ -520,6 +520,13 @@
   `tests/test_dcc_panel_design_scripts.py`) before screenshots go to the user. The panel rules above
   (one accent, px fonts through `Sz`, view bar apart from action bar, no modals, one undo step, view
   state apart from data) are collected there with the review checklist.
+- Shared look helpers live in `tools/fx/look.py` (2026-11-19): the Monos state colours, `border_px`,
+  `scale_css` / `round_borders`, `crisp_icon`, `filled_pixmap` / `eye_pixmap`, `PropsBase`, `SectionBase`. The
+  MonoFX Loader (`anim_loader/ui.py`) and the MONO Grooming panel (`grooming/ui_look.py`) import them under their
+  old names; where the tools differ, a parameter or a thin subclass keeps each one's pixels, and the defaults are
+  the Loader's (released). A change there is checked by pixel-comparing both tools' offscreen grabs before and
+  after (the Loader's thumbnail cell at 1100 px loads asynchronously and can differ between two runs of the same
+  code). The palette itself stays in `tools/fx/auto_material/ui.py`.
 
 ## Release (`release.ps1`, skill `.claude/skills/release`)
 

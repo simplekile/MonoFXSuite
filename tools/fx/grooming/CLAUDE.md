@@ -926,9 +926,12 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     switch back (Houdini keeps a desktop's changes for the session).
 - Panel look from the MonoFX Loader (t74, 2026-11-19, the user's pick "C" of three; sandbox `tests/t74_loader_look/`:
   `lessons.md` = what was taken, adapted or left and why, `mockups/`, `report.md`; `ui.py`'s docstring has the layout):
-  - Shared pieces the Loader has on main live in `ui_look.py` under the Loader's names (`_border_px`, `scale_css`,
-    `_crisp_icon`, `_filled_pixmap`, `_Props`, `_Section`, the Monos state colours): this branch has no
-    `tools.fx.anim_loader`, so do not import it; when the branch meets main, merge the two into one shared module.
+  - The look helpers are the suite's shared ones, `tools/fx/look.py` (also the Loader's); `ui_look.py` keeps the
+    panel's names and its differences as parameters or thin subclasses: `_crisp_icon` = Selected mode + a
+    `DISABLED_ICON` pixmap + cached, `scale_css` without the border step (`round_borders` does it), `_Props` /
+    `_Section` on `Sz` and role labels, `SELECTED_HOVER` #2c395b (the Loader keeps #2e3c5f). Panel-only colours
+    (BUTTON..., DISABLED_ICON) stay in `ui_look.py`. Before 2026-11-19 these were copies (`anim_loader` was not on
+    the branch).
   - The tree is painted by `_RowDelegate` for every column and by `_LayerTree.drawRow / drawBranches`; the sheet
     has no `QTreeWidget::item` / `::branch` rule any more. Measured before the change in the live t72 grab: the old
     `::item` rules did paint PANE / SELECTED in Houdini 22 (the Loader's grey came from palette colours), but they
