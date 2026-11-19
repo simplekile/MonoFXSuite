@@ -1585,65 +1585,125 @@ def open_manager(parent_path: str = "/stage") -> AnimLoaderManager:
     return _WINDOW
 
 
-# --- heavy-shot prompt (the user's decision, 2026-11-17) ----------------------------------------------
-# Non-modal: a modal box would hold Houdini and the MCP bridge (and a farm job) until someone clicks.
-# Draw Hulls Only lowers memory too (measured on /stage, Helen catmullClark: RAM 12.8 -> 7.2 GB once settled,
-# VRAM +6.7 -> +4.9 GB); scheme none lowers it most (2.5 GB). An earlier "does not lower memory" came from
-# measurements where hulls had not reached the /stage viewports.
+# --- scene prompts: heavy shot (the user's decision, 2026-11-17), loaders behind (2026-11-19) ------------------
+# Non-modal: a modal box would hold Houdini and the MCP bridge (and a farm job) until someone clicks. Both sit at the
+# bottom right of Houdini's main window, stacked (heavy shot at the bottom, loaders behind above it), and move down
+# when the other one goes. Draw Hulls Only lowers memory too (measured on /stage, Helen catmullClark: RAM 12.8 ->
+# 7.2 GB once settled, VRAM +6.7 -> +4.9 GB); scheme none lowers it most (2.5 GB).
 
 def prompt_allowed() -> bool:
     return _load_prefs().get("hulls_prompt", True) is not False
 
 
-class HeavyShotPrompt(QWidget):
-    """A small floating panel: the heavy-shot line, Draw Hulls Only, Later, Don't ask again; hides itself."""
+def _scene_key(hip: str) -> str:
+    return _path_key(hip or "untitled")
 
-    def __init__(self, text: str, on_hulls, parent: QWidget | None = None, hide_after_ms: int = 20000,
-                 scale: float = 1.0) -> None:
-        from PySide6.QtWidgets import QCheckBox
 
+def outdated_dismissed(hip: str) -> str:
+    """The signature (``logic.outdated_signature``) "Don't show again" was given for in this scene, "" when none."""
+    data = _load_prefs().get("outdated_dismissed", {})
+    return str(data.get(_scene_key(hip), "")) if isinstance(data, dict) else ""
+
+
+def set_outdated_dismissed(hip: str, signature: str) -> None:
+    """Keeps (or, with "", drops) this scene's dismissal; the 50 most recent scenes are kept."""
+    prefs = _load_prefs()
+    data = prefs.get("outdated_dismissed", {})
+    data = dict(data) if isinstance(data, dict) else {}
+    key = _scene_key(hip)
+    data.pop(key, None)
+    if signature:
+        data[key] = signature
+    if not data and "outdated_dismissed" not in prefs:
+        return
+    prefs["outdated_dismissed"] = dict(list(data.items())[-50:])
+    _save_prefs(prefs)
+
+
+class _ScenePrompt(QWidget):
+    """A small floating panel: a title, lines, a check box, Later and the panel's buttons; hides itself."""
+
+    def __init__(self, title: str, lines: list[str], check: str, buttons: list[tuple[str, str]],
+                 parent: QWidget | None = None, hide_after_ms: int = 20000, scale: float = 1.0) -> None:
         css = lambda c: scale_css(c, scale)  # noqa: E731
         super().__init__(parent, Qt.WindowType.Tool | Qt.WindowType.FramelessWindowHint)
         self.setObjectName("AnimLoaderPrompt")
         self.setWindowModality(Qt.WindowModality.NonModal)
         self.setStyleSheet(css(f"QWidget#AnimLoaderPrompt {{ background: {BG_RAISED}; border: 1px solid {LINE};"
                                f" border-radius: 10px; }}" + STYLE_MENU))
-        self._on_hulls = on_hulls
         lay = QVBoxLayout(self)
         lay.setContentsMargins(16, 14, 16, 14)
         lay.setSpacing(8)
-        title = QLabel(text)
-        title.setWordWrap(True)
-        title.setStyleSheet(css(f"color: {TEXT_PRIMARY}; font-size: {FS_META}px; font-weight: 600; background: transparent;"))
-        lay.addWidget(title)
-        hint = QLabel("The viewport may be slow and use a lot of memory. Draw Hulls Only draws the unsubdivided "
-                      "cages: lighter and less memory (Helen 12.8 GB -> 7.2 GB).")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(css(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;"))
-        lay.addWidget(hint)
+        self.title = QLabel(title)
+        self.title.setWordWrap(True)
+        self.title.setStyleSheet(css(f"color: {TEXT_PRIMARY}; font-size: {FS_META}px; font-weight: 600;"
+                                     " background: transparent;"))
+        lay.addWidget(self.title)
+        for text in lines:
+            line = QLabel(text)
+            line.setWordWrap(True)
+            line.setStyleSheet(css(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;"))
+            lay.addWidget(line)
         row = QHBoxLayout()
-        self.dont_ask = QCheckBox("Don't ask again")
+        self.dont_ask = QCheckBox(check)
         self.dont_ask.setStyleSheet(css(f"color: {TEXT_LABEL}; font-size: {FS_SMALL}px; background: transparent;"))
         row.addWidget(self.dont_ask)
         row.addStretch(1)
         self.later_button = QPushButton("Later")
         self.later_button.setStyleSheet(css(STYLE_GHOST))
-        self.hulls_button = QPushButton("Draw Hulls Only")
-        self.hulls_button.setStyleSheet(css(STYLE_PRIMARY))
-        for b in (self.later_button, self.hulls_button):
-            row.addWidget(b)
-        lay.addLayout(row)
+        row.addWidget(self.later_button)
         self.later_button.clicked.connect(self._close)
-        self.hulls_button.clicked.connect(self._hulls)
+        self.buttons: dict[str, QPushButton] = {}
+        for key, text in buttons:  # the last one is the primary
+            b = QPushButton(text)
+            b.setStyleSheet(css(STYLE_PRIMARY if key == buttons[-1][0] else STYLE_GHOST))
+            b.clicked.connect(lambda _=False, k=key: self._act(k))
+            row.addWidget(b)
+            self.buttons[key] = b
+        lay.addLayout(row)
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.setInterval(hide_after_ms)
         self._timer.timeout.connect(self._close)
         self.setMinimumWidth(round(380 * scale))
+        self.setMaximumWidth(round(480 * scale))
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._timer.start()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        QTimer.singleShot(0, _restack)
+
+    def _remember(self) -> None:
+        """What the check box keeps (subclasses)."""
+
+    def _run(self, key: str) -> None:
+        """A button's action (subclasses)."""
+
+    def _close(self) -> None:
+        self._remember()
+        self.hide()
+
+    def _act(self, key: str) -> None:
+        self._remember()
+        try:
+            self._run(key)
+        finally:
+            self.hide()
+
+
+class HeavyShotPrompt(_ScenePrompt):
+    """The heavy-shot line, Draw Hulls Only, Later, Don't ask again (kept for good)."""
+
+    def __init__(self, text: str, on_hulls, parent: QWidget | None = None, hide_after_ms: int = 20000,
+                 scale: float = 1.0) -> None:
+        super().__init__(text, ["The viewport may be slow and use a lot of memory. Draw Hulls Only draws the "
+                                "unsubdivided cages: lighter and less memory (Helen 12.8 GB -> 7.2 GB)."],
+                         "Don't ask again", [("hulls", "Draw Hulls Only")], parent, hide_after_ms, scale)
+        self._on_hulls = on_hulls
+        self.hulls_button = self.buttons["hulls"]
 
     def _remember(self) -> None:
         if self.dont_ask.isChecked():
@@ -1651,39 +1711,113 @@ class HeavyShotPrompt(QWidget):
             prefs["hulls_prompt"] = False
             _save_prefs(prefs)
 
-    def _close(self) -> None:
-        self._remember()
-        self.hide()
+    def _run(self, key: str) -> None:
+        self._on_hulls()
 
-    def _hulls(self) -> None:
-        self._remember()
+
+class OutdatedPrompt(_ScenePrompt):
+    """Loaders behind when the scene opens: which and what is newer, Open manager, Update all. Don't show again holds
+    for these versions only (``logic.outdated_signature``): a newer publish shows it again."""
+
+    def __init__(self, items, hip: str, on_update, on_open, parent: QWidget | None = None,
+                 hide_after_ms: int = 30000, scale: float = 1.0) -> None:
+        super().__init__(logic.outdated_title(items), logic.outdated_lines(items),
+                         "Don't show again for these versions",
+                         [("open", "Open manager"), ("update", f"Update {len(items)}")], parent, hide_after_ms, scale)
+        self._signature = logic.outdated_signature(items)
+        self._hip = hip
+        self._on = {"update": on_update, "open": on_open}
+        self.update_button = self.buttons["update"]
+        self.open_button = self.buttons["open"]
+
+    def _remember(self) -> None:
+        if self.dont_ask.isChecked():
+            set_outdated_dismissed(self._hip, self._signature)
+
+    def _run(self, key: str) -> None:
+        self._on[key]()
+
+
+_PROMPTS: dict[str, _ScenePrompt] = {}
+_STACK_ORDER = ("hulls", "outdated")  # bottom first
+
+
+def _alive(w) -> bool:
+    try:
+        return w is not None and w.isVisible()
+    except RuntimeError:  # deleted with Houdini's main window
+        return False
+
+
+def _restack() -> None:
+    """The visible prompts at the bottom right of their parent window, bottom up in ``_STACK_ORDER``."""
+    shown = [_PROMPTS[k] for k in _STACK_ORDER if _alive(_PROMPTS.get(k))]
+    if not shown:
+        return
+    parent = shown[0].parentWidget()
+    geo = parent.geometry() if parent is not None else shown[0].screen().availableGeometry()
+    bottom = geo.bottom() - 48
+    for w in shown:
+        w.adjustSize()
+        w.move(geo.right() - w.width() - 24, bottom - w.height())
+        bottom -= w.height() + 10
+
+
+def _show_prompt(key: str, make) -> _ScenePrompt:
+    old = _PROMPTS.pop(key, None)
+    if old is not None:
         try:
-            self._on_hulls()
-        finally:
-            self.hide()
+            old.close()
+        except RuntimeError:
+            pass
+    w = _PROMPTS[key] = make()
+    w.adjustSize()
+    w.show()
+    _restack()
+    return w
 
 
-_PROMPT: HeavyShotPrompt | None = None
+def refresh_manager() -> bool:
+    """Scans again in the manager window when it is open (a change made outside it, e.g. the prompt's Update)."""
+    w = _WINDOW
+    try:
+        if w is None or not w.isVisible():
+            return False
+        w.refresh()
+        return True
+    except RuntimeError:  # deleted with Houdini's main window
+        return False
+
+
+def _houdini_scale() -> float:
+    import hou
+
+    return max(0.5, min(3.0, hou.ui.scaledSize(1000) / 1000.0))
 
 
 def show_heavy_shot_prompt(text: str, on_hulls) -> None:
-    """Shows the prompt at the bottom right of Houdini's main window (Houdini only, with a UI)."""
-    global _PROMPT
+    """Shows the heavy-shot prompt (Houdini only, with a UI)."""
     import hou
 
     if not hou.isUIAvailable() or not prompt_allowed():
         return
-    main = hou.qt.mainWindow()
-    if _PROMPT is not None:
-        try:
-            _PROMPT.close()
-        except RuntimeError:
-            pass
-    _PROMPT = HeavyShotPrompt(text, on_hulls, main, scale=max(0.5, min(3.0, hou.ui.scaledSize(1000) / 1000.0)))
-    _PROMPT.adjustSize()
-    geo = main.geometry()
-    _PROMPT.move(geo.right() - _PROMPT.width() - 24, geo.bottom() - _PROMPT.height() - 48)
-    _PROMPT.show()
+    _show_prompt("hulls", lambda: HeavyShotPrompt(text, on_hulls, hou.qt.mainWindow(), scale=_houdini_scale()))
+
+
+def show_outdated_prompt(items, hip: str, on_update, on_open) -> bool:
+    """Shows the loaders-behind prompt unless "Don't show again" was given for these very versions in this scene;
+    a scene with nothing behind drops its dismissal (a later publish then shows the prompt again). True when shown."""
+    import hou
+
+    if not items:
+        if outdated_dismissed(hip):
+            set_outdated_dismissed(hip, "")
+        return False
+    if not hou.isUIAvailable() or not logic.outdated_shows(items, outdated_dismissed(hip)):
+        return False
+    _show_prompt("outdated", lambda: OutdatedPrompt(items, hip, on_update, on_open, hou.qt.mainWindow(),
+                                                    scale=_houdini_scale()))
+    return True
 
 
 # --- subdivision column (the user's pick, 2026-11-17: option A, a detail column beside List / Grid) ----------

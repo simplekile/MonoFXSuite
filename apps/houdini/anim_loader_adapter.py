@@ -2030,6 +2030,72 @@ def check_heavy_shot() -> None:
     hdefereval.executeDeferred(run)
 
 
+_OUTDATED_PENDING = False
+
+
+def outdated_loaders(states: list | None = None) -> list:
+    """``logic.outdated`` of the scene's MonoFX Loaders ((name, path, state) from ``loader_states``); reads the disk
+    only, so it runs on a worker thread. 2.2 / 2.1 nodes are left out: Upgrade is their step, not Update."""
+    states = loader_states() if states is None else states
+    found = logic.outdated([(path, st, logic.status(st)) for _name, path, st in states])
+    names = {path: name for name, path, _st in states}
+    return [(names.get(path, path), bits, path) for path, bits in found]
+
+
+def loader_states() -> list:
+    """(name, path, state) of every MonoFX Loader (main thread: reads parms)."""
+    return [(n.name(), n.path(), read_state(n)) for n in find_loaders() if n.type().name() == config.HDA_TYPE]
+
+
+def check_outdated() -> None:
+    """Scene opened: the loaders-behind prompt, stacked with the heavy-shot one (UI only, once per burst). The
+    parms are read on the main thread, the publishes on a worker thread: a Dropbox project takes a second or more."""
+    global _OUTDATED_PENDING
+    if hou is None or not hou.isUIAvailable() or _OUTDATED_PENDING:
+        return
+    _OUTDATED_PENDING = True
+    import threading
+
+    import hdefereval
+
+    def show(found, hip):
+        try:
+            from tools.fx.anim_loader import ui
+
+            items = [(name, bits) for name, bits, _path in found]
+            paths = [path for _name, _bits, path in found]
+
+            def do_update():
+                nodes = [n for n in (hou.node(p) for p in paths) if n is not None]
+                lines = update(nodes)
+                hou.ui.setStatusMessage("MonoFX Loader: " + ("; ".join(lines) if lines else "already up to date."))
+                ui.refresh_manager()  # an open manager read the scene before: it still said "2 behind"
+
+            ui.show_outdated_prompt(items, hip, do_update, lambda: ui.open_manager())
+        except Exception as exc:  # never break a scene load for a hint
+            hou.ui.setStatusMessage(f"MonoFX Loader: {exc}", severity=hou.severityType.Warning)
+
+    def work(states, hip):
+        try:
+            found = outdated_loaders(states)
+        except Exception:
+            found = []
+        hdefereval.executeDeferred(lambda: show(found, hip))
+
+    def start():
+        global _OUTDATED_PENDING
+        _OUTDATED_PENDING = False
+        try:
+            states = loader_states()
+        except Exception:
+            return
+        threading.Thread(target=work, args=(states, hou.hipFile.path()), daemon=True,
+                         name="monofx-loader-outdated").start()
+
+    hdefereval.executeDeferred(start)
+
+
 def on_loaded(node) -> None:
-    """A scene with loaders opened: one heavy-shot check for the whole scene."""
+    """A scene with loaders opened: one heavy-shot and one loaders-behind check for the whole scene."""
     check_heavy_shot()
+    check_outdated()
