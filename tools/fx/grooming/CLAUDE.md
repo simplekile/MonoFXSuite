@@ -965,5 +965,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     fields. Icons carry their own Disabled pixmap (`DISABLED_ICON` #45454e, `_crisp_icon`): Houdini drew the
     Normal one, so disabled + / up / down / delete looked usable. The desk `MONO_Grooming` gives the panel its own
     pane on the left (30 %), alone: viewport, then parameter editor over network editor.
+    Wide, the tree takes `TREE_SHARE` (40 %) of the window at least and follows it on resize, until the user drags
+    the divider (`_tree_user`): after that it only widens when a name no longer fits. Docked at ~1150 px it had
+    ~350 px and cut the head's count. The status column has slack over its words (`status_width`): in Houdini
+    "per lock" was cut to "per lo…" at the exact width.
   - In Houdini a `ui.grab()` right after a scroll can show the tree's rows below the first two from the older
     scroll position (seen in t74 `gui_panel8` and later; not on screen): sample the top rows only.

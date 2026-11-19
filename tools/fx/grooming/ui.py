@@ -189,6 +189,7 @@ ROLE_QUIET = Qt.ItemDataRole.UserRole + 3   # True: the default state, drawn onl
 ROLE_EYE = Qt.ItemDataRole.UserRole + 4     # (icon name, colour) of the eye cell: a FAINT one is lighter on a selected row
 FAINT_ON_SELECTED = "#868694"   # FAINT on SELECTED / selected + hover is 2.1-2.4:1; this is 3.2:1 on selected + hover
 NARROW_PX = 760      # below this width (at size 1) the tree sits above the settings
+TREE_SHARE = 0.4     # wide: the tree's part of the window at least (docked ~1150 px, the tree had ~350, the user)
 MESSAGE_MS = 6000    # the result line fades after this; errors stay twice as long
 FILTER_WORDS = {      # words the tree's filter knows besides names
     "new": lambda r: "new" in r.get("badges", []),
@@ -721,7 +722,9 @@ class _RowDelegate(QStyledItemDelegate):
         w = sum(metrics.horizontalAdvance(t) for t, _c in parts) + z.px(8) * max(0, len(parts) - 1)
         if "edited" in row.get("badges", []):
             w += z.px(14)
-        return w + z.px(14) if w else 0
+        # 8 right + 6 left of padding is what _status uses, plus slack: in Houdini the painter's metrics came out
+        # wider than QFontMetrics' and "per lock" was cut to "per lo…" (the user, docked)
+        return w + z.px(14) + z.px(10) + 2 if w else 0
 
 
 _StatusDelegate = _RowDelegate   # the t70 / t71 name, kept for the tests and the grabs that use it
@@ -1238,6 +1241,9 @@ class GroomingUI(QWidget):
         body.addWidget(self._build_properties())
         body.setStretchFactor(1, 1)
         self._body = body
+        # once the user drags the divider the tree keeps their width; until then it follows the window (TREE_SHARE)
+        self._tree_user = False
+        body.splitterMoved.connect(lambda *_a: setattr(self, "_tree_user", True))
         root.addWidget(body, stretch=1)
         root.addWidget(_line())
         root.addWidget(self._build_action_bar())
@@ -1798,10 +1804,10 @@ class GroomingUI(QWidget):
         if self._props:
             self.show_properties(self._props)   # stat cells and setting rows in their narrow / wide sizes
 
-    def _tree_width(self, width: int) -> int:
-        """The tree pane's width beside the settings: wide enough for the longest name (a 300 px pane cut
-        hair_back_01 to "ha…01" while the settings had 400 px to spare), at most half the window, and never
-        so wide that the settings scroll sideways."""
+    def _tree_width(self, width: int, share: bool = True) -> int:
+        """The tree pane's width beside the settings: TREE_SHARE of the window, wider for the longest name (a
+        300 px pane cut hair_back_01 to "ha…01" while the settings had 400 px to spare), at most half the window,
+        and never so wide that the settings scroll sideways."""
         z, tree = self.z, self._tree
         best, todo = 0, [(tree.topLevelItem(i), 1) for i in range(tree.topLevelItemCount())]
         while todo:
@@ -1815,15 +1821,17 @@ class GroomingUI(QWidget):
         # the settings' rows (name, slider, value, source, below) need ~540 px at scale 1 before they scroll
         props = max(self._props_widget.minimumSizeHint().width(), z.px(430)) +             self._scroll.verticalScrollBar().sizeHint().width()   # settings rows go compact under COMPACT_PX
         room = width - props - self._body.handleWidth() - 4
+        best = max(best, int(width * TREE_SHARE)) if share else best
         return max(min(best, width // 2, room), min(z.px(260), room), 1)
 
     def _fit_tree(self) -> None:
-        """Rows changed: widen the tree pane when a name no longer fits (never narrows what the user set)."""
+        """Rows changed or the window resized: the tree takes its width (`_tree_width`) while the user has not
+        dragged the divider; after that it only widens when a name no longer fits (never narrows what they set)."""
         if self._narrow is not False:
             return
         sizes = self._body.sizes()
-        want = self._tree_width(max(self.width(), 1))
-        if len(sizes) == 2 and sizes[0] < want:
+        want = self._tree_width(max(self.width(), 1), share=not self._tree_user)
+        if len(sizes) == 2 and (sizes[0] < want or (not self._tree_user and sizes[0] != want)):
             self._body.setSizes([want, max(sum(sizes) - want, 1)])
 
     def _button(self, text: str, icon: str, tip: str) -> QPushButton:

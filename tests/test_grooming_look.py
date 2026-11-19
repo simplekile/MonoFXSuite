@@ -395,3 +395,29 @@ def test_a_disabled_icon_button_looks_disabled(app, prefs) -> None:
     assert brightest(tools["delete"]) <= QColor(K.DISABLED_ICON).lightness() + 8
     assert brightest(tools["density"]) > QColor(K.DISABLED_ICON).lightness() + 40
     ui.close()
+
+
+def test_tree_takes_its_share_of_a_wide_panel_until_the_user_drags(app, prefs) -> None:
+    """Docked at ~1150 px the tree had ~350 px (the head's count and "per lock" were cut): 40 % at least, following
+    the window, until the user drags the divider."""
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app, 1150, 820)
+    left = ui._body.sizes()[0]
+    assert left >= int(1150 * U.TREE_SHARE) - 2
+    ui.resize(1500, 820)
+    for _ in range(4):
+        app.processEvents()
+    assert ui._body.sizes()[0] >= int(1500 * U.TREE_SHARE) - 2
+    ui._body.splitterMoved.emit(560, 1)          # the user's drag (wider than the names need)
+    ui._body.setSizes([560, 940])
+    ui.resize(1600, 820)
+    for _ in range(4):
+        app.processEvents()
+    assert ui._body.sizes()[0] == 560
+    auto = ui._rows[(SEL_LAYER, -1)]
+    cells = ui._tree.itemDelegateForColumn(U.COL_STATUS)
+    from PySide6.QtGui import QFontMetrics
+    need = QFontMetrics(ui.z.font("small")).horizontalAdvance("per lock") + ui.z.px(14)
+    assert ui._tree.header().sectionSize(U.COL_STATUS) >= need + ui.z.px(8)   # slack for Houdini's metrics
+    ui.close()
