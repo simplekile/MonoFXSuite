@@ -477,6 +477,65 @@ def resolve(state: LoaderState) -> Resolved:
     return Resolved(paths["anim"], paths["lookdev"], paths["groom"], paths["cloth"], frames, tuple(notes))
 
 
+PART_FOLDER_WORDS = {"anim": "Anim", "lookdev": "Lookdev", "groom": "Groom", "cloth": "Cloth"}
+
+
+def part_word(state: LoaderState, part: str) -> str:
+    """What a part's folder is called on a menu or button: the main part is the model for Source Asset."""
+    return ("Model" if is_asset(state) else "Anim") if part == "anim" else PART_FOLDER_WORDS.get(part, part.title())
+
+
+def _nearest(folder: Path, stop: Path) -> Path | None:
+    """``folder``, else the closest folder above it that is on disk, never above ``stop`` (a version gone: its
+    publish folder)."""
+    try:
+        folder.relative_to(stop)
+    except ValueError:
+        return folder if folder.is_dir() else None
+    while not folder.is_dir():
+        if folder == stop or folder.parent == folder:
+            return None
+        folder = folder.parent
+    return folder
+
+
+def part_folders(state: LoaderState) -> dict[str, str]:
+    """Each part's publish folder on disk, in column order (anim / model, lookdev, groom, cloth): the folder of the
+    version on the node (a groom / cloth cache: the instance's own folder in it); a version missing on disk gives
+    its part's publish folder. Parts that do not apply (a camera's lookdev, cloth on Source Asset) are left out."""
+    if not state.project_root:
+        return {}
+    root = Path(state.project_root)
+    r = resolve(state)
+    asset_dir = _asset_dir(root, state)
+    out: dict[str, str] = {}
+    main = Path(r.anim).parent if r.anim else main_path(root, state).parent
+    publish = (model_publish_dir(asset_dir) if asset_dir else None) if is_asset(state) \
+        else anim_publish_dir(root, state.shot)
+    if publish is not None:
+        found = _nearest(main, publish)
+        if found is not None:
+            out["anim"] = found.as_posix()
+    if state.kind != "geo" or state.asset is None:
+        return out
+    for part in PARTS:
+        if part == "cloth" and is_asset(state):
+            continue
+        version = state.versions.get(part, "")
+        path = getattr(r, part)
+        if part == "lookdev" or (part == "groom" and is_asset(state)):
+            if asset_dir is None:
+                continue
+            publish = asset_dir / "05_lookdev" / "publish" if part == "lookdev" else groom_publish_dir(asset_dir)
+        else:
+            publish = fx_publish_dir(root, state.shot, part)
+        folder = Path(path).parent if path else (publish / version if version else publish)
+        found = _nearest(folder, publish)
+        if found is not None:
+            out[part] = found.as_posix()
+    return out
+
+
 def _newer(current: str, found: list[str]) -> str | None:
     later = [v for v in found if _vnum(v) > _vnum(current)]
     return later[-1] if later else None
@@ -1417,8 +1476,23 @@ class PublishRef:
 
     @property
     def word(self) -> str:
+        """What it is, for people: model, anim, lookdev, groom, cloth, else its department (texturing)."""
         d = self.dept.replace("\\", "/").lower()
-        return {"anim": "model" if "modelling" in d else "anim"}.get(self.part, self.part)
+        if self.part != "anim":
+            return self.part
+        if "modelling" in d:
+            return "model"
+        if d.endswith("anim"):
+            return "anim"
+        return re.sub(r"^\d+_", "", d.rsplit("/", 1)[-1]) or "publish"
+
+    @property
+    def loader_reads(self) -> bool:
+        """A MonoFX Loader on Source Asset can take its place: an asset's UV model (01_modelling/03_uv) or lookdev.
+        A texturing geo (03_surfacing/02_texturing) is neither: Upgrade made a loader that looked for it in 03_uv,
+        "missing" (char_Mermaid_texturing_geo, the user's report 2026-11-20)."""
+        d = self.dept.replace("\\", "/").lower()
+        return self.kind == "asset" and (self.part == "lookdev" or d == "01_modelling/03_uv")
 
     def publish_dir(self) -> Path:
         base = Path(self.root) / ("01_assets" if self.kind == "asset" else "02_shots")

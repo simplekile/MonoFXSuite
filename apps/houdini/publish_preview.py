@@ -57,6 +57,30 @@ def stage_facts(stage, nodes: list) -> pp.StageFacts:
     return usd_stage_facts(stage, facts)
 
 
+def lookdev_facts(stage, loaders: list) -> list:
+    """Each shot loader with its lookdev on: how that lookdev sits on the anim under the instance prim (a lookdev
+    made on another geometry, e.g. char_Mermaid V001 on the texturing geo, binds nothing on /Geo and adds its own
+    static meshes, while the line read clean)."""
+    from monofx_pipeline_common.publish_checks import lookdev_facts as _lf
+
+    out = []
+    for node in loaders:
+        enable, path = node.parm(config.P_ENABLE["lookdev"]), node.parm(config.P_PATH["lookdev"])
+        inst, anim = node.parm(config.P_INSTANCE), node.parm(config.P_ANIM_PATH)
+        if None in (enable, path, inst, anim) or not enable.eval() or not path.evalAsString().strip():
+            continue
+        name = inst.evalAsString().strip()
+        if not name:
+            continue
+        version = node.parm(config.P_VERSION["lookdev"]).evalAsString()
+        try:
+            out.append(_lf(stage, "/" + name, version, anim.evalAsString().strip()))
+        except Exception as exc:  # a check that cannot read says so, it never stops the test
+            out.append(None)
+            print(f"MonoFX test: lookdev check of {node.name()} failed: {exc}")
+    return [f for f in out if f is not None]
+
+
 # --- the scene ----------------------------------------------------------------------------------------------------
 
 def _safe(text: str) -> str:
@@ -156,6 +180,8 @@ def build(kind: str, path: str, parent=None) -> dict:
     stage = display.stage() if display is not None else None
     sf = stage_facts(stage, nodes)
     sf.notes.extend(n for n in notes if n)
+    if plan.mode == "shot":
+        sf.lookdevs = lookdev_facts(stage, nodes)
     if plan.mode == "shot":
         meta = logic.read_outputs(logic.anim_publish_dir(Path(plan.root), plan.shot) / plan.anim_version)
         files = [str(Path(plan.files[0]).parent / o.file) if plan.files else o.file for o in meta]

@@ -146,3 +146,20 @@ def test_checks_are_shared_with_blender():
     assert pp.check_line is pc.check_line and pp.FileFacts is pc.FileFacts
     note = pc.note_text("t", "model", [], pc.StageFacts(meshes=1), save_hint="Not saved.")
     assert note.endswith("Not saved.")
+
+
+def test_lookdev_not_on_the_anim_is_a_problem():
+    """char_Mermaid V001 (sh011): a lookdev made on the texturing geo binds nothing on /Geo and adds its own meshes;
+    instances with the same finding make one problem. A lookdev that binds the anim reads clean."""
+    from monofx_pipeline_common import publish_checks as pc
+
+    anim = [pc.FileFacts("geo_char_Mermaid.usd", meshes=19, fps=30.0, animated=28)]
+    bad = [pc.LookdevFacts(f"/char_Mermaid{s}", "V001", anim_meshes=19, bound=0, own_meshes=29,
+                           own_root=f"/char_Mermaid{s}/Mermaid_h") for s in ("", "_inst02")]
+    probs = pc.problems("anim", anim, pc.StageFacts(meshes=96, lookdevs=bad))
+    assert probs == ["char_Mermaid, char_Mermaid_inst02: lookdev V001 gives no material to the 19 anim meshes and "
+                     "adds 29 meshes of its own (Mermaid_h), not made on the UV publish the anim comes from"]
+    note = pc.note_text("t", "anim", anim, pc.StageFacts(meshes=96, lookdevs=bad))
+    assert "/char_Mermaid lookdev V001: a material on 0 of 19 anim meshes, 29 meshes of its own" in note
+    good = [pc.LookdevFacts("/char_Helen", "v003", anim_meshes=26, bound=24)]
+    assert pc.problems("anim", anim, pc.StageFacts(meshes=26, lookdevs=good)) == []

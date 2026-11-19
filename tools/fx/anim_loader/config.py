@@ -45,6 +45,33 @@ P_FX = {t: {k: f"mx_{t}_{k}" for k in ("mode", "template", "first", "last", "roo
 # Show in Viewport: a button strip, one bit per part (on = the viewport draws it; off = Karma only).
 P_VIEWPORT = "mx_viewport"
 VIEWPORT_BITS = {"lookdev": 1, "groom": 2}
+# Open Folder strip on the node (the user's ask, 2026-11-20): one button per part, set back to 0 after each click
+P_OPEN_FOLDER = "mx_open_folder"
+# Prim Name on / off (the user's ask, 2026-11-20): on grafts the instance under /<Prim Name> (shot default), off keeps
+# the publish's own root prims (/Geo, /Groom: Source Asset default, a lookdev scene sees the asset as published).
+# The parm's own default is on, so a scene saved before it keeps its graft.
+P_USE_PRIM = "mx_use_prim"
+
+# Every Python LOP of the loader (and of a baked one: no MonoFX import) starts with this: ``root`` is "/<inst>", ""
+# when Prim Name is off (the publish's own root prims), None when there is nothing to work on; ``instance_prims``
+# gives the instance's top prims (the branch's root prims when off: input 0's prims pass through, not the loader's).
+# No "%" in it: the baked codes are %-formatted after it is put in.
+ROOT_CODE = '''inst = hda.evalParm("mx_instance_name")
+_use = hda.parm("mx_use_prim")
+root = ("/" + inst if inst else None) if (_use is None or _use.eval()) else ""
+
+
+def instance_prims(stage):
+    if root is None:
+        return []
+    if root:
+        p = stage.GetPrimAtPath(root)
+        return [p] if p else []
+    topo = hda.node("groom_topology")
+    names = [c.GetName() for c in topo.stage().GetPseudoRoot().GetChildren()] if topo is not None else []
+    return [p for p in (stage.GetPrimAtPath("/" + n) for n in names if n != "HoudiniLayerInfo") if p]
+'''
+OPEN_FOLDER_BITS = {"anim": 1, "lookdev": 2, "groom": 4, "cloth": 8}
 
 # Shot rules for subdivision (JSON list of {"pattern", "scheme", "dicing"}), see logic.subd_plan.
 P_SUBD_RULES = "mx_subd_rules"

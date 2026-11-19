@@ -53,7 +53,7 @@ def test_list_shows_every_loader_grouped(make):
     headers = [w.list_view.item(i).data(ui.ROLE_HEADER) for i in range(w.list_view.count())
                if w.list_view.item(i).data(ui.ROLE_HEADER)]
     assert headers == ["sh025   3", "sh900   1", "old loaders   1"]
-    assert w.headline.text() == "2 behind, 1 needs an asset, 1 to upgrade"
+    assert w.headline.text() == "2 behind, 1 missing, 1 needs an asset, 1 to upgrade"
     assert w.primary.text() == "Update 2 behind" and w.primary.isEnabled()
     assert w.upgrade_button.text() == "1" and not w.upgrade_button.isHidden()  # icon + count, the tip says it
     assert w.upgrade_button.toolTip().startswith("Upgrade 1")
@@ -278,7 +278,7 @@ def test_primary_button_follows_the_one_action(make):
     b.infos = [i for i in b.infos if not i.legacy]
     w.refresh(); w.wait()
     assert w.primary.isHidden()                                  # nothing worth doing: no primary button
-    assert w.headline.text() == "1 needs an asset"
+    assert w.headline.text() == "1 missing, 1 needs an asset"
 
 
 def test_heavy_shot_is_a_note_on_the_status_line(make):
@@ -379,6 +379,25 @@ def test_unsaved_scene_shot_starts_on_the_loaders_shot(make, tmp_path):
     b.project_and_shot = lambda: ("", "")
     w = mk(b)
     assert w._project == proj.as_posix() and w.ctl.target_shot == "sh900"
+
+
+def test_asset_scene_starts_on_no_shot(make, tmp_path):
+    """A lookdev scene (char_Mermaid_lookdev_v002.hiplc) is no shot's: the crumb read sh001, the project's first shot
+    (the user's report, 2026-11-20). It asks for a shot; the menu still lists them."""
+    from tests.anim_loader_tree import make as make_tree
+
+    mk, ui = make
+    proj = make_tree(tmp_path / "proj", ["01_assets/_characters/char_A/05_lookdev/houdini/work/",
+                                         "02_shots/sh001/01_anim/publish/v001/cam_sh001.usd",
+                                         "02_shots/sh002/01_anim/publish/v001/cam_sh002.usd"])
+    b = FakeBackend()
+    b.infos = []
+    b.project_and_shot = lambda: (proj.as_posix(), "")
+    w = mk(b)
+    assert w.ctl.target_shot == "" and w.shot_button.text() == "Pick a shot ▾"
+    assert w.shots == ["sh001", "sh002"]
+    _act(w.shot_menu, "sh002").trigger()
+    assert w.ctl.target_shot == "sh002" and w.shot_button.text() == "sh002 ▾"
 
 
 def test_subd_menu_says_what_it_does_and_every_row_has_an_icon(make):

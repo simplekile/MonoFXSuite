@@ -649,3 +649,29 @@ def test_outdated_lists_newer_parts_only():
     assert logic.outdated_lines(items) == ["char_Helen: anim v005 \u2192 v006"]
     assert logic.outdated_signature(items) == "char_Helen:anim:v006"
     assert not logic.outdated_shows([], "")
+
+
+def test_part_folders_open_each_column(tmp_path):
+    """The manager's column menu and the node's Open Folder strip (the user's ask, 2026-11-20): the folder of the
+    version on the node, the part's publish folder when that version is gone; cloth never published: none."""
+    from dataclasses import replace
+
+    from tools.fx.anim_loader.logic import initial_asset_state, part_folders, part_word
+
+    root = _shot(tmp_path)
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    f = part_folders(st)
+    assert list(f) == ["anim", "lookdev", "groom"]
+    assert f["anim"] == (root / ANIM / "v001").as_posix()
+    assert f["lookdev"].endswith("char_Robot/05_lookdev/publish/v002")
+    assert f["groom"] == (root / GROOM / "v001/char_Robot").as_posix()
+    gone = replace(st, anim_version="v009", versions={**st.versions, "lookdev": "v007"})
+    assert part_folders(gone)["anim"] == (root / ANIM).as_posix()          # the version is gone: its publish folder
+    assert part_folders(gone)["lookdev"].endswith("05_lookdev/publish")
+    cam = initial_state(root, "sh900", "v001", Output("cam_sh900.usd", "cam"))
+    assert list(part_folders(cam)) == ["anim"]
+    assert part_word(st, "anim") == "Anim" and part_word(st, "lookdev") == "Lookdev"
+    asset = initial_asset_state(_asset(tmp_path / "a"), "char_Robot")
+    fa = part_folders(asset)
+    assert fa["anim"].endswith("01_modelling/03_uv/publish/v002") and fa["groom"].endswith("04_grooming/publish/v002")
+    assert "cloth" not in fa and part_word(asset, "anim") == "Model"

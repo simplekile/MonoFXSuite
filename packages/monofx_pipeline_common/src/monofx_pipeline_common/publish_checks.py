@@ -27,6 +27,18 @@ class FileFacts:
 
 
 @dataclass
+class LookdevFacts:
+    """How one instance's lookdev sits on its anim in the loaded stage (Test in Houdini of a shot's anim)."""
+
+    instance: str                                        # the instance prim, /char_Mermaid
+    lookdev: str                                         # its version, V001
+    anim_meshes: int = 0                                 # meshes of the anim file under the instance
+    bound: int = 0                                       # of those, how many have a material bound
+    own_meshes: int = 0                                  # meshes under the instance that are not the anim's
+    own_root: str = ""                                   # where the first of those sits, /char_Mermaid/Mermaid_h
+
+
+@dataclass
 class StageFacts:
     """What the test scene shows: Houdini's loaded stage, or in Blender the publish's own stage plus the import."""
 
@@ -34,6 +46,7 @@ class StageFacts:
     broken: list[str] = field(default_factory=list)      # "prim -> target" of bindings to no Material
     node_errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
+    lookdevs: list[LookdevFacts] = field(default_factory=list)
 
 
 def _n(count: int, word: str) -> str:
@@ -50,6 +63,19 @@ def problems(kind: str, files: list[FileFacts], stage: StageFacts) -> list[str]:
             out.append(f"{f.name}: {f.error}")
     if stage.broken:
         out.append(f"{_n(len(stage.broken), 'broken material binding')} ({stage.broken[0]})")
+    groups: dict[tuple, list[str]] = {}
+    for ld in stage.lookdevs:  # instances of one asset share the finding: one problem for all of them
+        key = (ld.lookdev, ld.anim_meshes, ld.bound == 0, ld.own_meshes, ld.own_root[len(ld.instance):])
+        groups.setdefault(key, []).append(ld.instance)
+    for (version, anim, none_bound, own, own_rel), insts in groups.items():
+        bad = []
+        if anim and none_bound:
+            bad.append(f"gives no material to the {_n(anim, 'anim mesh')}")
+        if own:
+            bad.append(f"adds {_n(own, 'mesh')} of its own ({own_rel.lstrip('/')})")
+        if bad:
+            out.append(f"{', '.join(i.lstrip('/') for i in insts)}: lookdev {version} " + " and ".join(bad)
+                       + ", not made on the UV publish the anim comes from")
     if stage.meshes == 0 and not any(f.camera for f in files):
         out.append("no mesh in the stage")
     no_scheme = sum(len(f.no_scheme) for f in files)
@@ -115,6 +141,9 @@ def note_text(title: str, kind: str, files: list[FileFacts], stage: StageFacts, 
         else:
             bits.append(f"{_n(f.animated, 'prim')} with time samples")
         lines.append(f"  {f.name}: " + ", ".join(bits))
+    for ld in stage.lookdevs:
+        lines.append(f"  {ld.instance} lookdev {ld.lookdev}: a material on {ld.bound} of "
+                     f"{_n(ld.anim_meshes, 'anim mesh')}, {_n(ld.own_meshes, 'mesh')} of its own")
     for b in stage.broken[:10]:
         lines.append(f"  broken binding {b}")
     lines += [f"  {n}" for n in stage.notes]
@@ -175,6 +204,32 @@ def broken_bindings(stage, prim) -> list[str]:
             if not tp or not tp.IsA(UsdShade.Material):
                 bad.append(f"{prim.GetPath()} -> {target}")
     return bad
+
+
+def lookdev_facts(stage, instance: str, lookdev: str, anim_file: str) -> LookdevFacts:
+    """How the lookdev landed on the anim under ``instance``: the anim file's meshes (by path under the instance)
+    with a material bound, and meshes under the instance the anim file does not have (the lookdev's own; the
+    groom's curves are not meshes)."""
+    from pxr import Usd, UsdGeom, UsdShade
+
+    facts = LookdevFacts(instance, lookdev)
+    root = stage.GetPrimAtPath(instance) if stage is not None else None
+    anim = Usd.Stage.Open(str(anim_file), Usd.Stage.LoadNone) if anim_file else None
+    if not root or anim is None:
+        return facts
+    for prim in Usd.PrimRange(root):
+        if not prim.IsA(UsdGeom.Mesh):
+            continue
+        rel = prim.GetPath().pathString[len(instance):]
+        if anim.GetPrimAtPath(rel):
+            facts.anim_meshes += 1
+            if UsdShade.MaterialBindingAPI(prim).ComputeBoundMaterial()[0]:
+                facts.bound += 1
+        else:
+            facts.own_meshes += 1
+            if not facts.own_root:
+                facts.own_root = prim.GetPath().GetPrefixes()[min(1, prim.GetPath().pathElementCount - 1)].pathString
+    return facts
 
 
 def usd_stage_facts(stage, facts: StageFacts | None = None) -> StageFacts:

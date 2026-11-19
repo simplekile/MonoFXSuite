@@ -264,6 +264,15 @@ def main() -> None:
                rest.evalParm(config.P_MODEL_FILE), rest.evalParm(config.P_VERSION["groom"])) ==
               ("asset", "char_Robot", "v002", "char_Robot_uv_publish.usd", "v001"),
               (rest.evalParm(config.P_SOURCE), rest.evalParm(config.P_MODEL_VERSION), rest.evalParm(config.P_STATUS)))
+        # Prim Name off for a new Source Asset loader (the user's ask, 2026-11-20): the publish's own paths
+        check("asset scene: Prim Name off, the model at its own paths", rest.evalParm(config.P_USE_PRIM) == 0
+              and bool(st_rest.GetPrimAtPath(BODY)) and not st_rest.GetPrimAtPath("/char_Robot"))
+        check("asset groom outside Geo, at its own path", bool(st_rest.GetPrimAtPath("/Groom/strands")))
+        check("asset: lookdev subdivision applies with Prim Name off (body catmullClark)",
+              UsdGeom.Mesh(st_rest.GetPrimAtPath(BODY)).GetSubdivisionSchemeAttr().Get()
+              == UsdGeom.Tokens.catmullClark)
+        rest.parm(config.P_USE_PRIM).set(1)
+        st_rest = rest.stage()
         check("asset model grafted at the shot's paths", bool(st_rest.GetPrimAtPath(f"/char_Robot{BODY}")))
         check("asset groom outside Geo", bool(st_rest.GetPrimAtPath("/char_Robot/Groom/strands")))
         check("asset: lookdev subdivision applies (body catmullClark)",

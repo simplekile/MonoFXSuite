@@ -130,7 +130,7 @@ try:
     main()
 except Exception:
     check("no exception", False, traceback.format_exc())
-(OUT / "accept_groom_graft.json").write_text(json.dumps(CHECKS, indent=1), encoding="utf-8")
+(OUT / "accept_groom_graft.json").write_text(json.dumps(CHECKS, indent=1, default=str), encoding="utf-8")
 failed = [c["name"] for c in CHECKS if not c["ok"]]
 print(f"{len(CHECKS) - len(failed)}/{len(CHECKS)} passed", failed)
 sys.exit(1 if failed else 0)

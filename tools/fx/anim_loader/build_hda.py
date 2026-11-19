@@ -24,27 +24,31 @@ from tools.fx.anim_loader import config  # noqa: E402
 
 DEFAULT_OUT = os.path.join(SUITE, "otls", config.HDA_FILE)
 INST = '`chs("../mx_instance_name")`'
+# Where the instance sits: /<Prim Name>, or the stage root when Prim Name is off (config.P_USE_PRIM)
+GRAFT_AT = '`ifs(ch("../mx_use_prim"), "/" + chs("../mx_instance_name"), "/")`'
+ROOT_EXPR = '`ifs(ch("../mx_use_prim"), "/" + chs("../mx_instance_name"), "")`'
+ROOT_CODE = config.ROOT_CODE
 
 # Value clips authored after the graft (spike S2b): on /<instance><root> with clipPrimPath <root>, one clip set
 # per task, no manifest (USD makes one). Reads only the HDA's hidden parms; never opens a file.
 CLIP_CODE = '''hda = hou.pwd().parent()
 stage = hou.pwd().editableStage()
 from pxr import Usd
-inst = hda.evalParm("mx_instance_name")
+@ROOT@
 for task in ("groom", "cloth"):
-    if hda.evalParm("mx_%s_mode" % task) != "clip" or not inst:
+    if hda.evalParm("mx_%s_mode" % task) != "clip" or root is None:
         continue
     for token in hda.evalParm("mx_%s_roots" % task).split():
         # "src=dst": the clip reads src in the cache and sits on dst (groom: /Groom/<name>, outside Geo)
         src, _, dst = token.partition("=")
-        prim = stage.OverridePrim("/" + inst + (dst or src))
+        prim = stage.OverridePrim(root + (dst or src))
         clips = Usd.ClipsAPI(prim)
         clips.SetClipPrimPath(src, task)
         clips.SetClipTemplateAssetPath(hda.parm("mx_%s_template" % task).unexpandedString(), task)
         clips.SetClipTemplateStartTime(hda.evalParm("mx_%s_first" % task), task)
         clips.SetClipTemplateEndTime(hda.evalParm("mx_%s_last" % task), task)
         clips.SetClipTemplateStride(1, task)
-'''
+'''.replace("@ROOT@", ROOT_CODE)
 
 # Groom outside Geo (the user's pick, 2026-11-17): the branch copies each groom curves prim of the cache to
 # /Groom/<name> (mx_groom_roots "src=dst"), where lookdev binds hair. From the first frame when the cache has time
@@ -103,6 +107,8 @@ hda = hou.pwd().parent()
 if hda.evalParm("@MODE@") == "clip":
     layer = hou.pwd().editableLayer()
     inst = hda.evalParm("mx_instance_name")
+    _use = hda.parm("mx_use_prim")
+    root = ("/" + inst if inst else None) if (_use is None or _use.eval()) else ""
     pairs = [t.partition("=") for t in hda.evalParm("mx_groom_roots").split()]
     pairs = [(a, c) for a, b, c in pairs if b]
     cache = Sdf.Layer.FindOrOpen(hda.evalParm("@TOPO@")) if hda.evalParm("@TOPO@") else None
@@ -127,7 +133,7 @@ if hda.evalParm("@MODE@") == "clip":
             unanimate(child, has, animated)
 
     for a, c in pairs:
-        spec = layer.GetPrimAtPath("/" + inst + c) if inst else None
+        spec = layer.GetPrimAtPath(root + c) if root is not None else None
         if spec is not None:
             unanimate(spec, *cache_attrs(a))
 '''.replace("@MODE@", config.P_FX["groom"]["mode"]).replace("@TOPO@", config.P_GROOM_TOPO)
@@ -142,15 +148,15 @@ if hda.evalParm("@MODE@") == "clip":
 PURPOSE_CODE = '''hda = hou.pwd().parent()
 stage = hou.pwd().editableStage()
 from pxr import Usd, UsdGeom, UsdShade
-inst = hda.evalParm("mx_instance_name")
-root = stage.GetPrimAtPath("/" + inst) if inst else None
+@ROOT@
 vp = hda.evalParm("mx_viewport")
 look_vp, groom_vp = vp & 1, vp & 2
-if root:
+if root is not None:
     # Subdivision per mesh: shot rule > lookdev > anim > none (adapter.author_subd, logic.subd_plan)
     from apps.houdini import anim_loader_adapter
     anim_loader_adapter.author_subd(hda, stage)
-    for prim in Usd.PrimRange(root):
+for top in instance_prims(stage):
+    for prim in Usd.PrimRange(top):
         if not look_vp:
             rel = prim.GetRelationship("material:binding")
             targets = rel.GetTargets() if rel else []
@@ -159,7 +165,7 @@ if root:
                 rel.SetTargets([])
         if not groom_vp and prim.IsA(UsdGeom.BasisCurves):
             UsdGeom.Imageable(prim).CreatePurposeAttr().Set(UsdGeom.Tokens.render)
-'''
+'''.replace("@ROOT@", ROOT_CODE)
 
 # What the shot shows of each prim (hidden / render only / viewport only / both): last, after Hide Prims and the
 # groom's render purpose, so a rule wins over both (adapter.author_show, logic.parse_show_rules)
@@ -200,14 +206,20 @@ def build_network(sub) -> None:
     ptg.append(hou.StringParmTemplate("groom_file", "Groom File", 1))
     topo.setParmTemplateGroup(ptg)
     topo.parm("groom_file").setExpression(f'chs("../{config.P_GROOM_TOPO}")', hou.exprLanguage.Hscript)
-    graft = _node(sub, "graftstages", "graft", (src, topo), primpath="/" + INST, destpath="")
+    graft = _node(sub, "graftstages", "graft", (src, topo), primpath=GRAFT_AT, destpath="")
     unanimate = _node(sub, "pythonscript", "groom_unanimate", (graft,), python=GROOM_UNANIMATE_CODE)
     new_layer = _node(sub, "configurelayer", "fx_layer", (unanimate,), startnewlayer=1)
     clips = _node(sub, "pythonscript", "fx_clips", (new_layer,), python=CLIP_CODE)
     purpose = _node(sub, "pythonscript", "render_only", (clips,), python=PURPOSE_CODE)
-    geo_scale = _node(sub, "xform", "geo_scale", (purpose,), primpattern="/" + INST, scale='=ch("../scale")')
+    # Prim Name off: no /<inst> to scale, so the branch's own root prims are scaled before the graft (input 0's
+    # prims pass through and are not the loader's); on: the instance prim after it, as before
+    branch_scale = _node(sub, "xform", "branch_scale", (topo,), primpattern="/*",
+                         scale='=if(ch("../mx_use_prim"), 1, ch("../scale"))')
+    graft.setInput(1, branch_scale)
+    geo_scale = _node(sub, "xform", "geo_scale", (purpose,), primpattern=ROOT_EXPR,
+                      scale='=if(ch("../mx_use_prim"), ch("../scale"), 1)')
     hide = _node(sub, "configureprimitive", "hide_driver", (geo_scale,),
-                 primpattern=f'/{INST}/`chs("../mx_hide_pattern")`', visibility="invisible")
+                 primpattern=f'{ROOT_EXPR}/`chs("../mx_hide_pattern")`', visibility="invisible")
     hide.parm("setvisibility").setExpression('ch("../mx_hide_enable")', hou.exprLanguage.Hscript)
 
     # camera: 2.1's chain (cam_Loader -> transform1 -> camera_edit1 -> transform4), on top of input 0
@@ -293,6 +305,17 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     g.append(button("mx_reload", "Reload", "hou.phm().cb_reload(kwargs)",
                     "Read every file this loader uses again from disk (a publish written again into the same "
                     "version). Never changes a version."))
+    # Open Folder (the user's ask, 2026-11-20): a toggle strip, one button per part, set back to 0 by its callback so
+    # every click opens (a Normal strip does not call back when the same button is clicked again)
+    words = {"anim": "Geo", "lookdev": "Lookdev", "groom": "Groom", "cloth": "Cloth"}
+    open_folder = T.MenuParmTemplate(config.P_OPEN_FOLDER, "Open Folder", tuple(config.OPEN_FOLDER_BITS),
+                                     tuple(words[p] for p in config.OPEN_FOLDER_BITS), default_value=0,
+                                     is_button_strip=True, menu_type=T.menuType.StringToggle)
+    open_folder.setScriptCallback("hou.phm().cb_open_folder(kwargs)")
+    open_folder.setScriptCallbackLanguage(T.scriptLanguage.Python)
+    open_folder.setHelp("The publish folder of the version on the node, in Explorer: Geo (the anim, or the model "
+                        "for Source Asset), Lookdev, Groom, Cloth.")
+    g.append(open_folder)
     status = read_only(T.StringParmTemplate(config.P_STATUS, "Status", 1))
     status.setConditional(T.parmCondType.HideWhen, '{ %s == "" }' % config.P_STATUS)
     status.setHelp("What needs you: a missing file, an unknown asset, a note. Newer versions show in the menus.")
@@ -334,9 +357,20 @@ def _parm_templates() -> hou.ParmTemplateGroup:
     model_f = asset_only(s(config.P_MODEL_FILE, "Model File", menu="hou.phm().menu_model_files(hou.pwd())"))
     model_f.setHelp("A version may hold several files; the standard <asset>_uv_publish.usd is picked first.")
     src.addParmTemplate(model_f)
+    # The checkbox sits in the label column, as the parts' (the user's ask, 2026-11-20): on = /<name>/Geo/... (a
+    # shot's default), off = the publish's own root prims (Source Asset's default). Default on: a scene saved before
+    # the checkbox existed keeps its graft.
+    use = toggle(config.P_USE_PRIM, "Prim Name", default=True, callback=False)
+    use.hideLabel(True)
+    use.setJoinWithNext(True)
+    use.setHelp("On: the instance under /<Prim Name> (several instances, a shot). Off: the publish's own root "
+                "prims (/Geo, /Groom), as published: an asset's lookdev or grooming scene.")
+    use.setConditional(T.parmCondType.HideWhen, geo_only)
+    src.addParmTemplate(use)
     inst = s(config.P_INSTANCE, "Prim Name")
     inst.setHelp("The prim the instance is grafted under: /<name>/Geo/...")
     inst.setConditional(T.parmCondType.HideWhen, geo_only)
+    inst.setConditional(T.parmCondType.DisableWhen, f"{{ {config.P_USE_PRIM} == 0 }}")
     src.addParmTemplate(inst)
     g.append(src)
 

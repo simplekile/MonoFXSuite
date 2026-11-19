@@ -89,7 +89,7 @@ def test_update_selected():
 
 
 def test_headline():
-    assert _ctl().headline() == "2 behind, 1 needs an asset, 1 to upgrade"
+    assert _ctl().headline() == "2 behind, 1 missing, 1 needs an asset, 1 to upgrade"
 
 
 def test_stale_scan_dropped():
@@ -210,7 +210,7 @@ def test_primary_action_follows_what_matters_most():
     c.refresh()
     assert c.heavy_polygons() > 5_000_000                 # a heavy shot is a note on the status line (the window),
     assert c.primary_action() is None                      # never the primary nor the headline
-    assert c.headline() == "1 needs an asset"
+    assert c.headline() == "1 missing, 1 needs an asset"
     b.hulls_on = lambda: True
     c.refresh()
     assert c.heavy_polygons() == 0
