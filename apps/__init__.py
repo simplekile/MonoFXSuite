@@ -1,1 +1,1 @@
-# MonoFX Suite — DCC applications (Houdini, Maya, etc.)
+# MonoFX Suite — DCC applications (Houdini, Blender)

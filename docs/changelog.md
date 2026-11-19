@@ -3,6 +3,155 @@
 ## [Unreleased]
 
 
+## [0.1.38] - 2026-11-19
+
+### Blender
+- **Check for Updates** (add-on preferences) compares the installed MonoFX Suite with the latest release and offers **Download MonoFX Setup**, which downloads and starts the installer (close Blender, then finish it). Before, it compared the add-on's own version, which releases never changed, and always said up to date.
+
+### Installer
+- A release carries only `MonoFXSuite_Setup.exe`; it installs the Blender add-on too. The separate add-on ZIP is no longer published.
+
+
+## [0.1.37] - 2026-11-19
+
+### Houdini
+- **MonoFX Loader**: a groom whose lookdev publish holds its own values on the groom (Helen's) keeps moving after a Merge or a Graft Stages downstream; before, from the shot layout's merge_actors on, the groom stood still at the lookdev's values, with the lookdev's point count over the cache's topology (sh025_lighting_v004).
+- **MonoFX Loader**: the **Reload** button works; in v0.1.36 every click raised "module object has no attribute 'cb_reload'" (the manager's Reload from disk was fine).
+- **MonoFX Loader**: **Hide Prims** is gone from the node's parameters: show and hide prims with the eye in the manager's inspector. The hair driver mesh stays hidden by default, as before; its eye shows it.
+
+### Blender
+- **MonoFX tab by department**: the tab shows the tools of the department the .blend is saved in (`01_modelling` Model, `02_rigging` Rig, `NN_anim` Anim); Scene has an Auto / Model / Rig / Anim switch to pick another. A file outside a project shows Model and Anim as before.
+- **Rig publish** (new Rig panel): Publish Rig writes `02_rigging/<task>/publish/vNNN/<asset>_rig_publish.blend` holding only the rig's publish collection (other collections and scenes left out, orphans purged); the open file is not changed. Anim > Link finds it as before.
+- **UV maps and normals in publish**: Publish Asset and Publish Anim ask in their confirm dialog (Include: UV Maps, Normals). Model publish keeps both on by default, anim publish leaves both off (points only, as before); with them on, anim UVs are written once (the render UV as `st`) and normals on every frame.
+- **Anim > Link** also takes a publish collection named with a dash (`CHAR_HELEN_RIG-PUBLISH`), which it refused before.
+
+
+## [0.1.36] - 2026-11-19
+
+### Houdini
+- **MonoFX Loader**: a groom cache keeps moving after a Graft Stages downstream (the shot layout's graft_anim); before, the groom stood still at its first frame there, in any shot.
+- **MonoFX Loader**: **Reload** (on the node beside Refresh, and Reload from disk on the manager's right-click menu) reads every file the loader uses again from disk, for a publish written again into the same version; Houdini kept showing the old content. Versions do not change.
+
+
+## [0.1.35] - 2026-11-19
+
+### Blender
+- **Anim USD export**: a rig whose meshes are named with a digit first (veh_Spaceship v003: `01_Pipe_Rubber`) exports again; its prims are named `_01_Pipe_Rubber`, as in the asset's lookdev and UV publish. Before, the export stopped with "Path must be an absolute path" and a headless export hung. An export that cannot start now ends with its error instead of waiting forever.
+
+
+## [0.1.34] - 2026-11-17
+
+### Houdini
+- **MonoFX Loaders** manager, inspector: each prim has three toggles, as in Blender's outliner: show / hide, drawn in the viewport, rendered. Hiding a group hides what is under it and each child keeps its own setting for when the group shows again; viewport and render follow the parent unless a child has its own. A dot marks what this shot overrides, which **Remove the shot's overrides** takes off (who set a value is in the tooltip). A click takes ~0.2 s and reads only that loader again (it used to rescan the project, ~1 s). The right-click menu's **Display** says the same toggles in words.
+- **MonoFX Loaders** manager, inspector: the prims show every level of the hierarchy as the scene graph does (Geo, Base_grp, Body_grp, Geo_Body), with Houdini's Xform / Mesh / Curves icons, the groom's curves under Groom; with several loaders selected their prims share one tree, a branch each (the loader's own row hides or shows the whole asset). A filter field narrows the tree by prim name; right-click the column titles to choose the columns (Faces and From are off by default).
+- **MonoFX Loaders** manager, inspector: the right-click menu says what each item does ("Use the publish's subdivision", "Turn subdivision off", "Subdivide (Catmull-Clark)", "Remove the shot's overrides", "Same overrides on the other N char_Helen loaders"), each item with an icon; dicing is picked from a submenu of steps.
+- **MonoFX Loaders** manager, inspector: a camera shows its lens (focal length in mm, aperture and ratio, clipping in m, f-stop and focus distance or "Depth of field: off") and edits the loader's clipping, aperture, ratio and guide scale; a shot's loader shows its frame range and fps. Details are a list of labels and values in sections that fold; picking another loader no longer draws its details over the last one's.
+- **MonoFX Loader**: a prop whose lookdev holds the whole asset (env_Envi's cliffs) lists its meshes in the inspector and gets their subdivision from the loader; before, Cliff01 and Cliff06 listed none and their meshes got no scheme from the loader.
+- **MonoFX Loaders** manager: one **Upgrade** turns old loaders (Anim Loader 2.2 and 2.1, Character Loader) and Sublayer / Reference nodes reading a publish into MonoFX Loaders, keeping the node's place and wires (env_Envi lookdev: 10 sublayers, the same meshes and bounds). The manager reads 2.2 nodes like MonoFX Loaders and lists publish sublayers with their versions.
+- **MonoFX Loaders** manager: **Bake to plain nodes** (hand-off menu, right-click) turns loaders into plain Houdini subnets that open without MonoFX, for someone with Houdini only; **Upgrade** turns them back.
+- **MonoFX Loaders** manager: fewer words and lighter type: the top bar is flat icon buttons, Hand off / Undo / Upgrade are icons with tooltips, the inspector runs the full height and slides in and out, the list scrolls sideways instead of dropping columns, double-click selects the node and shows it in the Network Editor, the result line keeps to two lines.
+- **MonoFX Loader**: Draw Hulls Only and Frame find the Scene Viewer inside Houdini 22's Context Viewer pane; before, they said "No viewer shows /stage" while one did.
+- **MonoFX Loaders** manager: a part with nothing published when the loader was made and a version now shows as newer ("+V001") with Update, not as missing; a prop whose lookdev holds the whole asset shows "–" for its model; Textures has its own column.
+
+
+## [0.1.33] - 2026-11-17
+
+### Houdini
+- **MonoFX Loaders** manager (layout A, picked from mockups): **+ Add** holds Load shot and **Assets...**, a drawer of the project's assets (type chips, search, thumbnails; pick several, Add N). A **view bar**: Solo selected (Houdini's Solo Geometry, not saved), Lookdev / Groom in the viewport for every loader, Filter. The status line says what the shot has that the scene lacks (**Add it**) and how many GB of textures the lookdevs pull. The selected loader shows **what is new** in a newer version (date, who saved its work file in Monos, outputs, frame range, meshes, size), Source Shot / Asset, and Open folder, Open in Monos, Frame. **Hand off...** writes a self-contained USD per loader with its textures, for people without MonoFX.
+- **MonoFX Loader**: in a lighting scene laid out with merge_actors / merge_cameras / merge_environments, Load shot and Add put the new loaders there (characters with the actors, props and sets with the environments). Adding an asset already placed makes another instance (`prop_Cliff01_inst02`) for set dressing.
+- **MonoFX Loader**, Source Asset: props and environments whose lookdev publish holds the whole asset load that alone; before, the UV mesh was loaded under it as well (double geometry).
+
+### Houdini
+- **MonoFX Loader** is its own node now (Tab > MonoFX > MonoFX Loader, named `monofx_loader`), no longer an "anim loader" in name, file or type. Scenes with the 2.2 node still open; the manager's **Upgrade** moves those nodes over, keeping every setting.
+- **MonoFX Loader** manager (shelf **MonoFX Loaders**) finds loaders in every LOP network, also inside /obj (grooming scenes), not only /stage; opened from a node, Load shot builds next to it.
+- **MonoFX Loader**, Source Asset: an **Asset Type** menu (Characters, Props...) shortens the Asset list, which shows only assets that have a UV publish; Advanced shows the **Model Path**; a part with nothing published says "none published".
+
+
+## [0.1.32] - 2026-11-17
+
+### Houdini
+- **MonoFX Loader** (the Mono Anim Loader, renamed): a **Source** menu. Shot loads a shot's anim as before; **Asset** loads the asset's own UV model, groom and lookdev, for grooming and lookdev scenes. Both put the character at the same prim paths (`/char_Helen/Geo/...`), so one node replaces the Character Loader + Anim Loader pair and switching Source needs no rewiring; each side keeps its settings. A node put down in an asset's folder starts on Asset with the newest versions. A model version with several files offers a Model File menu, the standard `<asset>_uv_publish.usd` first.
+- **MonoFX Loader**: groom sits outside Geo, at `/char_Helen/Groom/...`, where lookdev binds the hair materials, for the asset's groom and for shot groom caches (motion blur kept).
+- **MonoFX Loader** manager: **Upgrade** also turns Character Loader 3.2 nodes into MonoFX Loader nodes on Source Asset, in place (same name and wires; model, groom, lookdev, scale and hidden prims kept; its SOP Modify is not carried). Their prims move from `/Geo` to `/<asset>/Geo`.
+
+
+## [0.1.31] - 2026-11-17
+
+### Houdini
+- **Mono Anim Loader** node put down by hand: **Shot** is a menu of the project's shots (shots with no anim say so), and changing the shot moves the same character to the newest anim there, or picks that shot's newest version with no file yet, instead of keeping the old shot's version ("anim v001 missing on disk"). While nothing is picked, Status says just the next step: outside a project, where to set one (Project Root under Advanced, or the manager's Project box); then pick a shot, "sh030 has no anim publish yet", pick an anim file.
+
+
+## [0.1.30] - 2026-11-17
+
+### Houdini
+- **Mono Anim Loader**: the camera's Clipping Range defaults to 0.0001 - 1e6 (near clip was 0.001).
+
+
+## [0.1.29] - 2026-11-17
+
+### Houdini
+- **Mono Anim Loader 2.2** (`mono_anim_loader::2.2`, built from code into `otls/`): one node per character, clone or camera of a shot, grafted under `/<asset>` (clones `/<asset>_instNN`) so several characters and clones load together; lookdev, groom and cloth found for that instance only; groom / cloth caches with time samples load as value clips (motion blur); versions never change by themselves. Manager window and shelf tool **Anim Loaders**: every loader in the scene as a list or a grid with Monos thumbnails, what is behind, Update (one undo step), Load shot, Upgrade 2.1 nodes.
+- **Mono Anim Loader**: subdivision per mesh comes from a shot rule on the loader, else the lookdev publish, else the anim publish, else none. USD reads a missing scheme as Catmull-Clark, so the viewport subdivided whole shots (sh025: over 45 GB, then a crash). Rules can also set Karma dicing quality.
+- **Mono Anim Loader** manager: a **Subdivision** column beside the list shows the selected character's meshes by group, where each scheme comes from and its dicing; set Publish / Off / Catmull-Clark and dicing on a selection, clear overrides, or apply them to every instance of the asset. Rows show "subd N · ~X M".
+- **Mono Anim Loader**: a heavy shot (lots of subdivision) shows a small non-modal prompt offering **Draw Hulls Only** for the viewport (lighter to draw and less memory: Helen 12.8 GB -> 7.2 GB), with Don't ask again.
+- **Mono Anim Loader**: Lookdev and Groom get **Show in Viewport** (on). Off loads them for render only (Karma).
+- **Mono Anim Loader** manager polish: one primary button, the thing worth doing now (Retarget, else Update, else Upgrade 2.1 nodes), hidden when there is nothing to do. The heavy-shot warning lives only in the Subdivision column, with Draw Hulls Only beside it. The scheme is a menu on each Subdivision row (on a selected row it sets the whole selection); dicing has its own field and keeps the scheme. From shows only where a mesh differs from its group, Dice only when there is dicing. Grid cards fill the width, camera cards are shorter, the splitter handle shows, and every size follows Houdini's UI scale.
+- **Mono Anim Loader** manager: **Retarget** moves loaders copied from another shot to this one: the newest anim there with the same character (the camera: that shot's camera), groom and cloth from that shot, lookdev and node settings kept, one undo step. In a scene saved in a shot it is offered for every loader from another shot; otherwise for the selected ones (also on the right-click menu). Characters the shot does not have are named and left as they were.
+- **Mono Anim Loader** manager: a **Project** box beside the shot: the scene's project, recent ones, or Browse for a folder (anywhere inside a project; inside a shot it picks that shot). Its shots are listed from the project, so Load shot works in a scene that is not saved yet. Also: list rows no longer overlap when the Subdivision column is dragged wider.
+- **Mono Anim Loader** manager redesigned on the Monos UI rules: project and shot as crumbs with menus and **Load shot** as a menu (no combo boxes); a slim status line instead of the big headline, with the heavy-shot note and Draw Hulls Only on it; the list is a table (one row per loader, a column per part, "–" where nothing is published, colour only where there is something to do); the details and subdivision show only for a selected loader, and scheme / dicing are set from the meshes' right-click menu.
+- **Mono Anim Loader**: cleaner parameters. Each version menu says its status ("v002  (v003 available)", "v004  latest") and the node shows it under its name in the network editor; the Status line appears only when something needs you (a missing file, an unknown asset). Source, Parts, Geometry or Camera as groups, a checkbox beside each part, **Show in Viewport** as one Lookdev / Groom strip, file paths under Advanced. Show in Viewport is a new parm: a loader saved with it off shows both parts in the viewport again.
+- **Mono Anim Loader**: the camera's **Clipping Range** works again (its parms were named `clippingRangex/y`; the camera read `clippingRange1/2`, as in 2.1), and defaults to 0.001 - 1e6.
+
+### Blender
+- **Anim USD**: a second rig of the same asset is named `geo_<asset>_inst02.usd` (then `_inst03`...), not `_2`, which clashed with assets whose names end in a number (`char_Robot_2`, `prop_CoralSet_001`). `publish_meta.json` now gives each geo output its `asset` and `instance` when the name is an asset folder of the project. Read by Mono Anim Loader 2.2.
+- **Anim USD**: every mesh writes its `subdivisionScheme`. Without one, USD reads a mesh as Catmull-Clark, so Houdini's viewport subdivided every character and set (sh025: over 45 GB, then a crash). A mesh is `catmullClark` only when a Subdivision Surface enabled for render ends its modifier stack, like a model publish; it is then exported as its cage (the Subdivision is switched off in the viewport during the export and back on after), so the file is also lighter. Anything else is `none`, Multires too.
+
+### Maya — removed
+- MonoFX no longer supports Maya. Taken out: `apps/maya` and the Maya tools Reference Manager, USD Export, Render Preview, Position / Scale and Scale from Last, with their tests. None of them was in the installer or the Houdini shelf.
+
+### Shared / tests
+- The shared rig library scan (`monofx_pipeline_common.rig_library`) defaults to Blender rigs (`.blend`, `02_build_rig/blender/work`); the Maya defaults are gone. The Blender add-on passed these itself, so it works as before. The shared scan tests moved to `tests/test_rig_library.py`.
+
+
+## [0.1.28] - 2026-11-17
+
+### Blender
+- **Model publish**: materials stay where Blender writes them (`/_materials`, beside the asset root), as before v0.1.26: the move into `/<root>/material` is taken out.
+- **Model publish**: the asset root is marked `kind = component` (USD asset structure). A kind already there, or a component / group / assembly below the root, is left alone.
+- **USD fps**: every publish (model, UV, camera) carries the scene fps. A static export used to keep 24, and a Houdini Sublayer copied that over the hip's fps (30 fps scenes rendered at 24). Anim USD also writes `framesPerSecond`.
+
+
+## [0.1.27] - 2026-11-17
+
+### Installer
+- The installer also installs the Blender add-on: a task (on by default) copies it into every Blender 5.0 or newer on the PC and turns it on, so the ZIP no longer has to be installed by hand. Close Blender first; a Blender it cannot turn the add-on on in is named at the end.
+- Monos (Settings › Add-ons › Studio tools) shows the installed MonoFX version: the installer writes it to `%LOCALAPPDATA%\Monos\tools\MonoFXSuite\VERSION`, and uninstalling removes it.
+
+### Blender
+- The add-on registers in background Blender (`blender -b`): it imports `bpy.utils.previews` itself.
+
+
+## [0.1.26] - 2026-11-17
+
+### Houdini
+- **Auto Material**: Fix colorspace button. Select a Material Library LOP and click it: every MaterialX image with an empty colour space gets the one in its file name (`_ACEScg`, `_Raw`, `_sRGB`, `_Linear`). Materials Houdini converts from a USD leave it empty, which made base colours look washed out; images that already have a value are not changed. One undo step.
+- **MONO Grooming** (v0.2a): density layers. Paint a density mask on the scalp in the viewport; each layer sets its own strands per cm² under its own mask stack, stacked over the base density. Scenes saved by v0.1 open with their groom unchanged.
+
+### Blender
+- **Model publish**: materials go under the asset root (`/<defaultPrim>/material`) instead of `/_materials` at the top of the file, with every binding moved with them, so a reference to the asset brings its materials.
+- **Model publish**: file names by collection. One collection publishes `char_Helen_uv_publish.usd`; several collections add the collection name after `publish`, words joined with a capital (`char_Helen_uv_publish_GeoHelen.usd`).
+- **Model publish**: the Publish dialog no longer fails with "Writing to ID classes in this context is not allowed" (Blender 5.2).
+- **Publish version**: new mode File (the default for new scenes): the publish version is the `_vNNN` of the open work file. Geo and anim USD.
+- **Anim USD**: the file declares a `defaultPrim`, so Solaris Reference / Sublayer attach it without a prim path.
+- **Anim USD**: faster export: meshes that do not move keep only their first and last sample, points are read in one call (shot sh025 ~57 s).
+- **Anim USD**: object transforms are written every frame (rigs animated only by transforms), and translated / rotated rig roots come out at the right place (the matrix was written transposed).
+- **Anim USD**: a warning when a mesh exports with all points at the origin, empty or NaN, naming its active modifiers (e.g. a wrap modifier with no source object).
+- The add-on version shows in the Scene, Model and Anim panel headers.
+
+### Shared / tests
+- Tests for the material scope move (needs pxr, run with hython), collection file names, point sampling, degenerate points and the colour space fix.
+
+
 ## [0.1.25] - 2026-11-13
 
 ### Houdini

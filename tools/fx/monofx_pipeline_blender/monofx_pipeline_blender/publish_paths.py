@@ -133,24 +133,34 @@ def default_usd_basename_from_scene(scene_path: Path) -> str:
 
 
 def sanitize_collection_slug(collection_name: str) -> str:
-    """Normalize a collection name for USD filenames (lowercase, spaces → underscores)."""
-    s = (collection_name or "").strip().lower()
-    s = re.sub(r"\s+", "_", s)
-    s = re.sub(r"_+", "_", s)
-    return s.strip("_") or "collection"
+    """Collection name for a USD filename: words joined, each starting with a capital.
 
-
-def collection_publish_usd_basename(scene_path: Path, collection_name: str) -> str:
+    ``Geo_Helen`` -> ``GeoHelen``, ``house _2`` -> ``House2``. Capitals already inside a
+    word are kept (``HelenWhale`` stays ``HelenWhale``).
     """
-    Per-collection publish basename: ``env_House_uv_house1_publish`` from scene + collection.
+    words = [w for w in re.split(r"[^0-9A-Za-z]+", (collection_name or "").strip()) if w]
+    slug = "".join(w[0].upper() + w[1:] for w in words)
+    return slug or "Collection"
+
+
+def collection_publish_usd_basename(
+    scene_path: Path,
+    collection_name: str,
+    *,
+    only_collection: bool = False,
+) -> str:
+    """
+    Publish basename for one collection of a multi-collection publish.
+
+    The collection name goes **after** ``publish``, joined with a capital per word:
+    ``env_House_uv_publish_House1``.
+    When the publish has a single collection (``only_collection``) there is nothing to tell
+    apart, so the plain ``env_House_uv_publish`` is used (same as a normal single-file publish).
     """
     base = default_usd_basename_from_scene(scene_path)
-    slug = sanitize_collection_slug(collection_name)
-    suffix = "_publish"
-    if base.casefold().endswith(suffix):
-        prefix = base[: -len(suffix)]
-        return f"{prefix}_{slug}{suffix}"
-    return f"{base}_{slug}{suffix}"
+    if only_collection:
+        return base
+    return f"{base}_{sanitize_collection_slug(collection_name)}"
 
 
 def list_version_numbers(publish_root: Path) -> list[int]:
@@ -206,6 +216,20 @@ def version_number_from_blend_stem(stem: str) -> Optional[int]:
         return int(m.group(1))
     except ValueError:
         return None
+
+
+def publish_version_from_scene_file(scene_path: Optional[Path]) -> Optional[int]:
+    """
+    Publish version that mirrors the open work file (``sh002_anim_v003.blend`` → ``3``).
+
+    ``None`` when there is no scene, no ``_vNNN`` suffix, or the suffix is ``v000``.
+    """
+    if scene_path is None:
+        return None
+    version = version_number_from_blend_stem(Path(scene_path).stem)
+    if version is None or version < 1:
+        return None
+    return min(version, 999)
 
 
 def description_from_blend_stem(stem: str) -> str:
@@ -383,7 +407,7 @@ def next_blend_save_path(
 
 
 _SHOT_RE = re.compile(r"^(sh\d{3,}[a-z0-9]*)$", re.IGNORECASE)
-# Task folder: 01_anim (shots), 06_anim (assets), etc. — Maya parity.
+# Task folder: 01_anim (shots), 06_anim (assets), etc.
 _ANIM_TASK_RE = re.compile(r"^\d{2}_anim$", re.IGNORECASE)
 
 ANIM_PUBLISH_PATH_HINT = (
@@ -412,7 +436,7 @@ def find_anim_task_index(parts: list[str]) -> Optional[int]:
 
 def resolve_anim_publish_root_from_scene(scene_path: Path) -> Optional[Path]:
     """
-    ``.../<NN_anim>/publish`` inferred from a saved .blend path (Maya parity).
+    ``.../<NN_anim>/publish`` inferred from a saved .blend path.
 
     Examples:
       ``.../02_shots/sh002/01_anim/blender/work/foo.blend``
@@ -481,3 +505,65 @@ def relative_publish_display(scene_path: Path, usd_path: Path) -> str:
     if task:
         return f"{task}/publish/{p.parent.name}/{p.name}"
     return p.name
+
+
+# --- Department and rig publish -------------------------------------------------
+
+_RIGGING_DEPT_RE = re.compile(r"^\d{2}_rigging$", re.IGNORECASE)
+_MODELLING_DEPT_RE = re.compile(r"^\d{2}_modelling$", re.IGNORECASE)
+_PUBLISH_COLLECTION_RE = re.compile(r"[_-]publish(?![a-z])", re.IGNORECASE)
+
+
+def department_from_scene(scene_path: Optional[Path]) -> Optional[str]:
+    """``MODEL`` / ``RIG`` / ``ANIM`` from where the .blend is saved, ``None`` outside a project.
+
+    ``.../01_modelling/...`` -> MODEL, ``.../02_rigging/...`` -> RIG, ``.../NN_anim/...`` -> ANIM.
+    """
+    if scene_path is None:
+        return None
+    for seg in Path(scene_path).parts:
+        if _MODELLING_DEPT_RE.match(seg):
+            return "MODEL"
+        if _RIGGING_DEPT_RE.match(seg):
+            return "RIG"
+        if _ANIM_TASK_RE.match(seg):
+            return "ANIM"
+    return None
+
+
+def resolve_rig_publish_root_from_scene(scene_path: Path) -> Optional[Path]:
+    """``.../02_rigging/<NN_task>/publish`` from a rig work file.
+
+    ``.../02_rigging/02_build_rig/blender/work/char_Ata_rig_v009.blend``
+    -> ``.../02_rigging/02_build_rig/publish`` (the folder Anim > Link scans).
+    """
+    parts = list(Path(scene_path).parts)
+    for i, seg in enumerate(parts):
+        if not _RIGGING_DEPT_RE.match(seg):
+            continue
+        if i + 1 >= len(parts) - 1:
+            return None
+        task = parts[i + 1]
+        if not _TASK_CODE_RE.match(task):
+            return None
+        return Path(*parts[: i + 2]) / "publish"
+    return None
+
+
+def rig_publish_basename(scene_path: Path) -> str:
+    """``<asset>_rig_publish`` (asset = the folder under ``01_assets/<group>/``)."""
+    parts = list(Path(scene_path).parts)
+    low = [p.casefold() for p in parts]
+    asset = ""
+    if "01_assets" in low:
+        i = low.index("01_assets")
+        if i + 2 < len(parts):
+            asset = parts[i + 2]
+    if not asset:
+        asset = asset_name_from_blend_stem(Path(scene_path).stem, "rig") or "asset"
+    return f"{asset}_rig_publish"
+
+
+def is_publish_collection_name(name: str) -> bool:
+    """The rig's publish collection: ``CHAR_ATA_RIG_PUBLISH``, ``..._RIG-PUBLISH``, ``Rig_X_publish``."""
+    return bool(_PUBLISH_COLLECTION_RE.search(name or ""))

@@ -26,9 +26,9 @@ def fake_project_blend(tmp_path: Path) -> Path:
     pub = ch / "02_rigging" / "02_build_rig" / "publish"
     (pub / "V001").mkdir(parents=True)
     (pub / "v002").mkdir(parents=True)
-    (pub / "V001" / "char_Errol_rig_Publish.mb").write_text("maya", encoding="utf-8")
+    (pub / "V001" / "char_Errol_rig_Publish.mb").write_text("other dcc", encoding="utf-8")
     (pub / "V001" / "char_Errol_rig_Publish.blend").write_text("blend1", encoding="utf-8")
-    (pub / "v002" / "char_Errol_rig_Publish.mb").write_text("maya2", encoding="utf-8")
+    (pub / "v002" / "char_Errol_rig_Publish.mb").write_text("other dcc 2", encoding="utf-8")
     (pub / "v002" / "char_Errol_rig_Publish.blend").write_text("blend2", encoding="utf-8")
     work = ch / "02_rigging" / "02_build_rig" / "blender" / "work"
     work.mkdir(parents=True)

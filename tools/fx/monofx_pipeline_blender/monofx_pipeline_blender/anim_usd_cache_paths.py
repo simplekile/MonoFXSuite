@@ -6,9 +6,16 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable, Optional
+from typing import Iterable, Optional, Sequence
 
 _SANITIZE_RE = re.compile(r"[^A-Za-z0-9_]")
+
+
+def _valid_identifier(safe: str) -> str:
+    """A USD prim name cannot start with a digit; Blender's USD export prefixes ``_``."""
+    if safe and safe[0].isdigit():
+        return "_" + safe
+    return safe
 
 
 def strip_blender_namespace(name: str) -> str:
@@ -32,7 +39,7 @@ def namespace_prefix_from_name(name: str) -> str:
 def sanitize_namespace_segment(namespace: str) -> str:
     """USD path segment for a linked rig namespace prefix."""
     safe = _SANITIZE_RE.sub("_", (namespace or "").strip()).strip("_")
-    return safe or "rig"
+    return _valid_identifier(safe) or "rig"
 
 
 _CAMERA_COLLECTION_NAMES = frozenset({"cameras", "camera", "cam"})
@@ -88,10 +95,15 @@ def is_namespace_geo_branch_name(name: str) -> bool:
 
 
 def sanitize_prim_segment(name: str) -> str:
-    """Make a single USD path segment from a Blender object name."""
+    """
+    Make a single USD path segment from a Blender object name.
+
+    A name starting with a digit gets ``_`` in front (``01_Pipe`` -> ``_01_Pipe``),
+    as Blender's own USD export names it in the lookdev / UV publish.
+    """
     base = strip_blender_namespace(name)
     safe = _SANITIZE_RE.sub("_", base).strip("_")
-    return safe or "Prim"
+    return _valid_identifier(safe) or "Prim"
 
 
 def dedupe_sibling_segment(segment: str, used: set[str]) -> str:
@@ -176,6 +188,23 @@ def prim_path_from_object_chain(
     )
 
 
+def single_top_level_prim_name(prim_paths: Iterable[str]) -> str:
+    """
+    Name of the one top-level prim shared by all ``prim_paths`` (``/Geo/...`` → ``Geo``).
+
+    Returns ``""`` when there is no top-level prim or more than one (multi-instance
+    export), because a USD layer can declare only a single ``defaultPrim``.
+    """
+    names: set[str] = set()
+    for path in prim_paths:
+        parts = [p for p in (path or "").strip().split("/") if p]
+        if parts:
+            names.add(parts[0])
+    if len(names) == 1:
+        return next(iter(names))
+    return ""
+
+
 def existing_output_paths(paths: Iterable[str | Path]) -> list[Path]:
     """Subset of ``paths`` that already exist on disk."""
     found: list[Path] = []
@@ -189,6 +218,31 @@ def existing_output_paths(paths: Iterable[str | Path]) -> list[Path]:
         if candidate.is_file():
             found.append(candidate)
     return found
+
+
+def uv_primvar_names(uv_names: Sequence[str], active_render: int) -> list[str]:
+    """USD primvar name for each Blender UV map, as Blender's own USD export names them.
+
+    The render-active map becomes ``st`` (what lookdev reads); the others keep their name,
+    made a valid identifier and never a second ``st``.
+    """
+    out: list[str] = []
+    used: set[str] = set()
+    if 0 <= active_render < len(uv_names):
+        used.add("st")
+    for i, raw in enumerate(uv_names):
+        if i == active_render:
+            out.append("st")
+            continue
+        base = _valid_identifier(_SANITIZE_RE.sub("_", (raw or "").strip()).strip("_")) or "uv"
+        name = base
+        n = 1
+        while name in used:
+            name = f"{base}_{n}"
+            n += 1
+        used.add(name)
+        out.append(name)
+    return out
 
 
 __all__ = [
@@ -205,5 +259,7 @@ __all__ = [
     "sanitize_namespace_segment",
     "sanitize_prim_segment",
     "segments_to_prim_path",
+    "single_top_level_prim_name",
     "strip_blender_namespace",
+    "uv_primvar_names",
 ]

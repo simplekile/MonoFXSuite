@@ -11,7 +11,7 @@ Allow MonoFX Suite to be updated from GitHub from within a script or DCC (e.g. m
 
 ## Design
 
-- **DCC-agnostic:** No imports of `maya.cmds`, `hou`, `bpy`, etc. Only stdlib: `subprocess`, `pathlib`, `dataclasses`.
+- **DCC-agnostic:** No imports of `hou`, `bpy`, etc. Only stdlib: `subprocess`, `pathlib`, `dataclasses`.
 - **Repo discovery:** Walks upward from the module file (or from an optional `repo_root`) until a directory containing `.git` is found.
 - **Git only:** Uses `git pull` and `git fetch` via `subprocess`. No GitHub API, no HTTP client.
 - **Fail-safe:** If not a git repo, or Git is missing, or network fails, returns structured result with message; no uncaught exceptions for normal failure cases.

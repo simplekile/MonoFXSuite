@@ -520,6 +520,25 @@ def run(focus: str | None = None) -> None:
     ui.on("open_path", open_path)
     ui.on("open_asset", on_open_asset)
     ui.on("update_assets", on_update_assets)
+
+    def on_fix_colorspace() -> None:
+        """Fill empty image colorspace in the selected Material Library from the texture file names."""
+        selected = sa.get_selected_lop_node()
+        if selected is None or selected.type().name() != "materiallibrary":
+            ui.set_message("Select a Material Library LOP first.", error=True)
+            return
+        try:
+            with sa.undo_group("Fix colorspace"):
+                result = sa.fix_empty_texture_colorspaces(selected)
+        except Exception as e:
+            ui.set_message(f"Fix colorspace failed: {e}", error=True)
+            return
+        msg = f"Colorspace set on {result['fixed']} image(s); {result['already_set']} already had one."
+        if result["unresolved"]:
+            msg += f" {len(result['unresolved'])} could not be read from the file name."
+        ui.set_message(msg, error=bool(result["unresolved"]) and result["fixed"] == 0)
+
+    ui.on("fix_colorspace", on_fix_colorspace)
     ui.on("undo", on_undo)
     ui.on("reload", on_reload)
     ui.on("create", on_create)

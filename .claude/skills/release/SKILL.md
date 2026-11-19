@@ -1,13 +1,14 @@
 ---
 name: release
-description: Release MonoFX Suite (version bump, changelog, installer build, git tag, GitHub Release with MonoFXSuite_Setup.exe and the Blender add-on ZIP). Use when the user asks to release, publish a version, ship, make a new build for others, or "push, release".
+description: Release MonoFX Suite (version bump, changelog, installer build, git tag, GitHub Release with MonoFXSuite_Setup.exe). Use when the user asks to release, publish a version, ship, make a new build for others, or "push, release".
 ---
 
 # Release MonoFX Suite
 
 A release is: the changes since the last tag written up in `docs/changelog.md`, `VERSION` bumped, the
-installer and the Blender ZIP built from `main`, a tag `vX.Y.Z` on `main`, and a GitHub Release
-carrying both files. `release.ps1` at the repo root does the mechanical part in two steps and checks
+installer built from `main`, a tag `vX.Y.Z` on `main`, and a GitHub Release carrying `MonoFXSuite_Setup.exe`
+(it installs the Blender add-on too; the add-on ZIP is no longer published, and Blender's Check for Updates offers
+the Setup). `release.ps1` at the repo root does the mechanical part in two steps and checks
 everything before it acts; this skill is the part a script cannot do (the notes) and the order.
 
 ## 1. See what changed
@@ -23,7 +24,7 @@ Read the commits (and the diff where a subject is vague). Nothing since the last
 ## 2. Write the notes under `## [Unreleased]` in `docs/changelog.md`
 
 Follow the earlier sections in that file:
-- Grouped by `### Houdini`, `### Blender`, `### Maya`, `### Installer`, `### Shared / tests` (only the groups that have something).
+- Grouped by `### Houdini`, `### Blender`, `### Installer`, `### Shared / tests` (only the groups that have something).
 - One bullet per change a user notices, starting with the tool in bold: `- **Auto Material**: ...`.
   Say what the user can now do or what no longer goes wrong, in their words, not the code's.
   Numbers when they matter ("16 materials ~1 s instead of ~110 s").
@@ -59,9 +60,9 @@ git switch --detach origin/main     # works in a worktree, where main is checked
 
 `publish` stops before acting when: HEAD is not `origin/main`, the tree is dirty, the changelog has no
 section for `VERSION`, the tag or the GitHub Release already exists, gh is logged out, Inno Setup is
-missing, tests fail, or the build did not produce a fresh installer and ZIP. It builds before tagging,
+missing, tests fail, or the build did not produce a fresh installer. It builds before tagging,
 so a failed build leaves no tag. Then: tag `vX.Y.Z` at HEAD, push the tag, `publish_release.ps1`
-(notes from `RELEASE_NOTES.md`, assets `MonoFXSuite_Setup.exe` + newest `monofx_pipeline_blender_v*.zip`).
+(notes from `RELEASE_NOTES.md`, asset `MonoFXSuite_Setup.exe`).
 
 Run `publish` in the background (it builds and uploads for a minute or two). If `publish_release.ps1`
 fails after the tag is pushed, fix the cause and run `.\publish_release.ps1` alone: do not re-tag.
@@ -72,7 +73,7 @@ fails after the tag is pushed, fix the cause and run `.\publish_release.ps1` alo
 gh release view vX.Y.Z --json url,isDraft,assets --jq '{url, isDraft, assets: [.assets[].name]}'
 ```
 
-Tell the user the release link, the tag, the two assets, and that other machines get the change by
+Tell the user the release link, the tag, the installer, and that other machines get the change by
 installing `MonoFXSuite_Setup.exe`. A copy patched by hand into `Documents/houdiniXX.X/monofx` is not
 replaced by a release; say so if this session patched one.
 

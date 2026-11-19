@@ -95,6 +95,16 @@ def test_sanitize_prim_segment():
     assert _paths.sanitize_prim_segment("geo-Body.001") == "geo_Body_001"
 
 
+def test_sanitize_prim_segment_leading_digit():
+    # Blender's USD export names these prims _01_... in the lookdev / UV publish.
+    assert _paths.sanitize_prim_segment("01_Pipe_Rubber") == "_01_Pipe_Rubber"
+    assert _paths.sanitize_prim_segment("rig::01_Pipe") == "_01_Pipe"
+    assert _paths.sanitize_prim_segment("_01_Pipe") == "_01_Pipe"
+    assert _paths.sanitize_prim_segment("Pipe_01") == "Pipe_01"
+    assert _paths.prim_path_from_object_chain(["Geo", "01_Pipe"]) == "/Geo/_01_Pipe"
+    assert _paths.sanitize_namespace_segment("2rig") == "_2rig"
+
+
 def test_prim_path_from_object_chain():
     path = _paths.prim_path_from_object_chain(["Char", "Body", "geo_Head"])
     assert path == "/Char/Body/geo_Head"
@@ -185,3 +195,39 @@ def test_existing_anim_export_paths(tmp_path: Path):
     missing_file = tmp_path / "cam_sh001.usd"
     found = _paths.existing_output_paths([existing_file, missing_file])
     assert found == [existing_file]
+
+
+def test_single_top_level_prim_name_single_root():
+    assert _paths.single_top_level_prim_name(
+        ["/Geo", "/Geo/Base_grp", "/Geo/Base_grp/Body_grp/Geo_Body"]
+    ) == "Geo"
+
+
+def test_single_top_level_prim_name_namespaced_root():
+    assert _paths.single_top_level_prim_name(
+        ["/tachirig/Geo/Body", "/tachirig/Geo"]
+    ) == "tachirig"
+
+
+def test_single_top_level_prim_name_multiple_roots_is_ambiguous():
+    # Multi-instance export has several top-level prims; USD allows one defaultPrim.
+    assert _paths.single_top_level_prim_name(
+        ["/tachirig/Geo/Body", "/tachirig2/Geo/Body"]
+    ) == ""
+
+
+def test_single_top_level_prim_name_empty_or_root_only():
+    assert _paths.single_top_level_prim_name([]) == ""
+    assert _paths.single_top_level_prim_name(["/"]) == ""
+    assert _paths.single_top_level_prim_name(["", "  "]) == ""
+
+
+def test_uv_primvar_names_active_render_is_st():
+    assert _paths.uv_primvar_names(["UVMap", "Detail"], 0) == ["st", "Detail"]
+    assert _paths.uv_primvar_names(["UVMap", "Detail"], 1) == ["UVMap", "st"]
+
+
+def test_uv_primvar_names_are_valid_and_unique():
+    assert _paths.uv_primvar_names(["UV Map.001", "st", "2nd"], 0) == ["st", "st_1", "_2nd"]
+    assert _paths.uv_primvar_names([], -1) == []
+    assert _paths.uv_primvar_names(["a"], -1) == ["a"]

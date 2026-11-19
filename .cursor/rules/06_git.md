@@ -20,5 +20,5 @@
 
 ```
 feat: add houdini ribbon trail generator
-fix: resolve maya docking issue
+fix: resolve blender panel redraw issue
 ```

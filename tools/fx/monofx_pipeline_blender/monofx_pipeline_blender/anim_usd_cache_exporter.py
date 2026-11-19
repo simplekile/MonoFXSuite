@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Sequence
 
 import bpy
+import numpy as np
 from mathutils import Vector
 
 from . import config
@@ -21,9 +22,22 @@ from .anim_usd_cache_camera_writer import (
     export_camera_anim_usd_cache,
 )
 from .anim_usd_cache_mesh_writer import UsdAnimCacheMeshWriter
+from .anim_usd_cache_points import PointSampleFilter, degenerate_points_reason
+from .anim_usd_cache_subdiv import (
+    SCHEME_NONE,
+    ModifierState,
+    render_subdiv_index,
+    subdiv_baked_in_viewport,
+    subdivision_scheme,
+)
 from .anim_usd_cache_xform_writer import (
+    MatrixXformOpCache,
     author_hierarchy_bind_xforms,
+    evaluated_world_matrices_for_hierarchy,
+    matrix_to_gf,
     resolve_orientation_matrix,
+    usd_xform_from_evaluated_worlds,
+    write_prim_animated_xform,
 )
 from .anim_usd_cache_paths import (
     dedupe_sibling_segment,
@@ -35,7 +49,9 @@ from .anim_usd_cache_paths import (
     namespace_prefix_from_name,
     sanitize_prim_segment,
     segments_to_prim_path,
+    single_top_level_prim_name,
     strip_blender_namespace,
+    uv_primvar_names,
 )
 from .anim_usd_cache_visibility import (
     filter_object_names_for_export,
@@ -129,10 +145,15 @@ class _HierarchyNode:
     prim_path: str
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class _MeshTopology:
-    face_vertex_counts: tuple[int, ...]
-    face_vertex_indices: tuple[int, ...]
+    face_vertex_counts: np.ndarray
+    face_vertex_indices: np.ndarray
+
+    def same_as(self, other: "_MeshTopology") -> bool:
+        return np.array_equal(
+            self.face_vertex_counts, other.face_vertex_counts
+        ) and np.array_equal(self.face_vertex_indices, other.face_vertex_indices)
 
 
 def _setup_logging() -> None:
@@ -1049,34 +1070,94 @@ def _release_evaluated_mesh(obj: bpy.types.Object, needs_clear: bool) -> None:
         pass
 
 
+def _modifier_states(obj: bpy.types.Object) -> list[ModifierState]:
+    return [
+        ModifierState(
+            type=str(mod.type),
+            show_viewport=bool(mod.show_viewport),
+            show_render=bool(mod.show_render),
+            levels=int(getattr(mod, "levels", 1)),
+        )
+        for mod in obj.modifiers
+    ]
+
+
+def _prepare_mesh_subdivision(
+    obj: bpy.types.Object,
+) -> tuple[str, Optional[str], Optional[str]]:
+    """Return (scheme, modifier switched off in the viewport, warning).
+
+    A render Subdivision ending the stack is exported as ``catmullClark`` over its
+    cage, like ``wm.usd_export`` BEST_MATCH: it is switched off in the viewport while
+    the points are evaluated (the caller puts it back). If it cannot be switched off,
+    its subdivided points are kept and the scheme is ``none``.
+    """
+    states = _modifier_states(obj)
+    index = render_subdiv_index(states)
+    if index is None or not subdiv_baked_in_viewport(states[index]):
+        return subdivision_scheme(states), None, None
+    mod = obj.modifiers[index]
+    try:
+        mod.show_viewport = False
+    except Exception as exc:  # linked data without an override, etc.
+        warning = (
+            f"{strip_blender_namespace(obj.name)}: cannot switch off "
+            f"'{mod.name}' in the viewport ({exc}); exported subdivided, scheme none."
+        )
+        return SCHEME_NONE, None, warning
+    return subdivision_scheme(states, viewport_subdiv_disabled=True), mod.name, None
+
+
 def _extract_topology(mesh: bpy.types.Mesh) -> _MeshTopology:
-    face_vertex_counts: list[int] = []
-    face_vertex_indices: list[int] = []
-    for poly in mesh.polygons:
-        face_vertex_counts.append(len(poly.vertices))
-        face_vertex_indices.extend(int(i) for i in poly.vertices)
-    return _MeshTopology(
-        face_vertex_counts=tuple(face_vertex_counts),
-        face_vertex_indices=tuple(face_vertex_indices),
-    )
+    counts = np.empty(len(mesh.polygons), dtype=np.int32)
+    mesh.polygons.foreach_get("loop_total", counts)
+    indices = np.empty(len(mesh.loops), dtype=np.int32)
+    mesh.loops.foreach_get("vertex_index", indices)
+    return _MeshTopology(face_vertex_counts=counts, face_vertex_indices=indices)
+
+
+def _extract_uvs(mesh: bpy.types.Mesh) -> list[tuple[str, np.ndarray]]:
+    """Every UV map as ``(primvar name, (loops, 2) array)``; the render-active one is ``st``."""
+    layers = list(getattr(mesh, "uv_layers", []) or [])
+    if not layers:
+        return []
+    active = next((i for i, uv in enumerate(layers) if getattr(uv, "active_render", False)), 0)
+    names = uv_primvar_names([uv.name for uv in layers], active)
+    out: list[tuple[str, np.ndarray]] = []
+    loops = len(mesh.loops)
+    for name, uv in zip(names, layers):
+        flat = np.empty(loops * 2, dtype=np.float32)
+        uv.uv.foreach_get("vector", flat)
+        out.append((name, flat.reshape(-1, 2)))
+    return out
+
+
+def _extract_corner_normals(mesh: bpy.types.Mesh) -> Optional[np.ndarray]:
+    """Per-corner normals ``(loops, 3)`` in object space (Blender 4.1+ ``corner_normals``)."""
+    corner = getattr(mesh, "corner_normals", None)
+    if corner is None or len(corner) != len(mesh.loops):
+        return None
+    flat = np.empty(len(mesh.loops) * 3, dtype=np.float32)
+    corner.foreach_get("vector", flat)
+    return flat.reshape(-1, 3)
 
 
 def _extract_local_mesh_points(
     mesh: bpy.types.Mesh,
     *,
     unit_scale: float,
-) -> list[Gf.Vec3f]:
+) -> np.ndarray:
     """
-    Evaluated mesh points in object-local space (no axis reorientation).
+    Evaluated mesh points as an ``(N, 3)`` float32 array in object-local space
+    (no axis reorientation).
 
     Lookdev publish applies Z-up → Y-up on Xform ops; points stay object-local.
     """
-    points: list[Gf.Vec3f] = []
-    for vert in mesh.vertices:
-        local = vert.co
-        if unit_scale != 1.0:
-            local = local * unit_scale
-        points.append(vector_to_gf(local))
+    flat = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+    mesh.vertices.foreach_get("co", flat)
+    points = flat.reshape(-1, 3)
+    if unit_scale != 1.0:
+        points = points * np.float32(unit_scale)
     return points
 
 
@@ -1089,13 +1170,10 @@ def _write_publish_meta(
     frame_end: int,
     camera_path: Optional[Path] = None,
 ) -> None:
-    outputs = [
-        {
-            "file": geo_path.name,
-            "type": "geo",
-        }
-        for geo_path in geo_paths
-    ]
+    from monofx_pipeline_common.anim_geo_naming import find_project_root, publish_meta_geo_entry
+
+    project_root = find_project_root(version_dir)
+    outputs = [publish_meta_geo_entry(geo_path.name, project_root) for geo_path in geo_paths]
     if camera_path is not None:
         outputs.append(
             {
@@ -1187,8 +1265,12 @@ class UsdAnimCacheExportSession:
         write_publish_meta: bool = True,
         job_label: str = "",
         camera_filepath: Optional[str] = None,
+        export_uvs: bool = False,
+        export_normals: bool = False,
     ) -> None:
         self.context = context
+        self.export_uvs = bool(export_uvs)
+        self.export_normals = bool(export_normals)
         self.filepath = str(filepath)
         self.frame_start = int(frame_start)
         self.frame_end = int(frame_end)
@@ -1208,6 +1290,7 @@ class UsdAnimCacheExportSession:
         self._current_frame = self.frame_start
         self._initialized = False
         self._finished = False
+        self._begin_error: Optional[str] = None
         self._cancelled = False
         self._step = 0
         self._frames_written = 0
@@ -1224,6 +1307,11 @@ class UsdAnimCacheExportSession:
         self._hierarchy: dict[str, _HierarchyNode] = {}
         self._mesh_prims: dict[str, UsdGeom.Mesh] = {}
         self._reference_topology: dict[str, _MeshTopology] = {}
+        self._point_filters: dict[str, PointSampleFilter] = {}
+        self._normal_filters: dict[str, PointSampleFilter] = {}
+        self._degenerate_warned: set[str] = set()
+        self._xform_filters: dict[str, PointSampleFilter] = {}
+        self._xform_op_cache = MatrixXformOpCache()
         self._depsgraph = None
         self._orient_matrix = None
         self._xform_prims: dict[str, UsdGeom.Xform] = {}
@@ -1231,6 +1319,9 @@ class UsdAnimCacheExportSession:
         self._start_time: Optional[float] = None
         self._mesh_index = 0
         self._frame_depsgraph_ready = False
+        self._subdiv_schemes: dict[str, str] = {}
+        # (object name, modifier name) switched off in the viewport for the export.
+        self._subdiv_viewport_off: list[tuple[str, str]] = []
 
     def _ensure_frame_evaluated(self) -> None:
         if self._scene is None or self._depsgraph is None or self._frame_depsgraph_ready:
@@ -1242,6 +1333,56 @@ class UsdAnimCacheExportSession:
             pass
         self._depsgraph.update()
         self._frame_depsgraph_ready = True
+        self._write_frame_xforms(self._current_frame)
+
+    def _write_frame_xforms(self, frame: int) -> None:
+        """
+        Author each hierarchy prim's transform for *frame*.
+
+        Rigs that animate only object transforms (no point deformation) rely on this;
+        unchanged transforms collapse to a first/last sample via ``PointSampleFilter``.
+        """
+        if self._writer is None or self._depsgraph is None:
+            return
+        names = set(self._hierarchy.keys())
+        worlds = evaluated_world_matrices_for_hierarchy(
+            self._hierarchy, depsgraph=self._depsgraph
+        )
+        for obj_name, node in self._hierarchy.items():
+            if obj_name not in worlds:
+                continue
+            prim = (
+                self._mesh_prims.get(obj_name).GetPrim()
+                if getattr(node, "is_mesh", False) and obj_name in self._mesh_prims
+                else (
+                    self._xform_prims[obj_name].GetPrim()
+                    if obj_name in self._xform_prims
+                    else None
+                )
+            )
+            if prim is None:
+                continue
+            gf = matrix_to_gf(
+                usd_xform_from_evaluated_worlds(
+                    obj_name,
+                    node,
+                    names,
+                    worlds,
+                    orient_matrix=self._orient_matrix,
+                    unit_scale=self._unit_scale,
+                )
+            )
+            arr = np.array(
+                [[gf[r][c] for c in range(4)] for r in range(4)], dtype=np.float64
+            )
+            xform_filter = self._xform_filters.setdefault(obj_name, PointSampleFilter())
+            for sample_frame, sample in xform_filter.push(float(frame), arr):
+                write_prim_animated_xform(
+                    prim,
+                    Gf.Matrix4d(sample.tolist()),
+                    sample_frame,
+                    op_cache=self._xform_op_cache,
+                )
 
     def _advance_frame(self) -> None:
         self._frames_written += 1
@@ -1282,7 +1423,10 @@ class UsdAnimCacheExportSession:
                     topo.face_vertex_counts,
                     topo.face_vertex_indices,
                 )
-            elif topo != self._reference_topology[mesh_obj.name]:
+                if self.export_uvs:
+                    for uv_name, uvs in _extract_uvs(mesh_data):
+                        self._writer.write_uvs(self._mesh_prims[mesh_obj.name], uv_name, uvs)
+            elif not topo.same_as(self._reference_topology[mesh_obj.name]):
                 msg = (
                     f"Frame {frame}: topology changed on "
                     f"{strip_blender_namespace(mesh_obj.name)}"
@@ -1297,14 +1441,71 @@ class UsdAnimCacheExportSession:
                 mesh_data,
                 unit_scale=self._unit_scale,
             )
-            self._writer.write_frame(
-                self._mesh_prims[mesh_obj.name],
-                points,
-                float(frame),
+            reason = degenerate_points_reason(points)
+            if reason and mesh_obj.name not in self._degenerate_warned:
+                self._degenerate_warned.add(mesh_obj.name)
+                names = ", ".join(m.name for m in mesh_obj.modifiers if m.show_viewport) or "none"
+                msg = (
+                    f"Frame {frame}: {strip_blender_namespace(mesh_obj.name)}: {reason}. "
+                    f"Check its modifiers (active: {names})."
+                )
+                self.result.warnings.append(msg)
+                logger.warning(msg)
+            # Static meshes only keep first/last (and every change) samples.
+            point_filter = self._point_filters.setdefault(
+                mesh_obj.name, PointSampleFilter()
             )
+            for sample_frame, sample_points in point_filter.push(float(frame), points):
+                self._writer.write_frame(
+                    self._mesh_prims[mesh_obj.name],
+                    sample_points,
+                    sample_frame,
+                )
+            if self.export_normals:
+                normals = _extract_corner_normals(mesh_data)
+                if normals is not None:
+                    normal_filter = self._normal_filters.setdefault(
+                        mesh_obj.name, PointSampleFilter()
+                    )
+                    for sample_frame, sample in normal_filter.push(float(frame), normals):
+                        self._writer.write_normals(
+                            self._mesh_prims[mesh_obj.name], sample, sample_frame
+                        )
         finally:
             _release_evaluated_mesh(eval_obj, needs_clear)
         return None
+
+    def _flush_point_samples(self) -> None:
+        """Write each mesh's last held frame so the time range is fully covered."""
+        if self._writer is None:
+            return
+        for name, point_filter in self._point_filters.items():
+            prim = self._mesh_prims.get(name)
+            if prim is None:
+                continue
+            for sample_frame, sample_points in point_filter.flush():
+                self._writer.write_frame(prim, sample_points, sample_frame)
+        for name, normal_filter in self._normal_filters.items():
+            prim = self._mesh_prims.get(name)
+            if prim is None:
+                continue
+            for sample_frame, sample in normal_filter.flush():
+                self._writer.write_normals(prim, sample, sample_frame)
+        for name, xform_filter in self._xform_filters.items():
+            prim = (
+                self._mesh_prims[name].GetPrim()
+                if name in self._mesh_prims
+                else (self._xform_prims[name].GetPrim() if name in self._xform_prims else None)
+            )
+            if prim is None:
+                continue
+            for sample_frame, sample in xform_filter.flush():
+                write_prim_animated_xform(
+                    prim,
+                    Gf.Matrix4d(sample.tolist()),
+                    sample_frame,
+                    op_cache=self._xform_op_cache,
+                )
 
     @property
     def elapsed_seconds(self) -> float:
@@ -1382,9 +1583,18 @@ class UsdAnimCacheExportSession:
 
     @property
     def done(self) -> bool:
-        return self._finished or self._cancelled
+        return self._finished or self._cancelled or self._begin_error is not None
 
     def begin(self) -> Optional[str]:
+        """Set the export up; an error ends the session (``done``, ``step`` repeats it)."""
+        err = self._begin()
+        if err:
+            self._begin_error = err
+            self.result.ok = False
+            self.result.error = err
+        return err
+
+    def _begin(self) -> Optional[str]:
         _setup_logging()
 
         self._mesh_objects = (
@@ -1422,7 +1632,12 @@ class UsdAnimCacheExportSession:
             else None
         )
         self._prev_frame = int(self._scene.frame_current)
-        self._orient_matrix = resolve_orientation_matrix(self.context)
+        # resolve_orientation_matrix returns the transposed axis conversion (the form
+        # ``wm.usd_export`` applies to a column-vector matrix). matrix_to_gf now does the
+        # row-vector transpose itself, so hand it the plain axis conversion; this keeps
+        # identity-transform rigs identical while rooted/translated rigs get the right
+        # translation and rotation.
+        self._orient_matrix = resolve_orientation_matrix(self.context).transposed()
         self._unit_scale = meters_scale_from_scene(self._scene)
         self._hierarchy = _collect_hierarchy_nodes(
             self._mesh_objects,
@@ -1452,11 +1667,13 @@ class UsdAnimCacheExportSession:
         )
 
         try:
+            self._prepare_subdivision()
             if self._mesh_objects:
                 self._stage = Usd.Stage.CreateNew(str(out_path))
                 UsdGeom.SetStageUpAxis(self._stage, UsdGeom.Tokens.y)
                 UsdGeom.SetStageMetersPerUnit(self._stage, 1.0)
                 self._stage.SetTimeCodesPerSecond(self.fps)
+                self._stage.SetFramesPerSecond(self.fps)
                 self._stage.SetStartTimeCode(float(self.frame_start))
                 self._stage.SetEndTimeCode(float(self.frame_end))
 
@@ -1464,13 +1681,33 @@ class UsdAnimCacheExportSession:
                 self._xform_prims = {}
                 for node in self._hierarchy.values():
                     if node.is_mesh:
-                        self._mesh_prims[node.obj_name] = self._writer.define_mesh(
-                            node.prim_path
+                        mesh_prim = self._writer.define_mesh(node.prim_path)
+                        self._writer.write_subdivision_scheme(
+                            mesh_prim,
+                            self._subdiv_schemes.get(node.obj_name, SCHEME_NONE),
                         )
+                        self._mesh_prims[node.obj_name] = mesh_prim
                     else:
                         self._xform_prims[node.obj_name] = UsdGeom.Xform.Define(
                             self._stage, node.prim_path
                         )
+
+                # Solaris Reference/Sublayer need a defaultPrim to attach the layer.
+                default_name = single_top_level_prim_name(
+                    node.prim_path for node in self._hierarchy.values()
+                )
+                default_prim = (
+                    self._stage.GetPrimAtPath(f"/{default_name}")
+                    if default_name
+                    else None
+                )
+                if default_prim is not None and default_prim.IsValid():
+                    self._stage.SetDefaultPrim(default_prim)
+                else:
+                    logger.warning(
+                        "No single top-level prim; defaultPrim not set on %s",
+                        out_path,
+                    )
 
                 author_hierarchy_bind_xforms(
                     context=self.context,
@@ -1480,6 +1717,7 @@ class UsdAnimCacheExportSession:
                     frame=self.frame_start,
                     orient_matrix=self._orient_matrix,
                     unit_scale=self._unit_scale,
+                    op_cache=self._xform_op_cache,
                 )
             else:
                 self._stage = None
@@ -1512,12 +1750,41 @@ class UsdAnimCacheExportSession:
             return None
         except Exception as exc:
             logger.exception("USD anim cache export setup failed")
+            self._restore_subdivision()
             return str(exc)
+
+    def _prepare_subdivision(self) -> None:
+        """Pick each mesh's subdivisionScheme; switch render Subdivisions to their cage."""
+        for obj in self._mesh_objects:
+            scheme, switched_off, warning = _prepare_mesh_subdivision(obj)
+            self._subdiv_schemes[obj.name] = scheme
+            if switched_off:
+                self._subdiv_viewport_off.append((obj.name, switched_off))
+            if warning:
+                self.result.warnings.append(warning)
+                logger.warning(warning)
+
+    def _restore_subdivision(self) -> None:
+        """Switch the Subdivisions turned off by ``_prepare_subdivision`` back on."""
+        for obj_name, mod_name in self._subdiv_viewport_off:
+            obj = bpy.data.objects.get(obj_name)
+            mod = obj.modifiers.get(mod_name) if obj is not None else None
+            if mod is None:
+                continue
+            try:
+                mod.show_viewport = True
+            except Exception as exc:
+                logger.warning("Cannot switch %s on again on %s: %s", mod_name, obj_name, exc)
+        self._subdiv_viewport_off = []
 
     def step(self, *, units_per_tick: int = 1, frames_per_tick: int = 1) -> Optional[str]:
         del frames_per_tick  # legacy alias; export is mesh-unit based now
-        if self._cancelled or self._finished or not self._initialized:
+        if self._begin_error is not None:
+            return self._begin_error
+        if self._cancelled or self._finished:
             return None
+        if not self._initialized:
+            return "Export session is not initialized."
         if self._scene is None or self._depsgraph is None:
             return "Export session is not initialized."
         if self._writer is None and not self._mesh_objects and self._camera_obj is None:
@@ -1590,12 +1857,15 @@ class UsdAnimCacheExportSession:
     def finish(self) -> UsdAnimCacheExportResult:
         if self._cancelled:
             return self.result
+        if self._begin_error is not None:
+            return self.result
         if not self._initialized or self._out_path is None:
             self.result.error = "Export session is not initialized."
             return self.result
 
         try:
             if self._stage is not None:
+                self._flush_point_samples()
                 self._stage.GetRootLayer().Save()
             if self._camera_obj is not None and self.export_camera:
                 cam_err = self._export_camera_via_blender_usd()
@@ -1658,6 +1928,7 @@ class UsdAnimCacheExportSession:
                 pass
 
     def _restore_frame(self) -> None:
+        self._restore_subdivision()
         if self._scene is None or self._prev_frame is None:
             return
         try:
@@ -1668,7 +1939,7 @@ class UsdAnimCacheExportSession:
 
 
 class UsdAnimCacheMultiExportSession:
-    """Queue one USD file per linked rig (Maya-style), camera on the last job."""
+    """Queue one USD file per linked rig, camera on the last job."""
 
     def __init__(
         self,
@@ -1682,8 +1953,12 @@ class UsdAnimCacheMultiExportSession:
         strict_topology: bool = True,
         export_camera: bool = True,
         camera_filepath: Optional[str] = None,
+        export_uvs: bool = False,
+        export_normals: bool = False,
     ) -> None:
         self.context = context
+        self.export_uvs = bool(export_uvs)
+        self.export_normals = bool(export_normals)
         self.jobs = list(jobs)
         self.frame_start = int(frame_start)
         self.frame_end = int(frame_end)
@@ -1700,6 +1975,7 @@ class UsdAnimCacheMultiExportSession:
         self._job_index = 0
         self._session: Optional[UsdAnimCacheExportSession] = None
         self._finished = False
+        self._begin_error: Optional[str] = None
         self._cancelled = False
         self._completed_steps = 0
         self._total_steps = 1
@@ -1741,6 +2017,8 @@ class UsdAnimCacheMultiExportSession:
             export_camera=self._is_last_job() and self._export_camera,
             write_publish_meta=False,
             job_label=job.publish_name,
+            export_uvs=self.export_uvs,
+            export_normals=self.export_normals,
             camera_filepath=(
                 str(self._camera_filepath_override)
                 if self._is_last_job() and self._camera_filepath_override is not None
@@ -1803,9 +2081,18 @@ class UsdAnimCacheMultiExportSession:
 
     @property
     def done(self) -> bool:
-        return self._finished or self._cancelled
+        return self._finished or self._cancelled or self._begin_error is not None
 
     def begin(self) -> Optional[str]:
+        """Set the export up; an error ends the session (``done``, ``step`` repeats it)."""
+        err = self._begin()
+        if err:
+            self._begin_error = err
+            self.result.ok = False
+            self.result.error = err
+        return err
+
+    def _begin(self) -> Optional[str]:
         if not PXR_AVAILABLE:
             return "OpenUSD (pxr) is not available in this Blender build."
         if not self.jobs:
@@ -1826,6 +2113,8 @@ class UsdAnimCacheMultiExportSession:
 
     def step(self, *, units_per_tick: int = 1, frames_per_tick: int = 1) -> Optional[str]:
         del frames_per_tick
+        if self._begin_error is not None:
+            return self._begin_error
         if self._cancelled or self._finished:
             return None
         if self._session is None:
@@ -1859,10 +2148,17 @@ class UsdAnimCacheMultiExportSession:
         if self._job_index >= len(self.jobs):
             self._finished = True
             return None
-        return self._start_current_job()
+        err = self._start_current_job()
+        if err:
+            self._begin_error = err
+            self.result.ok = False
+            self.result.error = err
+        return err
 
     def finish(self) -> UsdAnimCacheExportResult:
         if self._cancelled:
+            return self.result
+        if self._begin_error is not None:
             return self.result
         if not self._finished or not self._completed_geo_paths:
             self.result.error = "Export session did not complete."

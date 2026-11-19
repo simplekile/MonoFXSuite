@@ -1,5 +1,5 @@
 """
-Camera naming aligned with Maya USD Publish (``cam_`` + leaf) and Houdini ``cam_*.usd`` scan.
+Camera naming (``cam_`` + leaf) aligned with the Houdini ``cam_*.usd`` scan.
 
 Primary camera per shot: ``cam_{shot}`` (e.g. ``cam_sh010``).
 Additional cameras: ``cam_{shot}_02``, ``cam_{shot}_03``, …
@@ -24,7 +24,7 @@ _SHOT_TOKEN_RE = re.compile(r"^(sh)(\d+)([a-z0-9]*)$", re.IGNORECASE)
 
 def normalize_shot_token(shot: str) -> str:
     """
-    Normalize shot token like Maya ``_shot_token_from_scene_path`` (``sh1`` → ``sh001``).
+    Normalize a shot token (``sh1`` → ``sh001``).
     """
     token = (shot or "shot").strip().lower()
     m = _SHOT_TOKEN_RE.match(token)
@@ -255,7 +255,7 @@ def usd_camera_basename(cam_object_name: str) -> str:
     """
     Published USD filename stem.
 
-    Object ``cam_sh010`` → ``cam_sh010`` (Maya/Houdini).
+    Object ``cam_sh010`` → ``cam_sh010``.
   Legacy object ``sh010_01`` → ``cam_sh010``.
     """
     leaf = (cam_object_name or "").strip()
@@ -296,7 +296,7 @@ def resolve_camera_usd_basename(
 
 def usd_basename_from_camera_leaf(leaf: str, *, prefix: str = "cam_") -> str:
     """
-    Maya USD Publish rule: ``prefix + leaf``, without doubling when *leaf* already
+    ``prefix + leaf``, without doubling when *leaf* already
     starts with *prefix* (e.g. leaf ``cam_sh010`` → ``cam_sh010``).
     """
     body = (leaf or "").strip()

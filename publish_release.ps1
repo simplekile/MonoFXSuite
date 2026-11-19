@@ -1,6 +1,8 @@
-# MonoFX Suite — publish GitHub Release
-# Chạy từ repo root. Cần: VERSION đã đúng, đã build installer, đã tag và push tag.
-# Prerequisite: GitHub CLI (gh), đã gh auth login
+# MonoFX Suite - publish GitHub Release
+# Run from the repo root. Needs: VERSION right, installer built, tag created and pushed.
+# Keep this file ASCII: PowerShell 5.1 reads a file without BOM as ANSI, and Vietnamese text inside a string
+# turned into quote marks that swallowed the lines setting the release notes (empty notes v0.1.24-v0.1.31).
+# Prerequisite: GitHub CLI (gh), gh auth login done
 
 $ErrorActionPreference = "Stop"
 $ProjectRoot = $PSScriptRoot
@@ -9,26 +11,18 @@ $ChangelogPath = Join-Path $ProjectRoot "docs\changelog.md"
 $ExePath = Join-Path $ProjectRoot "build\output\MonoFXSuite_Setup.exe"
 $OutputDir = Join-Path $ProjectRoot "build\output"
 
-function Get-BlenderAddonZipPath {
-    $zip = Get-ChildItem -Path $OutputDir -Filter "monofx_pipeline_blender_v*.zip" -ErrorAction SilentlyContinue |
-        Sort-Object LastWriteTime -Descending |
-        Select-Object -First 1
-    if ($zip) { return $zip.FullName }
-    return $null
-}
-
 if (-not (Test-Path $VersionFile)) {
-    Write-Error "Không tìm thấy file VERSION tại: $VersionFile"
+    Write-Error "VERSION file not found: $VersionFile"
     exit 1
 }
 
 $Version = (Get-Content $VersionFile -Raw -Encoding UTF8).Trim()
 $Tag = "v$Version"
 
-# Kiểm tra tag đã tồn tại và đã push
+# The tag must exist (and be pushed)
 $tagExists = git tag -l $Tag 2>$null
 if (-not $tagExists) {
-    Write-Host "Tag $Tag chưa tồn tại. Tạo và push tag trước:"
+    Write-Host "Tag $Tag does not exist. Create and push it first:"
     Write-Host "  git tag -a $Tag -m `"Release $Tag`""
     Write-Host "  git push origin $Tag"
     exit 1
@@ -63,28 +57,35 @@ try {
         exit 1
     }
 
-    $BlenderZipPath = Get-BlenderAddonZipPath
-    if (-not $BlenderZipPath) {
-        Write-Error "Blender add-on ZIP not found in build\output. Run .\build\build.ps1 (builds installer + Blender ZIP)."
-        exit 1
-    }
-
+    # The installer only: it installs the Blender add-on too, and the add-on's Check for Updates offers it
     Write-Host "Creating GitHub Release: $Tag"
-    Write-Host "Assets: MonoFXSuite_Setup.exe, $(Split-Path $BlenderZipPath -Leaf)"
+    Write-Host "Assets: MonoFXSuite_Setup.exe"
     # --notes-file must be absolute path on Windows for gh to read correctly
     $NotesPathFull = [System.IO.Path]::GetFullPath($NotesPath)
-    gh release create $Tag --notes-file $NotesPathFull $ExePath $BlenderZipPath
+    # Create with the notes only, then upload the assets: created together, gh left the body empty
+    # (v0.1.24, v0.1.25, v0.1.29, v0.1.30), and an edit straight after did not stick either.
+    gh release create $Tag --title $Tag --notes-file $NotesPathFull
     if ($LASTEXITCODE -ne 0) {
         Write-Host "Release may already exist. Try: gh release delete $Tag then run again."
         exit 1
     }
-    # gh has left the body empty after creating with assets (v0.1.24, v0.1.25): check, and set it again
-    $bodyLength = gh release view $Tag --json body --jq ".body | length"
-    if ($LASTEXITCODE -ne 0 -or [int]$bodyLength -eq 0) {
-        gh release edit $Tag --notes-file $NotesPathFull | Out-Null
-        $bodyLength = gh release view $Tag --json body --jq ".body | length"
-        if ([int]$bodyLength -eq 0) { Write-Host "Release notes are still empty: gh release edit $Tag --notes-file RELEASE_NOTES.md" }
+    gh release upload $Tag $ExePath
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "Asset upload failed: gh release upload $Tag `"$ExePath`" --clobber"
+        exit 1
     }
+    # Check the body; set it again (a few tries, GitHub can lag) if it came out empty
+    $bodyLength = 0
+    for ($i = 0; $i -lt 4; $i++) {
+        if ($i -gt 0) {
+            Start-Sleep -Seconds 3
+            gh release edit $Tag --notes-file $NotesPathFull | Out-Null
+            Start-Sleep -Seconds 2
+        }
+        $bodyLength = gh release view $Tag --json body --jq ".body | length"
+        if ($LASTEXITCODE -eq 0 -and [int]$bodyLength -gt 0) { break }
+    }
+    if ([int]$bodyLength -eq 0) { Write-Host "Release notes are still empty: gh release edit $Tag --notes-file RELEASE_NOTES.md" }
     $url = "https://github.com/simplekile/MonoFXSuite/releases/tag/" + $Tag
     Write-Host "Done. Release: $url"
 }

@@ -145,6 +145,8 @@ from . import geo_usd_publish_list
 from . import geo_usd_publish_paths_ui
 from . import anim_camera
 from . import scene_version
+from . import department
+from . import rig_publish
 from monofx_pipeline_common.version_description_presets import DEPARTMENT_ENUM_ITEMS
 from . import keymaps
 from . import addon_updater
@@ -153,7 +155,7 @@ from . import addon_updater
 bl_info = {
     "name": "MonoFX Pipeline Blender",
     "author": "MonoFXSuite",
-    "version": (0, 9, 132),
+    "version": (0, 9, 146),
     "blender": (5, 0, 0),
     "location": "View3D > Sidebar > MonoFX",
     "description": (
@@ -330,8 +332,11 @@ def sync_asset_name_from_scene(props) -> None:
 
 
 def sync_auto_publish_output(props) -> None:
-    """Keep NEXT mode aligned with the latest publish folder scan."""
-    if str(getattr(props, "geo_usd_version_mode", "NEXT") or "NEXT") != "NEXT":
+    """Keep NEXT / FILE modes aligned with publish folders and the open work file."""
+    if str(getattr(props, "geo_usd_version_mode", "FILE") or "FILE") not in (
+        "NEXT",
+        "FILE",
+    ):
         return
     sync_geo_publish_output(props)
 
@@ -758,6 +763,12 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         default=True,
     )
     clean_mesh_report: StringProperty(default="")
+    rig_publish_status: StringProperty(
+        name="Rig Publish Status",
+        description="Last rig publish message shown in the Rig panel",
+        default="",
+    )
+    rig_publish_ok: BoolProperty(default=False)
     publish_status_report: StringProperty(
         name="Publish Status",
         description="Last successful publish message shown in the UI",
@@ -834,11 +845,12 @@ class MonoFXProperties(bpy.types.PropertyGroup):
     geo_usd_version_mode: EnumProperty(
         name="Version Mode",
         items=[
+            ("FILE", "File", "Publish version = version suffix of the open .blend"),
             ("MANUAL", "Manual", "Pick an existing publish version folder"),
             ("CURRENT", "Current", "Latest existing publish version folder"),
             ("NEXT", "Next", "Next publish folder after the latest existing one"),
         ],
-        default="NEXT",
+        default="FILE",
         update=_mono_fx_on_geo_usd_version_mode,
     )
     geo_usd_manual_version: IntProperty(
@@ -1001,8 +1013,16 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         description="USD root prim path for wm.usd_export (e.g. / or /Asset)",
         default=config.DEFAULT_USD_ROOT_PRIM_PATH,
     )
-    export_uvmaps: BoolProperty(default=True)
-    export_normals: BoolProperty(default=True)
+    export_uvmaps: BoolProperty(
+        name="UV Maps",
+        description="Write the meshes' UV maps into the published USD",
+        default=True,
+    )
+    export_normals: BoolProperty(
+        name="Normals",
+        description="Write the meshes' normals into the published USD",
+        default=True,
+    )
     export_materials: BoolProperty(default=True)
     generate_preview_surface: BoolProperty(
         name="USD Preview Surface Network",
@@ -1530,11 +1550,12 @@ class MonoFXProperties(bpy.types.PropertyGroup):
     anim_usd_version_mode: EnumProperty(
         name="Version Mode",
         items=[
+            ("FILE", "File", "Publish version = version suffix of the open .blend"),
             ("MANUAL", "Manual", "Pick an existing publish version folder"),
             ("CURRENT", "Current", "Latest existing publish version folder"),
             ("NEXT", "Next", "Next publish folder after the latest existing one"),
         ],
-        default="NEXT",
+        default="FILE",
         update=anim_usd_cache_ui._on_anim_usd_version_mode,
     )
     anim_usd_manual_version: IntProperty(
@@ -1573,6 +1594,19 @@ class MonoFXProperties(bpy.types.PropertyGroup):
         name="Root Prim",
         description="Optional root prim name override (e.g. Char). Leave empty to use Blender root object name",
         default="",
+    )
+    anim_usd_export_uvs: BoolProperty(
+        name="UV Maps",
+        description="Write the meshes' UV maps into the anim USD (once, not per frame)",
+        default=False,
+    )
+    anim_usd_export_normals: BoolProperty(
+        name="Normals",
+        description=(
+            "Write the meshes' normals into the anim USD on every frame "
+            "(about 5x the file size)"
+        ),
+        default=False,
     )
     anim_usd_merge_by_link: BoolProperty(
         name="Merge Same Link",
@@ -1702,11 +1736,12 @@ def _plan_collections_publish_jobs(
         return False, [], "Scene is not saved. Save the .blend file first."
 
     jobs: list[_CollectionPublishJob] = []
-    for col in collections:
-        objs = objects_in_collection_for_export(col)
-        if not objs:
-            continue
-        base = publish_paths.collection_publish_usd_basename(scene_path, col.name)
+    exportable = [(col, objects_in_collection_for_export(col)) for col in collections]
+    exportable = [(col, objs) for col, objs in exportable if objs]
+    for col, objs in exportable:
+        base = publish_paths.collection_publish_usd_basename(
+            scene_path, col.name, only_collection=len(exportable) == 1
+        )
         jobs.append(
             _CollectionPublishJob(
                 output_path=str(out_dir / f"{base}.usd"),
@@ -1758,6 +1793,7 @@ def _run_usd_export(props, objs: list, out_path: str) -> None:
         generate_materialx_network=props.generate_materialx_network,
         export_lights=props.export_lights,
         export_cameras=props.export_cameras,
+        asset_kind="component",
         export_objects=objs,
         convert_orientation=props.convert_orientation,
         export_global_forward_selection=props.export_forward_axis,
@@ -1855,7 +1891,9 @@ def _plan_publish_jobs_from_list(
         )
         if not ok_objs:
             return False, None, None, None, err_objs
-        base = publish_paths.collection_publish_usd_basename(scene_path, item.object_name)
+        base = publish_paths.collection_publish_usd_basename(
+            scene_path, item.object_name, only_collection=len(enabled_items) == 1
+        )
         jobs.append(
             _CollectionPublishJob(
                 output_path=str(out_dir / f"{base}.usd"),
@@ -2961,8 +2999,13 @@ def _format_publish_plan_lines(
     return lines
 
 
-def _summarize_publish_plan(context: Context, props) -> tuple[bool, list[str], str]:
-    sync_geo_publish_output(props)
+def _summarize_publish_plan(
+    context: Context, props, *, sync: bool = True
+) -> tuple[bool, list[str], str]:
+    # ``sync`` writes scene properties, which Blender forbids while drawing: draw() passes False
+    # (invoke() has already synced just before the dialog opens).
+    if sync:
+        sync_geo_publish_output(props)
     ok_list, jobs, objs, out_path, err_list = _plan_publish_jobs_from_list(context, props)
     if ok_list:
         if jobs is not None:
@@ -2992,7 +3035,7 @@ def _summarize_publish_plan(context: Context, props) -> tuple[bool, list[str], s
 
 def _draw_publish_confirm_dialog(layout: bpy.types.UILayout, context: Context) -> None:
     props = _pipeline_props(context)
-    ok, lines, err = _summarize_publish_plan(context, props)
+    ok, lines, err = _summarize_publish_plan(context, props, sync=False)
     col = layout.column(align=True)
     if not ok:
         col.label(text=err or "Nothing to publish.", icon="ERROR")
@@ -3004,6 +3047,12 @@ def _draw_publish_confirm_dialog(layout: bpy.types.UILayout, context: Context) -
         if line.startswith("  "):
             row.scale_y = 0.9
         row.label(text=line.strip())
+    layout.separator()
+    inc = layout.column(align=True)
+    inc.label(text="Include", icon="MESH_DATA")
+    row = inc.row(align=True)
+    row.prop(props, "export_uvmaps", toggle=True)
+    row.prop(props, "export_normals", toggle=True)
 
 
 def _execute_publish_usd(op: Operator, context: Context) -> set[str]:
@@ -3547,8 +3596,15 @@ class MONOFX_PT_model(Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "MonoFX"
+    # A sub-panel of Scene: it always sits under the department switch. As a panel of its own,
+    # showing / hiding it reordered the tab and moved the switch from under the cursor.
+    bl_parent_id = "MONOFX_PT_scene"
     bl_order = 0
     bl_description = "Geo preparation, USD bake, and Geo USD publish"
+
+    @classmethod
+    def poll(cls, context: Context) -> bool:
+        return department.shows(context, "MODEL")
 
     def draw(self, context: Context) -> None:
         prefs = preferences.get_addon_prefs(context)
@@ -3571,8 +3627,15 @@ class MONOFX_PT_anim(Panel):
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "MonoFX"
-    bl_order = 1
+    # A sub-panel of Scene: it always sits under the department switch. As a panel of its own,
+    # showing / hiding it reordered the tab and moved the switch from under the cursor.
+    bl_parent_id = "MONOFX_PT_scene"
+    bl_order = 2
     bl_description = "Animation tools, rig linking, and USD publish"
+
+    @classmethod
+    def poll(cls, context: Context) -> bool:
+        return department.shows(context, "ANIM")
 
     def draw(self, context: Context) -> None:
         prefs = preferences.get_addon_prefs(context)
@@ -3589,6 +3652,26 @@ class MONOFX_PT_anim(Panel):
             rig_ui.draw_rig_link_tab(layout, context)
         elif prefs.ui_anim_tab == "USD":
             _draw_anim_publish(layout, context)
+
+
+class MONOFX_PT_rig(Panel):
+    bl_label = "Rig"
+    bl_idname = "MONOFX_PT_rig"
+    bl_space_type = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_category = "MonoFX"
+    # A sub-panel of Scene: it always sits under the department switch. As a panel of its own,
+    # showing / hiding it reordered the tab and moved the switch from under the cursor.
+    bl_parent_id = "MONOFX_PT_scene"
+    bl_order = 1
+    bl_description = "Rig publish for Anim > Link"
+
+    @classmethod
+    def poll(cls, context: Context) -> bool:
+        return department.shows(context, "RIG")
+
+    def draw(self, context: Context) -> None:
+        rig_publish.draw_rig_publish(self.layout, context)
 
 
 classes = (
@@ -3649,7 +3732,9 @@ classes = (
     *scene_version.SCENE_VERSION_CLASSES,
     *anim_usd_cache_ops.ANIM_USD_OPERATOR_CLASSES,
     *anim_ops.ANIM_OPERATOR_CLASSES,
+    *rig_publish.CLASSES,
     MONOFX_PT_model,
+    MONOFX_PT_rig,
     anim_ui.MONOFX_PT_sine_amp_ramp,
     MONOFX_PT_anim,
     *rig_linking.RIG_OPERATOR_CLASSES,
@@ -3791,6 +3876,7 @@ def _safe_register_class(cls) -> None:
 
 def register() -> None:
     rig_ui.init_previews()
+    department.register()
     for cls in classes:
         _safe_register_class(cls)
     bpy.types.VIEW3D_MT_object_context_menu.append(rig_ui.draw_rig_context_menu)
@@ -3832,6 +3918,7 @@ def unregister() -> None:
     except Exception:
         pass
     rig_ui.clear_previews()
+    department.unregister()
     for handler, event in (
         (_mono_fx_on_load_post, bpy.app.handlers.load_post),
         (_mono_fx_on_save_post, bpy.app.handlers.save_post),

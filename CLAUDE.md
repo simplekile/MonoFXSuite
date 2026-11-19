@@ -1,5 +1,8 @@
 # MonoFXSuite
 
+- Hosts: Houdini and Blender. Maya is no longer supported (the user's decision, 2026-11-17): its
+  tools and `apps/maya` were removed; do not add Maya code back. Shared rig library defaults are Blender's.
+
 ## Auto Material (Houdini, `tools/fx/auto_material/` + `apps/houdini/solaris_adapter.py`)
 
 - Texture names follow Monos Painter publishes: `{set}_{name}_{colorspace}.{UDIM}.{ext}`. The colour
@@ -112,6 +115,10 @@
 - Painter writes `<UDIM>` for a texture set on several tiles and the first tile (`.1001`) for a set on
   one; both become `.<UDIM>`. Its `colorSpace` metadata is always `raw`, so the colour space comes
   from the name's last token (ACEScg, Raw, sRGB, Linear), like the folder scan.
+- Fix colorspace (action bar, a Material Library selected in `/stage`): fills an empty `filecolorspace`
+  on every `mtlximage` from the file name's last token (`logic.colorspace_from_filename`,
+  `solaris_adapter.fix_empty_texture_colorspaces`), for materials Houdini converted from a USD, which
+  leaves it empty. A value already there is never changed; one undo step.
 - UDIM paths use `<UDIM>` (MaterialX / USD), for the folder scan too. Houdini writes a parm's
   `%(UDIM)d` verbatim into the stage, which other USD readers do not resolve. Materials built before
   with `%(UDIM)d` move to `<UDIM>` on the next Create / Update, even with no version change
@@ -147,11 +154,362 @@
   textures in LOP, base-colour materials for other images, frame-sequence collapse. `tools.fx.drag_drop` imports Qt only in `run()`, so the
   drop handler and tests read prefs without Qt.
 
+## Installer and Monos (`build/installer/MonoFXSuite.iss`, `build/build.ps1`)
+
+- Monos reads the installed MonoFX version from `tools/MonoFXSuite/VERSION` beside its exe, the folder in
+  `%LOCALAPPDATA%\Monos\install_path.txt`, then `%LOCALAPPDATA%\Monos\tools\MonoFXSuite\VERSION`; the
+  installer writes the last one (always writable, removed on uninstall). The old `MonoStudio\install_path.txt`
+  path is kept for MonoStudio.
+- Task `blenderaddon` installs the Blender add-on like Monos installs its extensions: Blender itself turns it on
+  (`blender -b --python-exit-code 3 --python-expr "assert addon_utils.enable(...); save_userpref()"`, no
+  `--factory-startup`, which would save factory prefs over the user's). It stays a legacy add-on in
+  `%APPDATA%\Blender Foundation\Blender\X.Y\scripts\addons`: as an extension its module would become
+  `bl_ext.user_default.monofx_pipeline_blender` and lose its saved preferences and the scripts importing it.
+  Every `Program Files\Blender Foundation\Blender X.Y\blender.exe` with X >= 5 (bl_info "blender": (5, 0, 0)).
+  `build.ps1` runs the add-on's own build first: that vendors `monofx_pipeline_common` into the add-on folder the
+  installer ships, and stamps the suite's VERSION there as `SUITE_VERSION` (git-ignored).
+- A release ships only `MonoFXSuite_Setup.exe` (the user's call, 2026-11-19): the add-on ZIP is no longer published,
+  the Setup installs Blender too. The add-on's Check for Updates (`addon_updater`, logic in bpy-free `suite_updates`)
+  compares the installed suite's version (the add-on folder's `SUITE_VERSION`, else the installer's VERSION for Monos
+  under `%LOCALAPPDATA%`) with the latest release tag and offers Download MonoFX Setup, which fetches the installer and
+  starts it (close Blender, then finish it). `bl_info`'s version no longer decides: releases never moved it, so the
+  old ZIP updater always said up to date (0.9.146 from v0.1.35 to v0.1.37).
+
+## Blender add-on USD publish (`tools/fx/monofx_pipeline_blender/`)
+
+- Model publish leaves materials where Blender 5.2 writes them, `/_materials` at the stage root (the user's
+  decision, 2026-11-17): a move into `/<defaultPrim>/material` shipped in v0.1.26-v0.1.27 and was taken out.
+  Whoever wants materials inside the root prim adds the root prim in Blender and exports as usual.
+- After `wm.usd_export`, `transform.usd_export` stamps the scene fps (`usd_stage_fps.stamp_fps`: a static
+  export keeps 24, and a Houdini Sublayer LOP copies it over the hip's fps) and, for a model publish
+  (`asset_kind="component"` from `_run_usd_export`), marks the default prim `kind = component`
+  (`usd_asset_kind`; not over a kind already there, not above a grouping kind). Neither ever fails the export.
+  Both open the file with `Sdf.Layer.FindOrOpen` + `Reload(force=True)`: a layer still open in the session
+  is the one from before the export, and a plain `Reload()` skips a file rewritten in the same second.
+  Their tests need pxr: run them with hython (pytest skips them).
+- Publish file names (`publish_paths.collection_publish_usd_basename`): one collection -> the plain
+  `<asset>_<task>_publish.usd`; several -> the collection name after `publish`, words joined with a
+  capital each (`char_Helen_uv_publish_GeoHelen.usd`).
+- Version mode File (default for new scenes): the publish version is the open work file's `_vNNN`.
+- Anim USD caches points only by default (subdivision scheme: next note); per-frame normals cost
+  ~5x the file size (Helen 313 MB -> 1.53 GB). The confirm dialog's Include row (and the settings) turns on
+  UV maps (`anim_usd_export_uvs`: face-varying primvars at default time, the render-active map named `st`,
+  `uv_primvar_names`) and normals (`anim_usd_export_normals`: face-varying, per frame, through the same
+  `PointSampleFilter`); both off unless the artist picks them (the user's call, 2026-11-19). Model publish has
+  the same Include row (`export_uvmaps` / `export_normals`), both on by default (the user's call). Static meshes and transforms keep only first/last samples
+  (`PointSampleFilter`); a layer with one top-level prim sets it as `defaultPrim`.
+- Every anim USD mesh authors `subdivisionScheme` (USD's fallback is catmullClark: Houdini GL subdivided
+  sh025 to >45 GB). Rule (`anim_usd_cache_subdiv`, Blender's `wm.usd_export` BEST_MATCH, which model
+  publishes already use and which writes the scheme on every mesh): a render-enabled Subdivision Surface
+  ending the stack -> `catmullClark`, else `none` (Multires too). The cache evaluates the viewport
+  depsgraph, so that Subdivision is switched off in the viewport for the export (cage points, no double
+  subdivision) and back on in `_restore_frame`; if it cannot be switched off the points stay subdivided
+  and the scheme is `none`. Check in Blender: `tests/blender/accept_anim_usd_subdiv.py`.
+- `draw()` never writes scene properties (Blender 5.2 raises "Writing to ID classes in this context is not
+  allowed"): `_summarize_publish_plan(..., sync=False)` from draw, sync only in `invoke`.
+
+## Blender add-on tab and rig publish (`department.py`, `rig_publish.py`)
+
+- The MonoFX tab shows one department's panel (the user's pick, 2026-11-19: the tab held too much):
+  Auto reads it from the .blend's folder (`publish_paths.department_from_scene`: `NN_modelling` Model,
+  `NN_rigging` Rig, `NN_anim` Anim), the Scene panel's switch picks another. The pick is a WindowManager
+  property: not saved in the file, back to Auto in a new session. No department in the path -> Model and Anim.
+  Model / Rig / Anim are sub-panels of Scene (`bl_parent_id = "MONOFX_PT_scene"`): as panels of their own,
+  showing one and hiding another reordered the tab (partly by the order saved in the file), Scene jumped
+  above / below, and the switch moved from under the cursor, so a click (or Blender's drag over enum buttons)
+  landed on another department (the user's report, 2026-11-19).
+  One row, no hint line: `Auto (Rig) | Model | Rig | Anim` (`prop_enum` with the found department in Auto's text).
+  The add-on version shows on the Scene panel's header only. Save Version's last message is stored in the scene,
+  so it shows only while it names the open file (`_report_is_for_open_file`: v004 showed "Saved ..._v002").
+- Rig publish (the user's pick: a cleaned .blend): `<asset>/02_rigging/<NN_task>/publish/vNNN/<asset>_rig_publish.blend`,
+  next version, the folder and name Anim > Link scans (`rig_library`: `_rig_` and `_publish` in the stem). The
+  work file must hold exactly one publish collection (`is_publish_collection_name`: `_publish` or `-publish`,
+  e.g. `CHAR_ATA_RIG_PUBLISH`) with an armature; Link links that collection. The session is saved as a copy
+  (`.partial`, not scanned) in the version folder so relative paths stay right, then `blender -b --factory-startup`
+  keeps only that collection in the scene, drops other scenes, purges orphans (custom shapes stay: bones use them),
+  makes paths relative and saves the final name without `.blend1`. The open file is never changed; a failure
+  removes what it made. Before this, riggers saved publishes by hand (char_Ata v001-v005).
+
 ## MONO Grooming (Houdini, `tools/fx/grooming/` + `apps/houdini/grooming_adapter.py`)
 
 - Notes live in `tools/fx/grooming/CLAUDE.md`, the contract in `docs/plans/grooming_v0_1.md`. Read both
   before working on the grooming tool, its adapter, its HDA build or the `grooming-check` skill, and add
   new grooming notes there, not here.
+
+## Mono Anim Loader 2.2 (Houdini, `tools/fx/anim_loader/` + `apps/houdini/anim_loader_adapter.py`)
+
+- Spec and decisions: `docs/plans/anim_loader_v2_2.md` (spikes S1/S2 in its section 6); plan
+  `docs/plans/anim_loader_v2_2_plan.md`. LOP HDA `mono_anim_loader::2.2` built by `tools/fx/anim_loader/build_hda.py`
+  into `otls/mono_anim_loader.hdalc`; its PythonModule only imports the adapter. 2.1 (Dropbox library) keeps working;
+  the manager's Upgrade changes a 2.1 node to 2.2 keeping its parms (2.1 parm names are kept where the meaning is the same).
+- One node = one instance of an asset in a shot (or the camera). The instance is grafted (Graft Stages,
+  `primpath=/<instance>`, `destpath=""`: `"/"` nests the input node's name) on input 0, which passes through:
+  `/char_Helen/Geo/...`, clones `/char_Helen_inst02/...` (the user's convention: a Null named after the asset).
+  Every anim publish has the root `/Geo`, so instances never share one stage before the graft. Camera: no graft.
+- Clones are `geo_<asset>_instNN.usd` (Blender add-on, branch `claude/blender-clone-inst-meta`); `_2` was the
+  old suffix and clashes with assets named with a number (`prop_CoralSet_001`). `publish_meta.json` gives
+  `asset` / `instance`; without them the loader guesses (`logic.resolve_instance`) and says "asset?" instead of
+  guessing between two assets. Groom / cloth come from the grooming department's per-frame caches
+  `02_fx/{groom,cloth}/publish/vNNN/<instance folder>/<shot>_{groom,cloth}.####.usd`, only from the instance's
+  own folder, never another's.
+- Versions on the node are explicit `vNNN`; nothing moves by itself (newest picked once at creation; the status
+  and the manager say what is newer). "missing" = the version on the node is gone; "none" = never published.
+- Groom / cloth with time samples load as value clips authored AFTER the graft on a new layer (Configure Layer
+  `startnewlayer` + Python LOP, no manifest): Graft Stages flattens its branch into one layer, where the first
+  frame's samples beat a clip, and a same-layer anim beats a cloth clip. That gives motion blur; a cache without
+  time samples falls back to Sublayer `$F` (no blur, said on the node).
+- The node is **MonoFX Loader**, type `monofx::loader::1.0` in `otls/monofx_loader.hdalc` (the user's call, 2026-11-17:
+  it must not read "anim loader"; Tab > MonoFX names it `monofx_loader`). `build_hda.py` with no argument builds it
+  and the same node as `mono_anim_loader::2.2` (`otls/mono_anim_loader.hdalc`) so scenes saved with 2.2 open; the
+  root `OPcustomize` hides 2.2 from Tab (installer ships it). The manager's Upgrade moves 2.2 nodes over with
+  `changeNodeType` (same parms). `find_loaders` reads every instance of the loader types, so loaders inside a LOP
+  network in /obj (grooming scenes: `/obj/Character_Loader`) show in the manager; opened from a node, Load shot
+  builds in that node's network.
+- Source Asset parm pane: Asset Type (`mx_asset_group`, a folder of `01_assets`, "All") shortens the Asset menu,
+  which then lists only assets with a UV publish; Advanced shows Model Path (Anim Path hides). A part with nothing
+  published reads "none published", not Houdini's "(no entries)".
+- Manager layout A (the user's pick, 2026-11-17, mockups in the module docstring): "+ Add" = Load shot (versions)
+  and Add assets... (a drawer: type chips, search, thumbnails, pick several, Add N); a view bar (Viewport menu of
+  explicit actions: solo the selected / show all through Houdini's Solo Geometry, view state; show or hide lookdev /
+  groom in the viewport on every loader, one undo step; draw hulls only; what the viewport shows now in words, with
+  Show all while soloed; Filter); the status line adds the shot's outputs the scene lacks (Add it) and the textures
+  the lookdevs pull; the inspector is information only (Monos rules, reviewed 2026-11-17 with the monos-qml-ui skill):
+  source, what is new in a newer version (date, Monos work file author from `.monos/authors.json` of the same vNNN,
+  outputs, frames, meshes, size); its actions are on the row's right-click menu (Update to <part> <version>, Switch to
+  Source Shot / Asset, Open folder, Open in Monos `monos://open?project&page&e=sha256[:10]`, Frame in the viewport).
+  The list is a table: a sticky column header, group bands, zebra rows, column separators, every column but the
+  name centred, Textures a column of its own (the user's asks). The top bar's icon buttons (viewport, list / grid, add) are flat
+  (`STYLE_ICON_FLAT`, 28 px, no border): a solid fill only on hover, press and the view that is on. Every button has pressed and selected + hover looks
+  (Monos states). Fewer words (the user's ask): the top bar is icons (Filter with a search icon, eye = Viewport
+  menu, list / grid, plus = Add menu), the view bar row is gone (the viewport state sits on the status line), Hand
+  off / Undo / Upgrade are icons (Upgrade with its count), each icon button has a tooltip and an accessible name;
+  only the primary keeps words. The inspector is a full-height column from the window's top to the action bar.
+  A rounded control's border is 2 px at least and follows the UI scale (`scale_css`): Qt does not anti-alias a
+  stylesheet border, and 1 px broke on the corners; dividers stay hairlines. Viewers are found inside Houdini 22's
+  ContextViewer too (`scene_viewers`). Hand off... writes `<instance>_handoff/<instance>.usd` (the loader's stage flattened, textures copied,
+  relative paths) for people without MonoFX.
+- Where new loaders go: a network with the shot layout (`merge_actors`, `merge_cameras`, `merge_environments`,
+  skill solaris-shot-stage-layout) gets them wired there (Load shot: geo -> actors, camera -> cameras; Add: characters
+  -> actors, the rest -> environments); any other network gets `<shot>_merge` / `assets_merge`. Adding an asset
+  already in the network makes another instance, prim `<asset>_inst02` (set dressing places one asset many times).
+- Bake to plain nodes (Hand off menu, row menu; `bake_loaders`): a MonoFX Loader becomes a plain subnet in place
+  that anyone with Houdini opens: the loader's inner network copied in, its parms as spare parms without callbacks
+  or menu scripts, the subdivision Python LOP holding its plan as data (`BAKED_SUBD_CODE`, no `apps.` import). The
+  subnet keeps the loader's values and user data `monofx_baked_loader`, so the one Upgrade restores the loader
+  (edits made inside are lost). Unlocking the HDA was not enough: its Python LOPs import the adapter and its parms
+  call `hou.phm()`. sh025: 4 loaders baked, 50 meshes and 7 curves the same.
+- Sublayer / Reference LOPs that read a publish (`find_publish_layers`, `logic.parse_publish_path`: an absolute path
+  `<project>/01_assets/_<group>/<asset>/<dept>/publish/vNNN/<file>` or `02_shots/<shot>/...`; a path with a
+  variable or an expression is not read) show in the manager's "sublayers" group with their status. Update moves
+  the vNNN in the path to the newest version holding the file (a vNNN in the file name follows). Upgrade (the same
+  action as for old loaders, one button and one menu item: Convert and Upgrade confused the user) makes a
+  MonoFX Loader on Source Asset in its place (same name, place, wires; lookdev or model at the version it read,
+  groom and hide off): the loader puts the asset under /<prim>, so prim patterns of the nodes after it up to the
+  first merge / graft move there, and `lopinputprims('.', 0)` (the env scene's xforms) becomes the explicit list of
+  the layer's root prims under /<prim> (a group-level move acts in another frame); other parms naming those prims
+  are listed, not changed. Checked on env_Envi lookdev v005: its 10 sublayers converted, 1040 meshes, 1040
+  bindings, identical bounds.
+- Manager details (the user's asks, 2026-11-17): the list never drops a column, it scrolls sideways (the column header
+  follows the scroll); the inspector slides in 160 ms OutCubic / out 120 ms InCubic (Monos motion) beside the list,
+  just shows when stacked; it is a real slide: `_SlideClip` keeps the panel at full width while its clip widens from
+  the right edge (no reflow); the Geo column is a shot's anim or an asset's model; the result line is two lines at most, details in its tooltip (`Controller.details`);
+  double-click selects the node and frames it in the Network Editor; menus are square (`STYLE_MENU_SQ`) with
+  separators between groups; a Source Asset whose lookdev holds the geometry reads "–" for its model (scan).
+- The inspector's meshes table runs edge to edge, its name column fills what the others leave (wider only when
+  dragged), its scroll bars are thin and inside it, shown when needed (the user's ask). Houdini 22's style paints a
+  tree's rows and branch area grey (#303030 / #3a3a3a) whatever its palette or alternate-background-color says, a
+  `::item` background beats an item's own and an almost transparent one wiped what was under it; offscreen grabs
+  show none of it. So `_MeshDelegate` paints every cell (row colour, hover, lines, elided text) like the main list,
+  `_MeshTree` the branch area and the group chevron, and no `::item` rule is left. Check a tree's colours in the live
+  window (sample its pixels), not offscreen. The table shows every level of the hierarchy (Geo > Base_grp >
+  Body_grp > Geo_Body, as the scene graph does); a group sums its meshes. The name column's width is kept only
+  when the artist drags it (mouse down), never from Qt's own resizes.
+  One background for every row (the user's "too many colours", 2026-11-17): no zebra, no band per group level; a
+  group reads as one by its quieter text and chevron, a selected row by the selection colour.
+- Inspector layout B (the user's pick of three mockups, 2026-11-17), then its toggles (the user's ask the same day):
+  each prim row has three toggles first, before its name (narrow, no lines between them; the tree's branches stay
+  in the name column, `setTreePosition(0)`), as Blender's outliner: the eye (visibility), viewport and
+  render (purpose: both on default, viewport only proxy, render only render, both off guide). Inheritance is
+  Houdini's / USD's: hiding a prim hides everything under it and each child keeps its own eye for when the parent
+  shows again (drawn dimmed meanwhile); a prim without its own purpose follows its parent. One look per state (the
+  user's report: blue and white for one state read as two): a dot under the icon marks the shot's override, what
+  Remove the shot's overrides takes off (not the publish's or the loader's own values: a dot that stayed after a
+  Remove read as a bug); who set a value (this shot, the publish, the loader's Hide Prims / Show in Viewport) is in
+  the tooltip. A toggle that is on draws filled (`_filled_pixmap`: the pupil / lens cut out so any row colour shows
+  through), off is the outline with its slash; 13 px icons in 21 px columns. A click toggles that row, or the selection it is part of, to the clicked row's new value, keeps the
+  selection, one undo step; every click changes the state (`logic.toggle_edits`: the rule comes off only when the
+  wanted value is the one the row has without it, `PrimShow.base_visible` / `base_purpose`; taking it off whenever
+  the value was "on" left a prim the loader hides hidden, two clicks to show it). A toggle re-reads only that loader
+  (`Controller.refresh_detail`, `_run_detail`): a full refresh after each click walked the Dropbox project again
+  (~10,000 stat calls, ~1 s on env_Envi, the user's report of a slow, stuck window); now 0.13-0.23 s on Cliff04's
+  780 rows.
+- Inspector with several loaders selected (the user's ask): one tree, a branch per loader (`show_rows`, the loader's
+  own row has the pattern "**" = all its prims, and the toggles of the instance's root prim /<instance>: a show rule
+  on `logic.ROOT` ".", which every prim under it inherits; hiding it hides the asset); every row carries its loader (`ROLE_LOADER`), so toggles, the
+  menu's subdivision / dicing / Remove act on each row's own loader, and a toggle over several loaders is one undo
+  step (`set_show_many`); Same overrides only for one loader. A filter field above the tree (`_apply_filter`) keeps
+  the rows whose name holds the text, everything under a matching group, and the groups above (opened).
+  Right-click the tree's header: which columns show (the toggles, Faces, From, Scheme, Dice; the name always),
+  remembered per viewer in the prefs (`inspector_hidden_columns`; Faces and From off until picked, the user's ask); Dice still shows only when some prim has dicing. The header shows no icons
+  (the user's ask); the right-click menu's Display submenu says each toggle as a verb (Hide / Show, Stop drawing
+  in the viewport, Stop rendering) and runs the same toggle. Rules live in the hidden
+  `mx_show_rules` (JSON {pattern = one prim under the instance, "vis": invisible | inherited, "purpose"}; the first
+  form {"show": ...} still reads), authored by the HDA's `show_rules` Python LOP after Hide Prims
+  (`adapter.author_show`; no MakeVisible: hiding prunes, the user's rule), so a rule wins over Hide Prims and the
+  groom's render purpose; bake writes them as data (`BAKED_SHOW_CODE`). The panel's state comes from the files on
+  the worker thread (`shown_for`, `logic.prim_shows`: publish visibility / purpose, Hide Prims, Show in Viewport,
+  rules), checked against the stage with hython on sh025. The groom's curves are rows under Groom
+  (`groom_curve_counts`, first frame of a cache; not `groom_curves`, the cache's own paths that refresh uses: a second
+  function of that name broke every groom loader). Remove the shot's overrides clears subdivision and show rules;
+  Same overrides copies both; a change keeps the table's scroll, selection and folds. A camera has "On the loader":
+  clipping, aperture, ratio, guide scale as parm fields (Enter sets the parm, one undo step).
+- The HDA's PythonModule is `from apps.houdini.anim_loader_adapter import *`, which takes only `__all__`: every
+  `hou.phm().<name>` in `build_hda.py` must be in it (v0.1.36's Reload button raised AttributeError, cb_reload was
+  missing; `tests/test_anim_loader_hda_callbacks.py` checks it). A button is tested by `parm.pressButton()` in hython,
+  not by calling the adapter's function.
+- Hide Prims is off the parm pane (the user's ask, 2026-11-19): `mx_hide_enable` / `mx_hide_pattern` stay as hidden
+  parms, so the hair driver is still hidden by default and scenes keep what they had; the inspector's eye shows it.
+  Configure Primitive authors that visibility as a time sample at the current frame (its toggle is an expression):
+  read it at a frame, `ComputeVisibility(Usd.TimeCode(f))`; at the default time it reads inherited.
+- Reload from disk (the user's ask, 2026-11-19): the node's Reload button (beside Refresh) and the manager's row menu
+  re-read every file a loader uses (`adapter.files_of`: main file, lookdev with its sublayers, every frame of groom /
+  cloth, sublayer slots, groom topology; `logic.loader_files`) for a publish written again into the same version,
+  then press the inner Sublayer LOPs' own `reload`: `hou.lop.reloadLayer` re-read the file and the inner Sublayer
+  showed it, but the graft's flattened copy stayed old and `cook(force=True)` on the HDA does not cook its
+  children. Versions never move. On Windows a file USD has open (a crate is memory-mapped) cannot be overwritten in
+  place, but one written elsewhere and renamed over can (USD's export, so Blender's publish); checked with hython
+  (`assemble/reload_check.py`: points +100 shown only after Reload).
+- hython: `hou.hda.installFile` goes into the open hip's library list, which `hipFile.load` replaces: install
+  after the load (and `setIsPreferred`) or the scene runs the installed MonoFX's loader, or no loader at all.
+  Each row starts with its prim type's icon from Houdini's Scene Graph Tree (`SCENEGRAPH_primtype_xform` for a group,
+  `_mesh` for a mesh; `_prim_icon`, Lucide outside Houdini); groups are drawn as Xforms, their real type is not read.
+  The meshes' right-click menu (the user's "cryptic", 2026-11-17): verbs (Use the publish's subdivision, Turn
+  subdivision off, Subdivide (Catmull-Clark), Remove the shot's overrides, Copy these overrides to every <asset>), an
+  icon on every row and no checkable actions (their check column pushed rows in): the current choice shows a check icon.
+  Dicing is a submenu of steps (publish's, 0.25 to 4), not a field. A submenu is made as `QMenu(title, menu)`:
+  `addMenu(icon, title)`'s submenu was deleted with its Python wrapper.
+  Its first row is what it acts on, a band (`_menu_head`: lighter background, firm line under it, the name at the
+  items' size, regular, italic, in the label colour: bold and bright stood out too much), not a greyed-out item. "Same subdivision on the other N <asset> loaders" (`subd_to_asset`: this loader's whole rule set onto the
+  asset's other loaders) shows only when the scene has other loaders of that asset.
+- Inspector of a shot loader (the user's ask, 2026-11-17): Frames and Fps from the anim publish's `publish_meta.json`
+  (`Controller.timeline`; an asset loader has none). A camera adds its lens from the loader's stage at the current
+  frame (`adapter.camera_info`): USD lens values are tenths of a scene unit (sh025, 1 m a unit: 35 mm is 0.35), so
+  they are turned into mm, distances into m; f-stop 0 is USD's "no depth of field" and reads "Depth of field off".
+- No "·"-joined facts anywhere in the manager (the user's dislike, 2026-11-17): the inspector is a property list
+  (`_Props`: label left, value right) of Node, Kind, Shot / Asset, each part's version, Textures, Subdivision,
+  Viewport polygons; a NEWER VERSION section lists the part and version ("V001, first version"), Published, Work
+  file by, and only real changes (outputs added / removed, frames, fps, meshes added / removed; never a file size).
+  Both sections fold from their titles (`_Section`, view state kept per viewer in the prefs as
+  `inspector_details` / `inspector_news`). The list's side margins are 6 px (`LIST_PAD`).
+- Manager type: bold only for the inspector's name, the shot crumb and the primary; list names, headers, bands and
+  the status line are regular (the user's ask). Icons are drawn for every device-pixel ratio (`_crisp_icon`):
+  scaling a small pixmap up broke the search icon; icon-only buttons centre their icon.
+- Props and environments publish a complete asset as their lookdev (`def` meshes and materials, root prims at the
+  top, e.g. prop_Cliff01: 12 meshes), the UV publish being another mesh (`_uv_publish_Low` / `_zHigh`). Source Asset
+  loads such a lookdev alone (`lookdev_defines_geometry`), never with the UV publish (that doubled the geometry);
+  subdivision and the inspector's table read its meshes from that lookdev too (`geometry_file`; read from the model,
+  Cliff01's 12 meshes were listed as none and none got a scheme);
+  Helen's lookdev only overrides, so her UV model stays under it. Checked on env_Envi lookdev v005: its 14
+  hand-placed props rebuilt with loaders + the same xform nodes give the same 1040 meshes and the same bounds.
+- A locked LOP HDA makes its inner nodes on first cook: `node.children()` is empty before.
+- Source Asset (the user's decisions, 2026-11-17; design `docs/plans/anim_loader_asset_source.md`): the node (label
+  **MonoFX Loader**, type still `mono_anim_loader::2.2`) loads either a shot's anim (`mx_source` shot) or the asset's
+  own publishes (asset): UV model `01_modelling/03_uv/publish/vNNN/` (Model File menu, the standard
+  `<asset>_uv_publish.usd*` first; several files and none standard -> the artist picks), groom
+  `04_grooming/publish`, lookdev. Both graft under `/<asset>`, so mesh paths match (Helen: all 26) and subdivision
+  rules carry over; switching Source keeps the other's parms. A scene in an asset folder (`logic.detect_asset`)
+  gets Source Asset on creation. Load shot / Retarget leave Asset nodes alone (`_key` is empty). Upgrade turns a
+  Character Loader 3.2 (Dropbox HDA) into an Asset node in its place (`logic.from_character_loader`; its SOP Modify
+  is dropped, the user's call).
+- Groom sits outside Geo in both sources, at `/<instance>/Groom/<name>`: Helen's lookdev binds hair there
+  (`/Groom/Hair_Back` -> `M_Grm_Hair_Back`, empty BasisCurves of those names). The asset's groom publish is already
+  at `/Groom`. A shot groom cache is moved there by name (`logic.groom_targets`): the branch's `groom_topology`
+  Python LOP copies each curves prim from the first frame (or each frame's file without time samples, `$F` in
+  `mx_groom_topo`), and the clips after the graft read the cache's own path (clip `primPath`, tokens `src=dst` in
+  `mx_groom_roots`); spike S3 checked blur and binding. With clips (a cache with time samples) nothing under the clips may hold an animated value: a Merge or a
+  Graft Stages after the loader puts the loader's layers and the clip metadata into one, where a time sample (or a
+  default) beats the clip. Two sources: `groom_topology`'s copy of the first frame, which takes its own animated values
+  off, and the lookdev (Helen's holds points and primvars on /Groom/<name> with one sample, widths as a default):
+  sh025_lighting_v004's groom stood still at the lookdev's value from merge_actors on, with the lookdev's 1,884,595
+  points against the cache's 1,935,433-point topology. So `groom_unanimate`, a Python LOP right after the graft, on the
+  graft's own flattened layer, erases every time sample on the groom prims and the default of each attribute the cache
+  animates; an attribute the cache lacks keeps its value as a default (a lookdev-only primvar). Measured: a value block
+  from a stronger layer does not do it, in one layer it beats the clip too and the groom lost its points; a default in a
+  stronger layer beats a clip as well. Check: hython `tests/houdini/anim_loader/accept_groom_graft.py` (a time-sampled
+  copy of the fake project, its lookdev given samples on the groom, through Merge and Graft; fails with v0.1.36's HDA).
+- Subdivision per mesh (the user's decision, 2026-11-17; `logic.subd_plan`, `adapter.author_subd` from the
+  `render_only` Python LOP): a shot rule on the loader (hidden `mx_subd_rules`, JSON `pattern` from `/<instance>`,
+  `scheme` publish / none / catmullClark, `dicing`; a later rule wins) > lookdev publish > anim publish > `none`.
+  Never USD's fallback `catmullClark`: it made Houdini GL subdivide whole shots (sh025 v005 past 45 GB, crash in
+  `GR_OSDSubdSurfaceVK`; Helen alone 12.5 GB with a plain Sublayer, 2.5 GB with `none`). Opinions are read from
+  the publish files themselves with `TraverseAll` (lookdev holds overs): Graft Stages flattens and writes the
+  fallback as a value. Dicing is `primvars:karma:object:dicingquality` (render only).
+- Manager › Subdivision column (the user's pick of three mockups, 2026-11-17: beside List / Grid, under them when
+  narrower than 760 px): the selected loader's anim meshes by group (`logic.mesh_groups`, first two path levels),
+  faces, where the scheme comes from (shot / lookdev / publish / default; on a mesh only when it differs from its
+  group), scheme, dicing (column only when some mesh has dicing). The scheme is a menu on each row: on a selected
+  row it sets the whole selection, else that row. Dicing has its own field + Set, which keeps each scheme
+  (`logic.set_subd_rules`: scheme None / dicing `KEEP` keep that field; one rule per pattern, put last; Publish
+  with no dicing drops the override). Clear overrides and Apply to all instances share a row; each change is one
+  undo step. The plan is read by `HoudiniBackend.subd`
+  on the scan's worker thread; rows carry "subd N · ~X M".
+- Heavy shot (over `logic.HEAVY_SUBD_POLYGONS`, faces x 16): a non-modal prompt after Load shot and on scene
+  load (HDA OnLoaded, one check per burst, UI only) offers Draw Hulls Only for every viewport; "Don't ask again"
+  is a viewer pref. In the manager the warning lives in one place only, the Subdivision column (line + Draw Hulls
+  Only link), never in the result line. Draw Hulls Only lowers memory as well (measured on /stage,
+  Helen catmullClark: RAM 12.8 -> 7.2 GB once settled, VRAM +6.7 -> +4.9 GB; the first seconds still peak ~15 GB);
+  scheme none lowers it most (2.5 GB). It is set only on viewers showing a LOP network (`_stage_viewers`): /stage
+  has its own display options, and a value set while the viewer showed /obj never reached it (that, and reading RAM
+  at the peak, gave an earlier wrong "does not lower memory").
+- Lookdev and groom have "Show in Viewport" (on by default). Off: bindings move to `material:binding:full` (Karma
+  only) and groom curves get purpose `render`.
+- Manager layout R-A (the user's pick, 2026-11-17, after the Monos UI rules in `products/monos/monos/docs/`:
+  browse first, act second; the inspector is information, shown only for a selection; actions in context; no combo
+  box for a one-shot pick). Top bar: title, project crumb (menu: scene's, loaders', recent projects, Browse...), shot
+  crumb (menu), List / Grid, Load shot (menu of the shot's versions). A status line (what the primary does, count;
+  heavy-shot note + Draw Hulls Only on its right, never the headline or the primary). List = a table, 40 px rows,
+  Anim / Lookdev / Groom / Cloth / Subd columns, "–" for nothing published, colour only for work (behind, missing,
+  asset?; #6f9aff on a selected row for contrast); narrow: versions on a second line under the first header's column
+  names. Inspector (`InspectorPanel`, fixed ~360 px, under the list when narrow): name, node and versions, meshes
+  read-only; scheme / dicing / clear / apply on the meshes' right-click menu. Result line in the action bar (above
+  the buttons when narrow). Style rules for item views carry an objectName: Houdini's sheet painted the tree grey.
+- Parm pane (layout D, the user's pick 2026-11-17, checked in the Houdini 22 GUI down to 420 px; `_parm_templates`):
+  Manager / Refresh, a one-line Status shown only when something needs the artist (missing file, `asset?`, notes),
+  then Source / Parts / Geometry or Camera as plain groups and Advanced (project root, resolved paths) closed. The
+  status of each version is in its menu label (Normal menus: "v002  (v003 available)", "v004  latest"), cached
+  5 s per node and dropped by refresh; the node comment shows it in the network editor ("lookdev v003 available").
+  While the source is not set, Status says only the next step (`logic.next_step`: no project -> Project Root or the
+  manager's Project box, pick a shot, "<shot> has no anim publish yet", pick an anim file), never every part missing.
+  Shot is a menu of the project's shots ("sh030  (no anim)"). Changing the shot or project on the node
+  (`logic.switch_shot`) moves the same instance there like Retarget, else the shot's newest anim version and no file:
+  a version or file of the old shot is never kept (it showed "anim v001 missing on disk").
+  Show in Viewport is one button strip `mx_viewport` (bit 1 lookdev, 2 groom; it replaced PR #21's two toggles).
+  Measured: `button_icon` draws label + icon (not a button), a one-icon strip does not draw, `script_action` shows
+  on every row, and joined rows wider than checkbox + field overflow a docked pane: none of them is used.
+- Manager window (`ui.py` view, `controller.py` no Qt, `HoudiniBackend` in the adapter): List and Grid (the
+  user's pick), Monos asset thumbnails (`thumbnail.user.png`, else `.meta/thumb_lookdev.user.png`, else the
+  newest `.meta/thumb_*.user.png`), Load shot finds existing loaders by user data `monofx_anim_loader`
+  (shot + anim file, any version: never a second `/char_X`), Update / Load shot / Upgrade are one undo step each.
+  One primary button, the most important thing to do (`controller.primary_action`: update > upgrade 2.1 > Draw
+  Hulls Only for a heavy shot), hidden when there is nothing; the headline says the same; Upgrade shows apart only
+  when it is not the primary. Styles go through `scale_css` (every px scaled by the UI scale). Grid cards share the
+  row's width (as many as fit at 200 px, Qt keeps room for the scroll bar); a camera card is shorter.
+- Retarget (the user's pick, 2026-11-17; `logic.retarget_state`, `adapter.retarget`): loaders copied from another
+  shot move to the shot in the Load shot box. Which: the selected loaders from another shot; with nothing selected
+  and the box on the scene's own shot (`$HIP`), every loader from another shot (then it is the primary, above
+  Update, and the headline says "N loaders from sh025, not sh030"); a scene of no shot may load several shots.
+  Each moves to the newest anim version there that holds the same instance (the camera: that shot's camera,
+  node renamed when named after its shot), groom / cloth newest there (per shot), lookdev and every node setting
+  kept (subd rules too). A shot without that instance, or one already loaded for it, leaves the node and says so.
+  A shot merge whose loaders all moved is retagged. One undo step; also on a row's right-click menu.
+- Project box (the user's pick, 2026-11-17), first in the Load shot box: the scene's project ($HIP), the loaders'
+  projects, then recent ones (`recent_projects` in `anim_loader_prefs.json`, `logic.remember_project`, 8), and
+  Browse... (a folder anywhere inside a project finds its root; inside a shot it picks that shot too). Shots come
+  from `logic.list_shots` (`02_shots/<shot>/01_anim/publish`), so Load shot works in an unsaved scene. The shot
+  box keeps only a shot the artist chose; otherwise it opens on the scene's shot, else the loaders' shot.
+  List rows / grid cards are laid out again on their view's own resize (the splitter moves it, not the window).
+  Shelf tool "Anim Loaders". Checks: `tests/test_anim_loader_*.py`, hython `tests/houdini/anim_loader/accept_*.py`
+  on the fake project from `tools/fx/anim_loader/dev/make_fake_shot.py`.
 
 ## Tool panels (skill `.claude/skills/dcc-panel-design`)
 
@@ -171,3 +529,6 @@
   first, the build before the tag (a failed build leaves no tag), then tag, push the tag,
   `publish_release.ps1`. `-DryRun` stops after the build. Patch bumps unless asked otherwise.
 - The release commit goes to main through the PR; merging is the user's call.
+- `.ps1` files stay ASCII (`tests/test_release_scripts_ascii.py`): Windows PowerShell 5.1 reads a file without BOM
+  as ANSI, and Vietnamese text in a string swallowed the lines setting `$Notes`, so every GitHub Release up to
+  v0.1.31 came out with empty notes.

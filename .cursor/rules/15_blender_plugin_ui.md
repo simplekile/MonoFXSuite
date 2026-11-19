@@ -2,7 +2,7 @@
 
 Áp dụng khi làm UI cho `tools/fx/monofx_pipeline_blender/`. Tham chiếu: `ui_style.py`, `rig_ui.py`, `preferences.py`.
 
-**Không áp dụng** cho Maya/Houdini/PySide6 — xem `04_ui_standard.md`.
+**Không áp dụng** cho Houdini/PySide6 — xem `04_ui_standard.md`.
 
 ---
 

@@ -42,15 +42,34 @@ def test_uv_blend_resolves_to_uv_publish():
     assert root.parts[-2:] == ("03_uv", "publish")
 
 
-def test_collection_publish_usd_basename_inserts_collection_slug():
+def test_collection_publish_usd_basename_appends_collection_slug_after_publish():
     blend = Path(
         r"D:\proj\01_assets\_environments\env_House"
         r"\01_modelling\03_uv\blender\work\env_House_uv_v001.blend"
     )
     assert _pp.default_usd_basename_from_scene(blend) == "env_House_uv_publish"
-    assert _pp.collection_publish_usd_basename(blend, "house1") == "env_House_uv_house1_publish"
-    assert _pp.collection_publish_usd_basename(blend, "house _2") == "env_House_uv_house_2_publish"
-    assert _pp.sanitize_collection_slug("  House _2  ") == "house_2"
+    assert _pp.collection_publish_usd_basename(blend, "house1") == "env_House_uv_publish_House1"
+    assert _pp.collection_publish_usd_basename(blend, "house _2") == "env_House_uv_publish_House2"
+    assert _pp.collection_publish_usd_basename(blend, "Geo_Helen") == "env_House_uv_publish_GeoHelen"
+
+
+def test_collection_slug_joins_words_with_capitals():
+    assert _pp.sanitize_collection_slug("  House _2  ") == "House2"
+    assert _pp.sanitize_collection_slug("Geo_Helen") == "GeoHelen"
+    assert _pp.sanitize_collection_slug("geo helen") == "GeoHelen"
+    assert _pp.sanitize_collection_slug("HelenWhale") == "HelenWhale"
+    assert _pp.sanitize_collection_slug("___") == "Collection"
+
+
+def test_collection_publish_usd_basename_single_collection_has_no_slug():
+    blend = Path(
+        r"D:\proj\01_assets\_characters\char_Helen"
+        r"\01_modelling\03_uv\blender\work\char_Helen_uv_v019_clean.blend"
+    )
+    assert (
+        _pp.collection_publish_usd_basename(blend, "Geo_Helen", only_collection=True)
+        == "char_Helen_uv_publish"
+    )
 
 
 def test_asset_name_from_retopo_blend_filename():
@@ -178,3 +197,75 @@ def test_next_blend_save_path_requires_saved_file():
     assert not ok
     assert not path
     assert err
+
+
+def test_publish_version_from_scene_file_follows_work_version():
+    anim = Path(r"D:\p\02_shots\sh002\01_anim\blender\work\sh002_anim_v003.blend")
+    assert _pp.publish_version_from_scene_file(anim) == 3
+    note = Path(r"D:\p\01_assets\_characters\char_Helen\01_modelling\03_uv\blender\work\char_Helen_uv_v005_note.blend")
+    assert _pp.publish_version_from_scene_file(note) == 5
+
+
+def test_publish_version_from_scene_file_none_without_valid_suffix():
+    assert _pp.publish_version_from_scene_file(Path("sh002_anim.blend")) is None
+    assert _pp.publish_version_from_scene_file(Path("sh002_anim_v000.blend")) is None
+    assert _pp.publish_version_from_scene_file(None) is None
+
+
+_PROJECT = r"D:\Dropbox\Job\260826_grn_vp97"
+
+
+def _p(rel: str) -> Path:
+    return Path(_PROJECT + "\\" + rel)
+
+
+def test_department_from_scene_path():
+    assert _pp.department_from_scene(
+        _p(r"01_assets\_characters\char_Ata\01_modelling\03_uv\blender\work\char_Ata_uv_v001.blend")
+    ) == "MODEL"
+    assert _pp.department_from_scene(
+        _p(r"01_assets\_characters\char_Ata\02_rigging\02_build_rig\blender\work\char_Ata_rig_v009.blend")
+    ) == "RIG"
+    assert _pp.department_from_scene(
+        _p(r"02_shots\sh025\01_anim\blender\work\sh025_anim_v003.blend")
+    ) == "ANIM"
+    assert _pp.department_from_scene(
+        _p(r"01_assets\_characters\char_Ata\06_anim\blender\work\char_Ata_anim_v001.blend")
+    ) == "ANIM"
+    assert _pp.department_from_scene(Path(r"C:\temp\untitled.blend")) is None
+    assert _pp.department_from_scene(None) is None
+
+
+def test_rig_publish_target_from_work_file():
+    blend = _p(r"01_assets\_characters\char_Ata\02_rigging\02_build_rig\blender\work\char_Ata_rig_v009.blend")
+    root = _pp.resolve_rig_publish_root_from_scene(blend)
+    assert root is not None
+    assert root.parts[-3:] == ("02_rigging", "02_build_rig", "publish")
+    assert _pp.rig_publish_basename(blend) == "char_Ata_rig_publish"
+
+
+def test_rig_publish_target_needs_a_rigging_task_folder():
+    assert _pp.resolve_rig_publish_root_from_scene(
+        _p(r"01_assets\_characters\char_Ata\02_rigging\char_Ata_rig_v001.blend")
+    ) is None
+    assert _pp.resolve_rig_publish_root_from_scene(
+        _p(r"01_assets\_characters\char_Ata\01_modelling\03_uv\blender\work\a.blend")
+    ) is None
+
+
+def test_rig_publish_file_is_found_by_the_rig_library():
+    """The name the rig publish writes is the one Anim > Link scans for."""
+    name = _pp.rig_publish_basename(
+        _p(r"01_assets\_characters\char_Ata\02_rigging\02_build_rig\blender\work\char_Ata_rig_v009.blend")
+    )
+    s = name.lower()
+    assert "_rig_" in s and "_publish" in s
+
+
+def test_publish_collection_names():
+    assert _pp.is_publish_collection_name("CHAR_ATA_RIG_PUBLISH")
+    assert _pp.is_publish_collection_name("CHAR_HELEN_RIG-PUBLISH")
+    assert _pp.is_publish_collection_name("Rig_char_Ata_publish")
+    assert not _pp.is_publish_collection_name("character1_rig")
+    assert not _pp.is_publish_collection_name("publisher_notes")
+    assert not _pp.is_publish_collection_name("")

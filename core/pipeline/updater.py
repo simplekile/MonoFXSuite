@@ -1,7 +1,7 @@
 """
 Update MonoFX Suite from GitHub via git pull.
 
-DCC-agnostic: no maya/hou/bpy. Call from any DCC or standalone script.
+DCC-agnostic: no hou/bpy. Call from any DCC or standalone script.
 Uses subprocess + pathlib only. Safe when offline or not a git repo.
 """
 

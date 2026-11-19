@@ -13,10 +13,8 @@ apps → monofx_pipeline_common
 
 ## Forbidden
 
-- `monofx_pipeline_common` importing `maya.cmds`
 - `monofx_pipeline_common` importing `hou`
 - `monofx_pipeline_common` importing `bpy`
-- `core` importing `maya.cmds`
 - `core` importing `hou`
 - `core` importing `bpy`
 

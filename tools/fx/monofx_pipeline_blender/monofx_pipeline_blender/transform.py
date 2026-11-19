@@ -256,6 +256,34 @@ def apply_transforms_for_publish(
     return (applied, failed)
 
 
+def _stamp_scene_fps(output_filepath: str) -> None:
+    """Write the scene fps into the exported layer.
+
+    A static ``wm.usd_export`` leaves fps at 24; a Houdini Sublayer LOP would copy that onto the
+    stage and override the hip's fps. A failure never fails the export.
+    """
+    try:
+        from .usd_stage_fps import stamp_fps
+
+        render = bpy.context.scene.render
+        fps = float(render.fps) / float(render.fps_base or 1.0)
+        if stamp_fps(output_filepath, fps):
+            print(f"[MonoFX Pipeline] fps stamped: {fps:g}")
+    except Exception as exc:
+        print(f"[MonoFX Pipeline] could not stamp the scene fps: {exc}")
+
+
+def _set_asset_kind(output_filepath: str, kind: str) -> None:
+    """Mark the asset root (default prim) with a USD model kind. A failure never fails the export."""
+    try:
+        from .usd_asset_kind import set_default_prim_kind
+
+        if set_default_prim_kind(output_filepath, kind):
+            print(f"[MonoFX Pipeline] asset root kind set to {kind}")
+    except Exception as exc:
+        print(f"[MonoFX Pipeline] could not set the asset kind: {exc}")
+
+
 def usd_export(
     *,
     output_filepath: str,
@@ -276,6 +304,7 @@ def usd_export(
     merge_parent_xform: bool = True,
     generate_preview_surface: bool = config.DEFAULT_GENERATE_PREVIEW_SURFACE,
     generate_materialx_network: bool = config.DEFAULT_GENERATE_MATERIALX_NETWORK,
+    asset_kind: Optional[str] = None,
 ) -> None:
     import os
 
@@ -337,6 +366,9 @@ def usd_export(
             ):
                 export_kwargs.pop(key, None)
             bpy.ops.wm.usd_export(**export_kwargs)
+        _stamp_scene_fps(output_filepath)
+        if asset_kind:
+            _set_asset_kind(output_filepath, asset_kind)
     finally:
         try:
             _deselect_all_objects(view_layer)

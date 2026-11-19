@@ -29,18 +29,6 @@ precedent. Sources and dates: `sources.md`.
 - **Python panels** are docked by default and can be very narrow; a floating window is the exception.
   Design the 400 px column first.
 
-## Maya / XGen (next host; from the public manual, not re-read this session)
-
-- XGen keeps **Descriptions inside Collections**; each description has a modifier stack (Clumping,
-  Noise, Cut, Coil) and a Preview/Output tab with a density preview percentage. Artists expect per
-  description: density, a preview fraction, visibility, and a stack of named modifiers with their own
-  parameters. "Clump › Size", "Cut", "Noise frequency", "Width ramp" are the words they search for
-  (grooming review P1-5).
-- Keys: `F` frame selected, `A` frame all, `Ctrl+H` hide, `Shift+H` show, `Ctrl+Shift+H` unhide last,
-  `Alt+H` hide unselected (isolate by hiding). Maya's isolate select is a viewport toggle.
-- Maya dockable Qt panels run inside Maya's own Qt; the same rules on fonts, style-sheet scope and the
-  main thread apply (`maya.utils.executeDeferred` is the idle hook).
-
 ## Blender (later)
 
 - Hair is **Curves objects in Curves Sculpt mode**: brushes in the toolbar, selection modes `1` points /
