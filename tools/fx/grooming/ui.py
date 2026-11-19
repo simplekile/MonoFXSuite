@@ -1,7 +1,24 @@
 """
 MONO Grooming panel — one window, floating or docked in a Houdini pane.
 
-Zones, each on its own surface with a line between them:
+Look and layout C of t74 (the user's pick, 2026-11-19: "giao diện học hỏi từ tool monofx loader"; mockups in the
+sandbox, tests/t74_loader_look/mockups/index.html; lessons.md there): the MonoFX Loader manager's lessons.
+  - fewer words: the bars' buttons are 28 px flat icons with a tooltip and an accessible name (Settings, Dock,
+    Deform, Isolate, X-ray, Detect locks, Update regions, the tree's tools, Fold, Back); only Publish keeps words;
+    Display and Color by keep theirs (they show a value);
+  - wide (>= NARROW_PX): the view controls sit in the top bar and Properties run from the top bar to the action
+    bar, beside the tree (the Scalp strip spans the window while painting); narrow: the view controls have their
+    own bar, Properties under the tree;
+  - the tree is painted by `_RowDelegate` (+ `_LayerTree.drawRow / drawBranches`): one background for every row,
+    hover / selected / selected + hover, the branch area and chevron in the row's colour, a hairline under each
+    row and vertical ones eye | name | status, covered by a hovered or selected row's fill; the eye filled when
+    drawn; the status column one width (its widest words, at most 40 %); names cut in the middle;
+  - Properties as an inspector: Details (label / value rows, never joined by dots) first, then Values / Brush,
+    foldable sections kept per viewer; one-off layer commands on the tree's tools and the right-click menu;
+  - every button has hover, pressed, checked, checked + hover; rounded borders 2 px at least (`_border_px`),
+    dividers 1 px; thin scroll bars at the pane's edge; the result line two lines at most (whole text in its
+    tooltip); a refresh keeps scroll, folds, selection and the current row.
+Before t74 the zones were:
   top bar      the node, its asset, Settings (font size, X-ray strength), Dock; under it the view bar: what the viewport draws
                (Display, Color by, Deform, Isolate). Viewing never sits next to an action that writes.
   left         the lock tree (All locks › group › lock, Missing locks), each row with its density layers and
@@ -607,12 +624,14 @@ class _RowDelegate(QStyledItemDelegate):
         painter.fillRect(r, QColor(color))
         col = index.column()
         if color == PANE:   # hover / selection cover the separators
-            painter.setPen(QPen(QColor(LINE), 1))
-            painter.drawLine(r.left(), r.bottom(), r.right(), r.bottom())
+            # filled, not drawn: Houdini's painter comes antialiased and a 1 px line then lands on two pixels,
+            # half strength each (#1f1f24 measured in the live window instead of LINE)
+            line = QColor(LINE)
+            painter.fillRect(QRect(r.left(), r.bottom(), r.width(), 1), line)
             if col == COL_EYE:
-                painter.drawLine(r.right(), r.top(), r.right(), r.bottom())
+                painter.fillRect(QRect(r.right(), r.top(), 1, r.height()), line)
             elif col == COL_STATUS:
-                painter.drawLine(r.left(), r.top(), r.left(), r.bottom())
+                painter.fillRect(QRect(r.left(), r.top(), 1, r.height()), line)
         if col == COL_EYE:
             self._eye(painter, r, index)
         elif col == COL_STATUS:
@@ -813,8 +832,7 @@ class _LayerTree(QTreeWidget):
         color = self.row_color(index)
         painter.fillRect(rect, QColor(color))
         if color == PANE:
-            painter.setPen(QPen(QColor(LINE), 1))
-            painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+            painter.fillRect(QRect(rect.left(), rect.bottom(), rect.width(), 1), QColor(LINE))   # pixel exact
         if not self.model().hasChildren(index):
             return
         painter.save()

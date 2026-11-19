@@ -654,6 +654,11 @@ predates this model.
   was drawn over Automatic's name at 760 px); the row bar puts its values on a second line when the name and
   values do not fit; a closed panel stops polling; Paint ended in the viewport says so. Left as decided:
   duplicate layer names, a short Properties at 400 px (Fold), the two X-ray toggles while painting.
+- Look from the MonoFX Loader (t74, 2026-11-19, the user's pick "C"; sandbox `tests/t74_loader_look/`): icon
+  buttons in the bars (only Publish keeps words), the view controls in the top bar when wide, Properties a
+  full-height inspector (Details first, foldable sections), the tree painted by a delegate (one background, row
+  and column separators covered by hover / selection, filled eye), no "·" joins. Behaviour unchanged. The row
+  tint of layer rows (listed "not built" above) is decided against: one background for every row.
 
 **Done when.**
 - A layer of D painted white gives D: on the eight kinds of skin (whorl, top of the head, a lock start, stacked

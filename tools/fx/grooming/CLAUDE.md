@@ -924,3 +924,36 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     limits (steps capped at `STEPS_MAX`). Known, not changed: F reaches the state only while the viewport has
     the keyboard focus (Houdini's hotkeys), and a pane the user closed in the desktop stays closed when they
     switch back (Houdini keeps a desktop's changes for the session).
+- Panel look from the MonoFX Loader (t74, 2026-11-19, the user's pick "C" of three; sandbox `tests/t74_loader_look/`:
+  `lessons.md` = what was taken, adapted or left and why, `mockups/`, `report.md`; `ui.py`'s docstring has the layout):
+  - Shared pieces the Loader has on main live in `ui_look.py` under the Loader's names (`_border_px`, `scale_css`,
+    `_crisp_icon`, `_filled_pixmap`, `_Props`, `_Section`, the Monos state colours): this branch has no
+    `tools.fx.anim_loader`, so do not import it; when the branch meets main, merge the two into one shared module.
+  - The tree is painted by `_RowDelegate` for every column and by `_LayerTree.drawRow / drawBranches`; the sheet
+    has no `QTreeWidget::item` / `::branch` rule any more. Measured before the change in the live t72 grab: the old
+    `::item` rules did paint PANE / SELECTED in Houdini 22 (the Loader's grey came from palette colours), but they
+    beat an item's own colour, so per-row lines, separators and a hover over the branch area needed the delegate.
+    Check tree colours in the live window (`QWidget.grab` of the tree inside Houdini, t74 `t74_gui.py`
+    `live_tree_*`), not only offscreen.
+  - One background for every row (the user's rule on the Loader): layer rows are not tinted; t70's "row tint: not
+    built" is closed as decided. Separators (the user, 2026-11-19): a `LINE` hairline under each row, vertical lines
+    eye | name | status, all covered by a hovered or selected row; so the status column takes ONE width for the whole
+    tree (`_fit_status`: widest words, at most 40 %).
+  - No "·" joins anywhere the artist reads (the user, 2026-11-19): Properties show `details` (label / value rows,
+    from `controller.properties` / `layers.layer_properties`; `subtitle` is kept, comma-joined, for other readers),
+    counts and lists by commas, clauses and message parts by "; ". The HDA's own status line still has dots (no HDA
+    change in t74).
+  - The eye: drawn = filled (pupil cut out), not drawn = outline with slash; who decided is the tone: TEXT_LABEL
+    the row's own, `FAINT` (#6b6b73 since t74, 3.1:1 on a hovered row; #63636b was 2.75:1) a group / layer /
+    isolate, `FAINT_ON_SELECTED` on a selected row (`ROLE_EYE`); the accent eye of isolate went.
+  - The Loader's 40 % dim eye measures 2.2:1 on PANE and its selected + hover colour `#2e3c5f` 4.36:1 under
+    TEXT_LABEL: here `FAINT` and `SELECTED_HOVER` #2c395b (4.56:1). Settings rows and stat cells go compact when
+    Properties are narrower than `COMPACT_PX` (540 x scale), so the tree can have ~300 px at 760 px wide.
+  - Live Houdini (t74 `gui_panel*`): the painter Houdini hands a delegate draws antialiased, so a 1 px `drawLine`
+    landed on two pixels at half strength (#1f1f24 for LINE): separators are `fillRect`s of 1 px. A `QWidget.grab()`
+    of the tree's VIEWPORT came back without the state just set (selection, hover); grab the panel (`ui.grab()`) and
+    map the viewport's coordinates (`viewport().mapTo(ui, ...)`), with the panel's poll stopped while sampling (a
+    rebuild deletes the items being sampled). Measured: row #17171b, selected #273352, hover #1f1f25, selected +
+    hover #2c395b, branch area the same as its row, separators #26262d, covered on hover / selection.
+  - Tests: `tests/test_grooming_look.py` (delegate states by pixels, separators, icon buttons' tooltips and
+    accessible names, the eye, the status width, the two-line result line, the sections, no "·").

@@ -282,3 +282,32 @@ def test_no_dot_joins_words_in_the_panel(app, prefs) -> None:
 def ui_role():
     from tools.fx.grooming.ui import ROLE_ROW
     return ROLE_ROW
+
+
+def test_a_faint_eye_is_lighter_on_a_selected_row(app, prefs) -> None:
+    """FAINT on SELECTED is 2.1-2.4:1 (under the 3:1 of an icon): a selected row draws it in FAINT_ON_SELECTED."""
+    from PySide6.QtGui import QColor
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app)
+    c.set_visible(ctl.SEL_GROUP, ["fringe"], False)              # its locks: eyes decided by the group (FAINT)
+    item = ui._rows[(ctl.SEL_LOCKS, 1)]
+    assert item.data(U.COL_EYE, U.ROLE_EYE)[1] == U.FAINT
+    tree = ui._tree
+    tree.scrollToItem(item)
+    app.processEvents()
+
+    def eye_colours():
+        img = _grab(ui)
+        r = tree.visualRect(tree.indexFromItem(item, U.COL_EYE))
+        bg = QColor(tree.row_color(tree.indexFromItem(item)))
+        return max(img.pixelColor(x, y).lightness() for x in range(r.left() + 2, r.right() - 2)
+                   for y in range(r.top() + 2, r.bottom() - 2))   # the eye's strokes, inside the separators
+    plain = eye_colours()
+    tree.blockSignals(True)
+    item.setSelected(True)
+    tree.blockSignals(False)
+    selected = eye_colours()
+    assert plain <= QColor(U.FAINT).lightness() + 2
+    assert selected >= QColor(U.FAINT_ON_SELECTED).lightness() - 12 and selected > plain + 15
+    ui.close()
