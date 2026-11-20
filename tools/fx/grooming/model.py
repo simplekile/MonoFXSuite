@@ -56,13 +56,22 @@ Point = tuple[float, float, float]
 
 
 def _points(raw) -> list[Point]:
-    """Stored [x, y, z] rows as tuples; a row that is not three numbers drops the whole list (it cannot be
-    guessed which handle it was)."""
+    """Stored [x, y, z] rows (lists, tuples or a numpy array) as tuples of floats. A row that is not three finite
+    numbers, or something that is not a list of rows, drops the whole list (it cannot be guessed which handle it
+    was)."""
+    if raw is None or isinstance(raw, (str, bytes, dict)):
+        return []
+    try:
+        rows = list(raw)
+    except TypeError:
+        return []
     out: list[Point] = []
-    for row in raw or ():
+    for row in rows:
         try:
             x, y, z = (float(c) for c in row)
         except (TypeError, ValueError):
+            return []
+        if not (math.isfinite(x) and math.isfinite(y) and math.isfinite(z)):
             return []
         out.append((x, y, z))
     return out
@@ -70,10 +79,19 @@ def _points(raw) -> list[Point]:
 
 def _handles(raw) -> int | None:
     """A per-lock handle count, None when unset or not a whole number in config.HANDLES_MIN..HANDLES_MAX."""
-    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) != raw:
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    if isinstance(raw, float) and (not math.isfinite(raw) or int(raw) != raw):
         return None
     n = int(raw)
     return n if config.HANDLES_MIN <= n <= config.HANDLES_MAX else None
+
+
+def _json_default(o):
+    """json.dumps hook: a numpy array or scalar stored on a lock (handles straight from `logic`) as plain lists."""
+    if hasattr(o, "tolist"):
+        return o.tolist()
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
 
 
 @dataclass
@@ -122,11 +140,11 @@ class Lock:
     def edited(self) -> bool:
         """Its spine differs from the measured one: control points stored (a drawn lock is never "edited", it has
         no measured spine to differ from)."""
-        return not self.drawn and bool(self.spine)
+        return not self.drawn and len(self.spine) > 0
 
     def reset_spine(self) -> bool:
         """Back to the measured spine (the handle count the artist set stays). False when there was no edit."""
-        had = bool(self.spine)
+        had = len(self.spine) > 0
         self.spine = []
         return had
 
@@ -408,7 +426,7 @@ class GroomData:
         pts = _points(curve)
         if len(pts) < 2:
             raise ValueError("a drawn lock needs a curve of at least 2 points")
-        if width_cm <= 0 or thick_cm <= 0:
+        if not (0 < width_cm < math.inf and 0 < thick_cm < math.inf):
             raise ValueError("a drawn lock needs a width and a thickness over 0")
         lock_id = self.next_lock_id()
         if not name:
@@ -496,7 +514,7 @@ class GroomData:
 
     # ---- (de)serialise ----
     def to_json(self) -> str:
-        return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True, indent=1)
+        return json.dumps(asdict(self), ensure_ascii=False, sort_keys=True, indent=1, default=_json_default)
 
     @classmethod
     def from_json(cls, text: str | None) -> "GroomData":

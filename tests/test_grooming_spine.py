@@ -462,3 +462,40 @@ def test_flat_handles_round_trip():
     flat = logic.flat_handles(H)
     assert flat == [0.0, 0.0, 0.0, 0.1, 0.2, 0.3, 1.5, -2.0, 0.25] and logic.unflat_handles(flat) == H
     assert logic.unflat_handles(flat + [7.0]) == H and logic.flat_handles([]) == []
+
+
+# ---- the model takes what logic returns, and garbage in the new fields is dropped, never raised (t80 D1, D2) ----
+
+def test_model_takes_numpy_handles_from_logic():
+    H, _gap = logic.stroke_handles(np.c_[np.linspace(0, 0.2, 30), np.zeros(30), np.zeros(30)], 100.0)
+    d = GroomData()
+    lk = d.add_drawn_lock("g", H, 2.0, 0.6)
+    assert len(lk.curve) == len(H) and all(isinstance(p, tuple) for p in lk.curve)
+    ed = Lock(9, "a", "g", spine=H)                    # assigned as is by a caller
+    assert ed.edited and logic.lock_handle_count(ed, 10.0) == len(H)
+    d.locks.append(ed)
+    assert len(GroomData.from_json(d.to_json()).lock(9).spine) == len(H)
+    assert ed.reset_spine() and not ed.edited
+
+
+@pytest.mark.parametrize("field,value", [("handles", float("nan")), ("handles", float("inf")), ("handles", -float("inf")),
+                                         ("spine", 5), ("spine", [[0, 0, 0], [float("nan"), 0, 0]]),
+                                         ("spine", [[0, 0, 0], [float("inf"), 0, 0]]), ("curve", 7)])
+def test_garbage_in_new_fields_is_dropped(field, value):
+    d = GroomData(locks=[Lock(1, "a", "g", spine=[(0.0, 0.0, 0.0), (0.1, 0.0, 0.0)], handles=6)],
+                  orphans=[Orphan(2, "o", "g")])
+    raw = json.loads(d.to_json())
+    raw["locks"][0][field] = value
+    raw["orphans"][0][field] = value
+    out = GroomData.from_json(json.dumps(raw))
+    lk, orphan = out.lock(1), out.orphans[0]
+    if field == "handles":
+        assert lk.handles is None and orphan.handles is None
+    else:
+        assert getattr(lk, field) == [] and getattr(orphan, field, []) == []
+
+
+def test_drawn_lock_refuses_non_finite_width():
+    for w, t in ((float("nan"), 1.0), (float("inf"), 1.0), (1.0, float("nan"))):
+        with pytest.raises(ValueError):
+            GroomData().add_drawn_lock("g", [(0, 0, 0), (0, 1, 0)], w, t)
