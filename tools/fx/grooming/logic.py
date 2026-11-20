@@ -919,9 +919,9 @@ def handle_count(length_cm: float, override: int | None = None) -> int:
 
 def lock_handle_count(lock, length_cm: float) -> int:
     """The handles a lock has now: an edit's own count, a drawn lock's curve, else `handle_count`."""
-    if getattr(lock, "source", config.SOURCE_MESH) == config.SOURCE_DRAWN and getattr(lock, "curve", None):
+    if getattr(lock, "source", config.SOURCE_MESH) == config.SOURCE_DRAWN and getattr(lock, "curve", None) is not None and len(lock.curve):
         return len(lock.curve)
-    if getattr(lock, "spine", None):
+    if getattr(lock, "spine", None) is not None and len(lock.spine):
         return len(lock.spine)
     return handle_count(length_cm, getattr(lock, "handles", None))
 
