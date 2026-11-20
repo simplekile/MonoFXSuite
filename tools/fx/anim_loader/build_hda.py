@@ -175,6 +175,22 @@ from apps.houdini import anim_loader_adapter
 anim_loader_adapter.author_show(hda, stage)
 '''
 
+# Time codes per second of the branch = the anim / geometry file's, the last layer slot set (adapter: lookdev, fx,
+# then the anim). A Sublayer LOP takes the strongest layer's, the lookdev's: V001 of veh_Spaceship authors none, so
+# the branch read USD's fallback 24 and a 30 fps anim was squeezed into 0-24 (sh002 v004). 0 = the file says
+# nothing: Houdini's own rule. Python with hou and pxr only, so a baked loader keeps it.
+BRANCH_FPS_EXPR = '''from pxr import Sdf
+node = hou.pwd().parent()
+files = [node.evalParm(n) for n in (%s) if node.parm(n) is not None]
+files = [f for f in files if f]
+layer = Sdf.Layer.FindOrOpen(files[-1]) if files else None
+if layer is None:
+    return 0
+if layer.HasTimeCodesPerSecond():
+    return layer.timeCodesPerSecond
+return layer.framesPerSecond if layer.HasFramesPerSecond() else 0
+''' % ", ".join(repr(n) for n in config.P_LAYERS)
+
 PYTHON_MODULE = "from apps.houdini.anim_loader_adapter import *\n"
 ON_CREATED = "from apps.houdini import anim_loader_adapter\nanim_loader_adapter.on_created(kwargs['node'])\n"
 ON_LOADED = "from apps.houdini import anim_loader_adapter\nanim_loader_adapter.on_loaded(kwargs['node'])\n"
@@ -201,7 +217,10 @@ def build_network(sub) -> None:
     layers = _node(sub, "sublayer", "branch_layers", num_files=len(config.P_LAYERS))
     for i, name in enumerate(config.P_LAYERS, start=1):
         layers.parm(f"filepath{i}").set(f'`chs("../{name}")`')
-    topo = _node(sub, "pythonscript", "groom_topology", (layers,), python=GROOM_TOPO_CODE)
+    fps = _node(sub, "configurelayer", "branch_fps", (layers,))
+    fps.parm("timepersecond").setExpression(BRANCH_FPS_EXPR, hou.exprLanguage.Python)
+    fps.parm("settimepersecond").setExpression('ch("timepersecond") > 0', hou.exprLanguage.Hscript)
+    topo = _node(sub, "pythonscript", "groom_topology", (fps,), python=GROOM_TOPO_CODE)
     ptg = topo.parmTemplateGroup()
     ptg.append(hou.StringParmTemplate("groom_file", "Groom File", 1))
     topo.setParmTemplateGroup(ptg)

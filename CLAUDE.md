@@ -297,6 +297,11 @@
   `startnewlayer` + Python LOP, no manifest): Graft Stages flattens its branch into one layer, where the first
   frame's samples beat a clip, and a same-layer anim beats a cloth clip. That gives motion blur; a cache without
   time samples falls back to Sublayer `$F` (no blur, said on the node).
+- The branch's time codes per second are the anim / geometry file's (the last `mx_layer_N` set), by the Configure
+  Layer `branch_fps` after `branch_layers` (a Python expression with hou + pxr only, so bakes keep it). A Sublayer LOP
+  takes its strongest layer's, the lookdev's: veh_Spaceship lookdev V001 authors none (USD's fallback 24), so sh002
+  v004's 30 fps anim came out on 0-24 against a camera on 0-30. Check: hython
+  `tests/houdini/anim_loader/accept_branch_fps.py <fake_project> <out>` (fails with v0.1.43's HDA).
 - The node is **MonoFX Loader**, type `monofx::loader::1.0` in `otls/monofx_loader.hdalc` (the user's call, 2026-11-17:
   it must not read "anim loader"; Tab > MonoFX names it `monofx_loader`). `build_hda.py` with no argument builds it
   and the same node as `mono_anim_loader::2.2` (`otls/mono_anim_loader.hdalc`) so scenes saved with 2.2 open; the
