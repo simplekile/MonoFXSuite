@@ -1,0 +1,572 @@
+"""MONO Grooming panel, the MonoFX Loader's look (t74, the user's pick "C", 2026-11-19), offscreen with the fake
+adapter: the delegate-painted tree (row colours, hover, selection, branch area, separators), the icon buttons'
+tooltips and accessible names, the eye, the status column, the result line, the inspector's sections, no "·"."""
+
+from __future__ import annotations
+
+import pytest
+
+from tools.fx.grooming import controller as ctl
+from tools.fx.grooming.layers import SEL_LAYER
+
+from test_grooming_layers import LayerAdapter, _layered
+
+
+@pytest.fixture(scope="module")
+def app():
+    QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+    return QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+
+
+@pytest.fixture
+def prefs(tmp_path, monkeypatch):
+    from tools.fx.grooming import ui as ui_mod
+    monkeypatch.setattr(ui_mod, "PREFS_PATH", str(tmp_path / "grooming_prefs.json"))
+    return ui_mod
+
+
+def _panel(app, width=1100, height=820):
+    from tools.fx.grooming.ui import GroomingUI
+
+    adapter = LayerAdapter()
+    ids = _layered(adapter)
+    ui = GroomingUI()
+    c = ctl.GroomController(adapter, ui)
+    ctl.bind(ui, c)
+    c.set_node(adapter.node)
+    ui.resize(width, height)
+    ui.show()
+    for _ in range(4):
+        app.processEvents()
+    return adapter, ui, c, ids
+
+
+def _grab(ui):
+    from PySide6.QtGui import QImage
+    tree = ui._tree
+    tree.viewport().repaint()
+    return tree.viewport().grab().toImage().convertToFormat(QImage.Format.Format_RGB32)
+
+
+def _hex(img, x, y) -> str:
+    return img.pixelColor(x, y).name()
+
+
+# ---------------------------------------------------------------------------
+# The helpers named as in the Loader
+# ---------------------------------------------------------------------------
+def test_border_px_is_two_at_least_and_follows_the_scale() -> None:
+    from tools.fx.grooming.ui_look import _border_px, round_borders, scale_css
+    assert [_border_px(s) for s in (0.8, 1.0, 1.5, 2.0, 3.0)] == [2, 2, 2, 3, 4]
+    assert round_borders("border: 1px solid red; border-bottom: 1px solid blue;", 2.0) == \
+        "border: 3px solid red; border-bottom: 1px solid blue;"
+    assert scale_css("padding: 4px; border-bottom: 1px solid x;", 1.5) == "padding: 6px; border-bottom: 1px solid x;"
+
+
+def test_filled_eye_cuts_its_pupil_out(app) -> None:
+    from tools.fx.grooming.ui_look import eye_pixmap
+    on = eye_pixmap(True, 24, "#a3a3ae", 1.0).toImage()
+    off = eye_pixmap(False, 24, "#a3a3ae", 1.0).toImage()
+    assert on.pixelColor(12, 12).alpha() == 0          # the pupil: the row shows through
+    assert on.pixelColor(6, 12).alpha() > 200          # the body: solid
+    assert off.pixelColor(6, 12).alpha() < 200         # the outline eye is not filled
+
+
+# ---------------------------------------------------------------------------
+# The tree, painted by its delegate
+# ---------------------------------------------------------------------------
+def test_tree_rows_paint_their_states_and_the_branch_area_follows(app, prefs) -> None:
+    from tools.fx.grooming import ui as U
+    from tools.fx.grooming.ui_look import SELECTED_HOVER
+
+    adapter, ui, c, ids = _panel(app)
+    tree = ui._tree
+    sel = ui._rows[(SEL_LAYER, ids["crown"])]
+    plain = ui._rows[(SEL_LAYER, ids["soften"])]
+    hov = ui._rows[(ctl.SEL_LOCKS, 1)]
+    c.select(SEL_LAYER, (ids["crown"],))
+    ui.set_selection(c.selection)
+    tree._hover = hov
+    for _ in range(3):
+        app.processEvents()
+    img = _grab(ui)
+    name_x = lambda it: tree.visualRect(tree.indexFromItem(it, U.COL_NAME)).left() + 2   # noqa: E731: the name cell
+    branch_x = lambda it: tree.visualRect(tree.indexFromItem(it, U.COL_NAME)).left() - 4  # noqa: E731: the branch area
+    for item, want in ((sel, U.SELECTED), (plain, U.PANE), (hov, U.BG_HOVER)):
+        r = tree.visualItemRect(item)
+        y = r.top() + 3
+        assert _hex(img, name_x(item), y) == want.lower(), item.text(U.COL_NAME)
+        assert _hex(img, branch_x(item), y) == want.lower(), "branch area " + item.text(U.COL_NAME)
+    assert tree.row_color(tree.indexFromItem(sel)) == U.SELECTED
+    tree._hover = sel
+    assert tree.row_color(tree.indexFromItem(sel)) == SELECTED_HOVER
+    tree._hover = None
+    assert tree.row_color(tree.indexFromItem(hov)) == U.PANE
+    ui.close()
+
+
+def test_separators_on_plain_rows_and_covered_on_hover_and_selection(app, prefs) -> None:
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app)
+    tree = ui._tree
+    sel = ui._rows[(SEL_LAYER, ids["crown"])]
+    plain = ui._rows[(SEL_LAYER, ids["soften"])]
+    hov = ui._rows[(ctl.SEL_LOCKS, 1)]
+    c.select(SEL_LAYER, (ids["crown"],))
+    ui.set_selection(c.selection)
+    tree._hover = hov
+    for _ in range(3):
+        app.processEvents()
+    img = _grab(ui)
+    head = tree.header()
+    eye_right = head.sectionViewportPosition(U.COL_EYE) + head.sectionSize(U.COL_EYE) - 1
+    status_left = head.sectionViewportPosition(U.COL_STATUS)
+    for item, fill, lines in ((plain, U.PANE, True), (sel, U.SELECTED, False), (hov, U.BG_HOVER, False)):
+        r = tree.visualItemRect(item)
+        mid = r.center().y()
+        want = U.LINE if lines else fill
+        assert _hex(img, eye_right, mid) == want.lower(), ("eye | name", item.text(U.COL_NAME))
+        assert _hex(img, status_left, mid) == want.lower(), ("name | status", item.text(U.COL_NAME))
+        assert _hex(img, status_left + 20, r.bottom()) == want.lower(), ("under the row", item.text(U.COL_NAME))
+    ui.close()
+
+
+def test_status_column_takes_its_widest_words_for_every_row(app, prefs) -> None:
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app)
+    tree = ui._tree
+    cells = tree.itemDelegateForColumn(U.COL_STATUS)
+    widest = max(cells.status_width(it.data(U.COL_NAME, U.ROLE_ROW) or {}) for it in ui._rows.values())
+    room = tree.viewport().width() - tree.header().sectionSize(U.COL_EYE)
+    assert tree.header().sectionSize(U.COL_STATUS) == max(ui.z.px(24), min(widest, int(room * 0.4)))
+    auto = ui._rows[(SEL_LAYER, -1)].data(U.COL_NAME, U.ROLE_ROW)
+    assert auto["parts"][0][0] == "per lock"                     # it was cut to "each lock's D…"
+    ui.close()
+
+
+def test_eye_cells_fill_when_drawn_and_never_take_the_accent(app, prefs) -> None:
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app)
+    shown = ui._rows[(ctl.SEL_LOCKS, 1)].data(U.COL_EYE, U.ROLE_ICON).pixmap(32).toImage()
+    c.set_visible(ctl.SEL_LOCKS, [1], False)
+    hidden = ui._rows[(ctl.SEL_LOCKS, 1)].data(U.COL_EYE, U.ROLE_ICON).pixmap(32).toImage()
+    w = shown.width()
+    assert shown.pixelColor(w // 2, w // 2).alpha() == 0 and shown.pixelColor(w // 4, w // 2).alpha() > 200
+    assert hidden.pixelColor(w // 4, w // 2).alpha() < 200
+    ui.close()
+
+
+def test_refresh_keeps_scroll_folds_selection_and_current_row(app, prefs) -> None:
+    adapter, ui, c, ids = _panel(app, 1100, 420)
+    tree = ui._tree
+    crown_thin = ui._rows[(SEL_LAYER, ids["crown_thin"])]
+    crown_thin.setExpanded(False)
+    last = ui._rows[(ctl.SEL_LOCKS, 4)]
+    tree.setCurrentItem(last)
+    c.select_locks([4])
+    ui.set_selection(c.selection)
+    tree.verticalScrollBar().setValue(tree.verticalScrollBar().maximum())
+    before = tree.verticalScrollBar().value()
+    c._last_json = None
+    c.refresh()
+    for _ in range(3):
+        app.processEvents()
+    assert not ui._rows[(SEL_LAYER, ids["crown_thin"])].isExpanded()
+    assert tree.currentItem() is ui._rows[(ctl.SEL_LOCKS, 4)] and ui._rows[(ctl.SEL_LOCKS, 4)].isSelected()
+    assert tree.verticalScrollBar().value() == before
+    ui.close()
+
+
+# ---------------------------------------------------------------------------
+# Fewer words: icon buttons with a tooltip and an accessible name
+# ---------------------------------------------------------------------------
+def test_icon_buttons_say_what_they_do_in_tooltip_and_accessible_name(app, prefs) -> None:
+    adapter, ui, c, ids = _panel(app)
+    c.select(SEL_LAYER, (ids["crown"],))
+    c.paint_on()
+    app.processEvents()
+    names = {}
+    for b in ui._icon_buttons:
+        try:
+            name, tip = b.accessibleName(), b.toolTip()
+        except RuntimeError:   # a Properties button of an earlier selection, deleted
+            continue
+        assert name and tip and tip.startswith(name), (name, tip)
+        assert b.text().strip() == "", name                  # only the primary keeps words
+        names[name] = b
+    for want in ("Settings", "Dock", "Deform", "Isolate", "X-ray (X)", "Detect locks", "Update regions",
+                 "New density layer", "New paint layer", "Move up", "Move down", "Delete", "Scalp X-ray", "Fold"):
+        assert want in names, want
+    assert ui._publish_btn.text().strip() == "Publish"
+    side = ui.z.px(28)
+    assert all(b.width() == side and b.height() == side for b in names.values() if b.isVisible())
+    ui.close()
+
+
+def test_view_controls_move_to_the_top_bar_when_wide(app, prefs) -> None:
+    adapter, ui, c, ids = _panel(app, 1100)
+    assert ui._view_box.parentWidget() is ui._top_view and ui._view_bar.isHidden()
+    ui.resize(420, 900)
+    for _ in range(3):
+        app.processEvents()
+    assert ui._view_box.parentWidget() is ui._view_bar and not ui._view_bar.isHidden()
+    ui.resize(1100, 820)
+    for _ in range(3):
+        app.processEvents()
+    assert ui._view_box.parentWidget() is ui._top_view
+    ui.close()
+
+
+# ---------------------------------------------------------------------------
+# The result line, the inspector, the joiners
+# ---------------------------------------------------------------------------
+def test_result_line_is_two_lines_at_most_with_the_whole_text_in_its_tooltip(app, prefs) -> None:
+    adapter, ui, c, ids = _panel(app, 400, 900)
+    long = "Detect locks: 61 locks, 58 ok; " + "a long reason that goes on and on, " * 12 + "the end"
+    ui.set_message(long)
+    for _ in range(3):
+        app.processEvents()
+    ui._fit_message()
+    label = ui._message_label
+    assert ui.message() == long and label.text().endswith("…") and label.toolTip() == long
+    assert label.maximumHeight() <= label.fontMetrics().lineSpacing() * 2 + 4
+    ui.set_message("Crown: density 75 / cm²")
+    assert label.text() == "Crown: density 75 / cm²" and label.toolTip() == ""
+    ui.close()
+
+
+def test_properties_read_as_an_inspector_with_sections_kept_per_viewer(app, prefs) -> None:
+    from tools.fx.grooming.ui_look import _Props, _Section
+
+    adapter, ui, c, ids = _panel(app)
+    c.select(SEL_LAYER, (ids["crown_thin"],))
+    app.processEvents()
+    sections = {s.key: s for s in ui._props_widget.findChildren(_Section) if s.isVisible()}
+    assert list(sections) == ["details", "values"]
+    rows = [p.rows() for p in ui._props_widget.findChildren(_Props) if p.isVisible()]
+    assert any(r.get("Kind") == "Density layer" and r.get("Owner") == "All locks" for r in rows)
+    sections["details"].click()                                           # fold it: kept in the prefs
+    assert prefs.load_prefs().get("inspector_details") is False
+    c.select(SEL_LAYER, (ids["soften"],))
+    app.processEvents()
+    again = {s.key: s for s in ui._props_widget.findChildren(_Section) if s.isVisible()}
+    assert not again["details"].isChecked() and again["details"].body.isHidden()
+    c.select(SEL_LAYER, (ids["crown"],))                                  # a paint layer: Layer starts folded
+    app.processEvents()
+    paint = {s.key: s for s in ui._props_widget.findChildren(_Section) if s.isVisible()}
+    assert list(paint) == ["brush", "layer_actions", "details"] and not paint["layer_actions"].isChecked()
+    ui.close()
+
+
+def test_no_dot_joins_words_in_the_panel(app, prefs) -> None:
+    """No "·" in anything the panel shows (the user's ask, t74): label and button texts, tooltips of widgets and
+    tree cells, accessible names and descriptions, placeholders, the window title, the tree rows' parts and every
+    message the controller sends, over the panel's states (t75 widened it from the visible labels)."""
+    from PySide6.QtWidgets import QTreeWidgetItemIterator, QWidget
+
+    adapter, ui, c, ids = _panel(app)
+    messages = []
+    shown = ui.set_message
+    ui.set_message = lambda text, *a, **k: (messages.append(text), shown(text, *a, **k))[1]
+
+    def strings():
+        for w in ui.findChildren(QWidget):
+            for getter in ("text", "toolTip", "accessibleName", "accessibleDescription", "placeholderText", "title"):
+                g = getattr(w, getter, None)
+                try:
+                    value = g() if callable(g) else None
+                except TypeError:
+                    value = None
+                if isinstance(value, str) and value:
+                    yield f"{type(w).__name__}.{getter}", value
+        yield "window", ui.windowTitle()
+        it = QTreeWidgetItemIterator(ui._tree)
+        while it.value():
+            item = it.value()
+            for col in range(ui._tree.columnCount()):
+                yield "cell", item.text(col)
+                yield "cell tooltip", item.toolTip(col)
+                row = item.data(col, ui_role()) or {}
+                for t, _c in (row.get("parts", []) if isinstance(row, dict) else []):
+                    yield "row part", t
+            it += 1
+
+    states = [lambda: c.select(SEL_LAYER, (ids["crown_thin"],)), lambda: c.select(SEL_LAYER, (ids["soften"],)),
+              lambda: c.select(SEL_LAYER, (ids["crown"],)), lambda: c.paint_on(), lambda: c.set_brush(view="layer"),
+              lambda: c.paint_off(), lambda: c.select(SEL_LAYER, (-1,)), lambda: c.select_locks([3]),
+              lambda: c.select_locks([1, 2, 3]), lambda: c.select("group", ("fringe",)),
+              lambda: c.select("defaults", ()), lambda: c.toggle_isolate(), lambda: c.isolate_off(),
+              lambda: c.toggle_xray(), lambda: c.select(SEL_LAYER, (ids["crown_thin"],)),
+              lambda: c.add_density_layer(), lambda: c.add_mask_layer("paint"), lambda: c.move_layer(True),
+              lambda: c.delete_layer(), lambda: c.set_visible(ctl.SEL_LOCKS, [1], False),
+              lambda: ui.show_settings(c.settings_info())]
+    seen = 0
+    for go in states:
+        go()
+        for _ in range(2):
+            app.processEvents()
+        found = list(strings())
+        seen += len(found)
+        hits = [(where, t) for where, t in found if "·" in t]
+        assert not hits, hits
+    assert seen > 500 and len(messages) >= 5, (seen, messages)   # the scan reached the panel and its messages
+    assert not [m for m in messages if "·" in m], messages
+    ui.close()
+
+
+def ui_role():
+    from tools.fx.grooming.ui import ROLE_ROW
+    return ROLE_ROW
+
+
+def test_a_faint_eye_is_lighter_on_a_selected_row(app, prefs) -> None:
+    """FAINT on SELECTED is 2.1-2.4:1 (under the 3:1 of an icon): a selected row draws it in FAINT_ON_SELECTED."""
+    from PySide6.QtGui import QColor
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app)
+    c.set_visible(ctl.SEL_GROUP, ["fringe"], False)              # its locks: eyes decided by the group (FAINT)
+    item = ui._rows[(ctl.SEL_LOCKS, 1)]
+    assert item.data(U.COL_EYE, U.ROLE_EYE)[1] == U.FAINT
+    tree = ui._tree
+    tree.scrollToItem(item)
+    app.processEvents()
+
+    def eye_colours():
+        img = _grab(ui)
+        r = tree.visualRect(tree.indexFromItem(item, U.COL_EYE))
+        bg = QColor(tree.row_color(tree.indexFromItem(item)))
+        return max(img.pixelColor(x, y).lightness() for x in range(r.left() + 2, r.right() - 2)
+                   for y in range(r.top() + 2, r.bottom() - 2))   # the eye's strokes, inside the separators
+    plain = eye_colours()
+    tree.blockSignals(True)
+    item.setSelected(True)
+    tree.blockSignals(False)
+    selected = eye_colours()
+    assert plain <= QColor(U.FAINT).lightness() + 2
+    assert selected >= QColor(U.FAINT_ON_SELECTED).lightness() - 12 and selected > plain + 15
+    ui.close()
+
+
+# ---------------------------------------------------------------------------
+# The user's asks on the docked panel (2026-11-19)
+# ---------------------------------------------------------------------------
+def test_picking_a_density_layer_does_not_move_the_rows(app, prefs) -> None:
+    """The row bar sits UNDER the tree: above it, showing it on the click pushed the clicked row down."""
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app, 760, 820)
+    tree = ui._tree
+    c.select(ctl.SEL_LOCKS, (1,))
+    for _ in range(4):
+        app.processEvents()
+    assert ui._row_bar.isHidden()
+    item = ui._rows[(SEL_LAYER, ids["crown_thin"])]
+
+    def y() -> int:
+        return tree.viewport().mapTo(ui, tree.visualItemRect(item).topLeft()).y()
+    before = y()
+    c.select(SEL_LAYER, (ids["crown_thin"],))
+    for _ in range(4):
+        app.processEvents()
+    item = ui._rows[(SEL_LAYER, ids["crown_thin"])]
+    assert not ui._row_bar.isHidden()
+    assert y() == before
+    bar_top = ui._row_bar.mapTo(ui, ui._row_bar.rect().topLeft()).y()
+    assert bar_top >= tree.mapTo(ui, tree.rect().bottomLeft()).y()     # under the tree
+    ui.close()
+
+
+def test_density_status_shows_the_value_and_its_unit_in_the_tooltip(app, prefs) -> None:
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app)
+    item = ui._rows[(SEL_LAYER, ids["crown_thin"])]
+    row = item.data(U.COL_NAME, U.ROLE_ROW)
+    assert row["parts"][-1][0] == "75"                   # "75 /cm²" was cut to "75 /c…"
+    assert "strands / cm²" in item.toolTip(U.COL_STATUS) and "100%" in item.toolTip(U.COL_STATUS)
+    ui.close()
+
+
+def test_buttons_are_filled_and_fields_are_not(app, prefs) -> None:
+    """Quick picks read as fields when both were outlined on the pane: a button has a fill, a field stays inset."""
+    from PySide6.QtWidgets import QLineEdit, QToolButton
+
+    from tools.fx.grooming import ui_look as K
+
+    adapter, ui, c, ids = _panel(app)
+    c.select(SEL_LAYER, (ids["crown_thin"],))
+    for _ in range(4):
+        app.processEvents()
+    pick = next(b for b in ui._props_widget.findChildren(QToolButton) if b.text().strip() == "150")
+    field = next(f for f in ui.findChildren(QLineEdit) if f.isVisible() and f is not ui._filter)
+    b = pick.grab().toImage()
+    f = field.grab().toImage()
+    inset = ui.z.px(6)
+    assert b.pixelColor(inset, b.height() // 2).name() == K.BUTTON
+    assert f.pixelColor(inset, f.height() // 2).name() != K.BUTTON
+    ui.close()
+
+
+def test_a_disabled_icon_button_looks_disabled(app, prefs) -> None:
+    """Up / Down / Delete with nothing to act on drew like the usable ones in Houdini (the user, t74)."""
+    from tools.fx.grooming import ui_look as K
+
+    adapter, ui, c, ids = _panel(app)
+    c.select(ctl.SEL_LOCKS, (1,))
+    for _ in range(4):
+        app.processEvents()
+    tools = ui._layer_tools
+    assert not tools["delete"].isEnabled() and tools["density"].isEnabled()
+
+    whole = ui.grab().toImage()          # a button grabbed alone has no pane behind it
+
+    def brightest(b) -> int:
+        dpr = whole.devicePixelRatio()
+        o = b.mapTo(ui, b.rect().topLeft())
+        return max(whole.pixelColor(int((o.x() + x) * dpr), int((o.y() + y) * dpr)).lightness()
+                   for x in range(b.width()) for y in range(b.height()))
+    from PySide6.QtGui import QColor
+    assert brightest(tools["delete"]) <= QColor(K.DISABLED_ICON).lightness() + 8
+    assert brightest(tools["density"]) > QColor(K.DISABLED_ICON).lightness() + 40
+    ui.close()
+
+
+def test_tree_takes_its_share_of_a_wide_panel_until_the_user_drags(app, prefs) -> None:
+    """Docked at ~1150 px the tree had ~350 px (the head's count and "per lock" were cut): 40 % at least, following
+    the window, until the user drags the divider."""
+    from tools.fx.grooming import ui as U
+
+    adapter, ui, c, ids = _panel(app, 1150, 820)
+    left = ui._body.sizes()[0]
+    assert left >= int(1150 * U.TREE_SHARE) - 2
+    ui.resize(1500, 820)
+    for _ in range(4):
+        app.processEvents()
+    assert ui._body.sizes()[0] >= int(1500 * U.TREE_SHARE) - 2
+    ui._body.splitterMoved.emit(560, 1)          # the user's drag (wider than the names need)
+    ui._body.setSizes([560, 940])
+    ui.resize(1600, 820)
+    for _ in range(4):
+        app.processEvents()
+    assert ui._body.sizes()[0] == 560
+    auto = ui._rows[(SEL_LAYER, -1)]
+    cells = ui._tree.itemDelegateForColumn(U.COL_STATUS)
+    from PySide6.QtGui import QFontMetrics
+    need = QFontMetrics(ui.z.font("small")).horizontalAdvance("per lock") + ui.z.px(14)
+    assert ui._tree.header().sectionSize(U.COL_STATUS) >= need + ui.z.px(8)   # slack for Houdini's metrics
+    ui.close()
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_tree_head_count_is_never_cut_without_an_ellipsis(app, prefs, scale, monkeypatch) -> None:
+    """t75 defect 1: at a 760 px panel the head read "61 locks, 3 group", cut with no ellipsis. At every width from
+    400 to 1100 px the count shows whole, a shorter form ("4 locks"), or ends in "…"; anything shorter than the full
+    text carries the full text in its tooltip."""
+    monkeypatch.setattr(prefs, "houdini_scale", lambda: scale)
+    adapter, ui, c, ids = _panel(app, 400)
+    c.select(SEL_LAYER, (ids["crown_thin"],))
+    label = ui._count_label
+    full = "4 locks, 2 groups"
+    for width in range(400, 1101, 20):
+        ui.resize(width, 820)
+        for _ in range(4):
+            app.processEvents()
+        shown = label.text()
+        metrics = label.fontMetrics()
+        assert metrics.horizontalAdvance(shown) <= label.contentsRect().width(), (width, shown, label.width())
+        assert shown in (full, "4 locks") or shown.endswith("…"), (width, shown)
+        if shown != full:
+            assert label.toolTip() == full, (width, shown, label.toolTip())
+    ui.resize(2000, 820)
+    for _ in range(4):
+        app.processEvents()
+    assert label.text() == full and label.toolTip() == ""     # a wide panel: the whole count
+    ui.close()
+
+
+HELEN_COUNT = ("61 locks, 3 groups", "61 locks")
+HEAD_WIDTHS = range(400, 1241, 20)
+
+
+def _helen_panel(app, width: int, scale: float):
+    """Helen-sized (61 locks in 3 groups, a density layer selected) at `width` px, scale `scale`, shown fresh."""
+    from tools.fx.grooming import ui as U
+    from tools.fx.grooming.model import GroomData, Group, Lock
+
+    U.houdini_scale = lambda: scale
+    adapter = LayerAdapter()
+    locks, i = [], 1
+    for gid, n in (("bang", 20), ("base", 21), ("back", 20)):
+        for k in range(1, n + 1):
+            locks.append(Lock(id=i, name=f"hair_{gid}_{k:02d}", group=gid))
+            i += 1
+    data = GroomData(asset="char_Helen", groups=[Group(id=g, name=f"hair_{g}") for g in ("bang", "base", "back")],
+                     locks=locks)
+    layer = data.add_mask("Crown thin", kind="density", density=75.0).id
+    adapter.text = data.to_json()
+    ui = U.GroomingUI()
+    c = ctl.GroomController(adapter, ui)
+    ctl.bind(ui, c)
+    c.set_node(adapter.node)
+    c.select(SEL_LAYER, (layer,))
+    ui.resize(width, 820)
+    ui.show()
+    _settle(app)
+    return ui
+
+
+def _settle(app) -> None:
+    from PySide6.QtTest import QTest
+    for _ in range(6):
+        app.processEvents()
+    QTest.qWait(20)
+    for _ in range(6):
+        app.processEvents()
+
+
+def _head(ui) -> tuple[str, int]:
+    return ui._count_label.text(), ui._body.sizes()[0] if ui._narrow is False else -1
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_head_count_reads_whole_in_a_fresh_window_at_every_width(app, prefs, scale, monkeypatch) -> None:
+    """t75 recheck: a window opened at 700-800 px (scale 1) or 1050-1200 px (scale 1.5) read "6…" / "61…": the
+    room kept for the settings beat the head's need. Opened at any width from 400 to 1240 px, the count reads
+    "61 locks, 3 groups" or "61 locks", never elided, and the shorter form has the full count in its tooltip."""
+    from tools.fx.grooming import ui as U
+    monkeypatch.setattr(U, "houdini_scale", U.houdini_scale)
+    bad = []
+    for width in HEAD_WIDTHS:
+        ui = _helen_panel(app, width, scale)
+        text = ui._count_label.text()
+        if text not in HELEN_COUNT or (text != HELEN_COUNT[0] and ui._count_label.toolTip() != HELEN_COUNT[0]):
+            bad.append((width, text))
+        ui.close()
+    assert not bad, bad
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_head_count_and_tree_are_the_same_opened_or_resized(app, prefs, scale, monkeypatch) -> None:
+    """The same width gives the same count and tree width whether the window opens at it or is resized to it,
+    up from 400 px and back down."""
+    from tools.fx.grooming import ui as U
+    monkeypatch.setattr(U, "houdini_scale", U.houdini_scale)
+    fresh = {}
+    for width in HEAD_WIDTHS:
+        ui = _helen_panel(app, width, scale)
+        fresh[width] = _head(ui)
+        ui.close()
+    ui = _helen_panel(app, 400, scale)
+    bad = []
+    for width in [*HEAD_WIDTHS, *reversed(HEAD_WIDTHS)]:
+        ui.resize(width, 820)
+        _settle(app)
+        text, tree = _head(ui)
+        if text != fresh[width][0] or abs(tree - fresh[width][1]) > 1 or text not in HELEN_COUNT:
+            bad.append((width, (text, tree), fresh[width]))
+    ui.close()
+    assert not bad, bad

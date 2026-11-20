@@ -863,7 +863,9 @@ def test_panel_smoke(app, prefs) -> None:
     app.processEvents()
     assert ui._tree.topLevelItemCount() == 2             # All locks (holding the groups), Missing locks
     root = ui._rows[(ctl.SEL_DEFAULTS, "")]
-    assert root.text(0) == "All locks" and root.childCount() == 2 and root.isExpanded()
+    # All locks holds its layers first (here only the locked Automatic, v0.2a), then the two groups
+    assert root.text(0) == "All locks" and root.childCount() == 3 and root.isExpanded()
+    assert root.child(0).text(0) == "Automatic" and root.child(1).text(0) == "Fringe"
     assert ui._tree.columnCount() == 3 and ui._tree.columnWidth(0) > 150   # the names have room
     # Selecting a lock row in the tree selects it in the viewport and shows its settings
     ui._rows[(ctl.SEL_LOCKS, 2)].setSelected(True)
@@ -1249,7 +1251,7 @@ def test_the_measured_cells_say_what_the_geometry_holds(env, monkeypatch) -> Non
     c.select_locks([1])
     cells = dict(view.props["measured"])
     assert cells["Strands"] == "2,586" and cells["Points"] == "118,956" and cells["Points / strand"] == "46"
-    assert view.props["attribs"] == "point: P, width · prim: lock_id, name" and asked[-1] == [1]
+    assert view.props["attribs"] == "point: P, width; prim: lock_id, name" and asked[-1] == [1]   # no dots (t74)
     c.select("none")
     assert dict(view.props["overview"])["Points"] == "118,956" and asked[-1] is None
 
@@ -1304,14 +1306,20 @@ def test_panel_filter_review_line_narrow_layout_and_fading_message(app, prefs) -
     ui._review_btn.click()
     app.processEvents()
     assert ui._review.isHidden()
-    # docked narrow: the tree above the settings, the bars wrap
+    # docked narrow: the tree above the settings, the view controls in their own bar, the result line above the
+    # icons, version and Publish (one line: t74 "C")
     ui.resize(420, 900)
     app.processEvents()
     assert ui._narrow and ui._body.orientation() == Qt.Orientation.Vertical
-    assert ui._action_lay.direction() == ui_mod.QBoxLayout.Direction.TopToBottom
+    assert ui._action_lay.direction() == ui_mod.QBoxLayout.Direction.LeftToRight
+    assert not ui._view_bar.isHidden() and ui._view_box.parentWidget() is ui._view_bar
+    assert ui._message_label.parentWidget() is not None and ui._action_outer.indexOf(ui._message_label) == 1
     ui.resize(1200, 800)
     app.processEvents()
     assert not ui._narrow and ui._body.orientation() == Qt.Orientation.Horizontal
+    # wide: the view controls in the top bar, Properties from the top bar to the action bar
+    assert ui._view_bar.isHidden() and ui._view_box.parentWidget() is ui._top_view
+    assert ui._groom_lay.indexOf(ui._message_label) >= 0
     # wide: the tree pane fits the longest name (300 px cut hair_back_01 to "ha…01")
     from PySide6.QtGui import QFontMetrics
     tree = ui._tree

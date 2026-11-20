@@ -820,3 +820,139 @@ def test_kept_share_follows_roots_to_where_they_end_up():
     assert gm.kept_share(n, far, np.array([1.0, 1.0, 0.0, 0.0]), 1.0) == pytest.approx(1.0)
     assert gm.kept_share(n, far, np.ones(4), 0.0) == pytest.approx(0.5)
     assert gm.kept_share(np.zeros(4), far, np.ones(4), 0.0) == 1.0          # a lock with no strands
+
+
+# ---- the panel's settings page (t70): node_settings / set_node_setting with a hou whose undo records ----
+class _UndoHou:
+    """A stand-in for hou.undos: a group records what parm sets and user data writes it holds (unless a disabler
+    is open), performUndo puts the last group back."""
+
+    def __init__(self):
+        self.steps: list[tuple[str, list]] = []
+        self._open: list | None = None
+        self._off = 0
+        hou = self
+
+        class _Group:
+            def __init__(self, label):
+                self.label = label
+
+            def __enter__(self):
+                hou._open = []
+                return self
+
+            def __exit__(self, *a):
+                hou.steps.append((self.label, hou._open))
+                hou._open = None
+                return False
+
+        class _Off:
+            def __enter__(self):
+                hou._off += 1
+
+            def __exit__(self, *a):
+                hou._off -= 1
+                return False
+
+        import types
+        self.undos = types.SimpleNamespace(group=_Group, disabler=_Off, performUndo=self.perform_undo)
+
+    def record(self, undo) -> None:
+        if self._off:
+            return
+        if self._open is None:   # a change outside any group is a step of its own
+            self.steps.append(("(no label)", [undo]))
+        else:
+            self._open.append(undo)
+
+    def perform_undo(self) -> None:
+        _label, undos = self.steps.pop()
+        for undo in reversed(undos):
+            undo()
+
+
+def _settings_node(fake):
+    class Parm:
+        def __init__(self, v):
+            self.v = v
+
+        def eval(self):
+            return self.v
+
+        def set(self, v):
+            old = self.v
+            fake.record(lambda: setattr(self, "v", old))
+            self.v = v
+
+    class Node:
+        def __init__(self):
+            self.parms = {ga.LOOKUP_PARM: Parm(0), config.UNDO_CACHE_PARM: Parm(2.0), config.UNDO_DEFORM_PARM: Parm(4.0)}
+            self.data = {ga.LOOKUP_NOTE: ga.LOOKUP_KEPT_NOTE}
+
+        def parm(self, name):
+            return self.parms.get(name)
+
+        def path(self):
+            return "/obj/geo1/mono_grooming1"
+
+        def userData(self, key):
+            return self.data.get(key)
+
+        def setUserData(self, key, value):
+            old = self.data.get(key)
+            fake.record(lambda: self.data.__setitem__(key, old))
+            self.data[key] = value
+
+    return Node()
+
+
+def test_node_settings_reads_the_three_values_and_the_kept_lookup(monkeypatch) -> None:
+    fake = _UndoHou()
+    monkeypatch.setattr(ga, "hou", fake)
+    n = _settings_node(fake)
+    got = ga.node_settings(n)
+    assert got["lookup"] is False and got["lookup_kept"] is True and got["lookup_text"] == ga.LOOKUP_KEPT_TEXT
+    assert (got["undo_cache_gb"], got["undo_deform_gb"]) == (2.0, 4.0)
+    n.data[ga.LOOKUP_NOTE] = "off: set by hand"
+    assert ga.node_settings(n)["lookup_kept"] is False      # off by the artist's own choice: no note to show
+    del n.parms[config.UNDO_DEFORM_PARM]                     # an older build of the node
+    assert "undo_deform_gb" not in ga.node_settings(n)
+
+
+def test_set_node_setting_one_undo_step_with_the_by_hand_note(monkeypatch) -> None:
+    fake = _UndoHou()
+    monkeypatch.setattr(ga, "hou", fake)
+    n = _settings_node(fake)
+    ga.set_node_setting(n, "lookup", True)
+    assert n.parms[ga.LOOKUP_PARM].v == 1 and n.data[ga.LOOKUP_NOTE] == "on: set by hand"
+    assert [label for label, _u in fake.steps] == ["MONO Grooming: Fit lookup per lock"]
+    fake.undos.performUndo()                                 # one undo: the value AND the note come back
+    assert n.parms[ga.LOOKUP_PARM].v == 0 and n.data[ga.LOOKUP_NOTE] == ga.LOOKUP_KEPT_NOTE
+    assert fake.steps == []
+    ga.set_node_setting(n, "lookup", False)
+    assert n.data[ga.LOOKUP_NOTE] == "off: set by hand"
+    ga.set_node_setting(n, "undo_cache_gb", 3.5)
+    ga.set_node_setting(n, "undo_deform_gb", 0.0)            # kept above 0 (the parm's own minimum is strict)
+    assert n.parms[config.UNDO_CACHE_PARM].v == 3.5 and n.parms[config.UNDO_DEFORM_PARM].v == 0.01
+    assert len(fake.steps) == 3
+    fake.undos.performUndo()
+    assert n.parms[config.UNDO_DEFORM_PARM].v == 4.0 and n.parms[config.UNDO_CACHE_PARM].v == 3.5
+
+
+def test_set_node_setting_refuses_any_other_name(monkeypatch) -> None:
+    fake = _UndoHou()
+    monkeypatch.setattr(ga, "hou", fake)
+    n = _settings_node(fake)
+    for name in ("region_subdiv", "lookup_per_piece", "groom_data", ""):
+        with pytest.raises(KeyError):
+            ga.set_node_setting(n, name, 1)
+    assert fake.steps == []
+
+
+def test_the_parms_own_callback_still_writes_the_note_with_undo_off(monkeypatch) -> None:
+    fake = _UndoHou()
+    monkeypatch.setattr(ga, "hou", fake)
+    n = _settings_node(fake)
+    n.parms[ga.LOOKUP_PARM].v = 1
+    ga.on_lookup_changed(n)
+    assert n.data[ga.LOOKUP_NOTE] == "on: set by hand" and fake.steps == []

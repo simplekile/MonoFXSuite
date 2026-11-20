@@ -16,6 +16,16 @@ while that node is the selection. Another node selected, in its network or any o
 ends it (`_not_ours`: `_came_back` does not bring the brush back, and a stroke never starts), and Esc ends
 it from anywhere in Houdini's window, with the mouse held too: an application event filter (`_EscFilter`)
 sees the key, since a state gets no key event while a button is down; the stroke in progress is stored first.
+
+Like Houdini's Attribute Paint (v0.2a last task, decided 2026-11-19; what it shows and how the keys move the
+brush is `tools.fx.grooming.brush_keys`): a hint overlay (HUD) with the keys and the live brush values
+(Shift+F1 hides it), a parameter bar above the viewport (Radius, Softness, Grey, Eraser), the mouse wheel and
+Ctrl+Shift+LMB drag for the radius, F (a hotkey of the state's menu) swaps paint / erase, and a right-click
+menu with the same and radius / grey picks. All of it goes through `grooming_masks.set_brush(source="state")`:
+one source for the bar, the HUD and the panel's Properties. A brush change is view state: no undo step, no
+cook. The bar is written from the brush only outside the read-only callbacks (`onMouseEvent`: Houdini does not
+show a parm written there), deferred and coalesced (`_queue_show`); writing a state parm from code calls no
+`onParmChangeEvent` (spike t72), and `brush_keys.field_change` ignores a value the brush already has.
 """
 
 from __future__ import annotations
@@ -26,10 +36,12 @@ import traceback
 import hou
 
 from apps.houdini import grooming_masks as gm
+from tools.fx.grooming import brush_keys as bk
 from tools.fx.grooming import config
 
 STATE = config.PAINT_STATE
 LABEL = "MONO Grooming: Paint mask"
+HOTKEY_CONTEXT = "h.pane.gview.state.sop." + STATE
 LIVE: dict = {}      # "state": the running state object, "prev": the viewer's state before Paint
 # what tests read: one dict a stroke, counters, errors (a state's exception only reaches Houdini's console)
 STATS: dict = {"strokes": [], "events": 0, "enters": 0, "exits": 0, "came_back": 0, "errors": [], "esc": 0,
@@ -192,14 +204,20 @@ class MaskPaint(object):
         self.draw = None
         self.ring = None
         self.last_hit = None      # where the cursor's ray last met the skin (object space), None off it
+        self.last_frame = None    # (pos, normal) of that hit, for the ring
         self.dots = None
         self.root_count = 0
+        self.parms = None         # the bar's state_parms (Houdini's dict, kept from onEnter / onGenerate)
+        self.drag = None          # Ctrl+Shift+LMB: {"x": px at the press, "radius": cm then, "at": (pos, nrm)}
+        self.show_queued = False
 
     # ---- entering and leaving ----
     def onEnter(self, kwargs):
+        self.parms = kwargs.get("state_parms")
         self._setup()
 
     def onGenerate(self, kwargs):      # entered by name (setCurrentState): no node in kwargs
+        self.parms = kwargs.get("state_parms")
         self._setup()
 
     def _setup(self) -> None:
@@ -250,8 +268,15 @@ class MaskPaint(object):
         self.dots.setTransform(self.xform)
         self.reroot(cook=False)       # entering never cooks: what the cache holds, or the density asked
         self.recolour()
+        self.view_shown = gm.BRUSH["view"]
+        gm.BRUSH.pop("count_roots", None)
         node.addEventCallback((hou.nodeEventType.ParmTupleChanged,), self._parm_changed)
         _watch_esc(True)
+        try:
+            self.scene_viewer.hudInfo(template=bk.hud_template())
+            self.show_brush()
+        except Exception:
+            _note(traceback.format_exc())
         STATS["enter_s"] = time.perf_counter() - t0
 
     def onExit(self, kwargs):
@@ -340,11 +365,107 @@ class MaskPaint(object):
         dots.setGeometry(geo)
         dots.show(bool(len(roots)))
 
+    # ---- the brush shown: HUD and bar (one source: grooming_masks.BRUSH) ----
+    def layer_name(self) -> str:
+        try:
+            layer = self.session.layer() if self.session is not None else None
+            return layer.name if layer is not None else ""
+        except Exception:
+            return ""
+
+    def show_brush(self) -> None:
+        """The HUD's values and the bar's parms from the brush now (no undo, no cook)."""
+        self.show_queued = False
+        if self.session is None or LIVE.get("state") is not self:
+            return
+        brush = dict(gm.BRUSH)
+        values = bk.hud_values(brush, self.layer_name())
+        self.scene_viewer.hudInfo(values=values)
+        STATS["hud"] = values             # what the HUD was given last (tests: Houdini cannot read it back)
+        put = getattr(self.scene_viewer, "_setCurrentStateParm", None)
+        for name, value in bk.bar_values(brush).items():
+            # both (t72): a write to the kept state_parms dict reaches the bar only on the next callback (one
+            # change late), and the viewer's own call alone is put back by that dict on the next callback.
+            # Neither calls onParmChangeEvent
+            if self.parms is not None:
+                try:
+                    if self.parms[name]["value"] != value:
+                        self.parms[name]["value"] = value
+                except (KeyError, TypeError):
+                    pass
+            if put is not None and self.scene_viewer.currentState() == STATE:
+                text = ("1" if value else "0") if isinstance(value, bool) else repr(float(value))
+                try:
+                    put(name, text)
+                except hou.Error:
+                    pass
+        STATS["shown"] = STATS.get("shown", 0) + 1
+
+    def _queue_show(self) -> None:
+        """Show the brush from Houdini's event loop, once for any number of changes before it runs."""
+        if self.show_queued:
+            return
+        self.show_queued = True
+        import hdefereval
+        hdefereval.executeDeferred(self._show_deferred)
+
+    def _show_deferred(self) -> None:
+        try:
+            self.show_brush()
+        except Exception:
+            _note(traceback.format_exc())
+
+    def set_brush(self, **fields) -> None:
+        """A brush change made in the viewport (bar, wheel, drag, F, menu): the panel hears of it by its hook."""
+        if fields:
+            gm.set_brush(source="state", **fields)
+
+    def onParmChangeEvent(self, kwargs):
+        try:
+            self.set_brush(**bk.field_change(kwargs["parm_name"], kwargs["parm_value"], gm.BRUSH))
+        except Exception:
+            _note(traceback.format_exc())
+
+    def onMenuPreOpen(self, kwargs):
+        STATS["menu_opened"] = STATS.get("menu_opened", 0) + 1
+
+    def onMenuAction(self, kwargs):
+        try:
+            STATS["menu"] = (STATS.get("menu", []) + [kwargs["menu_item"]])[-20:]
+            self.set_brush(**bk.menu_fields(kwargs["menu_item"], gm.BRUSH))
+        except Exception:
+            _note(traceback.format_exc())
+
+    def onMouseWheelEvent(self, kwargs):
+        """The wheel sizes the brush. Consumed: the camera does not dolly while painting (MMB / Alt move it)."""
+        if self.session is None or gm.PAINT["node"] is None:
+            return False
+        try:
+            notches = kwargs["ui_event"].device().mouseWheel()
+            STATS["wheel"] = STATS.get("wheel", 0) + 1
+            self.set_brush(radius_cm=bk.wheel_radius(gm.BRUSH["radius_cm"], notches))
+            self._ring_again()
+        except Exception:
+            _note(traceback.format_exc())
+        return True
+
+    def _ring_again(self) -> None:
+        at = self.drag["at"] if self.drag is not None else self.last_frame
+        if at is not None and self.ring is not None:
+            self._place_ring(*at)
+            self.scene_viewer.curViewport().draw()
+
     def brush_changed(self) -> None:
+        if self.session is not None:
+            self._queue_show()
         if self.draw is not None:
             self.draw.setXray(bool(gm.BRUSH["xray"]))
-            if self.session is not None and not self.down:
-                # the view may have changed; one chosen by hand may grow the hair it needs to count
+            view = gm.BRUSH["view"]
+            if self.session is not None and not self.down and (view != getattr(self, "view_shown", None)
+                                                               or "count_roots" in gm.BRUSH):
+                # the view changed; one chosen by hand may grow the hair it needs to count. A radius, grey,
+                # softness or mode change (the wheel, a drag) costs no recount and no recolour
+                self.view_shown = view
                 self.reroot(cook=bool(gm.BRUSH.pop("count_roots", False)))
                 self.recolour()
             self.scene_viewer.curViewport().draw()
@@ -388,24 +509,31 @@ class MaskPaint(object):
         direction = direction.multiplyAsDir(self.inverse)
         pos, nrm, uvw = hou.Vector3(), hou.Vector3(), hou.Vector3()
         hit = self.isect.intersect(origin, direction, pos, nrm, uvw) >= 0
-        radius = gm.BRUSH["radius_cm"] / self.session.unit_cm
         self.last_hit = tuple(pos) if hit else None
-        if hit:
-            z = nrm.normalized()
-            x = z.cross(hou.Vector3(0, 1, 0) if abs(z[1]) < 0.9 else hou.Vector3(1, 0, 0)).normalized()
-            y = z.cross(x)
-            lift = z * (0.02 * radius)     # just off the skin, so the ring is not half inside it
-            self.ring.setTransform(hou.Matrix4((
-                (x[0] * radius, x[1] * radius, x[2] * radius, 0), (y[0] * radius, y[1] * radius, y[2] * radius, 0),
-                (z[0], z[1], z[2], 0), (pos[0] + lift[0], pos[1] + lift[1], pos[2] + lift[2], 1))) * self.xform)
-        self.ring.show(hit)
         left = dev.isLeftButton()
+        if self.drag is not None:
+            # Ctrl+Shift+LMB drag: the radius follows the mouse right (larger) / left, the ring stays put
+            if left:
+                self.set_brush(radius_cm=bk.drag_radius(self.drag["radius"], dev.mouseX() - self.drag["x"]))
+                self._place_ring(*self.drag["at"])
+            else:
+                STATS["drags"] = STATS.get("drags", 0) + 1
+                self.drag = None
+            return True
+        if hit:
+            self.last_frame = (hou.Vector3(pos), hou.Vector3(nrm))
+            self._place_ring(pos, nrm)
+        self.ring.show(hit)
         why = _not_ours(self.node) if left and not self.down else ""
         if why:
             # another node is selected, or none: this click is not for the painted node
             STATS["refused_strokes"] += 1
             _end_paint("ended_by_selection", why)
             return False
+        if left and not self.down and dev.isCtrlKey() and dev.isShiftKey():
+            if hit:      # sizing, not painting: no stroke starts
+                self.drag = {"x": dev.mouseX(), "radius": gm.BRUSH["radius_cm"], "at": self.last_frame}
+            return True
         if left and not self.down:
             self.refresh()
             self.down = True
@@ -426,6 +554,16 @@ class MaskPaint(object):
         if self.down and not left:
             self._end_stroke()
         return bool(left or self.down)
+
+    def _place_ring(self, pos, nrm) -> None:
+        radius = gm.BRUSH["radius_cm"] / self.session.unit_cm
+        z = nrm.normalized()
+        x = z.cross(hou.Vector3(0, 1, 0) if abs(z[1]) < 0.9 else hou.Vector3(1, 0, 0)).normalized()
+        y = z.cross(x)
+        lift = z * (0.02 * radius)     # just off the skin, so the ring is not half inside it
+        self.ring.setTransform(hou.Matrix4((
+            (x[0] * radius, x[1] * radius, x[2] * radius, 0), (y[0] * radius, y[1] * radius, y[2] * radius, 0),
+            (z[0], z[1], z[2], 0), (pos[0] + lift[0], pos[1] + lift[1], pos[2] + lift[2], 1))) * self.xform)
 
     def _end_stroke(self) -> None:
         self.down = False
@@ -476,6 +614,36 @@ def register(force: bool = False) -> None:
     template = hou.ViewerStateTemplate(STATE, LABEL, hou.sopNodeTypeCategory())
     template.bindFactory(MaskPaint)
     template.bindIcon("SOP_paint")
+    # the bar above the viewport: the panel's Radius, Softness, Grey, Eraser (one source, gm.BRUSH)
+    limits = {"radius": (bk.RADIUS_MIN_CM, bk.RADIUS_BAR_MAX_CM), "soft": (0.0, 1.0), "grey": (0.0, 1.0)}
+    defaults = bk.bar_values(gm.BRUSH)
+    for field, name, label in bk.BAR:
+        if field == "erase":
+            template.bindParameter(hou.parmTemplateType.Toggle, name=name, label=label,
+                                   default_value=defaults[name], help="Take the layer's paint away (F swaps)")
+        else:
+            lo, hi = limits[name]
+            template.bindParameter(hou.parmTemplateType.Float, name=name, label=label, min_limit=lo,
+                                   max_limit=hi, default_value=defaults[name])
+    # F swaps paint / erase: a hotkey of the state's menu (Houdini's own F, frame, is not run then)
+    keys = hou.PluginHotkeyDefinitions()
+    keys.addContext(HOTKEY_CONTEXT, LABEL, "The mask brush of MONO Grooming")
+    keys.addCommandCategory(HOTKEY_CONTEXT, LABEL, "The mask brush of MONO Grooming")
+    keys.addCommand(HOTKEY_CONTEXT + "." + bk.SWAP, "Paint / Erase", "Swap painting and erasing")
+    keys.addDefaultBinding(HOTKEY_CONTEXT, HOTKEY_CONTEXT + "." + bk.SWAP, [bk.SWAP_KEY])
+    template.bindHotkeyDefinitions(keys)
+    menu = hou.ViewerStateMenu(STATE + "_menu", LABEL)
+    subs: dict = {}
+    for sub, item, text in bk.menu_items():
+        if not sub:
+            menu.addActionItem(item, text, hotkey=HOTKEY_CONTEXT + "." + item if item == bk.SWAP else "")
+            continue
+        if sub not in subs:
+            subs[sub] = hou.ViewerStateMenu(STATE + "_" + sub.lower(), sub)
+        subs[sub].addActionItem(item, text)
+    for sub in subs.values():
+        menu.addMenu(sub)
+    template.bindMenu(menu)
     hou.ui.registerViewerState(template)
 
 

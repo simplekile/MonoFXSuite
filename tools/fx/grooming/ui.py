@@ -1,11 +1,28 @@
 """
 MONO Grooming panel — one window, floating or docked in a Houdini pane.
 
-Zones, each on its own surface with a line between them:
+Look and layout C of t74 (the user's pick, 2026-11-19: "giao diện học hỏi từ tool monofx loader"; mockups in the
+sandbox, tests/t74_loader_look/mockups/index.html; lessons.md there): the MonoFX Loader manager's lessons.
+  - fewer words: the bars' buttons are 28 px flat icons with a tooltip and an accessible name (Settings, Dock,
+    Deform, Isolate, X-ray, Detect locks, Update regions, the tree's tools, Fold, Back); only Publish keeps words;
+    Display and Color by keep theirs (they show a value);
+  - wide (>= NARROW_PX): the view controls sit in the top bar and Properties run from the top bar to the action
+    bar, beside the tree (the Scalp strip spans the window while painting); narrow: the view controls have their
+    own bar, Properties under the tree;
+  - the tree is painted by `_RowDelegate` (+ `_LayerTree.drawRow / drawBranches`): one background for every row,
+    hover / selected / selected + hover, the branch area and chevron in the row's colour, a hairline under each
+    row and vertical ones eye | name | status, covered by a hovered or selected row's fill; the eye filled when
+    drawn; the status column one width (its widest words, at most 40 %); names cut in the middle;
+  - Properties as an inspector: Details (label / value rows, never joined by dots) first, then Values / Brush,
+    foldable sections kept per viewer; one-off layer commands on the tree's tools and the right-click menu;
+  - every button has hover, pressed, checked, checked + hover; rounded borders 2 px at least (`_border_px`),
+    dividers 1 px; thin scroll bars at the pane's edge; the result line two lines at most (whole text in its
+    tooltip); a refresh keeps scroll, folds, selection and the current row.
+Before t74 the zones were:
   top bar      the node, its asset, Settings (font size, X-ray strength), Dock; under it the view bar: what the viewport draws
                (Display, Color by, Deform, Isolate). Viewing never sits next to an action that writes.
-  left         the layer tree (All locks › group › lock, Missing locks): swatch, name, status, eye (shown on
-               hover, on the selection, or when not the default);
+  left         the lock tree (All locks › group › lock, Missing locks), each row with its density layers and
+               their mask layers (v0.2a, ui_layers.py); eye at the left edge, swatch, name, status;
                a filter, Confirm all while locks are new or to check; drag to reorder or regroup
   right (main) the selection: title, what the viewport does with it, its actions (Hidden, Flip root,
                Exclude), measured shape (cm), then one compact row per setting; with
@@ -32,8 +49,9 @@ import os
 import sys
 from typing import Any, Callable
 
-from PySide6.QtCore import QPoint, QRect, QSize, Qt, QTimer
-from PySide6.QtGui import QColor, QCursor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPen, QPixmap, QShortcut
+from PySide6.QtCore import QEvent, QPoint, QPointF, QRect, QSize, Qt, QTimer
+from PySide6.QtGui import (QColor, QCursor, QFont, QFontMetrics, QIcon, QKeySequence, QPainter, QPainterPath, QPen,
+                           QPixmap, QShortcut)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -66,6 +84,7 @@ from tools.fx.auto_material.logic import STATUS_NEW, STATUS_PINNED
 from tools.fx.auto_material.ui import (
     ACCENT,
     ACCENT_FILL,
+    ACCENT_LINE,
     BG_APP,
     BG_HOVER,
     BG_RAISED,
@@ -81,6 +100,9 @@ from tools.fx.auto_material.ui import (
     _rgba,
 )
 from tools.fx.grooming import config
+from tools.fx.grooming import ui_look as K
+from tools.fx.grooming import ui_layers as L
+from tools.fx.grooming.layers import SEL_LAYER
 from tools.fx.grooming.controller import (
     COLOR_BY_LABELS,
     DISPLAY_LABELS,
@@ -140,7 +162,8 @@ SEPARATOR = "#2e2e36"
 ROW_LINE = "#1d1d22"
 SELECTED = "#273352"      # the accent at 24 % over PANE, opaque: Houdini paints the tree's own background
 DIM = "#62626c"           # names of hidden rows: still readable, clearly off
-FAINT = "#63636b"         # an eye decided by something else (a hidden group, isolate): 3.0:1 on PANE, under TEXT_LABEL
+FAINT = "#6b6b73"         # an eye decided by something else (a hidden group, isolate): 3.4:1 on PANE, 3.1:1 on a
+                          # hovered row (t74: #63636b was 2.75:1 there), under TEXT_LABEL
 WARN = STATUS_COLORS[STATUS_PINNED]
 STATUS_TEXT = {"unsure": WARN, "new": STATUS_COLORS[STATUS_NEW]}
 STATUS_HELP = {
@@ -163,7 +186,10 @@ COL_NAME, COL_STATUS, COL_EYE = range(3)
 ROLE_ROW = Qt.ItemDataRole.UserRole + 1
 ROLE_ICON = Qt.ItemDataRole.UserRole + 2    # the eye icon, painted by _IconDelegate
 ROLE_QUIET = Qt.ItemDataRole.UserRole + 3   # True: the default state, drawn only on hover or selection
+ROLE_EYE = Qt.ItemDataRole.UserRole + 4     # (icon name, colour) of the eye cell: a FAINT one is lighter on a selected row
+FAINT_ON_SELECTED = "#868694"   # FAINT on SELECTED / selected + hover is 2.1-2.4:1; this is 3.2:1 on selected + hover
 NARROW_PX = 760      # below this width (at size 1) the tree sits above the settings
+TREE_SHARE = 0.4     # wide: the tree's part of the window at least (docked ~1150 px, the tree had ~350, the user)
 MESSAGE_MS = 6000    # the result line fades after this; errors stay twice as long
 FILTER_WORDS = {      # words the tree's filter knows besides names
     "new": lambda r: "new" in r.get("badges", []),
@@ -275,11 +301,13 @@ def _sheet(z: Sz) -> str:
     t = {role: z.text(role) for role in TYPE}
     chevron = _image("chevron-down", p(14), TEXT_LABEL)
     check = _image("check", p(14), TEXT_PRIMARY)
+    b = K._border_px(z.scale)   # a rounded control's border (the Loader's rule); dividers stay 1 px
     return f"""
     QWidget#GroomingWindow {{ background: {BG_APP}; color: {TEXT_PRIMARY}; }}
     QWidget#GroomingWindow QWidget {{ font-size: {p(16)}px; }}
     QWidget#TopBar, QWidget#ViewBar, QWidget#TreePane, QWidget#ActionBar {{ background: {PANE}; }}
     QWidget#PropsPane {{ background: {BG_APP}; }}
+    QWidget#PaintStrip {{ background: #151a28; border-bottom: 1px solid {SEPARATOR}; }}
     QFrame[line="true"] {{ background: {SEPARATOR}; border: none; }}
     QLabel {{ color: {TEXT_PRIMARY}; background: transparent; }}
     QWidget#GroomingWindow QLabel[role="title"] {{ {t["title"]} }}
@@ -290,41 +318,58 @@ def _sheet(z: Sz) -> str:
     QWidget#GroomingWindow QLabel[role="caps"] {{ {t["caps"]} }}
     QToolTip {{ background: {BG_RAISED}; color: {TEXT_PRIMARY}; border: 1px solid {LINE}; padding: {p(6)}px;
                 font-size: {p(14)}px; }}
+    QWidget#GroomingWindow QLabel[role="small"][value="true"] {{ color: {TEXT_PRIMARY}; }}
     QSplitter::handle {{ background: {SEPARATOR}; }}
+    QSplitter::handle:hover {{ background: {TEXT_META}; }}
 
     QPushButton, QToolButton {{
-        background: transparent; color: {TEXT_PRIMARY}; border: 1px solid #34343c; border-radius: {p(7)}px;
+        background: {K.BUTTON}; color: {TEXT_PRIMARY}; border: {b}px solid #393942; border-radius: {p(7)}px;
         padding: {p(6)}px {p(12)}px; font-size: {p(16)}px;
     }}
-    QPushButton:hover, QToolButton:hover {{ background: {BG_HOVER}; border-color: #44444e; }}
-    QPushButton:disabled, QToolButton:disabled {{ color: {TEXT_META}; border-color: {LINE}; }}
+    QPushButton:hover, QToolButton:hover {{ background: {K.BUTTON_HOVER}; border-color: #4a4a55; }}
+    QPushButton:pressed, QToolButton:pressed {{ background: {K.BUTTON_PRESSED}; }}
+    QPushButton:disabled, QToolButton:disabled {{ background: {K.BUTTON_DISABLED}; color: {TEXT_META}; border-color: {LINE}; }}
     QToolButton::menu-indicator {{ image: none; width: 0; }}
-    QToolButton[flat="true"] {{ border: none; padding: {p(4)}px; border-radius: {p(5)}px; }}
-    QToolButton[flat="true"]:checked {{ background: {_rgba(ACCENT, 0.22)}; }}
+    QToolButton[flat="true"] {{ background: transparent; border: none; padding: {p(4)}px; border-radius: {p(6)}px; }}
+    QToolButton[flat="true"]:hover {{ background: {K.FLAT_HOVER}; }}
+    QToolButton[flat="true"]:pressed {{ background: {K.FLAT_PRESSED}; }}
+    QToolButton[flat="true"]:checked {{ background: {K.CHECKED}; }}
+    QToolButton[flat="true"]:checked:hover {{ background: {K.CHECKED_HOVER}; }}
+    QToolButton[flat="true"]:checked:pressed {{ background: {K.CHECKED_PRESSED}; }}
+    QToolButton[iconflat="true"] {{ padding: 0px; }}
     QPushButton#Publish {{
         background: {ACCENT_FILL}; color: #ffffff; border: none; font-weight: 600;
         padding: {p(8)}px {p(20)}px;
     }}
     QPushButton#Publish:hover {{ background: #4b78f5; }}
+    QPushButton#Publish:pressed {{ background: {K.PRIMARY_PRESSED}; }}
     QPushButton#Publish[armed="true"] {{ background: #8a5a12; }}
-    QPushButton[warn="true"] {{ border-color: {WARN}; color: {WARN}; }}
+    QPushButton[warn="true"], QToolButton[warn="true"] {{ border-color: {WARN}; color: {WARN}; }}
     QToolButton[toggle="true"] {{ padding: {p(5)}px {p(10)}px; font-size: {p(15)}px; }}
-    QToolButton[toggle="true"]:checked {{ background: {_rgba(ACCENT, 0.18)}; border-color: {_rgba(ACCENT, 0.6)};
-                                          color: {TEXT_PRIMARY}; }}
+    QToolButton[toggle="true"]:checked {{ background: {K.CHECKED}; border-color: {ACCENT_LINE}; color: {TEXT_PRIMARY}; }}
+    QToolButton[toggle="true"]:checked:hover {{ background: {K.CHECKED_HOVER}; border-color: {ACCENT}; }}
+    QToolButton[toggle="true"]:checked:pressed {{ background: {K.CHECKED_PRESSED}; }}
+    QToolButton[seg="left"] {{ border-top-right-radius: 0px; border-bottom-right-radius: 0px; border-right-width: 1px; }}
+    QToolButton[seg="mid"] {{ border-radius: 0px; border-left-width: 0px; border-right-width: 1px; }}
+    QToolButton[seg="right"] {{ border-top-left-radius: 0px; border-bottom-left-radius: 0px; border-left-width: 0px; }}
+    QPushButton#Section {{ background: transparent; border: none; border-bottom: 1px solid {LINE}; border-radius: 0px;
+                           color: {TEXT_LABEL}; text-align: left; padding: {p(3)}px 0px; font-size: {p(13)}px;
+                           font-weight: 600; letter-spacing: 1px; }}
+    QPushButton#Section:hover {{ color: {TEXT_PRIMARY}; background: transparent; }}
 
     QLineEdit {{
-        padding: {p(4)}px {p(7)}px; border: 1px solid #2e2e36; border-radius: {p(6)}px; background: {BG_RAISED};
+        padding: {p(4)}px {p(7)}px; border: {b}px solid #2e2e36; border-radius: {p(6)}px; background: {BG_RAISED};
         color: {TEXT_PRIMARY}; font-size: {p(16)}px; selection-background-color: {_rgba(ACCENT, 0.4)};
     }}
-    QLineEdit:focus {{ border: 1px solid {ACCENT}; }}
+    QLineEdit:focus {{ border: {b}px solid {ACCENT}; }}
     QLineEdit[inherited="true"] {{ color: {TEXT_LABEL}; }}
     QLineEdit[inherited="false"] {{ font-weight: 600; }}
 
     QComboBox {{
-        padding: {p(5)}px {p(28)}px {p(5)}px {p(10)}px; border: 1px solid #34343c; border-radius: {p(7)}px;
+        padding: {p(5)}px {p(28)}px {p(5)}px {p(10)}px; border: {b}px solid #34343c; border-radius: {p(7)}px;
         background: transparent; color: {TEXT_PRIMARY}; font-size: {p(16)}px;
     }}
-    QComboBox:hover {{ background: {BG_HOVER}; }}
+    QComboBox:hover {{ background: {BG_HOVER}; border-color: #44444e; }}
     QComboBox::drop-down {{ border: none; width: {p(24)}px; subcontrol-position: center right; }}
     QComboBox::down-arrow {{ image: url("{chevron}"); width: {p(14)}px; height: {p(14)}px; }}
     QComboBox QAbstractItemView {{
@@ -353,27 +398,19 @@ def _sheet(z: Sz) -> str:
 
     QWidget[setting="true"] {{ border-bottom: 1px solid {ROW_LINE}; }}
     QWidget[setting="true"]:hover {{ background: #15151a; }}
-    QWidget#Measured {{ background: {PANE}; border: 1px solid {LINE}; border-radius: {p(8)}px; }}
-    QWidget#Banner {{ background: {BG_RAISED}; border: 1px solid #34343c; border-radius: {p(7)}px; }}
+    QWidget#Measured {{ background: {PANE}; border: {b}px solid {LINE}; border-radius: {p(8)}px; }}
+    QWidget#Banner {{ background: {BG_RAISED}; border: {b}px solid #34343c; border-radius: {p(7)}px; }}
 
     QWidget#GroomingWindow QTreeWidget {{ background: {PANE}; border: none; outline: none; color: {TEXT_PRIMARY};
                    font-size: {p(16)}px; }}
     QWidget#GroomingWindow QTreeWidget {{ alternate-background-color: {PANE}; }}
-    QTreeWidget::item {{ height: {p(36)}px; border: none; padding-left: {p(2)}px; background: {PANE}; }}
-    QTreeWidget::item:hover {{ background: {BG_HOVER}; }}
-    QTreeWidget::item:selected {{ background: {SELECTED}; color: {TEXT_PRIMARY}; }}
-    QTreeWidget::branch {{ background: {PANE}; }}
-    QTreeWidget::branch:hover {{ background: {BG_HOVER}; }}
-    QTreeWidget::branch:selected {{ background: {SELECTED}; }}
-    QTreeWidget::branch:has-children:closed {{ image: url("{_image("chevron-right", p(14), TEXT_LABEL)}"); }}
-    QTreeWidget::branch:has-children:open {{ image: url("{_image("chevron-down", p(14), TEXT_LABEL)}"); }}
 
     QScrollArea {{ background: {BG_APP}; border: none; }}
     QScrollBar:vertical, QScrollBar:horizontal {{ background: transparent; border: none; margin: 2px; }}
-    QScrollBar:vertical {{ width: {p(10)}px; }}
-    QScrollBar:horizontal {{ height: {p(10)}px; }}
-    QScrollBar::handle {{ background: #2e2e36; border-radius: {p(3)}px; min-height: 30px; min-width: 30px; }}
-    QScrollBar::handle:hover {{ background: #3c3c46; }}
+    QScrollBar:vertical {{ width: {p(8)}px; }}
+    QScrollBar:horizontal {{ height: {p(8)}px; }}
+    QScrollBar::handle {{ background: {LINE}; border-radius: {p(2)}px; min-height: 24px; min-width: 24px; }}
+    QScrollBar::handle:hover {{ background: {TEXT_META}; }}
     QScrollBar::add-line, QScrollBar::sub-line {{ width: 0; height: 0; border: none; background: none; }}
     QScrollBar::add-page, QScrollBar::sub-page {{ background: none; }}
 """
@@ -385,6 +422,121 @@ def _label(text: str, role: str, color: str | None = None) -> QLabel:
     if color:
         label.setStyleSheet(f"color: {color};")
     return label
+
+
+class _FitLabel(QLabel):
+    """One line that never shows cut words (t75: the tree head read "61 locks, 3 group"): the first of its forms
+    that fits ("61 locks, 3 groups", then "61 locks"), else the last one elided with "…"; a shorter form carries the
+    full text in its tooltip. It asks for the full text (plus SLACK px: Houdini's metrics ran one px wide) and can
+    shrink to an ellipsis, so the tools beside it never squeeze it into a cut."""
+
+    SLACK = 2
+
+    def __init__(self, role: str) -> None:
+        super().__init__()
+        self.setProperty("role", role)
+        self._forms = [""]
+
+    def set_forms(self, *forms: str) -> None:
+        self._forms = [f for f in forms if f] or [""]
+        self.updateGeometry()
+        self._fit()
+
+    def full_text(self) -> str:
+        return self._forms[0]
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        m = self.contentsMargins()
+        return QSize(self.fontMetrics().horizontalAdvance(self._forms[0]) + self.SLACK + m.left() + m.right(),
+                     super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self.fontMetrics().horizontalAdvance("…") * 3, super().minimumSizeHint().height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._fit()
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._fit()
+
+    def _fit(self) -> None:
+        metrics = self.fontMetrics()
+        room = self.contentsRect().width() - self.SLACK
+        shown = next((f for f in self._forms if metrics.horizontalAdvance(f) <= room), None)
+        if shown is None:
+            shown = metrics.elidedText(self._forms[-1], Qt.TextElideMode.ElideRight, max(room, 0))
+        if shown != self.text():
+            QLabel.setText(self, shown)
+        tip = self._forms[0] if shown != self._forms[0] else ""
+        if tip != self.toolTip():
+            self.setToolTip(tip)
+
+
+class _TreeHead(QWidget):
+    """The tree's head: LOCKS, the count, the tree tools on one row while the whole count fits beside them, else
+    the tools on a row of their own under it (t75 recheck: a window opened at 700-800 px gave the count 39 px and
+    it read "6…"). Decided by its width alone, so a window opened at a width and one resized to it look the same;
+    the count then has the row and reads "61 locks, 3 groups" or "61 locks", never elided."""
+
+    def __init__(self, caps: QLabel, count: "_FitLabel") -> None:
+        super().__init__()
+        self._caps, self._count = caps, count
+        self._wrapped = False
+        col = QVBoxLayout(self)
+        col.setContentsMargins(6, 0, 0, 0)
+        col.setSpacing(4)
+        self._row1 = QHBoxLayout()
+        self._row1.setContentsMargins(0, 0, 0, 0)
+        self._row1.addWidget(caps)
+        self._row1.addWidget(count)
+        self._row1.addStretch(1)
+        self.tools = QWidget()
+        self.tools_row = QHBoxLayout(self.tools)
+        self.tools_row.setContentsMargins(0, 0, 0, 0)
+        self._row1.addWidget(self.tools)
+        col.addLayout(self._row1)
+        self._row2 = QWidget()
+        row2 = QHBoxLayout(self._row2)
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.addStretch(1)
+        self._row2.setVisible(False)
+        col.addWidget(self._row2)
+
+    def one_row(self) -> int:
+        """The width that holds LOCKS, the whole count and the tools on one row."""
+        gap = self._row1.spacing()
+        m = self.contentsMargins()
+        return (m.left() + m.right() + self._caps.sizeHint().width() + self._count.sizeHint().width()
+                + self.tools.sizeHint().width() + 3 * gap)   # caps, count, the stretch, the tools: three gaps
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self.one_row(), super().sizeHint().height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        m = self.contentsMargins()
+        short = self._caps.sizeHint().width() + self._row1.spacing() + self._count.minimumSizeHint().width()
+        return QSize(m.left() + m.right() + max(short, self.tools.sizeHint().width()),
+                     super().minimumSizeHint().height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.fit()
+
+    def fit(self) -> None:
+        wrap = self.width() < self.one_row()
+        if wrap == self._wrapped:
+            return
+        self._wrapped = wrap
+        if wrap:
+            self._row1.removeWidget(self.tools)
+            self._row2.layout().addWidget(self.tools)
+        else:
+            self._row2.layout().removeWidget(self.tools)
+            self._row1.addWidget(self.tools)
+        self._row2.setVisible(wrap)
 
 
 def _line(vertical: bool = False) -> QFrame:
@@ -402,6 +554,18 @@ def _fixed_icon(name: str, size: int, color: str) -> QIcon:
     icon = QIcon()
     for scale in (1.0, 2.0):
         pm = _lucide_pixmap(name, size, color, scale)
+        icon.addPixmap(pm, QIcon.Mode.Normal)
+        icon.addPixmap(pm, QIcon.Mode.Selected)
+    return icon
+
+
+def _eye_icon(drawn: bool, size: int, color: str) -> QIcon:
+    """The eye cell (the Loader's toggles): drawn = the eye filled, its pupil cut out; not drawn = the outline with
+    its slash. Its tone says who decided (TEXT_LABEL: the row's own eye; FAINT: a group, a density layer or
+    isolate), one look per state: the accent eye of isolate went (the banner and the Isolate toggle say it)."""
+    icon = QIcon()
+    for ratio in (1.0, 1.5, 2.0, 3.0):
+        pm = K.eye_pixmap(drawn, size, color, ratio)
         icon.addPixmap(pm, QIcon.Mode.Normal)
         icon.addPixmap(pm, QIcon.Mode.Selected)
     return icon
@@ -552,26 +716,77 @@ class _Combo(QComboBox):
 # ---------------------------------------------------------------------------
 # Tree
 # ---------------------------------------------------------------------------
-class _StatusDelegate(QStyledItemDelegate):
-    """Status column: ● edited (neutral), "unsure" / "new" in their status colours, the row's own display
-    mode in grey. Plain text, no chips: they looked like buttons."""
+class _RowDelegate(QStyledItemDelegate):
+    """Every cell of the lock tree, painted here (the MonoFX Loader's `_MeshDelegate`, t74): the row's colour (one
+    background for every row; hover, selected, selected + hover), the separators (a hairline under each row, a
+    vertical one after the eye and before the status: the user's ask, 2026-11-19; a hovered or selected row's fill
+    covers them), then the cell: the eye (filled when drawn), the icon and the name cut in the middle, the status.
+    A style sheet `::item` rule beat an item's own colour and Houdini 22's style paints rows grey under a
+    transparent one, so no `::item` rule is left for either to act on; check colours in the live window."""
 
     def __init__(self, tree: "_LayerTree") -> None:
         super().__init__(tree)
         self._tree = tree
 
+    def sizeHint(self, option, index) -> QSize:  # noqa: N802
+        return QSize(super().sizeHint(option, index).width(), self._tree.z.px(36))
+
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
-        super().paint(painter, option, index)
-        row = index.siblingAtColumn(COL_NAME).data(ROLE_ROW) or {}
-        z = self._tree.z
+        tree = self._tree
+        r = option.rect
+        color = tree.row_color(index)
         painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setFont(z.font("small"))
-        metrics = painter.fontMetrics()
-        x = option.rect.right() - z.px(6)
-        cy = option.rect.center().y()
-        dim = row.get("dimmed")
-        parts: list[tuple[str, str]] = []
+        painter.setClipRect(r)   # never over another cell (t71 defect 4)
+        painter.fillRect(r, QColor(color))
+        col = index.column()
+        if color == PANE:   # hover / selection cover the separators
+            # filled, not drawn: Houdini's painter comes antialiased and a 1 px line then lands on two pixels,
+            # half strength each (#1f1f24 measured in the live window instead of LINE)
+            line = QColor(LINE)
+            painter.fillRect(QRect(r.left(), r.bottom(), r.width(), 1), line)
+            if col == COL_EYE:
+                painter.fillRect(QRect(r.right(), r.top(), 1, r.height()), line)
+            elif col == COL_STATUS:
+                painter.fillRect(QRect(r.left(), r.top(), 1, r.height()), line)
+        if col == COL_EYE:
+            self._eye(painter, r, index)
+        elif col == COL_STATUS:
+            self._status(painter, r, index)
+        else:
+            self._name(painter, option, index)
+        painter.restore()
+
+    def _eye(self, painter: QPainter, r: QRect, index) -> None:
+        icon = index.data(ROLE_ICON)
+        if icon is None:
+            return
+        eye = index.data(ROLE_EYE)
+        if eye and eye[1] == FAINT and self._tree.is_selected(index):   # 3:1 on the selection too
+            name, _c, px = eye
+            icon = _eye_icon(name == "eye", px, FAINT_ON_SELECTED) if name != "lock" else                 _fixed_icon("lock", px, FAINT_ON_SELECTED)
+        if index.data(ROLE_QUIET) and not (self._tree.is_hovered(index) or self._tree.is_selected(index)):
+            return
+        size = self._tree.z.px(16)
+        icon.paint(painter, QRect(r.center().x() - size // 2 + 1, r.center().y() - size // 2, size, size))
+
+    def _name(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        z = self._tree.z
+        r = option.rect.adjusted(z.px(4), 0, -z.px(6), 0)
+        icon = index.data(Qt.ItemDataRole.DecorationRole)
+        size = self._tree.iconSize().width()
+        if isinstance(icon, QIcon) and not icon.isNull():
+            icon.paint(painter, QRect(r.left(), r.center().y() - size // 2, size, size))
+            r.setLeft(r.left() + size + z.px(7))
+        font = index.data(Qt.ItemDataRole.FontRole)
+        painter.setFont(font if isinstance(font, QFont) else option.font)
+        fg = index.data(Qt.ItemDataRole.ForegroundRole)
+        painter.setPen(fg.color() if fg is not None and hasattr(fg, "color") else QColor(TEXT_PRIMARY))
+        text = painter.fontMetrics().elidedText(str(index.data() or ""), Qt.TextElideMode.ElideMiddle, max(0, r.width()))
+        painter.drawText(r, Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, text)
+
+    @staticmethod
+    def parts(row: dict) -> list[tuple[str, str]]:
+        parts: list[tuple[str, str]] = list(row.get("parts", []))   # a layer row: its numbers
         for badge in ("new", "unsure"):
             if badge in row.get("badges", []):
                 parts.append((STATUS_WORD[badge], STATUS_TEXT[badge]))
@@ -581,21 +796,53 @@ class _StatusDelegate(QStyledItemDelegate):
             parts.append(("root flipped", TEXT_LABEL))
         if row.get("excluded"):
             parts.append(("excluded", TEXT_LABEL))
-        for text, color in parts:
+        return parts
+
+    def _status(self, painter: QPainter, r: QRect, index) -> None:
+        """Status: ● edited (neutral), "check match" / "new" in their status colours, the row's own display mode
+        in grey, a layer's numbers. Plain text, no chips: they looked like buttons."""
+        row = index.siblingAtColumn(COL_NAME).data(ROLE_ROW) or {}
+        z = self._tree.z
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        painter.setFont(z.font("small"))
+        metrics = painter.fontMetrics()
+        x = r.right() - z.px(8)
+        cy = r.center().y()
+        dim = row.get("dimmed")
+        left = r.left() + z.px(6)
+        for text, color in self.parts(row):
+            room = x - left
+            if room < metrics.horizontalAdvance("…") + z.px(2):
+                break
+            text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, room)
             w = metrics.horizontalAdvance(text)
             c = QColor(color)
             if dim:
                 c.setAlphaF(0.5)
             painter.setPen(c)
-            painter.drawText(QRect(x - w, option.rect.top(), w, option.rect.height()),
+            painter.drawText(QRect(x - w, r.top(), w, r.height()),
                              Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight, text)
             x -= w + z.px(8)
-        if "edited" in row.get("badges", []):
-            r = z.px(3)
+        if "edited" in row.get("badges", []) and x - z.px(6) > left:
+            rad = z.px(3)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QColor(DIM if dim else TEXT_LABEL))
-            painter.drawEllipse(QPoint(x - r, cy), r, r)
-        painter.restore()
+            painter.drawEllipse(QPoint(x - rad, cy), rad, rad)
+
+    def status_width(self, row: dict) -> int:
+        """What the status cell needs for this row's words (the column takes the widest, `_fit_status`)."""
+        z = self._tree.z
+        metrics = QFontMetrics(z.font("small"))
+        parts = self.parts(row)
+        w = sum(metrics.horizontalAdvance(t) for t, _c in parts) + z.px(8) * max(0, len(parts) - 1)
+        if "edited" in row.get("badges", []):
+            w += z.px(14)
+        # 8 right + 6 left of padding is what _status uses, plus slack: in Houdini the painter's metrics came out
+        # wider than QFontMetrics' and "per lock" was cut to "per lo…" (the user, docked)
+        return w + z.px(14) + z.px(10) + 2 if w else 0
+
+
+_StatusDelegate = _RowDelegate   # the t70 / t71 name, kept for the tests and the grabs that use it
 
 
 class _WrapRow(QWidget):
@@ -647,29 +894,6 @@ class _WrapRow(QWidget):
         return self.minimumSizeHint()
 
 
-class _IconDelegate(QStyledItemDelegate):
-    """The eye column: an eye in its default state (shown by its own eye) is drawn only on the row under
-    the mouse or a selected row, so 60 identical icons do not fill the tree; a state that is not the
-    default (hidden, hidden by its group, isolated) always shows."""
-
-    def __init__(self, tree: "_LayerTree") -> None:
-        super().__init__(tree)
-        self._tree = tree
-
-    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
-        super().paint(painter, option, index)
-        icon = index.data(ROLE_ICON)
-        if icon is None:
-            return
-        if index.data(ROLE_QUIET) and not (self._tree.is_hovered(index) or self._tree.is_selected(index)):
-            return
-        size = self._tree.iconSize()
-        r = option.rect
-        target = QRect(r.center().x() - size.width() // 2, r.center().y() - size.height() // 2,
-                       size.width(), size.height())
-        icon.paint(painter, target)
-
-
 class _LayerTree(QTreeWidget):
     """The layer tree with drag and drop like Cinema 4D / Substance Painter: drag one or several locks
     between locks (reorder) or onto a group (move into it), drag a group between groups. The controller
@@ -688,23 +912,30 @@ class _LayerTree(QTreeWidget):
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)
         self.setMouseTracking(True)
-        self._hover: tuple | None = None   # (parent row, row) under the mouse
+        self._hover = None   # the row under the mouse (its item: a (parent row, row) key was the same for two rows)
+        self.setAlternatingRowColors(False)
 
-    @staticmethod
-    def _key(index) -> tuple:
-        return (index.parent().row(), index.row())
+    def _item_of(self, index):
+        return self.itemFromIndex(index.siblingAtColumn(COL_NAME)) if index.isValid() else None
 
     def is_hovered(self, index) -> bool:
-        return self._hover == self._key(index)
+        return self._hover is not None and self._item_of(index) is self._hover
 
     def is_selected(self, index) -> bool:
         return self.selectionModel().isSelected(index.siblingAtColumn(COL_NAME))
 
+    def row_color(self, index) -> str:
+        """One background for every row (the Loader's rule): the pane, hover, the selection, selected + hover."""
+        sel, hov = self.is_selected(index), self.is_hovered(index)
+        return (K.SELECTED_HOVER if hov else SELECTED) if sel else (BG_HOVER if hov else PANE)
+
+    def forget_hover(self) -> None:
+        self._hover = None
+
     def mouseMoveEvent(self, event) -> None:  # noqa: N802
-        index = self.indexAt(event.position().toPoint())
-        key = self._key(index) if index.isValid() else None
-        if key != self._hover:
-            self._hover = key
+        item = self._item_of(self.indexAt(event.position().toPoint()))
+        if item is not self._hover:
+            self._hover = item
             self.viewport().update()
         super().mouseMoveEvent(event)
 
@@ -712,6 +943,33 @@ class _LayerTree(QTreeWidget):
         self._hover = None
         self.viewport().update()
         super().leaveEvent(event)
+
+    def drawBranches(self, painter, rect, index) -> None:  # noqa: N802
+        """The branch area takes the row's colour and its line, and a chevron drawn to the indentation (the
+        Loader's `_MeshTree.drawBranches`): the sheet's branch images neither followed the row nor the scale."""
+        color = self.row_color(index)
+        painter.fillRect(rect, QColor(color))
+        if color == PANE:
+            painter.fillRect(QRect(rect.left(), rect.bottom(), rect.width(), 1), QColor(LINE))   # pixel exact
+        if not self.model().hasChildren(index):
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(QPen(QColor(TEXT_LABEL), max(1.4, self.indentation() / 10)))
+        c = rect.center()
+        cx = rect.right() - self.indentation() / 2 + 1
+        s = self.indentation() / 5
+        path = QPainterPath()
+        if self.isExpanded(index):   # v
+            path.moveTo(cx - s, c.y() - s / 2)
+            path.lineTo(cx, c.y() + s / 2)
+            path.lineTo(cx + s, c.y() - s / 2)
+        else:                        # >
+            path.moveTo(cx - s / 2, c.y() - s)
+            path.lineTo(cx + s / 2, c.y())
+            path.lineTo(cx - s / 2, c.y() + s)
+        painter.drawPath(path)
+        painter.restore()
 
     def _dragged(self) -> list[tuple]:
         return [(r["kind"], r["id"]) for r in (it.data(COL_NAME, ROLE_ROW) for it in self.selectedItems())
@@ -755,6 +1013,11 @@ class _LayerTree(QTreeWidget):
         if item is not None and event.button() == Qt.MouseButton.LeftButton \
                 and self.columnAt(pos.x()) == COL_EYE:
             row = item.data(COL_NAME, ROLE_ROW)
+            if row and row["kind"] == SEL_LAYER:   # a layer's own eye (Automatic has none)
+                if row["layer"] != "base":
+                    self._ui._fire("set_layer_on", row["id"], not row.get("on", True))
+                event.accept()
+                return
             if row and row["kind"] in (SEL_GROUP, SEL_LOCKS):
                 kind, ids = self._ui._targets(row)
                 if event.modifiers() & Qt.KeyboardModifier.AltModifier:   # only these shown (again: all)
@@ -769,6 +1032,12 @@ class _LayerTree(QTreeWidget):
         """On the eye a double-click is two clicks: the eye toggles back."""
         if self.columnAt(event.position().toPoint().x()) == COL_EYE:
             self.mousePressEvent(event)
+            return
+        item = self.itemAt(event.position().toPoint())
+        row = item.data(COL_NAME, ROLE_ROW) if item is not None else None
+        if row and row["kind"] == SEL_LAYER and row["layer"] != "base":   # rename in place
+            self.editItem(item, COL_NAME)
+            event.accept()
             return
         super().mouseDoubleClickEvent(event)
 
@@ -805,6 +1074,7 @@ class _LayerTree(QTreeWidget):
             self.viewport().update()
 
     def drawRow(self, painter, option, index) -> None:  # noqa: N802
+        painter.fillRect(option.rect, QColor(self.row_color(index)))   # under Houdini's own row panel
         if getattr(self, "_dragging", False) and self.selectionModel().isSelected(index):
             painter.save()
             painter.setOpacity(0.4)
@@ -1042,8 +1312,12 @@ class GroomingUI(QWidget):
         self._tree_rows: list[dict] = []
         self._collapsed: set = set()     # rows the user closed (All locks opens unless closed)
         self._props: dict = {}
+        self._props_folded = False     # Properties folded while painting (view)
+        self._settings_open = False    # the settings page holds the Properties column
         self._timer: QTimer | None = None
         self._icons: list[tuple[Any, str, str, int]] = []  # (button, icon, colour, px at size 1)
+        self._icon_buttons: list[QToolButton] = []   # 28 px icon buttons, sized again with the UI size
+        self._message_full = ""   # the result line's whole text (the label may show it cut to two lines)
         prefs = load_prefs()
         self._ui_size = prefs.get(PREF_UI_SIZE) or _UI_SIZE_RENAMED.get(prefs.get("ui_size", ""), DEFAULT_UI_SIZE)
         if self._ui_size not in UI_SIZES:
@@ -1056,18 +1330,35 @@ class GroomingUI(QWidget):
         self._narrow = False
         self._message_timer = QTimer(self)
         self._message_timer.setSingleShot(True)
-        self._message_timer.timeout.connect(lambda: self._message_label.setText(""))
+        self._message_timer.timeout.connect(lambda: (self._message_label.setText(""),
+                                                     self._message_label.setToolTip("")))
         root.addWidget(self._build_top_bar())
         root.addWidget(_line())
-        root.addWidget(self._build_view_bar())
-        root.addWidget(_line())
+        root.addWidget(self._build_view_bar())   # narrow only: wide, its controls sit in the top bar (t74 "C")
+        self._view_line = _line()
+        root.addWidget(self._view_line)
+        # while painting, what the scalp shows and the legend, across the window: in the left column (the mockup)
+        # the legend's numbers and its caption collided at 760 px
+        root.addWidget(L.build_paint_strip(self))
+        # the left column: the Scalp strip (while painting) over the tree; Properties beside it run from the top
+        # bar to the action bar (the Loader's full-height inspector), under it when narrow
+        left = QWidget()
+        left.setObjectName("LeftColumn")
+        left_lay = QVBoxLayout(left)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(0)
+        left_lay.addWidget(self._build_tree(), stretch=1)
+        self._left_col = left
         body = QSplitter(Qt.Orientation.Horizontal)
         body.setHandleWidth(1)
         body.setChildrenCollapsible(False)
-        body.addWidget(self._build_tree())
+        body.addWidget(left)
         body.addWidget(self._build_properties())
         body.setStretchFactor(1, 1)
         self._body = body
+        # once the user drags the divider the tree keeps their width; until then it follows the window (TREE_SHARE)
+        self._tree_user = False
+        body.splitterMoved.connect(lambda *_a: setattr(self, "_tree_user", True))
         root.addWidget(body, stretch=1)
         root.addWidget(_line())
         root.addWidget(self._build_action_bar())
@@ -1103,14 +1394,17 @@ class GroomingUI(QWidget):
         if not self._docked and not self.isVisible():
             self.resize(z.px(1100), z.px(800))
         for widget, name, color, size in self._icons:
-            widget.setIcon(_lucide_icon(name, z.px(size), color))
+            widget.setIcon(K._crisp_icon(name, z.px(size), color))
             widget.setIconSize(QSize(z.px(size), z.px(size)))
+        for b in self._icon_buttons:
+            b.setFixedSize(z.px(28), z.px(28))
         self._hda_label.setPixmap(_hda_icon(z.px(20)))
         self._tree.z = z
         self._tree.setIndentation(z.px(18))
         self._tree.setIconSize(QSize(z.px(14), z.px(14)))
         # Houdini's own style sheet paints item views in its grey: the tree's surface is set on the widget
-        self._tree.setStyleSheet(f"QTreeWidget {{ background-color: {PANE}; }}")
+        self._tree.setStyleSheet(f"QTreeWidget {{ background-color: {PANE}; }}"
+                                 f" QTreeWidget QScrollBar:vertical {{ width: {z.px(8)}px; margin: 2px 2px 2px 0px; }}")
         for widget in (self._tree, self._tree.viewport()):
             palette = widget.palette()
             for role in (palette.ColorRole.Base, palette.ColorRole.AlternateBase, palette.ColorRole.Window):
@@ -1120,9 +1414,15 @@ class GroomingUI(QWidget):
         self._tree.setAlternatingRowColors(False)
         self._tree.viewport().setStyleSheet(f"background-color: {PANE};")
         header = self._tree.header()
-        for col, width in ((COL_STATUS, 110), (COL_EYE, 36)):
+        for col, width in ((COL_STATUS, 110), (COL_EYE, 30)):
             header.resizeSection(col, z.px(width))
+        self._fit_status()
         self._version_edit.setFixedWidth(z.px(84))
+        # Color by keeps its words whole (Qt clips a combo's text, it does not elide it); Display gives way first
+        fm = QFontMetrics(z.font("body"))
+        words = max(fm.horizontalAdvance(self._color_combo.itemText(i)) for i in range(self._color_combo.count()))
+        self._color_combo.setMinimumWidth(words + z.px(60))
+        self._display_combo.setMinimumWidth(fm.horizontalAdvance("Hair preview") + z.px(46))
         self._filter.setMinimumWidth(z.px(120))
         self._narrow = None   # lay out again for this size
         self._apply_layout()
@@ -1154,9 +1454,26 @@ class GroomingUI(QWidget):
         self._apply_size()
 
 
+    def _icon_button(self, icon: str, tip: str, checkable: bool = False, color: str = TEXT_LABEL) -> QToolButton:
+        """A button that says it with an icon (the Loader's fewer words): 28 px, flat, its hover / pressed /
+        checked looks from the sheet; the tooltip names it and so does its accessible name (the part before ":")."""
+        b = QToolButton()
+        b.setProperty("flat", True)
+        b.setProperty("iconflat", True)
+        b.setCheckable(checkable)
+        b.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        b.setToolTip(tip)
+        b.setAccessibleName(tip.split(":")[0].strip())
+        b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._icon(b, icon, color, 16)
+        b.setFixedSize(self.z.px(28), self.z.px(28))
+        self._icon_buttons.append(b)
+        return b
+
     def _icon(self, widget, name: str, color: str = TEXT_LABEL, size: int = 16):
         self._icons.append((widget, name, color, size))
-        widget.setIcon(_lucide_icon(name, self.z.px(size), color))
+        widget.setIcon(K._crisp_icon(name, self.z.px(size), color))
+        widget.setIconSize(QSize(self.z.px(size), self.z.px(size)))
         return widget
 
     def _recolor_icon(self, widget, color: str) -> None:
@@ -1164,7 +1481,7 @@ class GroomingUI(QWidget):
         for i, (w, name, _c, size) in enumerate(self._icons):
             if w is widget:
                 self._icons[i] = (w, name, color, size)
-                widget.setIcon(_lucide_icon(name, self.z.px(size), color))
+                widget.setIcon(K._crisp_icon(name, self.z.px(size), color))
 
     # =====================================================================
     # Build
@@ -1175,8 +1492,9 @@ class GroomingUI(QWidget):
         bar.setObjectName("TopBar")
         bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         lay = QHBoxLayout(bar)
-        lay.setContentsMargins(16, 8, 12, 8)
-        lay.setSpacing(10)
+        lay.setContentsMargins(16, 6, 10, 6)
+        lay.setSpacing(8)
+        self._top_lay = lay
         self._hda_label = QLabel()
         lay.addWidget(self._hda_label)
         self._node_label = _label("No node", "name")
@@ -1190,12 +1508,15 @@ class GroomingUI(QWidget):
         self._xray_level = load_prefs().get("xray", config.XRAY_DEFAULT)
         if self._xray_level not in config.XRAY_LEVELS:
             self._xray_level = config.XRAY_DEFAULT
-        self._settings_btn = QToolButton()
-        self._settings_btn.setProperty("flat", True)
-        self._settings_btn.setToolTip("Settings: font size, X-ray strength (saved for you)")
+        self._top_view = QWidget()   # wide: the view controls (Display, Color by, Deform, Isolate, X-ray) go here
+        tv = QHBoxLayout(self._top_view)
+        tv.setContentsMargins(0, 0, 0, 0)
+        tv.setSpacing(0)
+        self._top_view_lay = tv
+        lay.addWidget(self._top_view)
+        self._settings_btn = self._icon_button("settings", "Settings: font size, X-ray strength (saved for you),"
+                                                           " node settings and undo cache")
         self._settings_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self._icon(self._settings_btn, "settings")
-        self._settings_btn.setMinimumSize(self.z.px(28), self.z.px(28))   # a 24 px target at least, like Houdini's own
         menu = QMenu(self._settings_btn)
         fonts = menu.addMenu("Font size")
         for name in UI_SIZES:
@@ -1209,12 +1530,14 @@ class GroomingUI(QWidget):
             act.setCheckable(True)
             act.triggered.connect(lambda _c=False, n=name: self.set_xray_level(n))
         xray.aboutToShow.connect(lambda: [a.setChecked(a.text() == self._xray_level) for a in xray.actions()])
+        menu.addSeparator()
+        menu.addAction(_lucide_icon("sliders", self.z.px(15)), "Node settings and undo cache…").triggered.connect(
+            lambda: self.show_settings(self._ask("settings_info") or {}))
         self._settings_btn.setMenu(menu)
         self._settings_menus = {"font": fonts, "xray": xray}
         lay.addWidget(self._settings_btn)
-        self._dock_btn = QPushButton("  Dock")
-        self._icon(self._dock_btn, "panel-right")
-        self._dock_btn.setToolTip("Put the panel in a Houdini pane tab (drag the tab out to float it again)")
+        self._dock_btn = self._icon_button("panel-right", "Dock: put the panel in a Houdini pane tab (drag the tab out"
+                                                          " to float it again)")
         self._dock_btn.clicked.connect(lambda: self._fire("dock"))
         self._dock_btn.setVisible(not self._docked)
         lay.addWidget(self._dock_btn)
@@ -1227,10 +1550,14 @@ class GroomingUI(QWidget):
         bar.setObjectName("ViewBar")
         bar.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._view_lay = QBoxLayout(QBoxLayout.Direction.LeftToRight, bar)
-        self._view_lay.setContentsMargins(14, 6, 12, 6)
+        self._view_lay.setContentsMargins(14, 6, 10, 6)
         self._view_lay.setSpacing(6)
+        self._view_box = QWidget()
+        box = QHBoxLayout(self._view_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(6)
         shown = QHBoxLayout()
-        shown.setSpacing(8)
+        shown.setSpacing(6)
         self._display_combo = _Combo()
         for mode in config.DISPLAY_MODES:
             text = DISPLAY_LABELS[mode]
@@ -1250,49 +1577,37 @@ class GroomingUI(QWidget):
         self._color_combo.currentIndexChanged.connect(
             lambda _i: None if self._filling else self._fire("set_display", None, self._color_combo.currentData()))
         shown.addWidget(self._color_combo)
+        for combo in (self._display_combo, self._color_combo):   # they give way first when narrow
+            combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(7)
+            combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         toggles = QHBoxLayout()
-        toggles.setSpacing(4)
-        self._deform_btn = QToolButton()
-        self._deform_btn.setProperty("flat", True)
-        self._deform_btn.setCheckable(True)
-        self._deform_btn.setText("  Deform")
-        self._deform_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._icon(self._deform_btn, "move-3d", TEXT_LABEL, 16)
-        self._deform_btn.setToolTip("Deform by the animated hair mesh wired into input 3 (Point Deform), as in"
-                                    " the shot. Off while grooming: every edit would deform 4 M points (~1 s), every"
-                                    " lock is drawn as strands and X-ray only dims the others")
+        toggles.setSpacing(2)
+        self._deform_btn = self._icon_button(
+            "move-3d", "Deform: by the animated hair mesh wired into input 3 (Point Deform), as in the shot. Off while"
+            " grooming: every edit would deform 4 M points (~1 s), every lock is drawn as strands and X-ray only dims"
+            " the others", checkable=True)
         self._deform_btn.clicked.connect(lambda on: self._fire("set_shot_deform", on))
         self._deform_btn.setVisible(False)
         toggles.addWidget(self._deform_btn)
-        self._isolate_btn = QToolButton()
-        self._isolate_btn.setProperty("flat", True)
-        self._isolate_btn.setCheckable(True)
-        self._isolate_btn.setText("  Isolate")
-        self._isolate_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._isolate_btn.setToolTip("Isolate: show the selected locks or group alone (I). I on other locks"
-                                     " isolates them instead; Esc or I again shows everything. Eyes stay as they are")
-        self._icon(self._isolate_btn, "focus", TEXT_LABEL, 16)
+        self._isolate_btn = self._icon_button(
+            "focus", "Isolate: show the selected locks or group alone (I). I on other locks isolates them instead;"
+            " Esc or I again shows everything. Eyes stay as they are", checkable=True)
         self._isolate_btn.clicked.connect(lambda: self._fire("isolate"))
         toggles.addWidget(self._isolate_btn)
-        self._xray_toggle = QToolButton()
-        self._xray_toggle.setProperty("flat", True)
-        self._xray_toggle.setCheckable(True)
+        self._xray_toggle = self._icon_button(
+            "contrast", "X-ray (X): while you edit, the other locks are see-through bands so the selection stands out"
+            " and edits stay quick. Off: every lock as real strands, to judge the selection inside the groom (edits"
+            " slower). How see-through: Settings › X-ray", checkable=True, color=ACCENT)
         self._xray_toggle.setChecked(True)
-        self._xray_toggle.setText("  X-ray")
-        self._xray_toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self._xray_toggle.setToolTip("X-ray (X): while you edit, the other locks are see-through bands so the"
-                                     " selection stands out and edits stay quick. Off: every lock as real strands,"
-                                     " to judge the selection inside the groom (edits slower). How see-through:"
-                                     " Settings › X-ray")
-        self._icon(self._xray_toggle, "contrast", ACCENT, 16)
         self._xray_toggle.clicked.connect(lambda _on: self._fire("xray"))
         toggles.addWidget(self._xray_toggle)
-        toggles.addStretch(1)
         self._view_groups = (shown, toggles)
-        self._view_lay.addLayout(shown)
-        self._view_lay.addSpacing(10)
-        self._view_lay.addLayout(toggles)
-        self._view_lay.addStretch(1)
+        box.addLayout(shown, stretch=1)
+        box.addSpacing(6)
+        box.addLayout(toggles)
+        self._view_lay.addWidget(self._view_box, stretch=1)
+        self._view_bar = bar
         return bar
 
     def _build_tree(self) -> QWidget:
@@ -1300,16 +1615,19 @@ class GroomingUI(QWidget):
         side.setObjectName("TreePane")
         side.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._tree_pane = side
-        lay = QVBoxLayout(side)
-        lay.setContentsMargins(8, 10, 8, 8)
+        outer = QVBoxLayout(side)
+        outer.setContentsMargins(8, 10, 0, 0)   # right 0: the tree's scroll bar sits at the pane's edge (the user's ask)
+        outer.setSpacing(6)
+        top = QWidget()
+        lay = QVBoxLayout(top)
+        lay.setContentsMargins(0, 0, 8, 0)
         lay.setSpacing(6)
-        head = QHBoxLayout()
-        head.setContentsMargins(6, 0, 0, 0)
-        head.addWidget(_label("LAYERS", "caps"))
-        self._count_label = _label("", "small")
-        head.addWidget(self._count_label)
-        head.addStretch(1)
-        lay.addLayout(head)
+        outer.addWidget(top)
+        self._count_label = _FitLabel("small")
+        head = _TreeHead(_label("LOCKS", "caps"), self._count_label)
+        L.build_tree_tools(self, head.tools_row)
+        lay.addWidget(head)
+        self._tree_head = head
 
         self._filter = QLineEdit()
         self._filter.setPlaceholderText("Filter: name, or new, check, hidden, edited, excluded")
@@ -1359,6 +1677,7 @@ class GroomingUI(QWidget):
         self._banner.setVisible(False)
         lay.addWidget(self._banner)
 
+        lay = outer
         tree = _LayerTree(self)
         tree.setColumnCount(COL_EYE + 1)
         tree.setHeaderHidden(True)
@@ -1367,9 +1686,11 @@ class GroomingUI(QWidget):
         # the number that tells them apart stays visible.
         tree.setTextElideMode(Qt.TextElideMode.ElideMiddle)
         tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        tree.setItemDelegateForColumn(COL_STATUS, _StatusDelegate(tree))
-        icons = _IconDelegate(tree)
-        tree.setItemDelegateForColumn(COL_EYE, icons)
+        cells = _RowDelegate(tree)        # every cell, painted (the Loader's lesson, t74)
+        tree.setItemDelegate(cells)
+        for col in (COL_NAME, COL_STATUS, COL_EYE):
+            tree.setItemDelegateForColumn(col, cells)
+        tree.setAlternatingRowColors(False)
         tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         tree.customContextMenuRequested.connect(self._row_menu)
         tree.itemSelectionChanged.connect(self._on_tree_selection)
@@ -1380,10 +1701,26 @@ class GroomingUI(QWidget):
         header.setSectionResizeMode(COL_NAME, header.ResizeMode.Stretch)
         for col in (COL_STATUS, COL_EYE):
             header.setSectionResizeMode(col, header.ResizeMode.Fixed)
+        header.moveSection(header.visualIndex(COL_EYE), 0)   # the eye at the left edge: every eye lines up
+        tree.setEditTriggers(QAbstractItemView.EditTrigger.EditKeyPressed)   # F2 renames a layer
+        tree.itemChanged.connect(self._on_item_renamed)
+        delete = QShortcut(QKeySequence(Qt.Key.Key_Delete), tree)
+        delete.setContext(Qt.ShortcutContext.WidgetShortcut)
+        delete.activated.connect(lambda: self._fire("delete_layer")
+                                 if self._props.get("kind") == SEL_LAYER else None)
         self._tree = tree
         lay.addWidget(tree, stretch=1)
+        # The selected layer's blend / opacity or D / opacity, UNDER the tree: above it, showing it on a click
+        # pushed every row down and the row under the mouse moved (picking a density layer jumped, t74)
+        self._row_bar_line = _line()   # the selected layer's values are not a row of the tree
+        self._row_bar_line.setVisible(False)
+        lay.addWidget(self._row_bar_line)
+        bar = L.build_row_bar(self)
+        bar.setContentsMargins(6, 4, 8, 4)
+        lay.addWidget(bar)
         self._drop_label = _label("", "small", WARN)
         self._drop_label.setVisible(False)
+        self._drop_label.setContentsMargins(0, 0, 8, 6)
         lay.addWidget(self._drop_label)
         return side
 
@@ -1432,6 +1769,8 @@ class GroomingUI(QWidget):
         self._message_label = _label("", "meta")
         self._message_label.setWordWrap(True)
         self._message_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._message_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        self._action_outer = outer
         outer.addWidget(self._message_label)
 
         # Two groups that sit on one line, or one above the other when the panel is narrow
@@ -1439,14 +1778,13 @@ class GroomingUI(QWidget):
         self._action_lay.setSpacing(8)
         groom = QHBoxLayout()
         groom.setSpacing(8)
-        self._detect_btn = self._button("  Detect locks", "scan-search",
-                                        "Find the locks in the hair mesh again; each keeps its id and settings by"
-                                        " name, then root position, then shape")
+        self._detect_btn = self._icon_button("scan-search", "Detect locks: find the locks in the hair mesh again; each"
+                                             " keeps its id and settings by name, then root position, then shape")
         self._detect_btn.clicked.connect(lambda: self._fire("detect"))
         groom.addWidget(self._detect_btn)
-        self._split_btn = self._button("  Update regions", "layout-grid",
-                                       "Give each lock its growth region on the skin again. Regions stay"
-                                       " as they are until you update them, so an edit never moves another lock's hair")
+        self._split_btn = self._icon_button("layout-grid", "Update regions: give each lock its growth region on the skin"
+                                            " again. Regions stay as they are until you update them, so an edit never"
+                                            " moves another lock's hair")
         self._split_btn.clicked.connect(lambda: self._fire("split_regions"))
         groom.addWidget(self._split_btn)
         self._stale = QLabel()
@@ -1454,10 +1792,10 @@ class GroomingUI(QWidget):
                                " update. Update regions to grow each from its own skin area")
         self._stale.setVisible(False)
         groom.addWidget(self._stale)
+        self._groom_lay = groom
         groom.addStretch(1)
         publish = QHBoxLayout()
         publish.setSpacing(8)
-        publish.addStretch(1)
         self._version_edit = QLineEdit()
         self._version_edit.setPlaceholderText("Version")
         self._version_edit.setToolTip("Publish version (vNNN)")
@@ -1497,6 +1835,66 @@ class GroomingUI(QWidget):
         super().resizeEvent(event)
         self._apply_layout()
         self._fit_tree()
+        QTimer.singleShot(0, self._after_resize)
+
+    COMPACT_PX = 540   # Properties narrower than this (x scale): setting rows and stat cells go compact
+
+    def _compact(self) -> bool:
+        return bool(self._narrow) or self._scroll.viewport().width() < self.z.px(self.COMPACT_PX)
+
+    def _after_resize(self) -> None:
+        if not self.is_alive():
+            return
+        # again once the body is laid out: right after a stacked -> side by side switch the splitter still had
+        # its old size and spread the tree to another width than a window opened at this size (t75 recheck)
+        self._fit_tree()
+        self._fit_status()
+        self._fit_message()
+        compact = self._compact()
+        if compact != getattr(self, "_was_compact", None):
+            self._was_compact = compact
+            if self._props and not self._settings_open:
+                self.show_properties(self._props)
+
+    def _status_words(self) -> int:
+        """The status column's width for its widest words (no cap): from the rows, not from the column as it is
+        now, so the tree's width rule does not depend on what the last layout left (t75 recheck)."""
+        cells = self._tree.itemDelegateForColumn(COL_STATUS)
+        if not isinstance(cells, _RowDelegate):
+            return self._tree.header().sectionSize(COL_STATUS)
+        return max((cells.status_width(item.data(COL_NAME, ROLE_ROW) or {}) for item in self._rows.values()),
+                   default=0)
+
+    def _fit_status(self) -> None:
+        """The status column: one width for the whole tree, its widest words, at most 40 % (so the vertical
+        separators stand straight, the user's ask 2026-11-19); the name column takes the rest."""
+        tree, z = self._tree, self.z
+        if not isinstance(tree.itemDelegateForColumn(COL_STATUS), _RowDelegate):
+            return
+        widest = self._status_words()
+        room = max(tree.viewport().width(), 1) - tree.header().sectionSize(COL_EYE)
+        tree.header().resizeSection(COL_STATUS, max(z.px(24), min(widest, int(room * 0.4))))
+
+    def _fit_message(self) -> None:
+        """Two lines at most (the Loader's result line): longer text ends in "…", the whole of it in the tooltip."""
+        label, text = self._message_label, self._message_full
+        width = label.width()
+        metrics = label.fontMetrics()
+        if not text or width < 20:
+            label.setText(text)
+            return
+        two = metrics.lineSpacing() * 2
+
+        def fits(t: str) -> bool:
+            return metrics.boundingRect(QRect(0, 0, width, 10000), int(Qt.TextFlag.TextWordWrap), t).height() <= two
+
+        shown, room = text, int(width * 1.9)
+        while not fits(shown) and room > 20:   # wrapping breaks lines early: shrink until two lines hold it
+            shown = metrics.elidedText(text, Qt.TextElideMode.ElideRight, room)
+            room = int(room * 0.92)
+        label.setText(shown)
+        label.setToolTip(text if shown != text else "")
+        label.setMaximumHeight(metrics.lineSpacing() * 2 + 4)
 
     def _apply_layout(self) -> None:
         """Below NARROW_PX the tree sits above the settings, and the view and action bars wrap."""
@@ -1506,23 +1904,33 @@ class GroomingUI(QWidget):
             return
         self._narrow = narrow
         self._body.setOrientation(Qt.Orientation.Vertical if narrow else Qt.Orientation.Horizontal)
-        self._tree_pane.setMinimumWidth(0 if narrow else z.px(300))
+        self._left_col.setMinimumWidth(0 if narrow else z.px(300))
+        # the view controls: their own bar when narrow, the top bar when wide (t74 "C": Properties then run from
+        # the top bar to the action bar)
+        (self._view_lay if narrow else self._top_view_lay).addWidget(self._view_box, 1 if narrow else 0)
+        self._view_bar.setVisible(narrow)
+        self._view_line.setVisible(narrow)
+        # the result line: above the buttons when narrow, beside the icons when wide
+        if narrow:
+            self._action_outer.insertWidget(1, self._message_label)
+        else:
+            self._groom_lay.insertWidget(self._groom_lay.indexOf(self._stale) + 1, self._message_label, 1)
         w, h = max(self.width(), 1), max(self.height(), 1)    # the body's own size is not laid out yet
         tree_w = self._tree_width(w)
         self._body.setSizes([int(h * 0.45), int(h * 0.55)] if narrow else [tree_w, max(w - tree_w, 1)])
-        down = QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight
-        self._view_lay.setDirection(down)
-        self._action_lay.setDirection(down)
+        self._view_lay.setDirection(QBoxLayout.Direction.LeftToRight)
+        self._action_lay.setDirection(QBoxLayout.Direction.LeftToRight)   # icons, version, Publish fit one line
         self._props_lay.setContentsMargins(z.px(14 if narrow else 22), z.px(14), z.px(12 if narrow else 18), z.px(14))
-        self._asset_label.setVisible(not narrow)
+        self._asset_label.setVisible(self.width() >= z.px(1000))   # the node path gets the room first
         self._show_node_label()
         if self._props:
             self.show_properties(self._props)   # stat cells and setting rows in their narrow / wide sizes
 
-    def _tree_width(self, width: int) -> int:
-        """The tree pane's width beside the settings: wide enough for the longest name (a 300 px pane cut
-        hair_back_01 to "ha…01" while the settings had 400 px to spare), at most half the window, and never
-        so wide that the settings scroll sideways."""
+    def _tree_width(self, width: int, share: bool = True) -> int:
+        """The tree pane's width beside the settings: TREE_SHARE of the window, wider for the longest name (a
+        300 px pane cut hair_back_01 to "ha…01" while the settings had 400 px to spare), at most half the window,
+        and never so wide that the settings scroll sideways. The head does not widen it: its tools go to a row
+        of their own when the count would not fit beside them (`_TreeHead`)."""
         z, tree = self.z, self._tree
         best, todo = 0, [(tree.topLevelItem(i), 1) for i in range(tree.topLevelItemCount())]
         while todo:
@@ -1531,20 +1939,28 @@ class GroomingUI(QWidget):
             best = max(best, depth * tree.indentation() + z.px(16 + 12) + text)
             todo += [(item.child(k), depth + 1) for k in range(item.childCount())]
         header = tree.header()
-        best += header.sectionSize(COL_STATUS) + header.sectionSize(COL_EYE)
+        best += max(z.px(24), self._status_words()) + header.sectionSize(COL_EYE)
         best += tree.verticalScrollBar().sizeHint().width() + 16 + z.px(8)   # the pane's margins
-        # the settings' rows (name, slider, value, source, below) need ~540 px at scale 1 before they scroll
-        props = max(self._props_widget.minimumSizeHint().width(), z.px(540)) +             self._scroll.verticalScrollBar().sizeHint().width()
-        room = width - props - self._body.handleWidth() - 4
-        return max(min(best, width // 2, room), min(z.px(260), room), 1)
+        # Fixed numbers for Properties, not their minimum as laid out now (it changed with their compact state, so a
+        # window opened at a width and one resized to it got other trees, t75 recheck): the TREE_SHARE only takes
+        # what Properties do not need for whole rows (COMPACT_PX); the names may take more, down to 430 px of
+        # Properties (compact rows). The head never widens the tree: its tools wrap (`_TreeHead`).
+        bar, gap = self._scroll.verticalScrollBar().sizeHint().width(), self._body.handleWidth() + 4
+        room_whole = width - z.px(self.COMPACT_PX) - bar - gap
+        room = width - z.px(430) - bar - gap
+        tree_w = min(best, width // 2, room)
+        if share:
+            tree_w = max(tree_w, min(int(width * TREE_SHARE), width // 2, room_whole))
+        return max(tree_w, min(z.px(260), room), 1)
 
     def _fit_tree(self) -> None:
-        """Rows changed: widen the tree pane when a name no longer fits (never narrows what the user set)."""
+        """Rows changed or the window resized: the tree takes its width (`_tree_width`) while the user has not
+        dragged the divider; after that it only widens when a name no longer fits (never narrows what they set)."""
         if self._narrow is not False:
             return
         sizes = self._body.sizes()
-        want = self._tree_width(max(self.width(), 1))
-        if len(sizes) == 2 and sizes[0] < want:
+        want = self._tree_width(max(self.width(), 1), share=not self._tree_user)
+        if len(sizes) == 2 and (sizes[0] < want or (not self._tree_user and sizes[0] != want)):
             self._body.setSizes([want, max(sum(sizes) - want, 1)])
 
     def _button(self, text: str, icon: str, tip: str) -> QPushButton:
@@ -1571,23 +1987,45 @@ class GroomingUI(QWidget):
 
     def showEvent(self, event) -> None:  # noqa: N802
         super().showEvent(event)
+        if getattr(self, "_closed", False):   # closed, then shown again by the shelf tool
+            self._closed = False
+            if self._timer is not None and getattr(self, "_poll_ms", None):
+                self._timer.start(self._poll_ms)
         self._fire("shown")
 
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
         self._fire("hidden")   # the viewport draws every lock in its colour again
 
-    def _fire(self, event: str, *args) -> None:
+    def _fire(self, event: str, *args, **kwargs) -> None:
         cb = self._callbacks.get(event)
         if cb is not None:
-            cb(*args)
+            cb(*args, **kwargs)
 
     def _ask(self, event: str, *args) -> Any:
         cb = self._callbacks.get(event)
         return cb(*args) if cb is not None else None
 
+    def is_alive(self) -> bool:
+        """False once the window was closed or its C++ object deleted: a poll queued before that (hdefereval)
+        must not touch its widgets (t71 defect 7)."""
+        if getattr(self, "_closed", False):
+            return False
+        try:
+            import shiboken6
+            return bool(shiboken6.isValid(self))
+        except Exception:
+            return True
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self._closed = True
+        if self._timer is not None:
+            self._timer.stop()
+        super().closeEvent(event)
+
     def start_polling(self, ms: int) -> None:
         """Read the viewport selection and the node's data while the panel is up (no Houdini callback)."""
+        self._poll_ms = ms
         if self._timer is None:
             self._timer = QTimer(self)
             self._timer.timeout.connect(lambda: self._fire("poll") if self.isVisible() else None)
@@ -1602,7 +2040,7 @@ class GroomingUI(QWidget):
         self._show_node_label()
         self._node_label.setToolTip(path)
         self._asset_label.setText(asset or "")
-        self.setWindowTitle(f"{config.WINDOW_TITLE} · {path}" if path else config.WINDOW_TITLE)
+        self.setWindowTitle(f"{config.WINDOW_TITLE}: {path}" if path else config.WINDOW_TITLE)
 
     def _show_node_label(self) -> None:
         """The node's path, or only its parent and name when narrow (the tooltip has the path)."""
@@ -1619,12 +2057,16 @@ class GroomingUI(QWidget):
         self._collapsed = {key for key, item in self._rows.items() if not item.isExpanded()}
         first = not self._rows
         scroll = self._tree.verticalScrollBar().value()
+        current = self._tree.currentItem()
+        current_key = next((k for k, it in self._rows.items() if it is current), None) if current is not None else None
+        self._tree.forget_hover()
         self._tree.clear()
         self._rows = {}
         locks = 0
         root = None   # All locks: the defaults, and the level every group inherits from, so it holds them
         for row in rows:
             item = self._make_item(row)
+            L.add_layers(self, item, row, self._collapsed)
             if row["kind"] == SEL_DEFAULTS:
                 root = item
                 self._tree.addTopLevelItem(item)
@@ -1633,16 +2075,29 @@ class GroomingUI(QWidget):
             else:
                 self._tree.addTopLevelItem(item)
             for child in row.get("children", []):
-                item.addChild(self._make_item(child, parent=row))
+                child_item = self._make_item(child, parent=row)
+                item.addChild(child_item)
+                L.add_layers(self, child_item, child, self._collapsed)
                 locks += child["kind"] == SEL_LOCKS
             key = (row["kind"], row["id"])
             item.setExpanded(first or key in expanded or row["kind"] == SEL_DEFAULTS and key not in self._collapsed)
+        L.expand_layers(self, self._collapsed)
         groups = sum(r["kind"] == SEL_GROUP for r in rows)
-        self._count_label.setText(f"{locks} locks · {groups} groups")
+        self._count_label.set_forms(f"{locks} locks, {groups} groups", f"{locks} locks")
+        self._tree_head.fit()   # the count changed: one row or two
         self._apply_filter()
+        if current_key in self._rows:   # the Loader's _restore_tree_state: the current row too
+            from PySide6.QtCore import QItemSelectionModel
+            self._tree.setCurrentItem(self._rows[current_key], COL_NAME, QItemSelectionModel.SelectionFlag.NoUpdate)
         self._tree.verticalScrollBar().setValue(scroll)
         self._filling = False
         self._fit_tree()
+        self._fit_status()
+
+        def again() -> None:   # once the rows are laid out: a rebuild that changes the rows lands a few off
+            if self.is_alive() and not self._filling:
+                self._tree.verticalScrollBar().setValue(scroll)
+        QTimer.singleShot(0, again)
 
     def _apply_filter(self) -> None:
         """Hide the rows the filter does not match: a lock by its name or a filter word; a group shows when
@@ -1680,7 +2135,7 @@ class GroomingUI(QWidget):
     def set_review(self, new: int, to_check: int) -> None:
         """New and to-check locks: one line with Confirm all (none: hidden)."""
         parts = ([f"{new} new"] if new else []) + ([f"{to_check} to check"] if to_check else [])
-        self._review_label.setText(" · ".join(parts))
+        self._review_label.setText(", ".join(parts))
         self._review_label.setToolTip("Filter the tree with new or check to see them")
         self._review.setVisible(bool(parts))
 
@@ -1735,7 +2190,7 @@ class GroomingUI(QWidget):
             visible = row.get("visible", True)
             own = "its own eye: shown" if visible else "its own eye: hidden"
             if row.get("isolated_in"):
-                icon, color = "eye", ACCENT
+                icon, color = "eye", TEXT_LABEL
                 tip = f"Drawn: isolated ({own}). Click to change its own eye"
             elif row.get("isolated_out"):
                 icon, color = "eye-off", FAINT
@@ -1747,7 +2202,8 @@ class GroomingUI(QWidget):
                 icon, color = ("eye", TEXT_LABEL) if visible else ("eye-off", TEXT_LABEL)
                 tip = "Shown: click to hide" if visible else "Hidden: click to show"
             tip += ". Alt+click: show only this (again: the others back as they were)"
-            item.setData(COL_EYE, ROLE_ICON, _fixed_icon(icon, z.px(16), color))
+            item.setData(COL_EYE, ROLE_ICON, _eye_icon(icon == "eye", z.px(16), color))
+            item.setData(COL_EYE, ROLE_EYE, (icon, color, z.px(16)))
             item.setData(COL_EYE, ROLE_QUIET, False)   # always drawn: the most used control in the tree
             item.setToolTip(COL_EYE, tip)
             if by_group:
@@ -1772,24 +2228,42 @@ class GroomingUI(QWidget):
             self._tree.scrollToItem(first)
         self._filling = False
 
-    def show_properties(self, props: dict) -> None:
-        z = self.z
-        self._props = props
-        scroll = self._scroll.verticalScrollBar().value()
+    def _clear_props(self) -> None:
         while self._props_lay.count():
             entry = self._props_lay.takeAt(0)
             if entry.widget() is not None:  # hidden now: deleteLater waits for the event loop
                 entry.widget().hide()
                 entry.widget().deleteLater()
+            elif entry.layout() is not None:
+                entry.layout().setParent(None)
+
+    def show_properties(self, props: dict) -> None:
+        z = self.z
+        self._props = props
+        L.show_row_bar(self, props)
+        L.update_tree_tools(self, props)
+        if self._settings_open:   # the settings page stays until Back or another selection
+            return
+        scroll = self._scroll.verticalScrollBar().value()
+        self._clear_props()
         kind = props.get("kind", SEL_NONE)
         lay = self._props_lay
+        if kind == SEL_LAYER:
+            L.layer_props(self, props)
+            QTimer.singleShot(0, lambda: self._scroll.verticalScrollBar().setValue(scroll))
+            return
         if kind == SEL_NONE:
             self._overview(props)
             return
         title = _label(props["title"], "title")
         title.setWordWrap(True)
         lay.addWidget(title)
-        if props.get("subtitle"):
+        if props.get("details"):
+            lay.addSpacing(z.px(4))
+            rows = K._Props(z)
+            rows.set_rows(props["details"])
+            lay.addWidget(rows)
+        elif props.get("subtitle"):
             lay.addSpacing(z.px(2))
             sub = _label(props["subtitle"], "meta")
             sub.setWordWrap(True)
@@ -1810,8 +2284,8 @@ class GroomingUI(QWidget):
             head.addStretch(1)
             own = {"lock": "this lock", "group": "this group", "defaults": ALL_LOCKS}.get(props.get("own", ""), "")
             if own and not self._narrow:   # narrow: the source column's tooltip says it
-                below = "" if props.get("own") == "lock" else " · last column: levels below"
-                head.addWidget(_label(f"bold = set here · grey = inherited{below}", "small"))
+                below = "" if props.get("own") == "lock" else ", last column: levels below"
+                head.addWidget(_label(f"bold: set here, grey: inherited{below}", "small"))
             holder = QWidget()
             holder.setLayout(head)
             head.setContentsMargins(z.px(4), 0, 0, z.px(4))
@@ -1821,7 +2295,7 @@ class GroomingUI(QWidget):
                 lay.addWidget(_SettingRow(
                     s, z, lambda key, value: self._fire("set_value", key, value),
                     lambda key: self._fire("reset_value", key),
-                    lambda key, value: self._fire("preview_value", key, value), compact=bool(self._narrow)))
+                    lambda key, value: self._fire("preview_value", key, value), compact=self._compact()))
         lay.addStretch(1)
         QTimer.singleShot(0, lambda: self._scroll.verticalScrollBar().setValue(scroll))
 
@@ -1863,7 +2337,7 @@ class GroomingUI(QWidget):
         if not props.get("attribs"):
             return
         self._props_lay.addSpacing(self.z.px(8))
-        line = _label(f"Attributes · {props['attribs']}", "small")
+        line = _label(f"Attributes: {props['attribs']}", "small")
         line.setWordWrap(True)
         line.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         line.setToolTip("Attributes on the strands as cooked now (Geometry Spreadsheet names)")
@@ -1899,7 +2373,7 @@ class GroomingUI(QWidget):
             b.setIcon(_lucide_icon(icon, z.px(15), ACCENT if on else TEXT_LABEL))
             b.setIconSize(QSize(z.px(15), z.px(15)))
             mixed = {"Flip root": "root_flip", "Exclude": "excluded", "Hidden": "visible"}.get(text)
-            b.setToolTip(tip + (" · the selected locks differ" if mixed and state.get(mixed) is None else ""))
+            b.setToolTip(tip + (". The selected locks differ" if mixed and state.get(mixed) is None else ""))
             b.clicked.connect(act)
             made.append(b)
         return _WrapRow(made, z.px(6))
@@ -1914,7 +2388,7 @@ class GroomingUI(QWidget):
         grid.setContentsMargins(z.px(14), z.px(10), z.px(14), z.px(10))
         grid.setHorizontalSpacing(z.px(18))
         grid.setVerticalSpacing(z.px(10))
-        cols = 2 if self._narrow else 3
+        cols = 2 if self._compact() else 3
         for n, (name, value) in enumerate(measured):
             cell = QVBoxLayout()
             cell.setSpacing(z.px(1))
@@ -1955,7 +2429,9 @@ class GroomingUI(QWidget):
     def set_message(self, text: str, error: bool = False) -> None:
         """The result line; it fades after MESSAGE_MS (errors stay twice as long). A state that lasts
         (isolate, strands, hidden locks at Publish) is told by the banner or the warning, not here."""
-        self._message_label.setText(text)
+        self._message_full = text or ""
+        self._message_label.setToolTip("")
+        self._fit_message()
         self._message_label.setStyleSheet(f"color: {TEXT_ERROR if error else TEXT_LABEL};")
         if text:
             self._message_timer.start(MESSAGE_MS * (2 if error else 1))
@@ -1963,7 +2439,7 @@ class GroomingUI(QWidget):
             self._message_timer.stop()
 
     def message(self) -> str:
-        return self._message_label.text()
+        return self._message_full if self._message_label.text() else ""
 
     BUSY_DELAY_MS = 150
 
@@ -1993,9 +2469,9 @@ class GroomingUI(QWidget):
         tip = (f"Regions out of date. {since}Update regions gives each lock its growth area on the skin again"
                " (until then the hair grows from the old split)")
         self._stale.setToolTip(tip)
-        self._split_btn.setToolTip(tip if stale else "Give each lock its growth region on the skin again."
-                                   " Regions stay as they are until you update them, so an edit never moves"
-                                   " another lock's hair")
+        self._split_btn.setToolTip("Update regions: " + (tip if stale else "give each lock its growth region on the"
+                                   " skin again. Regions stay as they are until you update them, so an edit never"
+                                   " moves another lock's hair"))
         self._stale.setVisible(stale)
         self._split_btn.setProperty("warn", bool(stale))
         self._split_btn.style().unpolish(self._split_btn)
@@ -2052,6 +2528,22 @@ class GroomingUI(QWidget):
     def publish_warning(self) -> str:
         return self._warning_label.text() if self._warning.isVisibleTo(self) else ""
 
+    def set_paint_state(self, on: bool, brush: dict, reference: float | None = None) -> None:
+        """Paint on / off and the brush: the strip of what the scalp shows, the legend."""
+        L.set_paint_state(self, on, brush, reference)
+
+    def show_settings(self, info: dict) -> None:
+        """The settings page in the Properties column (the node's values, the undo cache)."""
+        L.show_settings(self, info)
+
+    def _on_item_renamed(self, item: QTreeWidgetItem, column: int) -> None:
+        if self._filling or column != COL_NAME:
+            return
+        row = item.data(COL_NAME, ROLE_ROW) or {}
+        if row.get("kind") == SEL_LAYER and item.text(COL_NAME).strip() != row.get("name"):
+            name = item.text(COL_NAME).strip()
+            QTimer.singleShot(0, lambda: self._fire("rename_layer", row["id"], name))
+
     def _drop_hint(self, text: str) -> None:
         self._drop_label.setText(f"Not here: {text}" if text else "")
         self._drop_label.setVisible(bool(text))
@@ -2067,6 +2559,14 @@ class GroomingUI(QWidget):
         if self._filling:
             return
         rows = [r for r in self._selected_rows() if r["kind"] != ORPHANS_ROW]
+        self._settings_open = False
+        current = self._tree.currentItem()
+        current = current.data(COL_NAME, ROLE_ROW) if current is not None else None
+        layers = [r for r in rows if r["kind"] == SEL_LAYER]
+        if layers:   # one layer at a time: the one clicked last
+            pick = current if current in layers else layers[0]
+            self._fire("select", SEL_LAYER, (pick["id"],))
+            return
         if not rows:
             self._fire("select", SEL_NONE, ())
             return
@@ -2109,6 +2609,10 @@ class GroomingUI(QWidget):
         z = self.z
         row = item.data(COL_NAME, ROLE_ROW)
         menu = self._menu()
+        if row["kind"] == SEL_LAYER:
+            L.layer_menu(self, row, menu)
+            menu.exec(self._tree.viewport().mapToGlobal(pos))
+            return
         if row["kind"] in (SEL_GROUP, SEL_LOCKS):
             kind, ids = self._targets(row)
             visible = row.get("visible", True)

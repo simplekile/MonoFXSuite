@@ -22,7 +22,9 @@ roles it needs; it never writes a hex value in a widget's style sheet. Measured 
 | `TEXT_META` | `#8e8e98` | icons, placeholders, disabled only, never a sentence (5.8:1, ui) |
 | `TEXT_ERROR` | `#fca5a5` | error lines |
 | `DIM` (grooming) | `#62626c` | names of hidden rows: meant to read as off (2.96:1, known) |
-| `FAINT` (grooming) | `#4a4a53` | an eye decided by something else (2.04:1, known, see self-test 7) |
+| `FAINT` (grooming) | `#6b6b73` | an eye decided by something else (3.4:1 on PANE since t74; `FAINT_ON_SELECTED` `#868694` on a selected row) |
+| `BUTTON` / `BUTTON_DISABLED` (grooming) | `#25252c` / `#1c1c21` | a button's fill, so it is not taken for a field (`BG_RAISED`); disabled: darker, `TEXT_META` text |
+| `DISABLED_ICON` (grooming) | `#45454e` | the icon of a disabled button (1.79:1, known: disabled controls are exempt, it must read as off) |
 | `ACCENT` | `#5b8cff` | links, selection, timeline, a toggle that is on, the drop target |
 | `ACCENT_FILL` | `#3d6cf0` | **the one primary button** (white on it: 4.56:1) |
 | `ACCENT_LINE` | `#2f4a80` | border of a checked pill |

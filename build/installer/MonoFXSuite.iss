@@ -55,6 +55,10 @@ Source: "..\..\OPmenu.xml"; DestDir: "{app}"; Flags: ignoreversion
 ; Houdini reads OPcustomize from each HOUDINI_PATH folder (hides the old Anim Loader 2.2 from Tab)
 Source: "..\..\OPcustomize"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\..\otls\*"; DestDir: "{app}\otls"; Flags: ignoreversion recursesubdirs createallsubdirs
+; MONO Grooming workspace: Houdini reads desktop/, radialmenu/ and python_panels/ from each HOUDINI_PATH folder
+Source: "..\..\desktop\*"; DestDir: "{app}\desktop"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\radialmenu\*"; DestDir: "{app}\radialmenu"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\..\python_panels\*"; DestDir: "{app}\python_panels"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Blender add-on, staged here and copied into each Blender's scripts\addons after install (InstallBlenderAddon).
 Source: "..\..\tools\fx\monofx_pipeline_blender\monofx_pipeline_blender\*"; DestDir: "{app}\blender\monofx_pipeline_blender"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "__pycache__,*.pyc"; Tasks: blenderaddon
 ; MonoStudio version detection (optional): if MonoStudio is installed, drop VERSION into its tools folder.

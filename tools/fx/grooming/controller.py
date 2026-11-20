@@ -19,7 +19,8 @@ import contextlib
 import math
 from typing import Any, Callable
 
-from tools.fx.grooming import config, logic, model
+from tools.fx.grooming import config, logic, model, workspace
+from tools.fx.grooming.layers import SEL_LAYER, LayersMixin
 
 # How often the panel reads the viewport selection and the node's data (ms)
 SELECTION_POLL_MS = 400
@@ -120,7 +121,7 @@ def report_text(counts: dict[str, int]) -> str:
         parts.append(f"{counts['new']} new")
     if counts.get("orphaned"):
         parts.append(f"{counts['orphaned']} missing (kept with their settings)")
-    return f"Detect locks: {total} lock{'s' if total != 1 else ''} · " + " · ".join(parts)
+    return f"Detect locks: {total} lock{'s' if total != 1 else ''}, " + ", ".join(parts)
 
 
 def _fmt(value: float) -> str:
@@ -146,7 +147,7 @@ def _names(names: list[str], most: int = 3) -> str:
     return shown + (f" +{len(names) - most}" if len(names) > most else "")
 
 
-class GroomController:
+class GroomController(LayersMixin):
     """The panel's actions on one node. *view* gets what to show (see the module docstring)."""
 
     def __init__(self, adapter: Any, view: Any, node: Any = None) -> None:
@@ -172,6 +173,7 @@ class GroomController:
         self._drag_origin_new = False
         self._drag_warned = False
         self._drag_factor: float | None = None   # the strand fraction a drag shows (logic.drag_factor)
+        self._radial_said = False   # the panel asked once to pick the radial menu by hand
         if node is not None:
             self.set_node(node)
 
@@ -179,8 +181,10 @@ class GroomController:
     # Node and reading
     # ------------------------------------------------------------------
     def set_node(self, node: Any) -> None:
+        self.paint_off()
         self.focus_off()
         self.node = node
+        self._path = self.node_path() if node is not None else ""   # said when the node is gone
         self._node_lost = False
         self.selection = (SEL_NONE, ())
         self._viewport_ids = []
@@ -197,6 +201,7 @@ class GroomController:
         if hasattr(self.view, "set_deform_state"):
             self.view.set_deform_state(*self.deform_state())
         self.refresh_publish_version()
+        self.load_notes()
         level = getattr(self.view, "xray_level", None)
         if level is not None:
             self.set_xray(level())
@@ -238,6 +243,43 @@ class GroomController:
     def node_path(self) -> str:
         path = getattr(self.node, "path", None)
         return path() if callable(path) else str(self.node or "")
+
+    def node_alive(self) -> bool:
+        """False once the node was deleted (or File > New): Houdini raises on any call to it then."""
+        if self.node is None:
+            return False
+        try:
+            self.node_path()
+        except Exception:
+            return False
+        return True
+
+    def node_gone(self) -> None:
+        """The node is gone: the panel shows no node, says so once, and the poll stops reading it (the poll
+        returns at once while there is no node). Nothing is called on the dead node."""
+        path = getattr(self, "_path", "") or "The MONO Grooming node"
+        self.paint_layer_id = None
+        self._display_before_paint = None
+        exit_ = getattr(self.adapter, "paint_exit", None)
+        if exit_ is not None:
+            try:
+                exit_(None)   # the brush state, not the node
+            except Exception:
+                pass
+        self.node = None
+        self._data = None
+        self._last_json = None
+        self.selection = (SEL_NONE, ())
+        self._viewport_ids = []
+        self.view.show_node("", "")
+        self.view.show_tree([])
+        self.view.set_selection(self.selection)
+        self.view.show_properties({"kind": SEL_NONE, "title": "", "settings": [], "measured": [],
+                                   "overview": [], "attribs": "", "shortcuts": SHORTCUTS})
+        if hasattr(self.view, "set_paint_state"):
+            self.view.set_paint_state(False, self.brush_state())
+        self.view.set_message(f"{path} no longer exists (deleted, or a new scene): run the Grooming shelf tool"
+                              " to open the panel on a MONO Grooming node", error=True)
 
     def refresh(self, data: model.GroomData | None = None) -> None:
         """Show the node again: tree, properties, warnings. Measured values are read from the cook."""
@@ -293,6 +335,10 @@ class GroomController:
         elif kind == SEL_GROUP and not any(lk.group == ids[0] for lk in data.locks) and data.group(ids[0]) is None:
             self.selection = (SEL_NONE, ())
         elif kind == SEL_ORPHAN and not any(o.id == ids[0] for o in data.orphans):
+            self.selection = (SEL_NONE, ())
+        elif kind == SEL_LAYER and data.mask(ids[0]) is None:   # deleted, or undone away
+            if self.paint_layer_id == ids[0]:
+                self.paint_off()
             self.selection = (SEL_NONE, ())
 
     # ------------------------------------------------------------------
@@ -350,7 +396,7 @@ class GroomController:
                               "badges": ["edited"] if o.overrides else [], "meta": o.group}
                              for o in data.orphans],
             })
-        return rows
+        return self.attach_layers(data, rows)
 
     @staticmethod
     def _group_order(data: model.GroomData) -> list[str]:
@@ -397,6 +443,8 @@ class GroomController:
         where it comes from, whether Reset applies) and the measured values."""
         data = data or self.data()
         kind, ids = self.selection
+        if kind == SEL_LAYER:
+            return self.layer_properties(data)
         if kind == SEL_NONE:
             overview, attribs = self._with_geometry(self._overview(data), None)
             return {"kind": SEL_NONE, "title": "", "settings": [], "measured": [],
@@ -420,13 +468,15 @@ class GroomController:
                 "tip": SETTING_TIPS.get(key, ""),
             })
         if kind == SEL_DEFAULTS:
-            title, subtitle = ALL_LOCKS, f"{len(data.locks)} locks · a group or a lock can set its own value"
+            title, subtitle = ALL_LOCKS, f"{len(data.locks)} locks, a group or a lock can set its own value"
+            details = [("Locks", f"{len(data.locks)}"), ("Below", "a group or a lock can set its own value")]
             infos = list(self._infos.values())
         elif kind == SEL_GROUP:
             g = data.group(ids[0])
             title = (g.name if g else ids[0]) or "(no group)"
             members = [lk for lk in data.locks if lk.group == ids[0]]
-            subtitle = f"Group · {len(members)} locks"
+            subtitle = f"Group, {len(members)} locks"
+            details = [("Kind", "Group"), ("Locks", f"{len(members)}")]
             infos = [self._infos[lk.id] for lk in members if lk.id in self._infos]
         else:
             locks = [data.lock(i) for i in ids]
@@ -434,16 +484,20 @@ class GroomController:
             groups = sorted({lk.group for lk in locks})
             g = data.group(groups[0])
             in_group = (g.name if g else groups[0]) if len(groups) == 1 else f"{len(groups)} groups"
-            subtitle = ("Lock · " if len(locks) == 1 else "Locks · ") + in_group
+            subtitle = ("Lock, " if len(locks) == 1 else "Locks, ") + in_group
+            details = [("Kind", "Lock" if len(locks) == 1 else f"{len(locks)} locks"),
+                       ("Group" if len(groups) == 1 else "Groups", in_group)]
             if len(locks) == 1 and (locks[0].match == "unsure" or (locks[0].match == "new" and data.orphans)):
-                subtitle += f" · {MATCH_LABELS.get(locks[0].match, locks[0].match)}"
+                subtitle += f", {MATCH_LABELS.get(locks[0].match, locks[0].match)}"
+                details.append(("Match", MATCH_LABELS.get(locks[0].match, locks[0].match)))
             infos = [self._infos[i] for i in ids if i in self._infos]
         state = self._state(data, kind, ids)
         if state.get("note"):
-            subtitle += f" · {state['note']}"
+            subtitle += f", {state['note']}"
+            details.append(("Viewport", state["note"]))
         measured, attribs = self._with_geometry(self._measured(kind, infos),
                                                 None if kind == SEL_DEFAULTS else self.lock_ids_of(data, self.selection))
-        return {"kind": kind, "title": title, "subtitle": subtitle, "own": own, "state": state,
+        return {"kind": kind, "title": title, "subtitle": subtitle, "details": details, "own": own, "state": state,
                 "settings": settings, "measured": measured, "attribs": attribs}
 
     def _with_geometry(self, measured: list[tuple[str, str]], lock_ids) -> tuple[list[tuple[str, str]], str]:
@@ -466,7 +520,7 @@ class GroomController:
         attribs = st.get("attribs") or {}
         # what a reader of the publish gets: the deform capture and viewport hints stay out of the list
         shown = {cls: [n for n in names if not n.startswith(("pCapt", "gl_"))] for cls, names in attribs.items()}
-        line = " · ".join(f"{cls}: {', '.join(names)}" for cls, names in shown.items() if names)
+        line = "; ".join(f"{cls}: {', '.join(names)}" for cls, names in shown.items() if names)
         return cells, line
 
     def _below(self, data: model.GroomData, key: str) -> dict | None:
@@ -704,7 +758,7 @@ class GroomController:
             degrees = "°" if key == "twist_add" else ""
             below = self._below(self.data(), key)
             keep = (below["groups"] + below["locks"]) if below else []
-            note = (f" · {_names(keep)} keep their own (Reset there to follow)" if keep else "")
+            note = (f"; {_names(keep)} keep their own (Reset there to follow)" if keep else "")
             self.view.set_message(f"{SETTING_LABELS[key]} = {_fmt(shown)}{degrees} on {holder['name']}{note}")
         return ok
 
@@ -930,12 +984,12 @@ class GroomController:
         else:
             text = report_text(c)
         if getattr(report, "floating", None):
-            text += " · " + logic.floating_text(report.floating)
+            text += "; " + logic.floating_text(report.floating)
         if self.data().regions_stale:
-            text += " · regions out of date: Update regions"
+            text += "; regions out of date: Update regions"
         warnings = self._preflight().get("warnings", [])
         if warnings:
-            text += " · Check: " + "; ".join(warnings)
+            text += ". Check: " + "; ".join(warnings)
         self.view.set_message(text, error=bool(warnings))
         return report
 
@@ -1057,7 +1111,7 @@ class GroomController:
             parts.append(f"isolated on {len(self.isolated or ())} lock{'s' if len(self.isolated or ()) != 1 else ''}")
         if not parts:
             return ""
-        return " · ".join(parts) + ": Publish writes every lock as it is now. Click again to publish"
+        return "; ".join(parts) + ": Publish writes every lock as it is now. Click again to publish"
 
     def publish(self, version: str | None) -> logic.PublishResult | None:
         """Publish always writes every lock. When some are hidden or the view is isolated, the first click
@@ -1107,7 +1161,7 @@ class GroomController:
         if len(groups) == 1 and all(lk.id in self.isolated for lk in data.locks if lk.group in groups):
             gid = next(iter(groups))
             g = data.group(gid)
-            return f"Isolated: {(g.name if g else gid) or gid} · {len(names)} lock{'s' if len(names) != 1 else ''}"
+            return f"Isolated: {(g.name if g else gid) or gid}, {len(names)} lock{'s' if len(names) != 1 else ''}"
         return f"Isolated: {_names(names)}"
 
     def toggle_isolate(self) -> bool:
@@ -1128,7 +1182,9 @@ class GroomController:
         return self._set_isolate(None)
 
     def escape(self) -> bool:
-        """Esc / the banner's button: out of isolate first; else nothing selected (the whole groom)."""
+        """Esc / the banner's button: Paint off first, then out of isolate; else nothing selected."""
+        if self.paint_off():
+            return True
         if self.isolate_off():
             return True
         if self.selection[0] == SEL_NONE:
@@ -1137,6 +1193,37 @@ class GroomController:
         if hasattr(self.view, "set_selection"):
             self.view.set_selection(self.selection)
         return True
+
+    # ------------------------------------------------------------------
+    # The workspace: the viewport's radial menu while the panel is shown (v0.2a last task)
+    # ------------------------------------------------------------------
+    def panel_shown(self) -> None:
+        """The panel shown (opened, or its desktop chosen): the viewport follows it again and its radial menu
+        (key C) becomes MONO Grooming; the user's is remembered (`adapter.radial_on`)."""
+        if self.node is not None:
+            self._sync_viewport()
+        call = getattr(self.adapter, "radial_on", None)
+        if call is None:
+            return
+        try:
+            ok = call()
+        except Exception:
+            ok = False
+        if not ok and not self._radial_said:
+            self._radial_said = True
+            self.view.set_message(workspace.RADIAL_BY_HAND)
+
+    def panel_hidden(self) -> None:
+        """The panel hidden (closed, or its desktop left): Paint off, every lock in its colour, and the user's
+        radial menu back once no panel is shown."""
+        self.paint_off()
+        self.focus_off()
+        call = getattr(self.adapter, "radial_off", None)
+        if call is not None:
+            try:
+                call()
+            except Exception:
+                pass
 
     def focus_off(self) -> None:
         """The panel closes or changes node: every lock in its colour again."""
@@ -1345,8 +1432,8 @@ class GroomController:
                         was = _fmt(next(iter(olds))) if len(olds) == 1 else "mixed"
                         now = _fmt(next(iter(new))) if len(new) == 1 else "mixed"
                         diffs.append(f"{SETTING_LABELS[key]} {was} → {now}")
-                text += (" · from the new group: " + ", ".join(diffs)) if diffs else " · settings unchanged"
-                text += " · regions out of date"
+                text += ("; from the new group: " + ", ".join(diffs)) if diffs else "; settings unchanged"
+                text += "; regions out of date"
             holder["text"] = text
 
         what = "group" if "group_id" in plan else self._count(SEL_LOCKS, plan["locks"])
@@ -1364,10 +1451,17 @@ class GroomController:
             return sorted(ids)
         if kind == SEL_GROUP:
             return sorted(lk.id for lk in data.locks if lk.group == ids[0])
+        if kind == SEL_LAYER:
+            return self.layer_lock_ids(data, ids[0])
         return []
 
     def select(self, kind: str, ids=()) -> None:
         """The panel's selection changed: show its properties and select its locks in the viewport."""
+        if kind == SEL_LAYER:
+            self.select_layer(ids[0])
+            return
+        if self.paint_layer_id is not None:   # a lock row paints nothing: Paint ends
+            self.paint_off()
         data = self.data()
         if kind == SEL_LOCKS:
             ids = [i for i in ids if data.lock(i) is not None]
@@ -1445,6 +1539,13 @@ class GroomController:
         viewport selection changed → select those locks here."""
         if self.node is None:
             return
+        alive = getattr(self.view, "is_alive", None)
+        if alive is not None and not alive():   # a poll queued (hdefereval) before the panel was closed
+            return
+        if not self.node_alive():
+            self.node_gone()
+            return
+        self.poll_paint()
         if self._drag_origin is not None:
             # a slider is being dragged: its ticks change groom_data, and showing it again would rebuild
             # the settings under the mouse and end the drag
@@ -1499,6 +1600,22 @@ class GroomController:
 # Houdini entry
 # ----------------------------------------------------------------------
 _PANELS: list = []  # (ui, controller) of open floating windows, so run() reuses one
+_LIVE: list = []    # (ui, controller) of every panel made, docked or floating (the radial menu finds them)
+
+
+def live_panels() -> list:
+    """(ui, controller) of the panels still open (a closed or deleted one is dropped)."""
+    alive = []
+    for ui, c in list(_LIVE):
+        try:
+            gone = not ui.is_alive() if hasattr(ui, "is_alive") else False
+        except RuntimeError:
+            gone = True
+        if gone:
+            _LIVE.remove((ui, c))
+        else:
+            alive.append((ui, c))
+    return alive
 
 
 def bind(ui: Any, controller: GroomController) -> None:
@@ -1521,8 +1638,8 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("isolate_off", controller.isolate_off)
     ui.on("escape", controller.escape)
     ui.on("undo", controller.undo)
-    ui.on("hidden", controller.focus_off)
-    ui.on("shown", lambda: controller._sync_viewport() if controller.node is not None else None)
+    ui.on("hidden", controller.panel_hidden)
+    ui.on("shown", controller.panel_shown)
     ui.on("redo", lambda: controller.undo(redo=True))
     ui.on("xray", controller.toggle_xray)
     ui.on("frame", controller.frame)
@@ -1536,6 +1653,21 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("drop", controller.drop)
     ui.on("poll", controller.poll)
     ui.on("refresh", controller.refresh)
+    # density layers (v0.2a)
+    ui.on("add_density_layer", controller.add_density_layer)
+    ui.on("add_mask_layer", controller.add_mask_layer)
+    ui.on("delete_layer", controller.delete_layer)
+    ui.on("move_layer", controller.move_layer)
+    ui.on("set_layer", controller.set_layer)
+    ui.on("set_layer_on", controller.set_layer_on)
+    ui.on("set_layer_owner", controller.set_layer_owner)
+    ui.on("rename_layer", controller.rename_layer)
+    ui.on("paint_layer_action", controller.paint_layer_action)
+    ui.on("toggle_paint", controller.toggle_paint)
+    ui.on("paint_off", controller.paint_off)
+    ui.on("set_brush", controller.set_brush)
+    ui.on("settings_info", controller.settings_info)
+    ui.on("set_node_setting", controller.set_node_setting)
 
 
 def _adapter():
@@ -1590,6 +1722,7 @@ def create_panel(adapter: Any = None, node: Any = None, docked: bool = False):
     else:
         ui.set_message("No MONO Grooming node in the scene: run the Grooming shelf tool", error=True)
     ui.start_polling(SELECTION_POLL_MS)
+    _LIVE.append((ui, controller))
     return ui, controller
 
 
@@ -1629,7 +1762,8 @@ def _dock(ui: Any) -> None:
 
     import hou
 
-    path = os.path.join(os.path.dirname(__file__), "mono_grooming.pypanel")
+    # the suite root's python_panels/ (on HOUDINI_PATH: Houdini loads it at start, the desktop uses it)
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "..", "python_panels", "mono_grooming.pypanel")
     try:
         hou.pypanel.installFile(path)
         interface = hou.pypanel.interfaceByName(PYPANEL_NAME)
@@ -1650,5 +1784,5 @@ def _dock(ui: Any) -> None:
 
 __all__ = [
     "GroomController", "SELECTION_POLL_MS", "SETTING_RANGES", "SETTING_LABELS",
-    "bind", "create_panel", "run", "lock_color", "report_text",
+    "bind", "create_panel", "run", "lock_color", "report_text", "live_panels",
 ]

@@ -53,6 +53,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tools.fx import look
 from tools.fx.anim_loader import logic
 from tools.fx.anim_loader.controller import ALL_PARTS, Controller, Row
 from tools.fx.auto_material.ui import (
@@ -113,56 +114,11 @@ LUCIDE.update({
             '<path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
 })
 
-def _crisp_icon(name: str, size: int, color: str) -> "QIcon":
-    """A Lucide icon drawn at ``size`` logical px for every device-pixel ratio Houdini may use: scaling one small
-    pixmap up broke the strokes (the search icon, the user's report 2026-11-17)."""
-    from PySide6.QtGui import QIcon
-
-    icon = QIcon()
-    for ratio in (1.0, 1.25, 1.5, 1.75, 2.0, 2.5, 3.0):
-        icon.addPixmap(_lucide_pixmap(name, size, color, ratio))
-    return icon
-
-
-# A toggle that is on draws filled (the user's ask): the shape solid, its inner part (the pupil, the lens) cut out
-# so the row shows through; off stays the outline with its slash. Shapes from Lucide (ISC), in its 24-unit box.
-_FILLED = {
-    "eye": ('<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1'
-            '-19.876 0"/>', (12.0, 12.0, 3.4)),
-    "monitor": ('<rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8M12 17v4" fill="none"/>', None),
-    "camera": ('<path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/>',
-               (12.0, 13.0, 3.4)),
-}
-_filled_cache: dict = {}
-
-
-def _filled_pixmap(name: str, size: int, color: str, ratio: float = 2.0) -> "QPixmap":
-    from PySide6.QtCore import QPointF
-    from PySide6.QtGui import QPixmap
-    from PySide6.QtSvg import QSvgRenderer
-
-    key = (name, size, color, ratio)
-    if key not in _filled_cache:
-        body, hole = _FILLED[name]
-        phys = int(size * ratio)
-        svg = (f'<svg xmlns="http://www.w3.org/2000/svg" width="{phys}" height="{phys}" viewBox="0 0 24 24" '
-               f'fill="{color}" stroke="{color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-               f"{body}</svg>")
-        pm = QPixmap(phys, phys)
-        pm.fill(Qt.GlobalColor.transparent)
-        p = QPainter(pm)
-        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        QSvgRenderer(svg.encode("utf-8")).render(p)
-        if hole is not None:  # the pupil / the lens: cut out, not painted, so it reads on any row colour
-            p.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
-            p.setPen(Qt.PenStyle.NoPen)
-            p.setBrush(QColor(0, 0, 0))
-            k = phys / 24.0
-            p.drawEllipse(QPointF(hole[0] * k, hole[1] * k), hole[2] * k, hole[2] * k)
-        p.end()
-        pm.setDevicePixelRatio(ratio)
-        _filled_cache[key] = pm
-    return _filled_cache[key]
+# The shared look helpers (tools/fx/look.py), under the names this module always had. The defaults are this
+# window's own: one Normal pixmap per ratio, no cache.
+_crisp_icon = look.crisp_icon
+_FILLED = look.FILLED
+_filled_pixmap = look.filled_pixmap
 
 
 _prim_icon_cache: dict = {}
@@ -209,23 +165,8 @@ ROLE_ROW = Qt.ItemDataRole.UserRole + 10
 ROLE_HEADER = Qt.ItemDataRole.UserRole + 11
 
 
-def _border_px(scale: float) -> int:
-    """Width of a control's border: 2 px at least (1 px breaks on rounded corners), more under a large UI scale."""
-    return max(2, round(1.5 * scale))
-
-
-def scale_css(css: str, scale: float) -> str:
-    """Every size in a style sheet times the UI scale (Houdini's x the window's); 1 px lines stay 1 px."""
-    import re
-
-    def one(m):
-        v = float(m.group(1))
-        return m.group(0) if v <= 1 else f"{round(v * scale)}px"
-
-    css = css if scale == 1 else re.sub(r"(\d+(?:\.\d+)?)px", one, css)
-    # a control's whole border (rounded): at least 2 px, after the scale (no double scaling); dividers
-    # (border-bottom, border-left...) stay hairlines
-    return re.sub(r"border:\s*1px", f"border: {_border_px(scale)}px", css)
+_border_px = look.border_px
+scale_css = look.scale_css   # sizes x the UI scale, then a control's whole border to _border_px (borders=True)
 
 
 def chip(state: str, newer: str | None, version: str) -> tuple[str, str]:
@@ -363,18 +304,18 @@ MESH_BAND = "#1a1e27"   # the inspector's meshes table header
 BAND = BG_RAISED        # group bands and the column header
 ROLE_ZEBRA = Qt.ItemDataRole.UserRole + 12
 # Monos states (docs/ui_states_rules.md): pressed a step past hover, selected + hover brighter than selected
-STATES_PILL = (f"QPushButton:pressed {{ background: #26262d; }}"
-               f"QPushButton:checked:hover {{ background: #22305a; border-color: {ACCENT}; }}"
-               f"QPushButton:checked:pressed {{ background: #1c2850; }}")
-STATES_GHOST = ("QPushButton:pressed { background: #26262d; color: #ededf0; }"
+STATES_PILL = (f"QPushButton:pressed {{ background: {look.PRESSED}; }}"
+               f"QPushButton:checked:hover {{ background: {look.CHECKED_HOVER}; border-color: {ACCENT}; }}"
+               f"QPushButton:checked:pressed {{ background: {look.CHECKED_PRESSED}; }}")
+STATES_GHOST = (f"QPushButton:pressed {{ background: {look.PRESSED}; color: #ededf0; }}"
                 "QPushButton::menu-indicator { image: none; width: 0; }")  # the label carries the arrow
-STATES_PRIMARY = "QPushButton:pressed { background: #2f5bd8; }"
+STATES_PRIMARY = f"QPushButton:pressed {{ background: {look.PRIMARY_PRESSED}; }}"
 # The top bar's icon buttons (the user's ask): compact, no border; a solid fill only on hover, press and the view
 # that is on (List / Grid), never an outline
 STYLE_ICON_FLAT = (f"QPushButton {{ background: transparent; border: none; border-radius: 6px; padding: 0px;"
                    f" font-size: {FS_META}px; }}"
                    f"QPushButton:hover {{ background: {BG_HOVER}; }}"
-                   f"QPushButton:pressed {{ background: #2c2c34; }}"
+                   f"QPushButton:pressed {{ background: {look.FLAT_PRESSED}; }}"
                    f"QPushButton:checked {{ background: #2a2a32; }}"
                    f"QPushButton:checked:hover {{ background: #31313a; }}"
                    "QPushButton::menu-indicator { image: none; width: 0; }")
@@ -480,7 +421,7 @@ class _ListDelegate(QStyledItemDelegate):
         hover = bool(option.state & option.state.__class__.State_MouseOver)
         base = ZEBRA if index.data(ROLE_ZEBRA) else BG_APP
         # Monos states: hover a step lighter, selected its own blue, selected + hover brighter than selected
-        fill = ("#2e3c5f" if hover else SELECTED) if selected else (BG_HOVER if hover else base)
+        fill = (look.SELECTED_HOVER_LOADER if hover else SELECTED) if selected else (BG_HOVER if hover else base)
         p.fillRect(rect, QColor(fill))
         p.setPen(QColor(LINE))
         p.drawLine(rect.bottomLeft(), rect.bottomRight())
@@ -1908,79 +1849,32 @@ def _faces_word(n: int) -> str:
     return f"{n / 1000:.1f}k" if n < 1_000_000 else f"{n / 1e6:.2f} M"
 
 
-class _Props(QWidget):
+class _Props(look.PropsBase):
     """Rows of label and value, the label column in TEXT_LABEL, the value in TEXT_PRIMARY (or a status colour);
-    the user's ask, 2026-11-17: details as a list, never joined by dots."""
+    the user's ask, 2026-11-17: details as a list, never joined by dots. The grid is the shared one
+    (`look.PropsBase`); the labels are this window's (`owner._label`, FS_SMALL)."""
 
     def __init__(self, owner) -> None:
-        from PySide6.QtWidgets import QGridLayout
-
-        super().__init__()
+        super().__init__(owner.px)
         self.owner = owner
-        self.grid = QGridLayout(self)
-        self.grid.setContentsMargins(0, 0, 0, 0)
-        self.grid.setHorizontalSpacing(owner.px(12))
-        self.grid.setVerticalSpacing(owner.px(4))
-        self.grid.setColumnStretch(1, 1)
 
-    def set_rows(self, rows: list[tuple[str, str, str]]) -> None:
-        """(label, value, colour) rows; "" colour = TEXT_PRIMARY."""
-        while self.grid.count():
-            w = self.grid.takeAt(0).widget()
-            if w is not None:  # off at once: taken out of the grid it stayed painted over the new rows until deleted
-                w.hide()
-                w.setParent(None)
-                w.deleteLater()
-        for i, (label, value, color) in enumerate(rows):
-            k = self.owner._label(label, FS_SMALL, color=TEXT_LABEL)
-            k.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-            v = self.owner._label(value, FS_SMALL, color=color or TEXT_PRIMARY)
-            v.setWordWrap(True)
-            v.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            self.grid.addWidget(k, i, 0)
-            self.grid.addWidget(v, i, 1)
-        self.setVisible(bool(rows))
-
-    def rows(self) -> dict[str, str]:
-        """{label: value} as shown (tests)."""
-        out = {}
-        for i in range(self.grid.rowCount()):
-            k, v = self.grid.itemAtPosition(i, 0), self.grid.itemAtPosition(i, 1)
-            if k and v and k.widget() and v.widget():
-                out[k.widget().text()] = v.widget().text()
-        return out
+    def _cell(self, text: str, value: bool, color: str):
+        return self.owner._label(text, FS_SMALL, color=color)
 
 
-class _Section(QPushButton):
+class _Section(look.SectionBase):
     """A section title that folds the widget under it: chevron + caps label, flat. Folded or open is view state,
-    kept per viewer in the prefs (``inspector_<key>``), never in the scene."""
+    kept per viewer in the prefs (``inspector_<key>``), never in the scene. The fold is the shared one
+    (`look.SectionBase`); the style and `apply` are this window's."""
 
     def __init__(self, owner, title: str, key: str, body: QWidget) -> None:
-        super().__init__(title.upper())
-        self.owner, self.key, self.body = owner, key, body
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setCheckable(True)
-        self.setChecked(_load_prefs().get(f"inspector_{key}", True) is not False)
+        self.owner = owner
+        super().__init__(title, key, body, owner.px, lambda: _load_prefs(), lambda d: _save_prefs(d),
+                         min_height=owner.px(24))
         self.setStyleSheet(owner.css(
             f"QPushButton {{ background: transparent; border: none; color: {TEXT_LABEL}; text-align: left;"
             f" padding: 2px 0px; font-size: {FS_SMALL}px; letter-spacing: 1px; }}"
             f"QPushButton:hover {{ color: {TEXT_PRIMARY}; }}"))
-        self.setMinimumHeight(owner.px(24))
-        self.setIconSize(QSize(owner.px(14), owner.px(14)))
-        self.toggled.connect(self._toggled)
-        self._paint_icon()
-
-    def _paint_icon(self) -> None:
-        self.setIcon(_crisp_icon("chevron-down" if self.isChecked() else "chevron-right", self.owner.px(14),
-                                 TEXT_LABEL))
-        self.setToolTip("Fold this section" if self.isChecked() else "Show this section")
-
-    def _toggled(self, on: bool) -> None:
-        prefs = _load_prefs()
-        prefs[f"inspector_{self.key}"] = on
-        _save_prefs(prefs)
-        self._paint_icon()
-        self.apply()
 
     def apply(self, has_rows: bool | None = None) -> None:
         """Shows the body when open and it has something; the title shows whenever the body has rows."""
@@ -3015,7 +2909,7 @@ class AddDrawer(QWidget):
             f"QListWidget#assetGrid::item:hover {{ background: {BG_HOVER}; }}"
             f"QListWidget#assetGrid::item:selected {{ background: {SELECTED}; border: 1px solid {ACCENT_LINE};"
             f" color: {TEXT_PRIMARY}; }}"
-            f"QListWidget#assetGrid::item:selected:hover {{ background: #2e3c5f; border: 1px solid {ACCENT}; }}"))
+            f"QListWidget#assetGrid::item:selected:hover {{ background: {look.SELECTED_HOVER_LOADER}; border: 1px solid {ACCENT}; }}"))
         self.list.itemSelectionChanged.connect(self._picked_changed)
         lay.addWidget(self.list, 1)
         foot = QHBoxLayout()

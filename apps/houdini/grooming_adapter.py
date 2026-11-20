@@ -1532,14 +1532,65 @@ def keep_old_lookup(node) -> bool:
 LOOKUP_NOTE_BY_HAND = {1: "on: set by hand", 0: "off: set by hand"}
 
 
-def on_lookup_changed(node) -> None:
+def on_lookup_changed(node, recorded: bool = False) -> None:
     """The toggle's callback: the artist set "Fit lookup per lock" by hand, so the note says so (it said "off:
     the scene was saved before the parm existed" after the artist had turned it on, t68). Any note means the
-    choice is made: OnLoaded / OnUpdated never judge the node again."""
+    choice is made: OnLoaded / OnUpdated never judge the node again. `recorded`: the note goes into the undo step
+    being made (the panel's `set_node_setting`), so one undo puts back the value AND the note; the parm's own
+    callback writes it with undo off, as before."""
     p = node.parm(LOOKUP_PARM)
-    if p is not None:
-        with hou.undos.disabler():
-            node.setUserData(LOOKUP_NOTE, LOOKUP_NOTE_BY_HAND[1 if p.eval() else 0])
+    if p is None:
+        return
+    note = LOOKUP_NOTE_BY_HAND[1 if p.eval() else 0]
+    if recorded:
+        node.setUserData(LOOKUP_NOTE, note)
+        return
+    with hou.undos.disabler():
+        node.setUserData(LOOKUP_NOTE, note)
+
+
+LOOKUP_KEPT_NOTE = "off: the scene was saved before the parm existed"   # what keep_old_lookup writes
+NODE_SETTING_PARMS = {"lookup": LOOKUP_PARM, "undo_cache_gb": config.UNDO_CACHE_PARM,
+                      "undo_deform_gb": config.UNDO_DEFORM_PARM}
+NODE_SETTING_LABELS = {"lookup": "Fit lookup per lock", "undo_cache_gb": "Undo cache, GB",
+                       "undo_deform_gb": "Deformed undo, GB"}
+NODE_SETTING_GB = (0.01, 16.0)   # the two limits from the panel are clamped to this (a typo of 99999 GB lifted the cap)
+
+
+def node_settings(node) -> dict:
+    """The node's own values the panel's settings page shows: "Fit lookup per lock" (`lookup`, and
+    `lookup_kept` with `lookup_text` while it is off because the scene was saved before it existed), "Undo cache,
+    GB" and "Deformed undo, GB". A parm the node does not have (an older build) is left out."""
+    out: dict = {}
+    for key, name in NODE_SETTING_PARMS.items():
+        p = node.parm(name)
+        if p is not None:
+            out[key] = bool(p.eval()) if key == "lookup" else float(p.eval())
+    if "lookup" in out:
+        out["lookup_kept"] = not out["lookup"] and node.userData(LOOKUP_NOTE) == LOOKUP_KEPT_NOTE
+        out["lookup_text"] = LOOKUP_KEPT_TEXT
+    return out
+
+
+def set_node_setting(node, key: str, value) -> None:
+    """Set one of `node_settings` from the panel: one undo step named "MONO Grooming: <label>". Only the three
+    keys of NODE_SETTING_PARMS (anything else: KeyError). The lookup toggle also records that the artist chose it
+    (`on_lookup_changed(recorded=True)`: "on/off: set by hand", in the same undo step; a parm set from Python runs
+    no callback). The undo limits are not in a lock's cache key (setting them regrows nothing); the lookup is in
+    every lock's key. A lowered "Deformed undo, GB" frees nothing until the next deformed state is stored. The two
+    limits are clamped to NODE_SETTING_GB (0.01-16)."""
+    if key not in NODE_SETTING_PARMS:
+        raise KeyError(f"not a node setting the panel sets: {key!r}")
+    name = NODE_SETTING_PARMS[key]
+    p = node.parm(name)
+    if p is None:
+        raise KeyError(f"{node.path()} has no parm {name} (an older build of the node)")
+    with hou.undos.group(f"{UNDO_PREFIX}{NODE_SETTING_LABELS[key]}"):
+        if key == "lookup":
+            p.set(1 if value else 0)
+            on_lookup_changed(node, recorded=True)
+        else:
+            p.set(min(max(float(value), NODE_SETTING_GB[0]), NODE_SETTING_GB[1]))
 
 
 def on_created(node) -> None:
@@ -2238,7 +2289,20 @@ def cook_frozen_regions(sop) -> None:
         geo.merge(frozen)
 
 
+def radial_on() -> bool:
+    """The viewport's radial menu becomes MONO Grooming while the panel is shown (grooming_workspace)."""
+    from apps.houdini import grooming_workspace
+    return grooming_workspace.radial_on()
+
+
+def radial_off() -> bool:
+    """The user's radial menu back once no panel is shown (grooming_workspace)."""
+    from apps.houdini import grooming_workspace
+    return grooming_workspace.radial_off()
+
+
 __all__ = [
+    "radial_on", "radial_off",
     "undo_cache_usage",
     "find_nodes", "create_node", "read_data", "write_data", "write_data_live", "lock_infos", "detect", "split_regions",
     "set_display", "display_state", "selected_lock_ids", "select_locks", "publish_context", "publish",

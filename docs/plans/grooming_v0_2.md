@@ -594,7 +594,8 @@ the hair. The final model gives every layer its own number and keeps the 0..1 ma
   locks the cache does not hold in full (Guides display: the whole groom once, ~12 s).
 - Also from the user's try: Paint records no undo step of its own, and says so on the status bar when the layer
   being painted is undone; a stroke in Guides display grows no hair; the painted colour is the final density map.
-- Still open: the result is not shown as hair while the button is down; a pen's pressure, radius by drag, mirror.
+- Still open: the result is not shown as hair while the button is down; a pen's pressure, mirror. (Radius by drag
+  closes in v0.2a's last task: wheel and Ctrl+Shift+LMB drag, decided 2026-11-19.)
 
 **Panel (for the panel task; not built here).** The lock tree has three levels, as Substance Painter's layer
 stack with masks: **lock row (All locks / a group / a lock) > its density layers > each layer's mask layers**,
@@ -606,6 +607,58 @@ brush (grey 0 / 0.5 / 1, eraser, radius, softness). Over the viewport the view c
 with the density ramp's legend. "Undo cache, GB" (node parm `undo_cache_gb`, default 2) with the readout of
 `undo_cache_usage(node)` belongs in the panel's settings. Mockups first (dcc-panel-design); the E2 mockup of t59
 predates this model.
+
+**Panel, built (t70, 2026-11-16; minimal: no folders, no workspace, no pie menu).** Mockups in the sandbox
+(`tests/t70_density_panel/mockups/index.html`, three reworks of E2); **the user picked A, "E2 kept"**:
+- The lock tree (heading "Locks") holds each row's density layers as its first children, top first (the upper
+  wins), each with its mask layers under it, top first. Automatic is the last row of All locks' layers, a padlock
+  where the eye is (no eye, cannot be selected for paint, moved, deleted or set; its Properties say so). The eye
+  column sits at the left edge for every row (v0.1 had it at the right). Status column: a density layer's D and
+  opacity under 100 %, a mask layer's blend and opacity, a fill's value, "painting" on the layer being painted.
+- Tree tools in the tree's head: new density layer (owner = the selected row: All locks, a group, ONE lock;
+  several locks selected are refused with a sentence; a selected layer gives its own owner), new paint layer (a
+  fill layer: right click or Properties), up / down (among the layers of the same row, or inside one mask), delete
+  (Del too; a density layer goes with its mask, the selection goes to what held it). Rename: double click or F2.
+  Every command is ONE adapter call (`mask_add`, `mask_remove`, `mask_move`, `mask_set`, `mask_fill` /
+  `mask_clear` / `mask_invert`: one undo step each), cooked in the loading line. Reorder is by the buttons, not by
+  drag (drag stays for locks and groups).
+- The row bar above the tree: a mask layer's blend and opacity, a density layer's D and opacity (mockup A).
+  Properties: a density layer's D (slider, field, quick picks 0 / 75 / 150 / 300), owner (combo: All locks, each
+  group, each lock) and the rule in one sentence; a fill layer's value (picks 0 / 0.5 / 1); a paint layer's Paint,
+  Eraser, Grey (0 / 0.5 / 1), Radius, Softness and Fill white / Invert / Clear (Clear asks on the first click).
+- Paint: the selected paint layer's Paint button (`paint_enter`, `HOOKS["stroke"]` cooks the stroke in the loading
+  line and says "Stroke on <layer>", `HOOKS["exit"]` brings the panel back when Paint ends in the viewport).
+  Selecting another paint layer moves the brush to it; selecting a density layer, a lock row, deleting the layer or
+  Esc in the panel ends Paint. Hair display becomes Hair preview while painting and comes back after. While Paint
+  is on a strip under the view bar shows what the scalp shows (Result / Layer / Roots, `set_brush(view=)`), the
+  scalp's X-ray and the legend (`logic.DENSITY_STOPS` x the Density of All locks, `logic.DENSITY_RAMP`'s colours);
+  Properties can be folded to one line (view state, ends with Paint). Brush values are session state (no undo).
+- Settings: the ⚙ menu keeps Font size and X-ray (per user) and opens a "Node settings and undo cache" page in the
+  Properties column: Fit lookup per lock, Undo cache, GB and Deformed undo, GB with what the cache holds
+  (`undo_cache_usage`). Set through two adapter functions added for the panel, `node_settings(node)` and
+  `set_node_setting(node, key, value)` (one undo step; the lookup toggle also writes the note its own callback
+  writes). Opening a node puts `mask_dropped`, `mask_problem` and the lookup note on the message line.
+- Code: `tools/fx/grooming/layers.py` (the controller's part, a mixin), `ui_layers.py` (the view's part); tests
+  `tests/test_grooming_layers.py`. Not built: mask thumbnails on the rows (icons instead), the row tint of layer
+  rows (Houdini's sheet paints item backgrounds), drag to reorder layers, a missing lock's layers shown under
+  Missing locks are listed but their owner cannot be picked again from the combo.
+- Checked (t70 `report.md`): pytest 812 passed; offscreen grabs 42 (7 states x 400 / 760 / 1100 x scale 1 / 1.5),
+  0 overflow; contrast 34 of 36, 2 known; GUI Helen through the panel's widgets 30 of 30 (a stroke of D 75: 364
+  automatic roots on the painted core -> 89, asked 91.8; undo 364, redo 89; eyes, D 0 -> 0, opacity 50 % -> 180,
+  reorder, delete; panel and node agree at 13 of 13 points); `accept_v02a.py` 80 of 84 (the three failing by
+  decision with main's rows, `s2` known, `s1` passing), `accept_v02a_gui.py` 19 of 19.
+- Fix round after the t71 check (2026-11-19, t70 `report.md` "Fix round (t71)"): an empty rename shows the node's
+  name again and says a layer needs a name; the settings page and `set_node_setting` clamp the two limits to
+  0.01-16 GB, typed or dragged; a node deleted (or File > New) under an open panel puts it in its no-node state
+  with one message instead of raising on every poll (v0.1's code); the status column elides inside its cell (it
+  was drawn over Automatic's name at 760 px); the row bar puts its values on a second line when the name and
+  values do not fit; a closed panel stops polling; Paint ended in the viewport says so. Left as decided:
+  duplicate layer names, a short Properties at 400 px (Fold), the two X-ray toggles while painting.
+- Look from the MonoFX Loader (t74, 2026-11-19, the user's pick "C"; sandbox `tests/t74_loader_look/`): icon
+  buttons in the bars (only Publish keeps words), the view controls in the top bar when wide, Properties a
+  full-height inspector (Details first, foldable sections), the tree painted by a delegate (one background, row
+  and column separators covered by hover / selection, filled eye), no "·" joins. Behaviour unchanged. The row
+  tint of layer rows (listed "not built" above) is decided against: one background for every row.
 
 **Done when.**
 - A layer of D painted white gives D: on the eight kinds of skin (whorl, top of the head, a lock start, stacked
@@ -802,7 +855,74 @@ after the mask panel, since the pie menu's entries are that panel's commands. On
   viewer state.
 - Installer: `MonoFXSuite.iss` ships `desktop/` and `radialmenu/` (in the same change).
 
-**Spike first (OPEN).**
+**Paint state like Attribute Paint (decided 2026-11-19, built in this task).** The user looked at Houdini's
+Attribute Paint and asked for the same in our Paint state:
+- (a) a hint overlay (HUD) in the viewport, top left, listing the keys and the current brush values (radius,
+  softness, grey, paint / erase); Houdini's own Shift+F1 hides it, like every state's hints;
+- (b) a parameter bar above the viewport with Radius, Softness, Grey and Eraser, two-way with the panel's
+  Properties: one source, `grooming_masks.BRUSH` through `set_brush`; a change on either side shows on the
+  other, with no feedback loop; a brush change is view state (no undo step, no cook);
+- (c) the mouse wheel and Ctrl+Shift+LMB drag change the radius;
+- (d) F swaps paint / erase; Ctrl+LMB (erase while painting) and Esc (leave) stay.
+- Not in this task: smooth (Shift), sample a value, pen pressure, mirror. They are new mask features, a later
+  part.
+
+**Spike (ANSWERED 2026-11-19, t72, Houdini 22.0.466 in GUI on its own `HOUDINI_USER_PREF_DIR`; sandbox
+`tests/t72_workspace_paint/spike/`).**
+1. Radial menu by script: YES, through `hou.ui._getActiveRadialMenu()` / `hou.ui._setActiveRadialMenu(name)`
+   (underscore: not documented, present in H22's `hou.py`; set and read back `t72spike`, then `main` again; no
+   pref file written). A `.radialmenu` in a HOUDINI_PATH folder's `radialmenu/` is listed by
+   `hou.ui.radialMenus()`. A desk's `radial menu set <name>` line also switches it, but switching back to Build
+   left ours on: a desk does not put the user's back. So the PANEL switches it: shown -> ours (the user's
+   remembered), the last panel hidden (closed, or its desktop left) -> the user's, unless they picked another
+   meanwhile. Fallback kept for a build without the calls: the panel says once to pick it by hand.
+2. `.desk` with the Python panel: YES. A hand-written desk in a HOUDINI_PATH folder's `desktop/` is listed
+   (`hou.ui.desktopNames()`), and its `pythonpanel -n mono_grooming` tab opens our interface on a fresh pref dir
+   (the stand-in for another machine), provided `python_panels/mono_grooming.pypanel` is on HOUDINI_PATH: it
+   moved from `tools/fx/grooming/` to the suite root's `python_panels/` (Houdini loads it at start; Dock still
+   installs it by path). Build update: the desk is the same plain hscript SideFX's own desks use
+   (`SolarisLookDev.desk` names four Python panels the same way), written by hand, not saved by a build, so
+   nothing build-specific is in it; a missing interface leaves an empty Python Panel tab, not an error. No
+   shelf-tool layout.
+3. Viewer state API in H22 (docs `hom.zip`: state_parameters, hud_info, state_events, state_menus): the
+   parameter bar (`bindParameter`, the "Operation Toolbox" above the viewport) and the HUD (`hudInfo(template=)`
+   then `hudInfo(values=)`, "Press Shift+F1 to hide hints" drawn by Houdini) work; a flipbook does NOT include
+   either (they are Houdini's UI over the GL view): pictures of them are offscreen grabs of the main window.
+   Writing a state parm from code (`_setCurrentStateParm`, or the `state_parms` dict kept from `onEnter`) calls
+   no `onParmChangeEvent` (no loop); a write from `onMouseEvent` does not reach the bar (read-only callback, as
+   documented), so the state writes the bar deferred. `onMouseWheelEvent` gets +-1 a notch; consumed (True)
+   the camera does not move (a synthetic wheel moved it in neither case, so the camera's own wheel is the
+   user's to try). Ctrl+Shift+LMB reaches `onMouseEvent` with both modifiers, the camera does not move. F:
+   `bindHotkeyDefinitions` + a menu item with that hotkey -> `onMenuAction("swap")`, and Houdini's own F
+   (frame) is not run; `onKeyEvent` still sees "f" first and must not consume it. RMB opens the state's
+   `bindMenu` menu (`onMenuPreOpen` called; it is Houdini's own menu, not a Qt one). A synthetic wheel reaches
+   the state only when sent to the viewport's `RE_Window` widget (the GL widget's grandparent).
+
+**Built (2026-11-19, t72).** `desktop/MONO_Grooming.desk` (viewport 70 % left; right: the MONO Grooming panel
+with a Parameters tab, network editor under it; the shelves as Build has them: hiding shelves per desk was
+not done, see the t72 report), `radialmenu/mono_grooming.radialmenu` (made from `tools/fx/grooming/workspace.py`
+`ENTRIES`; a test holds the file to it: Paint top, Erase top right, Scalp X-ray right, Update regions bottom
+right, Detect locks bottom, Isolate bottom left, Display submenu left with Guides / Hair preview / Hair; check
+marks on the toggles), `python_panels/mono_grooming.pypanel`; the installer ships the three folders. Each entry
+is `apps/houdini/grooming_workspace.radial(entry)` -> `workspace.run(controller, entry)` -> the controller
+function the panel's button fires; without a panel a controller on the scene's node reports to the status
+line; with no node the status line says so. Paint state: `tools/fx/grooming/brush_keys.py` (HUD rows and values,
+bar, wheel x1.1 a notch, drag x2 every 120 px right, menu: Paint / Erase (F), Radius smaller / larger / 0.25-4
+cm, Grey 0 / 0.5 / 1) bound by `grooming_paint_state.py`; every change goes through
+`grooming_masks.set_brush(source="state")`, whose `HOOKS["brush"]` tells the panel (shown on its next poll,
+400 ms), and a change made in the panel does not come back.
+
+**Checked (t72, GUI by script, `tests/t72_workspace_paint/report.md`).** Desktop from the list on a fresh pref
+dir (viewport, panel `mono_grooming` on the node, network editor), back to Build unchanged, radial menu ours while
+the panel is shown and the user's after; the 9 radial entries leave the node as the panel's own widgets do; with
+no node they say so; the Paint state's HUD, bar and the panel agree after a change from the panel, the bar, the
+wheel, a Ctrl+Shift drag, F and the menu, each with no undo step and no cook, and a stroke after each moves the
+right way; strokes 0.21-0.35 s (limits 0.9-1.5 s), undo 0.04-0.05 s with the HUD on; Esc, another node, the node
+deleted, File > New while painting: no traceback, bar gone. The installer log holds the three folders;
+`accept_v02a_gui.py` 19 / 19. Left for the User look gate: a real hand on the wheel, drag, F, bar and menu, the
+pie menu with C, the layout; not built: hiding shelves per desk (needs a shelf set and the user's choice).
+
+**Spike first (the questions as asked, 2026-11-13).**
 1. Can the tool switch the viewport to its radial menu when the panel opens and put the user's back when
    it closes, by script, in Houdini 22? If not: the user picks it in the menu, and the panel says so once.
 2. Does a `.desk` file keep the Python panel (by its interface name) on another machine and survive a

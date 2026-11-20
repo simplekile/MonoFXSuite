@@ -857,3 +857,133 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     read into a typed variable first. The same family as "type every prim() read".
   - Patch scripts with triple quotes inside a shell heredoc break the shell tool's quoting: write the script
     with the editor into the scratchpad and run the file.
+- Density-layer panel (t70, 2026-11-16, the user's pick "A" of three E2 reworks; the plan's "Panel, built" has the
+  whole list): the lock tree holds each row's density layers and their mask layers (`ui_layers.add_layers`), the eye
+  column moved to the left edge (`header.moveSection`), Automatic last in All locks with a padlock. The controller's
+  part is the mixin `layers.LayersMixin` (selection kind `SEL_LAYER`), the view's part `ui_layers.py`; both are LF
+  files, so `controller.py` / `ui.py` (CRLF) only got hooks. Every layer command is one adapter call (its own undo
+  step) inside `_run`. `GroomingUI._fire` passes keyword arguments (`set_layer(lid, density=...)`,
+  `set_brush(view=...)`): it did not, and the first offscreen test caught it.
+  - Qt ignores `QTreeWidgetItem.setExpanded` before the item is in a view: layer rows are opened after the tree is
+    built (`ui_layers.expand_layers`). An item's BackgroundRole is painted over by the window's sheet
+    (`QTreeWidget::item { background }`), so layer rows are told apart by indentation and icons, not a tint.
+  - "painting" in the status column is TEXT_PRIMARY: ACCENT on SELECTED is 3.95:1 (contrast_check).
+  - Node values from the panel go through `grooming_adapter.node_settings` / `set_node_setting` (added outside the
+    panel with the manager's yes, t70): only the three keys of `NODE_SETTING_PARMS` (else KeyError), one undo step
+    each; a parm set from Python runs no callback, so the lookup toggle calls `on_lookup_changed(recorded=True)`,
+    which writes the "on/off: set by hand" note INSIDE the step (the callback itself keeps undo off), and one undo
+    puts back value and note.
+  - Fix round t71 (the checker's defects): the poll checks the node is alive first (`controller.node_alive`;
+    a deleted node raises on ANY call, `node.path()` included, so the old except handler raised too) and goes to
+    `node_gone` once; the panel's `is_alive` (closed, or its C++ object deleted) stops a poll queued through
+    hdefereval; the status delegate clips and elides to its own cell (a wider text was drawn over the name
+    column); `ui_layers._RowBar` switches to two lines by the width its content needs.
+- Workspace and Paint keys (v0.2a last task, t72, 2026-11-19; plan section "v0.2a, last task"; sandbox
+  `tests/t72_workspace_paint/`, `report.md`):
+  - Shipped at the suite root (the package `hpath`), each in the installer: `desktop/MONO_Grooming.desk`,
+    `radialmenu/mono_grooming.radialmenu`, `python_panels/mono_grooming.pypanel` (moved from this folder:
+    Houdini loads `python_panels/` at start, which the desk needs; `_dock` installs it from there). The radial
+    file is MADE from `workspace.ENTRIES` (`workspace.radial_menu_text()`); a test fails when they differ:
+    change the entries, then write the file again. Its scripts call `apps/houdini/grooming_workspace.radial`,
+    and a check script is a body with `return` (as SideFX's own `.radialmenu` files write it).
+  - A radial entry calls the controller function the panel's button fires (`workspace.run`): the open panel's
+    controller (`controller.live_panels()`, every panel made, docked or floating), else one on the scene's
+    node with a `StatusView` (messages to the status line), else the status line says there is no node.
+  - The radial menu is switched by the PANEL (`controller.panel_shown` / `panel_hidden`, through the adapter's
+    `radial_on` / `radial_off`): `hou.ui._setActiveRadialMenu` (private in H22; the panel asks once to pick it
+    by hand when missing). A desk's `radial menu set` line was tried and not used: going back to the user's
+    desktop left ours on. What was the user's is kept on `hou.session`, so a module reload keeps it.
+  - Paint state like Attribute Paint: `brush_keys.py` is the pure part (HUD rows / values, bar, wheel x1.1 a
+    notch, Ctrl+Shift drag x2 per 120 px, menu items), `grooming_paint_state.py` binds it. One source:
+    `grooming_masks.set_brush(..., source=)`; "panel" (the default) tells only the state, anything else also
+    calls `HOOKS["brush"]`, which marks the panel dirty and its poll (`flush_brush`) shows it: a drag changes the
+    radius at the mouse's rate and rebuilding the Properties per move would slow it. The state writes HUD and
+    bar deferred and coalesced (`_queue_show`): Houdini ignores a bar write made from `onMouseEvent`, and a
+    write from code fires no `onParmChangeEvent` (so no loop; `field_change` also drops a value the brush
+    has). The bar is written BOTH ways (t72 gui2 / gui3): the kept `state_parms` dict alone reached the bar on
+    the next callback only (the bar one change late), `viewer._setCurrentStateParm` alone was put back by that
+    dict on the next callback (the bar stuck at its first value). A radius / grey / softness / mode change recounts and recolours nothing (`view_shown`): only a view
+    change does. F is a hotkey of the state's menu (`bindHotkeyDefinitions`), so Houdini's frame-on-F does not
+    run; `onKeyEvent` must return False for it. The wheel is consumed while painting (no dolly).
+  - What GUI tests can and cannot do here: the bar and HUD are Houdini's own UI, not Qt and not in a flipbook
+    (grab the main window); `_evalCurrentStateParm` reads the bar, nothing reads the HUD back (the state keeps
+    what it sent in `STATS["hud"]`); a change typed in the bar is simulated as `_setCurrentStateParm` + the
+    state's `onParmChangeEvent` (Houdini's own call is not triggered by a script); a menu item is chosen by
+    calling `onMenuAction` (RMB opening the menu is seen through `onMenuPreOpen`); a synthetic wheel reaches
+    the state only when sent to the `RE_Window` widget (the GL widget's grandparent).
+  - GUI tests of the workspace run Houdini on their own `HOUDINI_USER_PREF_DIR` with the suite on
+    HOUDINI_PATH (`run_gui.sh` in t72), so the user's desktops and radial menus are never touched.
+  - Paint ended by a deleted node or File > New: the state's exit hook (`_on_paint_exit`) reads nothing from
+    the node (`node_alive` first); it raised `hou.ObjectWasDeleted` inside `_came_back` (t72 gui1).
+  - Fix round t73 (the checker's findings): Paint and the radial Erase need ONE paint layer selected
+    (`layers.paint_needs`, text `PAINT_NEEDS` + what is selected); without it they say so and change nothing
+    (no state, no write, brush as it was). The panel never holds several layer rows (the one clicked last is
+    the selection). A radial entry's message also goes to the status line (`grooming_workspace._said`). The
+    HUD shows the wheel on the Radius row and the drag on its own row (a key spec "mousewheel / Ctrl + Shift +
+    LMB" drew only the drag). `brush_keys` takes NaN / inf / huge / non-numbers: always a finite radius in the
+    limits (steps capped at `STEPS_MAX`). Known, not changed: F reaches the state only while the viewport has
+    the keyboard focus (Houdini's hotkeys), and a pane the user closed in the desktop stays closed when they
+    switch back (Houdini keeps a desktop's changes for the session).
+- Panel look from the MonoFX Loader (t74, 2026-11-19, the user's pick "C" of three; sandbox `tests/t74_loader_look/`:
+  `lessons.md` = what was taken, adapted or left and why, `mockups/`, `report.md`; `ui.py`'s docstring has the layout):
+  - The look helpers are the suite's shared ones, `tools/fx/look.py` (also the Loader's); `ui_look.py` keeps the
+    panel's names and its differences as parameters or thin subclasses: `_crisp_icon` = Selected mode + a
+    `DISABLED_ICON` pixmap + cached, `scale_css` without the border step (`round_borders` does it), `_Props` /
+    `_Section` on `Sz` and role labels, `SELECTED_HOVER` #2c395b (the Loader keeps #2e3c5f). Panel-only colours
+    (BUTTON..., DISABLED_ICON) stay in `ui_look.py`. Before 2026-11-19 these were copies (`anim_loader` was not on
+    the branch).
+  - The tree is painted by `_RowDelegate` for every column and by `_LayerTree.drawRow / drawBranches`; the sheet
+    has no `QTreeWidget::item` / `::branch` rule any more. Measured before the change in the live t72 grab: the old
+    `::item` rules did paint PANE / SELECTED in Houdini 22 (the Loader's grey came from palette colours), but they
+    beat an item's own colour, so per-row lines, separators and a hover over the branch area needed the delegate.
+    Check tree colours in the live window (`QWidget.grab` of the tree inside Houdini, t74 `t74_gui.py`
+    `live_tree_*`), not only offscreen.
+  - One background for every row (the user's rule on the Loader): layer rows are not tinted; t70's "row tint: not
+    built" is closed as decided. Separators (the user, 2026-11-19): a `LINE` hairline under each row, vertical lines
+    eye | name | status, all covered by a hovered or selected row; so the status column takes ONE width for the whole
+    tree (`_fit_status`: widest words, at most 40 %).
+  - No "·" joins anywhere the artist reads (the user, 2026-11-19): Properties show `details` (label / value rows,
+    from `controller.properties` / `layers.layer_properties`; `subtitle` is kept, comma-joined, for other readers),
+    counts and lists by commas, clauses and message parts by "; ". The HDA's own status line still has dots (no HDA
+    change in t74).
+  - The eye: drawn = filled (pupil cut out), not drawn = outline with slash; who decided is the tone: TEXT_LABEL
+    the row's own, `FAINT` (#6b6b73 since t74, 3.1:1 on a hovered row; #63636b was 2.75:1) a group / layer /
+    isolate, `FAINT_ON_SELECTED` on a selected row (`ROLE_EYE`); the accent eye of isolate went.
+  - The Loader's 40 % dim eye measures 2.2:1 on PANE and its selected + hover colour `#2e3c5f` 4.36:1 under
+    TEXT_LABEL: here `FAINT` and `SELECTED_HOVER` #2c395b (4.56:1). Settings rows and stat cells go compact when
+    Properties are narrower than `COMPACT_PX` (540 x scale), so the tree can have ~300 px at 760 px wide.
+  - Live Houdini (t74 `gui_panel*`): the painter Houdini hands a delegate draws antialiased, so a 1 px `drawLine`
+    landed on two pixels at half strength (#1f1f24 for LINE): separators are `fillRect`s of 1 px. A `QWidget.grab()`
+    of the tree's VIEWPORT came back without the state just set (selection, hover); grab the panel (`ui.grab()`) and
+    map the viewport's coordinates (`viewport().mapTo(ui, ...)`), with the panel's poll stopped while sampling (a
+    rebuild deletes the items being sampled). Measured: row #17171b, selected #273352, hover #1f1f25, selected +
+    hover #2c395b, branch area the same as its row, separators #26262d, covered on hover / selection.
+  - Tests: `tests/test_grooming_look.py` (delegate states by pixels, separators, icon buttons' tooltips and
+    accessible names, the eye, the status width, the two-line result line, the sections, no "·").
+  - The user on the docked panel (t74, 2026-11-19): the row bar (a layer's D / opacity or blend / opacity) is UNDER
+    the tree: above it, showing it on a click pushed every row down and picking a density layer jumped; the tree
+    gets shorter at its bottom and the current row is scrolled into view. A layer's status cell shows the value
+    alone ("75", "75, 50%"), the unit in the cell's tooltip ("75 /c…" was cut). Bordered buttons are FILLED
+    (`ui_look.BUTTON` #25252c, hover / pressed / disabled), fields stay inset (BG_RAISED): quick picks read as
+    fields. Icons carry their own Disabled pixmap (`DISABLED_ICON` #45454e, `_crisp_icon`): Houdini drew the
+    Normal one, so disabled + / up / down / delete looked usable. The desk `MONO_Grooming` gives the panel its own
+    pane on the left (30 %), alone: viewport, then parameter editor over network editor.
+    Wide, the tree takes `TREE_SHARE` (40 %) of the window at least and follows it on resize, until the user drags
+    the divider (`_tree_user`): after that it only widens when a name no longer fits. Docked at ~1150 px it had
+    ~350 px and cut the head's count. The status column has slack over its words (`status_width`): in Houdini
+    "per lock" was cut to "per lo…" at the exact width.
+    The head's count is a `_FitLabel` (t75): it shows "61 locks, 3 groups", else "61 locks", else that elided
+    with "…", and a shorter form carries the full count in its tooltip; it asks for its full width + 2 px and can
+    shrink to an ellipsis, so the tree tools beside it never cut it (at 760 px it read "61 locks, 3 group").
+    The head is a `_TreeHead` (t75 recheck): LOCKS, the count and the tools on one row while the whole count fits
+    beside the tools, else the tools on a row of their own under it, decided by its width alone. A window opened
+    at 700-800 px had read "6…" (the tree's room beat the head's need); the head no longer widens the tree.
+  - The tree's width (`_tree_width`) is a function of the window's width and the rows only, so a window opened at
+    a width and one resized to it match: Properties count as fixed numbers (the 40 % share yields to
+    `COMPACT_PX`, whole rows; the names may push them down to 430 px, compact rows), not their minimum as laid
+    out (it changed with the compact state); the status column counts its widest words (`_status_words`), not
+    its section as left by the last layout; `_after_resize` fits the tree again once the body is laid out (a
+    stacked -> side by side switch spread the splitter from its old size). Offscreen checks need
+    `QT_QPA_FONTDIR` (Windows fonts): without it Qt falls back to a font about twice as wide.
+  - In Houdini a `ui.grab()` right after a scroll can show the tree's rows below the first two from the older
+    scroll position (seen in t74 `gui_panel8` and later; not on screen): sample the top rows only.
