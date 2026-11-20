@@ -177,7 +177,8 @@ def test_stored_points_that_cannot_be_read_are_dropped_not_guessed():
                                      {"id": 3, "name": "b", "group": "bang", "handles": 6.0},
                                      {"id": 4, "name": "c", "group": "bang", "handles": True}])
     d = GroomData.from_json(json.dumps(raw))
-    assert d.lock(1).spine == [] and d.lock(1).handles is None and d.lock(1).curve == []
+    # a count out of range is clamped by the one rule (the manager, 2026-11-21; t80 N2): 30 is 12
+    assert d.lock(1).spine == [] and d.lock(1).handles == 12 and d.lock(1).curve == []
     assert d.lock(3).handles == 6 and d.lock(4).handles is None
 
 
@@ -413,7 +414,7 @@ def test_a_stroke_becomes_the_fewest_handles_within_the_tolerance():
     Q = _helix()
     H, gap = logic.stroke_handles(Q, UNIT)
     K = len(H)
-    assert gap <= config.STROKE_TOL_CM and config.HANDLES_MIN <= K <= config.STROKE_HANDLES_MAX
+    assert gap <= config.STROKE_TOL_CM and config.HANDLES_MIN <= K <= config.HANDLES_MAX
     assert np.allclose(H[0], Q[0]) and np.allclose(H[-1], Q[-1])
     if K > config.HANDLES_MIN:                                         # one fewer would miss
         fewer = logic.at_lengths(Q, logic.arc_lengths(Q)[-1] * logic.handle_shares(K - 1))
@@ -499,3 +500,113 @@ def test_drawn_lock_refuses_non_finite_width():
     for w, t in ((float("nan"), 1.0), (float("inf"), 1.0), (1.0, float("nan"))):
         with pytest.raises(ValueError):
             GroomData().add_drawn_lock("g", [(0, 0, 0), (0, 1, 0)], w, t)
+
+
+# ---- the manager's decisions of 2026-11-21 (after t80 and t79) ----
+
+def test_handle_counts_are_clamped_by_one_rule_on_load():
+    raw = dict(SIX, schema=7, locks=[{"id": 1, "name": "a", "group": "bang", "handles": 13},
+                                     {"id": 2, "name": "b", "group": "bang", "handles": 2},
+                                     {"id": 3, "name": "c", "group": "bang", "handles": 12.0},
+                                     {"id": 4, "name": "d", "group": "bang", "handles": 7.5},
+                                     {"id": 5, "name": "e", "group": "bang", "handles": float("nan")}])
+    d = GroomData.from_json(json.dumps(raw).replace("NaN", "NaN"))
+    assert [d.lock(i).handles for i in range(1, 6)] == [12, 4, 12, None, None]
+    assert [logic.handle_count(10.0, x) for x in (13, 2, 12)] == [12, 4, 12]
+
+
+def test_a_drawn_lock_keeps_its_curve_as_drawn_and_reset_puts_it_back():
+    d = GroomData(groups=[Group("bang", "Bang")])
+    curve = [(0.0, 0.0, 0.0), (0.0, 0.1, 0.0), (0.0, 0.2, 0.05)]
+    lk = d.add_drawn_lock("bang", curve, 2.0, 0.6)
+    assert lk.drawn_curve == curve and not lk.edited
+    lk.curve = [(0.0, 0.0, 0.0), (0.05, 0.1, 0.0), (0.0, 0.25, 0.05)]
+    lk.root, lk.length = lk.curve[0], 0.3
+    assert lk.edited                                      # a drawn lock whose points were moved is edited
+    again = GroomData.from_json(d.to_json()).lock(lk.id)
+    assert again.drawn_curve == curve and again.edited
+    assert d.edited_locks() == [lk.id]
+    assert lk.reset_spine() is True and lk.curve == curve and not lk.edited
+    assert math.isclose(lk.length, sum(math.dist(a, b) for a, b in zip(curve, curve[1:])))
+    assert lk.reset_spine() is False
+
+
+def test_a_drawn_lock_saved_without_drawn_curve_takes_its_curve():
+    raw = dict(SIX, schema=7, locks=[{"id": 1, "name": "a", "group": "bang", "source": "drawn",
+                                      "curve": [[0, 0, 0], [0, 0.1, 0]], "width_cm": 2, "thick_cm": 0.6}])
+    lk = GroomData.from_json(json.dumps(raw)).lock(1)
+    assert lk.drawn_curve == lk.curve and not lk.edited
+
+
+def test_a_source_outside_the_list_reads_as_mesh():
+    raw = dict(SIX, schema=7, locks=[{"id": 1, "name": "a", "group": "bang", "source": "painted"},
+                                     {"id": 2, "name": "b", "group": "bang", "source": 3}])
+    d = GroomData.from_json(json.dumps(raw))
+    assert d.lock(1).source == config.SOURCE_MESH and d.lock(2).source == config.SOURCE_MESH
+
+
+def test_reassign_orphan_without_an_edit_keeps_the_targets_edit():
+    edit = [(0.0, 0.0, 0.0), (0.1, 0.0, 0.0), (0.2, 0.01, 0.0), (0.3, 0.0, 0.0)]
+    d = GroomData(groups=[Group("bang", "Bang")], orphans=[Orphan(id=5, name="x", group="bang")],
+                  locks=[Lock(id=9, name="bang_09", group="bang", spine=list(edit), handles=4)])
+    d.reassign_orphan(5, 9)
+    assert d.lock(9).spine == edit and d.lock(9).handles == 4
+    d2 = GroomData(groups=[Group("bang", "Bang")], orphans=[Orphan(id=5, name="x", group="bang", spine=edit[:2] + edit[2:], handles=5)],
+                   locks=[Lock(id=9, name="bang_09", group="bang")])
+    d2.reassign_orphan(5, 9)
+    assert d2.lock(9).spine == edit and d2.lock(9).handles == 5
+
+
+def test_add_drawn_lock_refuses_a_curve_without_length_or_with_garbage():
+    d = GroomData(groups=[Group("bang", "Bang")])
+    for curve in ([(0.0, 0.0, 0.0), (0.0, 0.0, 0.0)], [(0.0, 0.0, 0.0), (float("nan"), 0.0, 0.0)],
+                  [(0.0, 0.0, 0.0), (0.0, 0.1, 0.0), (0.0, 0.0, 0.0)]):
+        with pytest.raises(ValueError):
+            d.add_drawn_lock("bang", curve, 2.0, 0.6)
+    for w in (float("nan"), float("inf"), 0.0):
+        with pytest.raises(ValueError):
+            d.add_drawn_lock("bang", [(0.0, 0.0, 0.0), (0.0, 0.1, 0.0)], w, 0.6)
+    assert d.locks == []
+
+
+def test_rotate_and_scale_with_garbage_leave_the_handles():
+    H = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (2.0, 0.5, 0.0)]
+    for axis in ((0.0, 0.0, 0.0), (float("nan"), 0.0, 1.0), (0.0, float("inf"), 0.0)):
+        assert logic.rotate_about_root(H, axis, 90.0).tolist() == [list(p) for p in H]
+    assert logic.rotate_about_root(H, (0, 0, 1), float("nan")).tolist() == [list(p) for p in H]
+    for f in (0.0, -1.0, float("nan"), float("inf")):
+        assert logic.scale_about_root(H, f).tolist() == [list(p) for p in H]
+
+
+def test_a_stroke_with_a_point_that_is_not_a_number_is_refused():
+    bad = [(0.0, 0.0, 0.0), (float("nan"), 0.0, 0.0), (1.0, 0.0, 0.0)]
+    with pytest.raises(ValueError):
+        logic.stroke_handles(bad, 100.0)
+    P, T, A = SPINES[NAMES[0]]
+    with pytest.raises(ValueError):
+        logic.redraw_handles(P, T, A, bad, 100.0)
+
+
+def test_strokes_take_at_most_12_handles_and_say_the_gap():
+    t = np.linspace(0, 1, 400)
+    wiggle = np.stack([t * 0.3, 0.02 * np.sin(t * 60), np.zeros_like(t)], 1)    # 12 handles cannot hold it
+    H, gap = logic.stroke_handles(wiggle, 100.0)
+    assert len(H) == config.HANDLES_MAX and gap > config.STROKE_TOL_CM
+    P, T, A = SPINES[NAMES[0]]
+    H, gap = logic.redraw_handles(P, T, A, P + np.stack([np.zeros(len(P)), 0.01 * np.sin(np.linspace(0, 40, len(P))),
+                                                          np.zeros(len(P))], 1), 100.0)
+    assert len(H) <= config.HANDLES_MAX
+    assert not hasattr(config, "STROKE_HANDLES_MAX")
+
+
+def test_drawn_handle_count_refits_the_curve():
+    curve = [(0.0, 0.0, 0.0), (0.0, 0.05, 0.01), (0.0, 0.1, 0.03), (0.01, 0.15, 0.06), (0.0, 0.2, 0.1)]
+    new, gap = logic.drawn_handle_count(curve, 8, 100.0)
+    assert len(new) == 8 and np.allclose(new[0], curve[0]) and gap < config.RESAMPLE_TOL_CM
+    back, gap2 = logic.drawn_handle_count(new, 5, 100.0)
+    assert len(back) == 5 and gap2 < config.RESAMPLE_TOL_CM
+    assert len(logic.drawn_handle_count(curve, 30, 100.0)[0]) == config.HANDLES_MAX
+
+
+def test_set_drawn_has_its_own_undo_label():
+    assert config.UNDO_SPINE["drawn"].startswith("MONO Grooming: ")

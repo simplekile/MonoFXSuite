@@ -78,13 +78,27 @@ def _points(raw) -> list[Point]:
 
 
 def _handles(raw) -> int | None:
-    """A per-lock handle count, None when unset or not a whole number in config.HANDLES_MIN..HANDLES_MAX."""
+    """A per-lock handle count: a whole number clamped to config.HANDLES_MIN..HANDLES_MAX (the one rule, as
+    `logic.handle_count` clamps an override; t80 N2: a stored 13 is 12, not "by length"); None when unset or not a
+    whole number."""
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
     if isinstance(raw, float) and (not math.isfinite(raw) or int(raw) != raw):
         return None
-    n = int(raw)
-    return n if config.HANDLES_MIN <= n <= config.HANDLES_MAX else None
+    return min(config.HANDLES_MAX, max(config.HANDLES_MIN, int(raw)))
+
+
+def _source(raw) -> str:
+    """A lock's stored source; anything outside config.LOCK_SOURCES reads as a lock of the mesh (t80 D5)."""
+    return raw if isinstance(raw, str) and raw in config.LOCK_SOURCES else config.SOURCE_MESH
+
+
+def _curve_place(pts) -> tuple:
+    """(root, length, direction) of a drawn lock's curve, as `add_drawn_lock` sets them."""
+    length = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
+    span = math.dist(pts[0], pts[-1]) if len(pts) > 1 else 0.0
+    direction = tuple((b - a) / span for a, b in zip(pts[0], pts[-1])) if span > 0 else None
+    return (tuple(pts[0]) if pts else (0.0, 0.0, 0.0)), length, direction
 
 
 def _json_default(o):
@@ -124,6 +138,9 @@ class Lock:
     # a drawn lock (source "drawn"): its control points in rest scene space (scene units, root on the skin first),
     # its width and thickness at the root (cm) and the share of them left at the tip
     curve: list[Point] = field(default_factory=list)
+    # the curve as drawn (the manager, 2026-11-21): Reset puts `curve` back to it; a drawn lock whose curve differs
+    # is "edited". Absent on load = the curve (no schema step)
+    drawn_curve: list[Point] = field(default_factory=list)
     width_cm: float = 0.0
     thick_cm: float = 0.0
     taper: float = config.DRAWN_TAPER_DEFAULT
@@ -138,12 +155,21 @@ class Lock:
 
     @property
     def edited(self) -> bool:
-        """Its spine differs from the measured one: control points stored (a drawn lock is never "edited", it has
-        no measured spine to differ from)."""
-        return not self.drawn and len(self.spine) > 0
+        """Its shape was edited: control points stored on a lock of the mesh, or a drawn lock whose curve is no
+        longer the one drawn (`drawn_curve`)."""
+        if self.drawn:
+            return len(self.drawn_curve) > 0 and list(self.curve) != list(self.drawn_curve)
+        return len(self.spine) > 0
 
     def reset_spine(self) -> bool:
-        """Back to the measured spine (the handle count the artist set stays). False when there was no edit."""
+        """Back to the measured spine (the handle count the artist set stays), or for a drawn lock back to the curve
+        as drawn (its root, length and direction with it). False when there was no edit."""
+        if self.drawn:
+            if not self.edited:
+                return False
+            self.curve = list(self.drawn_curve)
+            self.root, self.length, self.direction = _curve_place(self.curve)  # type: ignore[assignment]
+            return True
         had = len(self.spine) > 0
         self.spine = []
         return had
@@ -163,7 +189,9 @@ class Orphan:
 
     @classmethod
     def from_lock(cls, lk: "Lock") -> "Orphan":
-        """What a lock that went missing keeps: settings, flags and its edit."""
+        """What a lock that went missing keeps: settings, flags and its edit. Only locks of the mesh go missing
+        (Detect leaves a drawn lock alone), so a drawn lock's curve, width and taper are not kept here (t80 D6:
+        not reachable)."""
         return cls(id=lk.id, name=lk.name, group=lk.group, overrides=dict(lk.overrides), root_flip=lk.root_flip,
                    excluded=lk.excluded, spine=list(lk.spine), handles=lk.handles)
 
@@ -399,8 +427,9 @@ class GroomData:
         if orphan is None or lk is None:
             return None
         lk.overrides = dict(orphan.overrides)
-        if not lk.drawn:
-            # its control points too (v0.2b): places in the root frame, so they fit the lock that takes its place
+        if not lk.drawn and len(orphan.spine) > 0:
+            # its control points too (v0.2b): places in the root frame, so they fit the lock that takes its place.
+            # Only an orphan WITH an edit replaces the lock's (t80 N5: one without wiped the target's edit)
             lk.spine, lk.handles = list(orphan.spine), orphan.handles
         lk.match = "ok"
         self.orphans.remove(orphan)
@@ -425,7 +454,9 @@ class GroomData:
         footprint in the same undo step and clears that."""
         pts = _points(curve)
         if len(pts) < 2:
-            raise ValueError("a drawn lock needs a curve of at least 2 points")
+            raise ValueError("a drawn lock needs a curve of at least 2 finite points")
+        if not sum(math.dist(a, b) for a, b in zip(pts, pts[1:])) > 0 or math.dist(pts[0], pts[-1]) <= 0:
+            raise ValueError("a drawn lock needs a curve of some length")
         if not (0 < width_cm < math.inf and 0 < thick_cm < math.inf):
             raise ValueError("a drawn lock needs a width and a thickness over 0")
         lock_id = self.next_lock_id()
@@ -436,7 +467,8 @@ class GroomData:
         span = math.dist(pts[0], pts[-1])
         direction = tuple((b - a) / span for a, b in zip(pts[0], pts[-1])) if span > 0 else None
         lk = Lock(id=lock_id, name=name, group=group, source=config.SOURCE_DRAWN, root=pts[0], length=length,
-                  direction=direction, curve=pts, width_cm=float(width_cm), thick_cm=float(thick_cm),  # type: ignore[arg-type]
+                  direction=direction, curve=pts, drawn_curve=list(pts), width_cm=float(width_cm),  # type: ignore[arg-type]
+                  thick_cm=float(thick_cm),
                   taper=min(1.0, max(0.0, float(taper))))
         self.locks.append(lk)
         self.note_ids()
@@ -521,6 +553,14 @@ class GroomData:
         if not text or not text.strip():
             return cls()
         raw = migrate(json.loads(text))
+        out = cls._from_raw(raw)
+        for lk in out.locks:            # a drawn lock saved before `drawn_curve`: as drawn = as it is now
+            if lk.drawn and not lk.drawn_curve:
+                lk.drawn_curve = list(lk.curve)
+        return out
+
+    @classmethod
+    def _from_raw(cls, raw: dict) -> "GroomData":
         return cls(
             asset=str(raw.get("asset", "")),
             defaults=_clean_overrides(raw.get("defaults")),
@@ -536,7 +576,7 @@ class GroomData:
             locks=[
                 Lock(
                     id=int(lk["id"]), name=str(lk.get("name", "")), group=str(lk.get("group", "")),
-                    source=str(lk.get("source", "mesh")),
+                    source=_source(lk.get("source")),
                     root=tuple(float(c) for c in lk.get("root", (0.0, 0.0, 0.0)))[:3],  # type: ignore[arg-type]
                     length=float(lk.get("length", 0.0)),
                     direction=(tuple(float(c) for c in lk["direction"])[:3]  # type: ignore[arg-type]
@@ -546,7 +586,7 @@ class GroomData:
                     match=str(lk.get("match", "ok")),
                     root_flip=bool(lk.get("root_flip", False)), excluded=bool(lk.get("excluded", False)),
                     spine=_points(lk.get("spine")), handles=_handles(lk.get("handles")),
-                    curve=_points(lk.get("curve")),
+                    curve=_points(lk.get("curve")), drawn_curve=_points(lk.get("drawn_curve")),
                     width_cm=max(0.0, _number(lk.get("width_cm"), 0.0)),
                     thick_cm=max(0.0, _number(lk.get("thick_cm"), 0.0)),
                     taper=min(1.0, max(0.0, _number(lk.get("taper"), config.DRAWN_TAPER_DEFAULT))),

@@ -208,3 +208,26 @@ def test_input_labels_are_four():
     else:
         bh = importlib.import_module("tools.fx.grooming.build_hda")
     assert bh.INPUT_LABELS[3] == "Animated scalp" and len(bh.INPUT_LABELS) == 4
+
+
+def test_most_skin_group_is_the_group_that_gave_most():
+    data = GroomData(groups=[Group(id="a", name="A"), Group(id="b", name="B")],
+                     locks=[Lock(id=1, name="a_01", group="a"), Lock(id=2, name="b_01", group="b")])
+    assert ga.most_skin_group(data, [[1], [2], [2], [1, 2]]) == "b"      # 2.5 against 1.5
+    assert ga.most_skin_group(data, [[1], [2]]) == "a"                   # a tie: the lower id
+    assert ga.most_skin_group(data, [[99]]) == "" and ga.most_skin_group(data, []) == ""
+
+
+def test_give_back_frees_only_the_skin_the_deleted_lock_owned_alone():
+    freed, kept = ga.give_back([[5], [5, 2], [3], []], {5})
+    assert freed == [0] and kept == [[], [2], [3], []]
+
+
+def test_gap_text_only_past_the_tolerance():
+    assert ga._gap_text(0.2, 6, 0.25) == ""
+    assert "0.61 cm" in ga._gap_text(0.61, 12, 0.25) and "12 handles" in ga._gap_text(0.61, 12, 0.25)
+
+
+def test_drawn_locks_are_named_drawn_nn():
+    assert ga.DRAWN_PREFIX == "drawn"
+    assert logic.lock_name("drawn", ["drawn_01", "hair_bang_02"]) == "drawn_02"

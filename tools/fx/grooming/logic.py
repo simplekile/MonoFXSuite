@@ -1047,7 +1047,11 @@ def rotate_about_root(points, axis, degrees: float):
     X = _arr(points)
     if len(X) == 0:
         return X
-    k = _unit(np.asarray(axis, dtype=float))
+    ax = np.asarray(axis, dtype=float).reshape(-1)
+    # a zero or non-finite axis, or a non-finite angle, turns nothing (t80 D3: a zero axis collapsed the lock)
+    if ax.size != 3 or not np.all(np.isfinite(ax)) or float(np.linalg.norm(ax)) < 1e-12             or not math.isfinite(float(degrees)):
+        return X.copy()
+    k = _unit(ax)
     a = math.radians(float(degrees))
     v = X - X[0]
     out = v * math.cos(a) + np.cross(k, v) * math.sin(a) + k * (v @ k)[:, None] * (1 - math.cos(a))
@@ -1059,7 +1063,10 @@ def scale_about_root(points, factor: float):
     X = _arr(points)
     if len(X) == 0:
         return X
-    return X[0] + (X - X[0]) * float(factor)
+    f = float(factor)
+    if not math.isfinite(f) or f <= 0:          # t80 D3: a zero or non-finite factor leaves the lock as it is
+        return X.copy()
+    return X[0] + (X - X[0]) * f
 
 
 def _fit_stroke(Q, K: int):
@@ -1086,14 +1093,37 @@ def drawn_spine(handles, n_points: int):
     return at_lengths(C, np.linspace(0.0, arc_lengths(C)[-1], int(n_points)))
 
 
-def stroke_handles(stroke, unit_cm: float, tol_cm: float = config.STROKE_TOL_CM):
-    """A drawn stroke (world, root first) as the fewest handles, config.HANDLES_MIN up, at equal lengths along it,
-    whose curve (`curve_points`) lies within tol_cm of the stroke. Returns (handles, gap cm); past
-    config.STROKE_HANDLES_MAX it gives that many and the gap they leave."""
+def _stroke(stroke):
+    """A stroke as points; refused (ValueError) with a non-finite point (t80 D4) or no length."""
+    np = _np()
     Q = _arr(stroke)
+    if not np.all(np.isfinite(Q)):
+        raise ValueError("a stroke with a point that is not a number")
     if len(Q) < 2 or arc_lengths(Q)[-1] <= 0:
         raise ValueError("a stroke needs two points apart")
-    for K in range(config.HANDLES_MIN, config.STROKE_HANDLES_MAX + 1):
+    return Q
+
+
+def drawn_handle_count(curve, K: int, unit_cm: float):
+    """A drawn lock's curve given K handles (t80 N6; U1): its curve through the old handles (`curve_points`)
+    sampled again at K equal lengths. Returns (new handles, how far the new curve lies from the old one at most,
+    cm), the same message rule as a lock of the mesh (`resample_spine`)."""
+    np = _np()
+    K = min(config.HANDLES_MAX, max(config.HANDLES_MIN, int(K)))
+    old = curve_points(curve)
+    if len(old) < 2:
+        raise ValueError("a drawn lock needs a curve of at least 2 points")
+    new = at_lengths(old, np.linspace(0.0, arc_lengths(old)[-1], K))
+    new[0] = _arr(curve)[0]
+    return new, curve_gap(curve_points(new), old) * float(unit_cm)
+
+
+def stroke_handles(stroke, unit_cm: float, tol_cm: float = config.STROKE_TOL_CM):
+    """A drawn stroke (world, root first) as the fewest handles, config.HANDLES_MIN up, at equal lengths along it,
+    whose curve (`curve_points`) lies within tol_cm of the stroke. Returns (handles, gap cm); a stroke
+    config.HANDLES_MAX handles cannot hold gets that many and the gap they leave (the caller says it)."""
+    Q = _stroke(stroke)
+    for K in range(config.HANDLES_MIN, config.HANDLES_MAX + 1):
         H = _fit_stroke(Q, K)
         gap = curve_gap(Q, curve_points(H)) * float(unit_cm)
         if gap <= tol_cm:
@@ -1104,13 +1134,11 @@ def stroke_handles(stroke, unit_cm: float, tol_cm: float = config.STROKE_TOL_CM)
 def redraw_handles(P, T, A, stroke, unit_cm: float, tol_cm: float = config.STROKE_TOL_CM, snap_root=None):
     """A lock redrawn along `stroke` (world, root first): the fewest handles (config.HANDLES_MIN up) placed on the
     stroke at k / (K - 1) of its length whose edit (`edited_spine`) lies within tol_cm of it. Returns (handles in
-    the root frame, gap cm); past config.STROKE_HANDLES_MAX, that many and the gap. A stroke starting off the
+    the root frame, gap cm); past config.HANDLES_MAX, that many and the gap. A stroke starting off the
     measured root moves the root (onto the skin with `snap_root`, as the network does)."""
-    Q = _arr(stroke)
-    if len(Q) < 2 or arc_lengths(Q)[-1] <= 0:
-        raise ValueError("a stroke needs two points apart")
+    Q = _stroke(stroke)
     origin, R = root_frame(P, T, A)
-    for K in range(config.HANDLES_MIN, config.STROKE_HANDLES_MAX + 1):
+    for K in range(config.HANDLES_MIN, config.HANDLES_MAX + 1):
         H = world_to_frame(_fit_stroke(Q, K), origin, R)
         if not root_moved(H):
             H[0] = 0.0

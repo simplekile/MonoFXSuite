@@ -184,9 +184,9 @@ HANDLE_SPACING_CM = 8.0
 HANDLES_MIN = 4
 HANDLES_MAX = 12
 # A redrawn or drawn curve keeps as few control points as hold it within this of the stroke (spike t76 Q4:
-# 4 to 15 a lock on curves like Helen's); a stroke needing more than STROKE_HANDLES_MAX is stored with that many
+# 4 to 15 a lock on curves like Helen's), at most HANDLES_MAX (the manager, 2026-11-21: 12 everywhere); a stroke
+# 12 cannot hold is still taken, and the gap it leaves goes into the message
 STROKE_TOL_CM = 0.25
-STROKE_HANDLES_MAX = 24
 # Changing the handle count of an edited lock re-fits its moves (logic.resample_spine); the edited spine is
 # expected to stay within this. Fewer handles than the edit was made with may not hold it (a local bend needs
 # handles close together): the function returns the distance so the caller can say so
@@ -213,6 +213,7 @@ UNDO_SPINE: dict[str, str] = {
     "handles": "MONO Grooming: Set handle count",
     "draw": "MONO Grooming: Draw lock",
     "delete": "MONO Grooming: Delete drawn lock",
+    "drawn": "MONO Grooming: Drawn lock settings",     # width, thickness, taper of drawn locks
 }
 # a drawn lock's curve through its handles is sampled this many times a segment (the spike's Q4 fit)
 CURVE_SAMPLES = 40

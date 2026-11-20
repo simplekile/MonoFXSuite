@@ -965,55 +965,7 @@ def split_regions(node) -> None:
     share), else the nearest lock; stacked locks share. Frozen as one point per prim with `lock_owners`
     (int array) and the detail `region_rule` (config.REGION_RULE)."""
     data = read_data(node)
-    measured = _cooked(node, NODE_SPINES_LOCKS)
-    spines = _cooked(node, NODE_SPINES)        # v0.2b: after the edit (a moved root) and with the drawn locks
-    scalp = _cooked(node, NODE_SCALP_FINE)
-    roots: dict[int, tuple[float, float, float]] = {}
-    radii: dict[int, float] = {}
-    excluded = {lk.id for lk in data.locks if lk.excluded}   # grows no hair: takes no scalp from another lock
-    for prim in measured.iterPrims():
-        lid = prim.intAttribValue(config.ATTR_LOCK_ID)
-        if lid < 0 or lid in excluded:
-            continue
-        # The root band of a lock is often tapered to almost nothing, so the footprint takes the widest
-        # section near the root (first 10 % of the spine). Not further: Helen's hair_base caps widen
-        # to 20 cm a little up, and a 10 cm footprint grew a cone of strands converging on the lock.
-        pts0 = prim.points()
-        head = pts0[:max(2, len(pts0) // 10)]
-        width = max((p.floatAttribValue(config.ATTR_LOCK_WIDTH) for p in head), default=0.0)
-        radii[lid] = config.REGION_FOOTPRINT * width
-    unit_cm = max(float(node.evalParm("unit_cm")), 1e-6)
-    for prim in spines.iterPrims():
-        lid = prim.intAttribValue(config.ATTR_LOCK_ID)
-        if lid < 0 or lid in excluded:
-            continue
-        lk = data.lock(lid)
-        if lk is not None and lk.drawn:   # its set width (logic.drawn_footprint_cm, the same footprint rule)
-            radii[lid] = logic.drawn_footprint_cm(lk.width_cm) / unit_cm
-        if lid in radii:
-            roots[lid] = tuple(prim.attribValue("root"))  # type: ignore[assignment]
-    has_group = scalp.findPointAttrib(config.ATTR_GROUP) is not None
-    centroids: list[tuple[float, float, float]] = []
-    prim_groups: list[str] = []
-    for prim in scalp.iterPrims():
-        pp = prim.points()
-        n = max(len(pp), 1)
-        c = [0.0, 0.0, 0.0]
-        for p in pp:
-            pos = p.position()
-            c[0] += pos[0]; c[1] += pos[1]; c[2] += pos[2]
-        centroids.append((c[0] / n, c[1] / n, c[2] / n))
-        prim_groups.append(pp[0].stringAttribValue(config.ATTR_GROUP) if has_group and pp else "")
-    roots = _roots_on_skin(roots, centroids)
-    if has_group:
-        groups_of = {lk.id: lk.group for lk in data.locks}
-    else:  # scalp without regions: every prim may grow any lock
-        groups_of = {lid: "" for lid in roots}
-    near = _cooked(node, NODE_REGION_MESH)
-    mesh_near = [list(zip(pr.floatListAttribValue("mesh_dist"), pr.intListAttribValue("mesh_lock")))
-                 for pr in near.iterPrims()]
-    share = config.REGION_MESH_SHARE_CM / max(float(node.evalParm("unit_cm")), 1e-6)
-    owners = logic.region_owners(centroids, roots, radii, groups_of, prim_groups, mesh_near, share)
+    centroids, owners, mesh_near, roots = _split(node, data)
     frozen = hou.Geometry()
     frozen.addAttrib(hou.attribType.Global, ATTR_REGION_RULE, 0)
     frozen.setGlobalAttribValue(ATTR_REGION_RULE, config.REGION_RULE)
@@ -1043,6 +995,71 @@ def split_regions(node) -> None:
     shared = sum(1 for own in owners if len(own) > 1)
     _status(f"{config.HDA_LABEL}: regions updated for {len(grown)}/{len(roots)} locks, {len(centroids)} skin"
             f" prims, {shared} shared")
+
+
+
+
+def _split(node, data, only=None):
+    """The split rule of Update regions on the spines as cooked (locks not in `data` left out): (prim centres,
+    owners per prim, each prim's mesh distances, the locks' roots on the skin). `only`: the prim indices to give
+    owners to (v0.2b: a deleted drawn lock's skin back to its neighbours); the whole scalp still places the roots."""
+    measured = _cooked(node, NODE_SPINES_LOCKS)
+    spines = _cooked(node, NODE_SPINES)        # v0.2b: after the edit (a moved root) and with the drawn locks
+    scalp = _cooked(node, NODE_SCALP_FINE)
+    roots: dict[int, tuple[float, float, float]] = {}
+    radii: dict[int, float] = {}
+    excluded = {lk.id for lk in data.locks if lk.excluded}   # grows no hair: takes no scalp from another lock
+    for prim in measured.iterPrims():
+        lid = prim.intAttribValue(config.ATTR_LOCK_ID)
+        if lid < 0 or lid in excluded or data.lock(lid) is None:
+            continue
+        # The root band of a lock is often tapered to almost nothing, so the footprint takes the widest
+        # section near the root (first 10 % of the spine). Not further: Helen's hair_base caps widen
+        # to 20 cm a little up, and a 10 cm footprint grew a cone of strands converging on the lock.
+        pts0 = prim.points()
+        head = pts0[:max(2, len(pts0) // 10)]
+        width = max((p.floatAttribValue(config.ATTR_LOCK_WIDTH) for p in head), default=0.0)
+        radii[lid] = config.REGION_FOOTPRINT * width
+    unit_cm = max(float(node.evalParm("unit_cm")), 1e-6)
+    for prim in spines.iterPrims():
+        lid = prim.intAttribValue(config.ATTR_LOCK_ID)
+        if lid < 0 or lid in excluded:
+            continue
+        lk = data.lock(lid)
+        if lk is None:                    # not in the data (a drawn lock being deleted): takes no skin
+            continue
+        if lk.drawn:   # its set width (logic.drawn_footprint_cm, the same footprint rule)
+            radii[lid] = logic.drawn_footprint_cm(lk.width_cm) / unit_cm
+        if lid in radii:
+            roots[lid] = tuple(prim.attribValue("root"))  # type: ignore[assignment]
+    has_group = scalp.findPointAttrib(config.ATTR_GROUP) is not None
+    centroids: list[tuple[float, float, float]] = []
+    prim_groups: list[str] = []
+    for prim in scalp.iterPrims():
+        pp = prim.points()
+        n = max(len(pp), 1)
+        c = [0.0, 0.0, 0.0]
+        for p in pp:
+            pos = p.position()
+            c[0] += pos[0]; c[1] += pos[1]; c[2] += pos[2]
+        centroids.append((c[0] / n, c[1] / n, c[2] / n))
+        prim_groups.append(pp[0].stringAttribValue(config.ATTR_GROUP) if has_group and pp else "")
+    roots = _roots_on_skin(roots, centroids)
+    if has_group:
+        groups_of = {lk.id: lk.group for lk in data.locks}
+    else:  # scalp without regions: every prim may grow any lock
+        groups_of = {lid: "" for lid in roots}
+    near = _cooked(node, NODE_REGION_MESH)
+    mesh_near = [list(zip(pr.floatListAttribValue("mesh_dist"), pr.intListAttribValue("mesh_lock")))
+                 for pr in near.iterPrims()]
+    share = config.REGION_MESH_SHARE_CM / max(float(node.evalParm("unit_cm")), 1e-6)
+    if only is not None:
+        idx = list(only)
+        owners = logic.region_owners([centroids[i] for i in idx], roots, radii, groups_of,
+                                     [prim_groups[i] for i in idx], [mesh_near[i] for i in idx], share)
+        return [centroids[i] for i in idx], owners, [mesh_near[i] for i in idx], roots
+    owners = logic.region_owners(centroids, roots, radii, groups_of, prim_groups, mesh_near, share)
+    return centroids, owners, mesh_near, roots
 
 
 def set_display(node, mode: str, color_by: str, preview: float = config.PREVIEW_FRACTION) -> None:
@@ -2641,12 +2658,15 @@ def set_points(node, points: dict, space: str = "points", step: str = "move") ->
 
 
 def reset_points(node, lock_ids: Iterable[int]) -> dict:
-    """Back to the measured spine (one undo step "Reset lock"); a drawn lock has none and is left. The hair comes
-    from the cache (no lock regrown). A root that had moved comes back: regions out of date."""
+    """Back to the measured spine, or for a drawn lock back to its curve as drawn (`Lock.drawn_curve`), one undo
+    step "Reset lock". The hair comes from the cache (no lock regrown). A root that had moved comes back: regions
+    out of date."""
     data = read_data(node)
-    moved = [lk.id for lk in data.locks if lk.id in set(int(i) for i in lock_ids) and lk.edited
-             and logic.root_moved(lk.spine)]
-    done = logic.reset_locks([lk for lk in data.locks if not lk.drawn], [int(i) for i in lock_ids])
+    want = set(int(i) for i in lock_ids)
+    moved = [lk.id for lk in data.locks if lk.id in want and lk.edited and (
+        (lk.drawn and tuple(lk.curve[0]) != tuple(lk.drawn_curve[0])) or
+        (not lk.drawn and logic.root_moved(lk.spine)))]
+    done = logic.reset_locks(data.locks, [int(i) for i in lock_ids])
     for lid in moved:
         data.mark_stale(f"{data.lock(lid).name}: a root moved")
     if done:
@@ -2714,9 +2734,7 @@ def set_handle_count(node, lock_ids: Iterable[int], count: int | None) -> dict:
             K = logic.handle_count(length_cm, count)
             if K == len(lk.curve) and lk.handles == count:
                 continue
-            old = logic.curve_points(lk.curve)
-            new = logic.at_lengths(old, np.linspace(0.0, logic.arc_lengths(old)[-1], K))
-            gaps[lk.id] = logic.curve_gap(logic.curve_points(new), old) * unit
+            new, gaps[lk.id] = logic.drawn_handle_count(lk.curve, K, unit)      # t80 N6: the public refit
             lk.curve = [tuple(map(float, p)) for p in new]
         else:
             row = rows.get(lk.id)
@@ -2767,7 +2785,15 @@ def redraw_lock(node, lock_id: int, stroke, tol_cm: float = config.STROKE_TOL_CM
         write_data(node, data, config.UNDO_SPINE["redraw"])
     res = _spine_result([lk.id] if ch else [], [lk.id] if rm else [], data, "Redrawn")
     res.update(gap_cm=float(gap), count=int(len(H)))
+    res["message"] += _gap_text(gap, len(H), tol_cm)
     return res
+
+
+def _gap_text(gap: float, count: int, tol_cm: float) -> str:
+    """A stroke 12 handles cannot hold is still taken (the manager, 2026-11-21): the message says how far."""
+    if gap <= tol_cm:
+        return ""
+    return f"; {count} handles lie {gap:.2f} cm from the stroke at most (the most a lock has)"
 
 
 def _default_group(data: model.GroomData, frozen, root) -> str:
@@ -2781,6 +2807,23 @@ def _default_group(data: model.GroomData, frozen, root) -> str:
             if lk is not None:
                 return lk.group
     return data.groups[0].id if data.groups else DEFAULT_GROUP
+
+
+DRAWN_PREFIX = "drawn"     # a drawn lock's name: drawn_NN (the user, 2026-11-20)
+
+
+def most_skin_group(data: model.GroomData, owners: Sequence[Sequence[int]]) -> str:
+    """Pure: the group of the lock that owned the most of this skin (a shared prim counts 1 / its owners for each),
+    "" when none of them is a lock of the data. Ties go to the lower lock id."""
+    share: dict[int, float] = {}
+    for own in owners:
+        for lid in own:
+            share[lid] = share.get(lid, 0.0) + 1.0 / max(len(own), 1)
+    for lid, _w in sorted(share.items(), key=lambda kv: (-kv[1], kv[0])):
+        lk = data.lock(lid)
+        if lk is not None:
+            return lk.group
+    return ""
 
 
 def draw_lock(node, stroke, width_cm: float = config.DRAWN_WIDTH_CM, thick_cm: float = config.DRAWN_THICK_CM,
@@ -2804,14 +2847,23 @@ def draw_lock(node, stroke, width_cm: float = config.DRAWN_WIDTH_CM, thick_cm: f
     H[0] = Q[0]
     frozen = node.parm(PARM_REGIONS).evalAsGeometry()
     stale_before = (data.regions_stale, list(data.stale_why))
-    lk = data.add_drawn_lock(group or _default_group(data, frozen, Q[0]), H.tolist(), width_cm, thick_cm, taper, name)
+    sel: list[int] = []
     gave_ids: list[int] = []
+    owners: list = []
+    if frozen is not None and len(frozen.iterPoints()):
+        P = np.frombuffer(frozen.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3)
+        owners = frozen.pointIntListAttribValues(ATTR_LOCK_OWNERS)
+        sel, gave_ids = footprint_owners(P, owners, Q[0], logic.drawn_footprint_cm(width_cm) / unit)
+    # its group: the group of the lock that gave it most skin (the user, 2026-11-20; it resolves that group's
+    # settings); named drawn_NN
+    if group is None:
+        group = most_skin_group(data, [owners[i] for i in sel]) or _default_group(data, frozen, Q[0])
+    if not name:
+        name = logic.lock_name(DRAWN_PREFIX, [x.name for x in data.locks] + [o.name for o in data.orphans])
+    lk = data.add_drawn_lock(group, H.tolist(), width_cm, thick_cm, taper, name)
     regions = None
     if frozen is not None and len(frozen.iterPoints()):
         regions = hou.Geometry(frozen)
-        P = np.frombuffer(regions.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3)
-        owners = regions.pointIntListAttribValues(ATTR_LOCK_OWNERS)
-        sel, gave_ids = footprint_owners(P, owners, Q[0], logic.drawn_footprint_cm(width_cm) / unit)
         pts = regions.points()
         for i in sel:
             pts[i].setAttribValue(ATTR_LOCK_OWNERS, [lk.id])
@@ -2825,7 +2877,7 @@ def draw_lock(node, stroke, width_cm: float = config.DRAWN_WIDTH_CM, thick_cm: f
             node.parm(PARM_REGIONS).set(regions)
         node.parm(config.DATA_PARM).set(data.to_json())
     gave = [data.lock(i).name for i in gave_ids if data.lock(i) is not None]
-    msg = f"Drew {lk.name}" + (f"; skin from {', '.join(gave)}" if gave else "")
+    msg = f"Drew {lk.name}" + (f"; skin from {', '.join(gave)}" if gave else "") + _gap_text(gap, len(H), tol_cm)
     if regions is None:
         msg += "; no regions yet: Update regions gives it skin"
     return {"id": lk.id, "name": lk.name, "gave": gave, "gave_ids": gave_ids, "gap_cm": float(gap),
@@ -2835,7 +2887,7 @@ def draw_lock(node, stroke, width_cm: float = config.DRAWN_WIDTH_CM, thick_cm: f
 def set_drawn(node, lock_ids: Iterable[int], width_cm: float | None = None, thick_cm: float | None = None,
               taper: float | None = None) -> dict:
     """Width, thickness (cm, at the root) and tip taper (0..1) of drawn locks, one undo step (config.UNDO_SPINE
-    "draw"). A new width changes the footprint the lock would get: regions out of date with that reason."""
+    "drawn"). A new width changes the footprint the lock would get: regions out of date with that reason."""
     data = read_data(node)
     changed = []
     for lid in lock_ids:
@@ -2858,27 +2910,71 @@ def set_drawn(node, lock_ids: Iterable[int], width_cm: float | None = None, thic
             if lk.width_cm != before[0]:
                 data.mark_stale(f"{lk.name}: width changed")
     if changed:
-        write_data(node, data, config.UNDO_SPINE["draw"])
+        write_data(node, data, config.UNDO_SPINE["drawn"])
     return _spine_result(changed, [], data, "Drawn lock")
 
 
+def give_back(owners: Sequence[Sequence[int]], gone: set[int]) -> tuple[list[int], list[list[int]]]:
+    """Pure: of the frozen region points, (those owned by none but the `gone` locks, every point's owners without
+    them). The first need new owners; a shared point just loses the gone locks."""
+    freed, kept = [], []
+    for i, own in enumerate(owners):
+        rest = [o for o in own if o not in gone]
+        if len(rest) != len(own) and not rest:
+            freed.append(i)
+        kept.append(rest)
+    return freed, kept
+
+
 def delete_drawn_locks(node, lock_ids: Iterable[int]) -> dict:
-    """Delete drawn locks, one undo step "Delete drawn lock"; their ids are never used again. The skin they owned
-    grows nothing until Update regions gives it to the locks around (regions out of date)."""
+    """Delete drawn locks, ONE undo step "Delete drawn lock" that also gives their skin back (the user,
+    2026-11-20): a region point they shared keeps its other owners, one they owned alone goes to the locks the
+    rule of Update regions gives it (`_split` on those points only, the deleted locks left out). Their ids are
+    never used again. Returns {"locks", "took": [names of the locks that took skin], "took_ids", "message"}."""
     data = read_data(node)
     names = []
     done = []
+    stale_before = (data.regions_stale, list(data.stale_why))
     for lid in lock_ids:
         lk = data.lock(int(lid))
         if lk is not None and lk.drawn:
             names.append(lk.name)
             if data.remove_drawn_lock(lk.id):
                 done.append(lk.id)
-    if done:
-        write_data(node, data, config.UNDO_SPINE["delete"])
-    msg = (f"Deleted {', '.join(names)}; Update regions gives their skin to the locks around" if done
-           else "Deleted: no drawn lock among these")
-    return {"locks": done, "message": msg}
+    if not done:
+        return {"locks": [], "took": [], "took_ids": [], "message": "Deleted: no drawn lock among these"}
+    frozen = node.parm(PARM_REGIONS).evalAsGeometry()
+    regions = None
+    took: set[int] = set()
+    if frozen is not None and len(frozen.iterPoints()):
+        regions = hou.Geometry(frozen)
+        freed, kept = give_back(regions.pointIntListAttribValues(ATTR_LOCK_OWNERS), set(done))
+        new_owners, near = [], []
+        if freed:
+            _c, new_owners, near, _r = _split(node, data, only=freed)
+        pts = regions.points()
+        has_dist = regions.findPointAttrib(ATTR_OWNER_DIST) is not None
+        for i, own in enumerate(kept):
+            if own != list(pts[i].intListAttribValue(ATTR_LOCK_OWNERS)):
+                pts[i].setAttribValue(ATTR_LOCK_OWNERS, own)
+                pts[i].setAttribValue(config.ATTR_LOCK_OWNER, own[0] if own else config.NO_OWNER)
+        for i, own, nm in zip(freed, new_owners, near):
+            pts[i].setAttribValue(ATTR_LOCK_OWNERS, list(own))
+            pts[i].setAttribValue(config.ATTR_LOCK_OWNER, own[0] if own else config.NO_OWNER)
+            if has_dist:
+                dist_of = {lid: d for d, lid in nm}
+                pts[i].setAttribValue(ATTR_OWNER_DIST, [float(dist_of.get(lid, -1.0)) for lid in own])
+            took.update(own)
+        data.regions_stale, data.stale_why = stale_before      # the skin is given back: as up to date as before
+    with hou.undos.group(config.UNDO_SPINE["delete"]):
+        if regions is not None:
+            node.parm(PARM_REGIONS).set(regions)
+        node.parm(config.DATA_PARM).set(data.to_json())
+    took_names = sorted(data.lock(i).name for i in took if data.lock(i) is not None)
+    msg = f"Deleted {', '.join(names)}" + (f"; its skin to {', '.join(took_names)}" if took_names else "")
+    if regions is None:
+        msg += "; no regions yet"
+    return {"locks": done, "took": took_names, "took_ids": sorted(took), "message": msg}
 
 
 def edited_ids(node) -> list[int]:

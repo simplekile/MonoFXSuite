@@ -643,20 +643,29 @@ def h1_counts():
 
 
 def h2_resample():
+    """5 -> 8 -> 5 handles after a 2 cm tip move and after a 25 deg turn (each step's cooked spine against the
+    edited spine as made, within RESAMPLE_TOL_CM), and one 12 -> 4 with a local bend, whose message must give the
+    true distance (the farthest a cooked spine point moved, within 0.01 cm)."""
     rows = {}
     ok = True
     lid = ID[MOVE_LOCK]
-    set_frame(lid, alib.bend(ROW0[lid], default_k(lid), 2.0, U))
-    cook_all()
-    before = edited_row(lid)["P"]
-    res = ga.set_handle_count(node, [lid], 8)
-    cook_all()
-    gap = logic.curve_gap(edited_row(lid)["P"], before) * U
-    rows["%s_tip_2cm_4_to_8" % MOVE_LOCK] = {"gap_cm": r3(gap), "reported_cm": r3(res["gap_cm"].get(lid)),
-                                            "count": ga.lock_handles(node, [lid])[lid]["count"], "message": res["message"]}
-    ok = ok and gap <= RESAMPLE_CM and ga.lock_handles(node, [lid])[lid]["count"] == 8
-    restore()
-    # fewer handles than the edit was made with: a local bend, 12 -> 4. Within the limit, or the message says how far
+    for tag, make in (("tip_2cm", lambda K: alib.bend(ROW0[lid], K, 2.0, U)),
+                      ("turn_25deg", lambda K: alib.turn(ROW0[lid], K, 25.0))):
+        ga.set_handle_count(node, [lid], 5)
+        set_frame(lid, make(5))
+        cook_all()
+        made = edited_row(lid)["P"]
+        steps = []
+        for K in (8, 5):
+            res = ga.set_handle_count(node, [lid], K)
+            cook_all()
+            gap = logic.curve_gap(edited_row(lid)["P"], made) * U
+            count = ga.lock_handles(node, [lid])[lid]["count"]
+            steps.append({"to": K, "count": count, "gap_from_as_made_cm": r3(gap),
+                          "reported_step_cm": r3(res["gap_cm"].get(lid)), "message": res["message"]})
+            ok = ok and gap <= RESAMPLE_CM and count == K
+        rows[f"{MOVE_LOCK}_{tag}_5_8_5"] = steps
+        restore()
     lid = ID[BACK_LOCK]
     K = default_k(lid)
     H = alib.measured_handles(ROW0[lid], K)
@@ -668,17 +677,19 @@ def h2_resample():
     cook_all()
     gap = logic.curve_gap(edited_row(lid)["P"], before) * U
     pointwise = float(np.linalg.norm(edited_row(lid)["P"] - before, axis=1).max() * U)
-    said = ("%.2f cm" % res["gap_cm"].get(lid, -1)) in res["message"]
-    rows["%s_local_bend_%d_to_4" % (BACK_LOCK, K)] = {"gap_cm": r3(gap), "reported_cm": r3(res["gap_cm"].get(lid)),
+    reported = res["gap_cm"].get(lid, -1)
+    said = ("%.2f cm" % reported) in res["message"]
+    rows["%s_local_bend_%d_to_4" % (BACK_LOCK, K)] = {"gap_cm": r3(gap), "reported_cm": r3(reported),
                                                      "pointwise_cooked_cm": r3(pointwise),
                                                      "message": res["message"], "message_says_how_far": said,
                                                      "count": ga.lock_handles(node, [lid])[lid]["count"]}
-    ok = ok and ga.lock_handles(node, [lid])[lid]["count"] == 4 and (gap <= RESAMPLE_CM or said) \
-        and abs(pointwise - res["gap_cm"].get(lid, -1)) < 0.01
+    ok = ok and K == 12 and ga.lock_handles(node, [lid])[lid]["count"] == 4 and (gap <= RESAMPLE_CM or said) \
+        and abs(pointwise - reported) < 0.01
     add("h2_handle_count_change_keeps_the_shape", ok, rows, RESAMPLE_CM,
-          "an edited lock given another handle count: its cooked spine against the one before (curve_gap, cm) within "
-          "config.RESAMPLE_TOL_CM, or, with fewer handles than the edit needs, the change made and the message saying "
-          "how far the spine moved (that number is the farthest a spine point moved, the cooked one within 0.01 cm)")
+        "%s with 5 handles, moved 2 cm at the tip, then turned 25 deg: 5 -> 8 -> 5, each step's cooked spine "
+        "within config.RESAMPLE_TOL_CM of the edited spine as made (curve_gap); %s with 12 handles and a 3 cm "
+        "local bend set to 4: the change made and the message giving the true distance (the farthest a cooked "
+        "spine point moved, within 0.01 cm)" % (MOVE_LOCK, BACK_LOCK))
     restore()
 
 
@@ -698,6 +709,10 @@ def n1_n2_drawn():
     reg_before = node.parm("regions").evalAsGeometry().pointIntListAttribValues("lock_owners")
     CC.take()
     res, steps, label = labels_after(lambda: ga.draw_lock(node, stroke, 2.0, 0.6, 0.3))
+    reg_after = node.parm("regions").evalAsGeometry().pointIntListAttribValues("lock_owners")
+
+    def reg_before_sel(new_id):        # the owners before the draw of the points the new lock took
+        return [reg_before[i] for i, own in enumerate(reg_after) if list(own) == [new_id]]
     s, d, r = cook_all()
     lid = res["id"]
     now = hair()
@@ -728,9 +743,20 @@ def n1_n2_drawn():
     errs = lib.node_errors(node)
     warns = [w for w in lib.node_warnings(node) if w not in WARN0]
     count_ok = len(mine) > 0 and abs(len(mine) / want - 1) <= DRAWN_COUNT_SHARE
-    ok1 = count_ok and float(off.max()) <= GAP_CM and wok and not errs and not warns
+    # the user's 2026-11-20: named drawn_NN, in the group of the lock that gave it most skin (computed here)
+    gave_w: dict = {}
+    for own in reg_before_sel(res["id"]):
+        for o in own:
+            gave_w[o] = gave_w.get(o, 0.0) + 1.0 / max(len(own), 1)
+    top = min(gave_w, key=lambda k: (-gave_w[k], k)) if gave_w else None
+    want_group = ga.read_data(node).lock(top).group if top is not None else None
+    named = res["name"].startswith("drawn_") and res["name"][6:].isdigit()
+    grouped = want_group is not None and lk.group == want_group
+    ok1 = count_ok and float(off.max()) <= GAP_CM and wok and not errs and not warns and named and grouped
     add("n1_drawn_lock_grows_on_bare_skin", ok1,
-          {"lock": res["name"], "strands": len(mine), "expected": r3(want), "ratio": r3(len(mine) / max(want, 1e-9)),
+          {"lock": res["name"], "named_drawn_nn": named, "group": lk.group, "group_of_most_skin_given": want_group,
+           "skin_given_by": {NAMES.get(k, k): r3(v) for k, v in gave_w.items()},
+           "strands": len(mine), "expected": r3(want), "ratio": r3(len(mine) / max(want, 1e-9)),
            "skin_cm2": r3(area), "cross_section_cm2": r3(section), "density": dens,
            "roots_off_skin_max_cm": float("%.3g" % off.max()), "width_at_stations": wrows, "errors": errs,
            "new_warnings": warns, "stroke_cm": r3(logic.arc_lengths(np.array(stroke))[-1] * U)},
@@ -759,6 +785,47 @@ def n1_n2_drawn():
     hou.undos.performRedo()
     cook_all()
     return lid, stroke
+
+
+def n4_delete_gives_skin_back():
+    """Delete a drawn lock: one undo step, its skin to its neighbours (the rule of Update regions on that skin),
+    the message naming them, only they recook; one undo takes it all back."""
+    spot, stroke = _drawn_setup()
+    reg0 = node.parm("regions").evalAsGeometry().pointIntListAttribValues("lock_owners")
+    d = ga.draw_lock(node, stroke)
+    cook_all()
+    lid = d["id"]
+    before = node.evalParm(config.DATA_PARM)
+    reg1 = node.parm("regions").evalAsGeometry().pointIntListAttribValues("lock_owners")
+    hair1 = hair()
+    CC.take()
+    res, steps, label = labels_after(lambda: ga.delete_drawn_locks(node, [lid]))
+    s, dc, rc = cook_all()
+    reg2 = node.parm("regions").evalAsGeometry().pointIntListAttribValues("lock_owners")
+    freed = [i for i, own in enumerate(reg1) if list(own) == [lid]]
+    left_bare = [i for i in freed if not list(reg2[i])]
+    still_named = sum(1 for own in reg2 if lid in own)
+    back_as_before = sum(1 for i in freed if sorted(reg2[i]) == sorted(reg0[i]))
+    took = set(res["took_ids"])
+    named_all = all(NAMES[i] in res["message"] for i in took)
+    now = hair()
+    changed = [k for k in hair1 if k != lid and k in now and same_strands({k: hair1[k]}, now) != 0.0]
+    hou.undos.performUndo()
+    back = node.evalParm(config.DATA_PARM) == before and \
+        node.parm("regions").evalAsGeometry().pointIntListAttribValues("lock_owners") == reg1
+    ok = steps == 1 and label == config.UNDO_SPINE["delete"] and freed and not left_bare and still_named == 0 \
+        and took and named_all and set(dc) <= took and set(changed) <= took and back
+    add("n4_delete_gives_skin_back", ok,
+        {"deleted": d["name"], "undo_steps": steps, "label": label, "freed_prims": len(freed),
+         "left_bare": len(left_bare), "prims_still_naming_it": still_named,
+         "freed_prims_owned_as_before_the_draw": back_as_before, "took": res["took"], "message": res["message"],
+         "recooked": dc, "locks_whose_hair_changed": [NAMES[i] for i in changed], "display_s": r3(s),
+         "one_undo_puts_lock_and_regions_back": back},
+        "one step",
+        "a lock drawn on bare skin, then deleted: one undo step that gives every region point it owned alone to the "
+        "locks the rule of Update regions gives it there (none left bare, none naming it), the message names those "
+        "locks, only they recook; one undo puts the lock and the regions back")
+    restore()
 
 
 def n3_detect(lid, stroke):
@@ -1150,6 +1217,7 @@ def s_shots():
 def n_drawn():
     lid, stroke = n1_n2_drawn()
     n3_detect(lid, stroke)
+    n4_delete_gives_skin_back()
 
 
 # the drawn locks right after the edits of one lock: Draw's "only the locks that gave skin recook" is measured on
