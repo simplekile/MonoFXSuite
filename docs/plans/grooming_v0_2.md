@@ -993,6 +993,22 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   density layers, a control-point edit on a drawn lock, the redraw and rotate / scale gestures: not
   prototyped; each is a "Done when" item.
 
+**Design gate (t78, 2026-11-20; mockups in `sandbox/.../tests/t78_redraw_mockups/`). Decided by the user.**
+- **Mockup B**: a Tool bar at the panel's head (Select / Edit points / Draw lock / Paint) and under it a strip
+  with the settings of the tool in hand (drag mode Move / Rotate / Scale / Redraw, Handles `auto (N)` with
+  minus / plus, Reset, Done). One tool at a time shows in one place; Paint is entered from the same bar.
+- **The word "edited"** on a row and as a filter word means the lock's SHAPE was edited. A lock with its own
+  settings keeps its grey dot; its filter word becomes `own`. A drawn lock's row says `drawn`.
+- **A drawn lock's group**: the group of the lock that gave it most skin (it resolves that group's settings);
+  named `drawn_NN`.
+- **Deleting a drawn lock** gives its skin back to the neighbours in the same undo step, and the message names
+  the locks that took it (as Draw, U3).
+- Left as mocked unless the user's try says otherwise (the manager's call, 2026-11-20): `edited` in the
+  update blue and `drawn` in the "new" violet; keys Enter (Edit points), R / E / Shift + drag (rotate, scale,
+  redraw), minus / plus (handles), the wheel for a new lock's width; Draw lock stays on for the next lock;
+  Reset on a drawn lock returns the curve as drawn, and a drawn lock whose points were moved is also
+  `edited`; in a paint layer's Properties the Paint button stays (two ways in).
+
 **Build, split by files** (U1-U4 are answered above; the panel waits for its mockup pick).
 - **B1 Model and logic**: `tools/fx/grooming/model.py`, `logic.py`, `config.py`, their pytest files. Schema 7
   (`Lock.spine`, the lock's own handle count (empty = the default by length), a drawn lock's curve, width,
