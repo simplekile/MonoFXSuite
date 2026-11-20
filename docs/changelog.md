@@ -9,6 +9,9 @@
 - **MONO Grooming desktop**: Houdini's desktop **MONO_Grooming** puts the panel alone in its own pane on the left, the viewport beside it, the parameter editor over the network editor. While the panel shows, the viewport's radial menu (C) is the grooming one (Paint, Erase, Detect locks, Update regions, Isolate, X-ray and more), the user's own radial comes back after.
 - **MONO Grooming** panel looks like the MonoFX Loader: rows with an eye, the name and the value between thin column lines, hover and selection over the whole row, filled buttons (fields stay inset), icon buttons with their name in the tooltip, disabled buttons clearly dimmed, an inspector with folding Details / Values / Brush / Layer sections. Docked wide, the tree takes 40 % of the panel; its count reads whole at any width (the tree tools move under it when short).
 
+### Shared / tests
+- The MonoFX Loader and the MONO Grooming panel draw from one shared look module (`tools/fx/look.py`); new hython check for the Loader's timing with a lookdev (`accept_branch_fps.py`).
+
 
 ## [0.1.43] - 2026-11-20
 
