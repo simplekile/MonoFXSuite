@@ -1007,7 +1007,34 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   update blue and `drawn` in the "new" violet; keys Enter (Edit points), R / E / Shift + drag (rotate, scale,
   redraw), minus / plus (handles), the wheel for a new lock's width; Draw lock stays on for the next lock;
   Reset on a drawn lock returns the curve as drawn, and a drawn lock whose points were moved is also
-  `edited`; in a paint layer's Properties the Paint button stays (two ways in).
+  `edited`.
+- **Paint's way in** (the user to the mockup session, 2026-11-20): the Tool bar's Paint cell REPLACES the Paint
+  button in a paint layer's Properties (one way in). The cell is usable with one paint layer selected, else
+  dimmed with the reason in its tooltip. B4 builds from `t78_redraw_mockups/b_toolbar.html` plus `review_b.md`
+  there (status colours, Done, Reset, Edit points with no lock selected, a click on hair in the viewport
+  selects that lock); where the two differ the review wins.
+
+**After B1's independent check (t80) and B2's interim report (t79); the manager, 2026-11-21.**
+- **The curve as drawn is kept** beside the moved one: `Lock.drawn_curve`, set by `add_drawn_lock`, saved
+  with the lock (no schema step: absent = the curve). `Lock.edited` is true for a drawn lock whose `curve`
+  differs from it; Reset puts `curve` back.
+- **At most 12 handles everywhere** (U1): a redraw and a drawn stroke take the fewest handles within
+  0.25 cm up to `HANDLES_MAX`; `STROKE_HANDLES_MAX` goes. A stroke 12 handles cannot hold is still taken
+  and the message says how far the lock lies from it (t80: a straight redraw stroke needed up to 22).
+- **One rule for a handle count out of range**: clamped to 4..12, on load too (t80 N2: a stored 13 became
+  "by length").
+- **Handing an orphan's state to a lock** replaces that lock's shape edit only when the orphan has one
+  (t80 N5: an orphan without an edit wiped the target's).
+- **A drawn lock's handle count** changes by a public function that refits its curve (t80 N6); same
+  message rule as a mesh lock.
+- **Garbage stays out of the cook** (t80 D3-D5): a zero or non-finite axis / factor leaves the handles as
+  they are; a stroke with a non-finite point raises; a drawn lock with a non-finite or zero-length curve is
+  refused; a loaded `source` outside `config.LOCK_SOURCES` reads as mesh.
+- **A density layer naming only a deleted drawn lock** stays, with no lock (t80 N4); B4's row says so.
+- **The shot deform of an edited lock** keeps its capture on the rest hair mesh (U4, v0.1's deform); the
+  carried mesh is for display, regions and QC.
+- **Limits are not moved to pass** (s3 drawn lock stretch 2 %, s5 unedited groom in shots): a failing
+  number is traced to its cause first, with the v0.1 locks beside it on the same shot as the baseline.
 
 **Build, split by files** (U1-U4 are answered above; the panel waits for its mockup pick).
 - **B1 Model and logic**: `tools/fx/grooming/model.py`, `logic.py`, `config.py`, their pytest files. Schema 7
@@ -1074,7 +1101,11 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   0.25 cm of the spine before it (`config.RESAMPLE_TOL_CM`; set by the manager 2026-11-20 from B1's t77:
   5 -> 8 -> 5 on Helen's spines 0.017-0.058 cm a step, 0.22 cm on the 89.6 cm lock turned 25 deg; the first
   0.1 cm was not measured). Fewer handles cannot hold every edit: past the limit the change is still made
-  and the message line says how far the spine moved.
+  and the message line says how far the spine moved. Read with t80's numbers (61 spines): more handles
+  holds a tip move (worst 0.12 cm) and most turns (0.51 cm worst, 2.3 % over); fewer handles often does
+  not (12 -> 4 after a 2 cm tip move: 1.46 cm). The acceptance check names the edits it tries: 5 -> 8 -> 5
+  after a tip move and after a 25 deg turn within the limit, and one 12 -> 4 case whose message must give
+  the true distance.
 - A lock drawn on bare skin grows density x max(its skin, its cross-section) strands within 15 %, roots on
   the skin, hair width within 20 % of the set width at four stations, no error or warning on the node.
 - Draw is one undo step that also gives the lock its footprint (0.5 x its width round its root): it has hair
