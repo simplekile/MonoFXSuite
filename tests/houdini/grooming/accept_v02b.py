@@ -2,7 +2,8 @@
 (docs/plans/grooming_v0_2.md, "v0.2b", "Done when").
 
     hython accept_v02b.py <suite> <scene> <out_dir> --base <suite before v0.2b> [--t55 <qc_report.json of t55>]
-                          [--sh020 <shot scene>] [--sh025 <shot scene>] [--look <dir of the look step's pictures>]
+                          [--ref <approved groom.usd>] [--sh020 <shot scene>] [--sh025 <shot scene>]
+                          [--look <dir of the look step's pictures>]
                           [--only id,id]
 
 <scene> is a copy of the Helen grooming scene; the shot scenes copies of the ones t56 / t76 used; all stay in the
@@ -24,6 +25,8 @@ Definitions this script makes on its own (for the checker to judge):
   4. "A root on the skin": its distance to the rest scalp's surface (nearestPrim), cm.
   5. "Strand length within N points" in a shot: the median of the lock's strands' length at the frame over their
      length at rest, edited against unedited (absolute difference of the two ratios).
+  6. "Cooks as before" for a shot scene as saved: the build before v0.2b is not byte-identical with itself there
+     (0.05 cm between its own runs, measured in t79), so this build is held to that spread (s5).
 """
 from __future__ import annotations
 
@@ -44,6 +47,7 @@ def _arg(name, default=""):
 
 
 BASE, T55, SH020, SH025, LOOK = _arg("--base"), _arg("--t55"), _arg("--sh020"), _arg("--sh025"), _arg("--look")
+REF = _arg("--ref")   # the approved groom (v006) grooming-check grades against, as t55 and accept_v02a do
 ONLY = [x for x in _arg("--only").split(",") if x]
 HERE = os.path.dirname(os.path.abspath(__file__)).replace("\\", "/")
 sys.path.insert(0, SUITE)
@@ -1007,7 +1011,7 @@ def r2_qc():
     node.parm("lookup_per_piece").set(1)
     cook_all()
     out = OUT + "/qc_noedit"
-    hython([QC, SUITE, hip, out], "qc_noedit.log")
+    hython([QC, SUITE, hip, out] + (["--ref", REF] if REF else []), "qc_noedit.log")
     path = out + "/qc_report.json"
     if not os.path.isfile(path):
         add("r2_qc_numbers_are_t55s", False, "no qc_report.json", note="see qc_noedit.log")
@@ -1078,7 +1082,7 @@ def s_shots():
         rows3[tag] = g["drawn_wired"]
         ok3 = ok3 and g["drawn_wired"]["scalp_ok"] and all(
             abs(r["length_p50"] - 1) <= DRAWN_SHOT_LEN and r["roots_p95_cm"] <= DRAWN_SHOT_ROOT_CM
-            for r in g["drawn_wired"]["frames"].values())
+            for place in g["drawn_wired"]["places"].values() for r in place["frames"].values())
         rows4[tag] = g["drawn_unwired"]
         ok4 = ok4 and all(v["drawn_at_rest_max_cm"] == 0.0 and v["message"] and not v["errors"]
                           and v["mesh_locks_same_as_without_the_drawn_lock_cm"] == 0.0
@@ -1088,8 +1092,10 @@ def s_shots():
           "on the animated scalp within %s cm (p95) of the unedited lock's, strand length (DEFINITION 5) within 3 points "
           "of the unedited lock's at every frame (2 cm)" % (MOVE_LOCK, SHOT_ROOT_CM), evidence="shot_*.json")
     add("s3_shot_drawn_lock_follows_the_scalp", ok3, rows3, {"length": DRAWN_SHOT_LEN, "roots_cm": DRAWN_SHOT_ROOT_CM},
-          "a drawn lock with the animated scalp wired (the rest scalp's cut of the shot's head): strand length (median) "
-          "within 2 % and roots within 0.1 cm (p95) of the animated skin at every frame", evidence="shot_*.json")
+          "two drawn locks (on the bare skin farthest from every root, Helen's fringe; on the hair_back skin farthest "
+          "from the roots, where the spike drew) with the animated scalp wired (the rest scalp's cut of the shot's "
+          "head): strand length (median) within 2 % and roots within 0.1 cm (p95) of the animated skin at every "
+          "frame", evidence="shot_*.json")
     add("s4_shot_drawn_lock_at_rest_without_the_scalp", ok4, rows4, "0.0 cm",
           "the animated scalp not wired, and wired with another point count: the drawn lock's strands are at rest, "
           "animated_scalp gives the panel's line, no error on the node, the mesh locks' deformed points equal what they "
@@ -1101,22 +1107,36 @@ def s_shots():
         f = frames.split(",")[1]
         if not BASE:
             break
-        a = sub("dump", BASE, hip, "s5_%s_base" % tag, f)
-        b = sub("dump", SUITE, hip, "s5_%s_new" % tag, f)
-        if "error" in a or "error" in b:
-            rows5[tag] = {"error": a.get("error") or b.get("error")}
+        runs = [("base_0", BASE), ("new_0", SUITE), ("base_1", BASE), ("new_1", SUITE), ("base_2", BASE)]
+        got = {t: sub("dump", su, hip, "s5_%s_%s" % (tag, t), f) for t, su in runs}
+        if any("error" in g for g in got.values()):
+            rows5[tag] = {"error": [g.get("error") for g in got.values() if "error" in g][0]}
             ok5 = False
             continue
-        d = same_strands(_npz_strands(OUT + "/s5_%s_base.npz" % tag), _npz_strands(OUT + "/s5_%s_new.npz" % tag))
-        rows5[tag] = {"frame": f, "strands_equal": a["strands"] == b["strands"], "points_max_cm": float("%.3g" % d),
-                      "sha1_equal": a["sha1_points"] == b["sha1_points"], "errors": b["errors"],
-                      "new_warnings": sorted(set(b["warnings"]) - set(a["warnings"]))}
-        ok5 = ok5 and rows5[tag]["strands_equal"] and d <= OLD_SCENE_HELEN_CM and not b["errors"] \
-            and not rows5[tag]["new_warnings"]
-    add("s5_three_inputs_cook_as_before", ok5, rows5, OLD_SCENE_HELEN_CM,
-          "the shot scenes as saved (three inputs, the anim wired, Shot deform on), opened by the build before v0.2b and "
-          "by this one: output 1 at a frame, same strands per lock and points within v0.1's own run-to-run difference "
-          "on Helen as v0.1 saved it (t68, 0.015 cm)", evidence="s5_*.json")
+        P = {t: np.load(OUT + "/s5_%s_%s_P.npy" % (tag, t), mmap_mode="r") for t, _su in runs}
+        same_layout = all(np.array_equal(np.load(OUT + "/s5_%s_%s.npz" % (tag, t))["nv"],
+                                         np.load(OUT + "/s5_%s_base_0.npz" % tag)["nv"]) for t, _su in runs)
+
+        def gap(x, y):
+            return float(np.abs(np.asarray(P[x]) - np.asarray(P[y])).max())
+        bases, news = ["base_0", "base_1", "base_2"], ["new_0", "new_1"]
+        base_spread = max(gap(x, y) for i, x in enumerate(bases) for y in bases[i + 1:])
+        new_vs = {f"{n}_vs_{x}": gap(n, x) for n in news for x in bases}
+        ulp = float(np.spacing(np.float32(np.abs(np.asarray(P["base_0"])).max())))
+        limit = base_spread + 2 * ulp
+        b0 = got["base_0"]
+        rows5[tag] = {"frame": f, "strands_equal": all(g["strands"] == b0["strands"] for g in got.values()),
+                      "same_points_a_strand": same_layout, "base_vs_base_max_cm": base_spread,
+                      "new_vs_base_cm": new_vs, "float32_step_cm": ulp, "limit_cm": limit,
+                      "errors": [e for n in news for e in got[n]["errors"]],
+                      "new_warnings": sorted(set(w for n in news for w in got[n]["warnings"]) - set(b0["warnings"]))}
+        ok5 = ok5 and rows5[tag]["strands_equal"] and same_layout and max(new_vs.values()) <= limit             and not rows5[tag]["errors"] and not rows5[tag]["new_warnings"]
+    add("s5_three_inputs_cook_as_before", ok5, rows5, "the build before v0.2b's own spread + 2 float32 steps",
+        "the shot scenes as saved (three inputs, the anim wired, Shot deform on, \"Fit lookup per lock\" off as an "
+        "old scene opens), output 1 at a frame, 3 processes of the build before v0.2b and 2 of this one, "
+        "interleaved: the same strands and points a strand, and this build's points as far from the old build's as "
+        "the old build's runs lie from each other (DEFINITION 6: that spread + 2 float32 steps at the largest "
+        "coordinate; the scenes sit ~330 m from the origin, a float32 step is 0.004 cm there)", evidence="s5_*.json")
     look_files = sorted(f for f in os.listdir(look) if f.endswith(".png")) if os.path.isdir(look) else []
     want = [f for f in look_files if f.startswith("shot_")]
     add("s2_shot_flipbooks_for_the_user", None if not want else True,

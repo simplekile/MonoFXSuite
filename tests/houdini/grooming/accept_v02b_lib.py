@@ -186,9 +186,10 @@ def to_skin_cm(points, scalp_geo, unit: float, limit: int = 400) -> np.ndarray:
     return np.array(out)
 
 
-def bare_spot(node, unit: float) -> tuple[np.ndarray, np.ndarray]:
+def bare_spot(node, unit: float, group: str = "") -> tuple[np.ndarray, np.ndarray]:
     """(place on the rest scalp, its normal): the centre of the fine scalp prim farthest from every lock's root
-    (prims under 0.001 cm2, Helen's sliver band by the ears, left out), the spike's place for a drawn lock."""
+    (prims under 0.001 cm2, Helen's sliver band by the ears, left out), the spike's rule for a drawn lock's place.
+    `group`: only among the prims a lock of that group owns (the spike's lock lay on hair_back skin)."""
     from apps.houdini import grooming_masks as gm
     geo = node.node("SCALP_REGIONS").geometry()
     vp, vpt = gm._vertex_tables(geo)
@@ -201,6 +202,11 @@ def bare_spot(node, unit: float) -> tuple[np.ndarray, np.ndarray]:
     roots = np.array([r["P"][0] for r in sp.values()])
     d = np.sqrt(((cen[:, None, :] - roots[None]) ** 2).sum(-1)).min(1)
     d[area < 0.001] = -1
+    if group:
+        from apps.houdini import grooming_adapter as ga
+        mine = {lk.id for lk in ga.read_data(node).locks if lk.group == group}
+        owners = geo.primIntListAttribValues("lock_owners")
+        d[[not any(o in mine for o in own) for own in owners]] = -1
     k = int(np.argmax(d))
     scalp = node.node("IN_SCALP").geometry()
     pr, u, v, _ = scalp.nearestPrim(hou.Vector3(*cen[k]))

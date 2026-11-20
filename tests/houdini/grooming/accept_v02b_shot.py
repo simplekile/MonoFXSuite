@@ -94,16 +94,22 @@ def run(ga, node, frames_text, look, unit):
     hou.setFrame(rest_frame)
     ga.reset_points(node, [lid])
 
-    # ---- a drawn lock ----
+    # ---- drawn locks: one on the bare skin farthest from every root (the fringe on Helen), one on the hair_back skin
+    # farthest from the roots (where the spike drew its lock) ----
     f1 = frames[min(1, len(frames) - 1)]
     hou.setFrame(f1)
-    before_draw = alib.strands((groom.cook(), groom.geometry())[1], unit)
+    groom.cook()
+    before_draw = alib.strands(groom.geometry(), unit)
     hou.setFrame(rest_frame)
-    spot, nrm = alib.bare_spot(node, unit)
-    res = ga.draw_lock(node, alib.drawn_stroke(spot, nrm, 12.0, unit))
-    did = res["id"]
-    ref = next(k for k in sorted(before_draw) if k not in res["gave_ids"] and k != did)
-    R0 = strands_of(rest, did)
+    drawn = {}
+    for place, group in (("fringe", ""), ("back", "hair_back")):
+        spot, nrm = alib.bare_spot(node, unit, group)
+        res = ga.draw_lock(node, alib.drawn_stroke(spot, nrm, 12.0, unit))
+        drawn[place] = res
+    gave = {i for r in drawn.values() for i in r["gave_ids"]}
+    ids_d = {r["id"] for r in drawn.values()}
+    ref = next(k for k in sorted(before_draw) if k not in gave and k not in ids_d)
+    R0 = {place: strands_of(rest, r["id"]) for place, r in drawn.items()}
     unwired = {}
     blast = net.createNode("blast", "accept_scalp_fewer")
     blast.setInput(0, a_scalp)
@@ -114,12 +120,17 @@ def run(ga, node, frames_text, look, unit):
         hou.setFrame(f1)
         groom.cook()
         geo = alib.strands(groom.geometry(), unit)
-        mine = {sid: P for sid, P in geo.get(did, [])}
-        rest_d = max((float(np.abs(mine[sid] - P).max()) for sid, P in R0 if sid in mine), default=float("inf"))
+        rest_d = 0.0
+        n_d = 0
+        for place, r in drawn.items():
+            mine = {sid: P for sid, P in geo.get(r["id"], [])}
+            n_d += len(mine)
+            rest_d = max([rest_d] + [float(np.abs(mine[sid] - P).max()) if sid in mine else float("inf")
+                                     for sid, P in R0[place]])
         ref_d = max((float(np.abs(Q - P).max()) for (s1, P), (s2, Q) in zip(before_draw[ref], geo.get(ref, []))
                      if s1 == s2 and P.shape == Q.shape), default=float("inf"))
         st = ga.animated_scalp(node)
-        unwired[tag] = {"drawn_strands": len(mine), "drawn_at_rest_max_cm": rest_d, "message": st["message"],
+        unwired[tag] = {"drawn_strands": n_d, "drawn_at_rest_max_cm": rest_d, "message": st["message"],
                         "scalp": {k: st[k] for k in ("wired", "ok", "anim_points", "rest_points")},
                         "errors": lib.node_errors(node), "mesh_lock": ref,
                         "mesh_locks_same_as_without_the_drawn_lock_cm": ref_d}
@@ -128,10 +139,13 @@ def run(ga, node, frames_text, look, unit):
     hou.setFrame(rest_frame)
     hou.hipFile.save(f"{look}/{shot}_drawn.hiplc")
     st = ga.animated_scalp(node)
-    wired = {"lock": res["name"], "gave": res["gave"], "scalp_ok": st["ok"], "message": st["message"], "frames": {}}
-    for f in frames:
-        hou.setFrame(f)
-        wired["frames"][str(f)] = _measure(R0, strands_of(groom, did), a_scalp.geometry(), unit)
+    wired = {"scalp_ok": st["ok"], "message": st["message"], "places": {}}
+    for place, r in drawn.items():
+        row = {"lock": r["name"], "gave": r["gave"], "frames": {}}
+        for f in frames:
+            hou.setFrame(f)
+            row["frames"][str(f)] = _measure(R0[place], strands_of(groom, r["id"]), a_scalp.geometry(), unit)
+        wired["places"][place] = row
     wired["errors"] = lib.node_errors(node)
     out["drawn_wired"] = wired
     return out
