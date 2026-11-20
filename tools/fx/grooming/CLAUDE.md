@@ -1018,3 +1018,55 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - Measured on the fixture (sandbox `tests/t77_redraw_model/numbers.json`): re-sampling 5 -> 8 -> 5 moves the
     edited spine 0.017-0.058 cm, but 0.22 cm for the 89.6 cm lock turned 25 deg (its tip 34 cm away): near the
     0.25 cm tolerance; fewer handles than the edit was made with can miss a local bend (the caller says so).
+- v0.2b lock redraw, B2 network and adapter (2026-11-20; sandbox `tests/t79_redraw_network/`, `report.md` there;
+  acceptance `tests/houdini/grooming/accept_v02b.py` + `_sub.py` / `_shot.py` / `_lib.py`, pytest
+  `tests/test_grooming_adapter_spines.py`):
+  - Nodes after `root_skin`: `SPINES_MEASURED` (the spine as Root to skin left it: a mesh lock's handles are in its
+    root frame) -> `spine_edit` (prim wrangle `VEX_SPINE_EDIT`, the spike's rule = `logic.edited_spine` within
+    0.001 cm; input 1 the rest scalp for a moved root) -> `drawn_locks` (Python SOP `cook_drawn_locks`: one spine a
+    drawn lock, `drawn_spine_arrays`, resolved settings via `lock_display_attribs`, `piece` -1, `drawn` 1; detail
+    `edited_count`, `drawn_count`, `drawn_group`) -> `SPINES`. `cook_assign` writes `edit_cp` (flat handles,
+    `edit_cp_values`) and `drawn` 0 on every mesh spine, and matches pieces to the MESH locks only (`mesh_locks`).
+  - `spine_edit` moves the prim `root` only when the root handle moved: the measured `root` is spine_build's, not
+    the spine's first point after Root to skin, and rewriting it on an unmoved-root edit moved the footprint (an
+    identity edit of hair_back_20 moved hair 0.04 cm). `length` is scaled by the spine's length change; `curveu`
+    stays the measured one. Handles all within `SPINE_STILL` (1e-6 scene units) of the measured spine leave the
+    spine untouched and `edited` 0: the per-lock loop is chaotic in the last bit (float noise of 1e-7 in P and
+    2e-6 in the frame moved hair_back_20's strands 0.04 cm; a recook with no change is exact, 0.0).
+  - The carried mesh: `mesh_carry` (point wrangle `VEX_MESH_CARRY` on `mesh_pu`, inputs SPINES_MEASURED and
+    SPINES) puts each point of an EDITED lock's piece at its `pu` on the edited spine with the same offset in the
+    square frame (tangent, width axis, thickness axis) -> switch `mesh_carry_any` (the mesh itself while no lock
+    is edited: no edit = the network before v0.2b) -> `MESH_CARRIED`. Read by `region_join`, `root_place`,
+    `region_mesh` and the mesh display (`mesh_show` / `mesh_show_any` before `mesh_color`). Not by the shot
+    deform: U4 keeps v0.1's capture on the rest hair mesh for edited locks (the spike measured that one; a
+    capture on the carried mesh would need the animated mesh carried too). `mesh_su` stays on the mesh.
+  - `split_regions` takes roots from SPINES (a moved root's footprint) and widths from SPINES_LOCKS (measured, as
+    before), a drawn lock's radius from `logic.drawn_footprint_cm`; `region_mesh` reads MESH_CARRIED and SPINES.
+    `lock_infos` reads root and length after the edit, and the drawn locks from SPINES.
+  - The per-lock loop for a drawn lock (piece -1): `piece_or_none` (an empty `no_piece` instead of the Unpack of
+    nothing that warned "Input has no packed primitives") feeds `fit_cloud`; fit_to_lock's ellipse does the rest.
+  - Input 4 "Animated scalp" (U2, `build_hda.INPUT_LABELS`, max inputs 4, hidden `scalp_wired`, in
+    `_KEY_SKIP_PARMS`): unpacked as input 2 (`rest_scalp_names`, `anim_scalp_*`), `ANIM_SCALP` (detail
+    `deform_ok`, `anim_points`, `rest_points`; never a warning). The capture loops (`_capture_loop`) capture a
+    drawn lock on the rest scalp (`*_lock_scalp`, switch `*_on_scalp` by its `drawn`); `_deform_drawn` (display
+    `deform_drawn_*`, output 1 `groom_drawn_*`) deforms the mesh locks as v0.1 and the drawn ones by the animated
+    scalp, or leaves them at rest when it is not wired or has another point count; while no lock is drawn the
+    v0.1 Point Deform is used as it is. `deform_keys` takes ANIM_SCALP as input 2 (its points in the key only
+    with drawn locks).
+  - Adapter (every change one undo step named from `config.UNDO_SPINE`, several locks at once; places in the
+    node's space): `lock_handles(node, ids)` -> per lock `points`, `frame`, `origin`, `axes`, `count`, `edited`,
+    `drawn`, `root_moved`, `spine`, `measured`, `length_cm`, `default_count`, `count_set`; `set_points(node,
+    {id: points}, space="points"|"frame", step="move")` -> {locks, roots_moved, message} (a root given where it is
+    keeps the stored root, `ROOT_SAME_CM`; a moved root marks regions out of date "<name>: a root moved");
+    `reset_points`, `rotate_points(node, ids, axis, degrees)`, `scale_points(node, ids, factor)`;
+    `set_handle_count(node, ids, count|None)` -> also `gap_cm` per lock, the message says how far past
+    `RESAMPLE_TOL_CM`; `redraw_lock(node, id, stroke)` -> also `gap_cm`, `count`; `draw_lock(node, stroke, width_cm,
+    thick_cm, taper, group, name)` -> {id, name, gave, gave_ids, gap_cm, count, message}, the footprint
+    (`footprint_owners`) in the same undo step (U3); `set_drawn(node, ids, width_cm, thick_cm, taper)` (step
+    "draw": UNDO_SPINE has no label of its own for it); `delete_drawn_locks(node, ids)` (its skin grows nothing
+    until Update regions); `edited_ids`, `drawn_ids`, `scalp_wired`, `animated_scalp(node)` -> {wired, ok,
+    anim_points, rest_points, drawn, message} (`scalp_text`, the panel's line); `import_spines(node, tool_dir)`
+    (`spines_from_publish`: edits by lock name, drawn locks with their id when unused here, regions out of date).
+  - Detect: `match_locks` and `apply_detect` leave drawn locks alone (never missing, never new) and build orphans
+    with `Orphan.from_lock` (a missing lock keeps its edit). Publish: grooming_data.json holds the edits (schema
+    7), publish.json `spines` names the edited and drawn locks (`spine_record`).

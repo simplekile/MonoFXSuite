@@ -1629,6 +1629,130 @@ if (!i@deform_ok && npoints(0) > 0)
 """
 
 # ---------------------------------------------------------------------------
+# v0.2b lock redraw and control points (docs/plans/grooming_v0_2.md "v0.2b"; the spike t76's network)
+# ---------------------------------------------------------------------------
+
+SPINE_STILL = 1e-6   # scene units: every handle within this of the measured spine (1e-4 cm in Helen's metres) = no edit
+VEX_SPINE_EDIT = r"""// spine edit (v0.2b): the K control points (handles) cook_assign stored on the spine as f[]@edit_cp, in the
+// lock's ROOT FRAME (origin the measured spine's first point after Root to skin; axes its tangent, width axis,
+// thickness axis there; scene units), move the measured spine. The measured spine keeps its own detail: each
+// handle's MOVE (stored place - where the measured spine is at k / (K - 1) of its length) is interpolated along
+// the spine (Catmull-Rom, ends clamped) and added, so handles equal to the measured ones change nothing. A moved
+// root goes onto the skin (input 1); a root stored at the origin stays the measured root. The frame (lock_axis,
+// lock_minor) turns with the tangent, so the offsets fit_to_lock reads carry the lock's mesh surface along the
+// same bend. The same rule as logic.edited_spine (checked by accept_v02b.py within 0.001 cm).
+i@edited = 0;
+float cp[] = f[]@edit_cp;
+int K = len(cp) / 3;
+if (K < 2) return;
+int pts[] = primpoints(0, @primnum);
+int n = len(pts);
+if (n < 2) return;
+vector P[], T[], A[];
+foreach (int p; pts) {
+    vector q = point(0, "P", p); append(P, q);
+    vector t = point(0, "tangentu", p); append(T, t);
+    vector a = point(0, "lock_axis", p); append(A, a);
+}
+float S[]; resize(S, n); S[0] = 0;
+for (int i = 1; i < n; i++) S[i] = S[i - 1] + distance(P[i], P[i - 1]);
+float L = max(S[n - 1], 1e-9);
+vector t0 = normalize(T[0]);
+vector a0 = normalize(A[0] - t0 * dot(A[0], t0));
+vector m0 = cross(t0, a0);
+vector D[]; resize(D, K);
+int j = 0;
+for (int k = 0; k < K; k++) {
+    float sk = L * k / (K - 1);
+    while (j < n - 2 && S[j + 1] < sk) j++;
+    float f = clamp((sk - S[j]) / max(S[j + 1] - S[j], 1e-12), 0, 1);
+    vector mk = lerp(P[j], P[j + 1], f);
+    vector ck = P[0] + t0 * cp[3 * k] + a0 * cp[3 * k + 1] + m0 * cp[3 * k + 2];
+    if (k == 0 && nprimitives(1) > 0 && length(set(cp[0], cp[1], cp[2])) > %(eps)s) {
+        int hp; vector huv;
+        xyzdist(1, ck, hp, huv);
+        ck = primuv(1, "P", hp, huv);
+    }
+    D[k] = ck - mk;
+}
+// handles where the measured spine is (moves within float noise) change nothing, exactly: the hair loop is
+// sensitive to the last bit (a frame turned by 1e-6 moved the 89.6 cm lock's strands 0.04 cm)
+float dmax = 0;
+foreach (vector dk; D) dmax = max(dmax, length(dk));
+if (dmax <= %(still)s) return;
+vector N[]; resize(N, n);
+for (int i = 0; i < n; i++) {
+    float x = S[i] / L * (K - 1);
+    int k = min(int(floor(x)), K - 2);
+    float f = x - k;
+    vector p0 = D[max(k - 1, 0)], p1 = D[k], p2 = D[k + 1], p3 = D[min(k + 2, K - 1)];
+    vector d = 0.5 * ((2 * p1) + (-p0 + p2) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f
+                      + (-p0 + 3 * p1 - 3 * p2 + p3) * f * f * f);
+    N[i] = P[i] + d;
+}
+float len = 0;
+for (int i = 0; i < n; i++) {
+    vector tn = normalize(N[min(i + 1, n - 1)] - N[max(i - 1, 0)]);
+    vector told = normalize(T[i]);
+    vector4 q = dihedral(told, tn);
+    vector a = qrotate(q, normalize(A[i] - told * dot(A[i], told)));
+    a = normalize(a - tn * dot(a, tn));
+    setpointattrib(0, "P", pts[i], N[i]);
+    setpointattrib(0, "tangentu", pts[i], tn);
+    setpointattrib(0, "lock_axis", pts[i], a);
+    setpointattrib(0, "lock_minor", pts[i], cross(tn, a));
+    if (i > 0) len += distance(N[i], N[i - 1]);
+}
+// curveu stays the measured spine's (its share along the lock as Resample gave it, before the smoothing): the
+// hair loop reads it, and rewritten by the edited spine's arc length an edit of handles equal to the measured ones
+// moved the 89.6 cm lock's hair 0.04 cm
+// the prim's root (the footprint's centre, Update regions' root) moves only with a moved root: a lock whose root
+// stays keeps its measured `root` (spine_build's, not the spine's first point after Root to skin) and its region
+if (length(set(cp[0], cp[1], cp[2])) > %(eps)s) v@root = N[0];
+v@direction = normalize(N[n - 1] - N[0]);
+f@length *= len / L;                    // the measured length, scaled as the spine's own length changed
+i@edited = 1;
+""" % {"eps": config.ROOT_MOVED_EPS, "still": SPINE_STILL}
+
+VEX_MESH_CARRY = """// the carried mesh (v0.2b): each point of an EDITED lock's mesh piece put on the edited spine by the bend that
+// moved the spine there, the rule fit_to_lock places a strand by (its place along the lock and its offset in the
+// lock's frame, carried): u = the point's pu (on the spine as Root to skin left it, input 1; flipped locks read
+// it at 1 - u), its offset from the spine there in that spine's frame (tangent, width axis, thickness axis made
+// square), the same offset in the edited spine's frame at the same u (input 2). Points of a lock not edited keep
+// their place exactly. Every reader of a lock's mesh reads this: the mesh display, region_join, root_place,
+// region_mesh (Update regions).
+i@carried = 0;
+if (f@pu < 0) return;
+int s0 = findattribval(1, "prim", "piece", i@piece);
+int s1 = findattribval(2, "prim", "piece", i@piece);
+if (s0 < 0 || s1 < 0) return;
+if (prim(2, "edited", s1) == 0) return;
+int fl = prim(1, "root_flip", s0);
+vector uv = set(fl ? 1 - f@pu : f@pu, 0, 0);
+vector c0 = primuv(1, "P", s0, uv), c1 = primuv(2, "P", s1, uv);
+vector t0 = normalize(primuv(1, "tangentu", s0, uv)), t1 = normalize(primuv(2, "tangentu", s1, uv));
+vector a0 = primuv(1, "lock_axis", s0, uv), a1 = primuv(2, "lock_axis", s1, uv);
+a0 = normalize(a0 - t0 * dot(a0, t0));
+a1 = normalize(a1 - t1 * dot(a1, t1));
+vector m0 = cross(t0, a0), m1 = cross(t1, a1);
+vector d = v@P - c0;
+v@P = c1 + t1 * dot(d, t0) + a1 * dot(d, a0) + m1 * dot(d, m0);
+i@carried = 1;
+"""
+
+VEX_MESH_SHOW = """// the mesh display of an edited lock: its mesh on the edited spine (MESH_CARRIED, the same points)
+if (point(1, "carried", @ptnum)) @P = point(1, "P", @ptnum);
+"""
+
+VEX_SCALP_CHECK = """// a drawn lock follows the animated scalp (input 4, U2) only with the rest scalp's points; otherwise it stays at
+// rest, the adapter says why on the panel's line (`animated_scalp`), and nothing warns here: a warning inside the
+// locked HDA reaches no artist (t56), and a scene without the input is not wrong
+i@deform_ok = npoints(0) == npoints(1) && npoints(0) > 0;
+i@anim_points = npoints(0);
+i@rest_points = npoints(1);
+"""
+
+# ---------------------------------------------------------------------------
 # network
 # ---------------------------------------------------------------------------
 
@@ -1654,6 +1778,8 @@ def _node(parent, kind, name, inputs=(), **parms):
 
 
 DETAIL, PRIM, POINT = 0, 1, 2
+# the node's inputs (v0.2b added the fourth, U2: a contract change decided by the user 2026-11-20)
+INPUT_LABELS = ("Scalp (UV)", "Hair mesh (rest)", "Animated hair mesh", "Animated scalp")
 
 
 def build_network(sub) -> None:
@@ -1669,6 +1795,8 @@ def build_network(sub) -> None:
     in_scalp = _node(sub, "null", "IN_SCALP", [rest_scalp])
     in_hair = _node(sub, "null", "IN_HAIR", [rest_hair])
     in_anim = _node(sub, "null", "IN_ANIM", [ins[2]])
+    # v0.2b (U2): the animated scalp, which drawn locks follow in a shot (they have no mesh to follow)
+    in_anim_scalp = _node(sub, "null", "IN_ANIM_SCALP", [ins[3]])
     sections = []
 
     def section(title):
@@ -1731,7 +1859,21 @@ def build_network(sub) -> None:
     spines_locks = _node(sub, "null", "SPINES_LOCKS", [flip])
     settings = _wrangle(sub, "apply_settings", VEX_APPLY_SETTINGS, POINT, [spines_locks])
     to_skin = _wrangle(sub, "root_skin", VEX_ROOT_SKIN, PRIM, [settings])
-    spines = _node(sub, "null", "SPINES", [to_skin])
+    # v0.2b: the measured spine (what a lock's handles are relative to), the artist's edit of it (the handles
+    # cook_assign wrote as edit_cp), then the locks drawn on the skin, each with its own resolved settings
+    measured = _node(sub, "null", "SPINES_MEASURED", [to_skin])
+    edit = _wrangle(sub, "spine_edit", VEX_SPINE_EDIT, PRIM, [measured, in_scalp])
+    drawn = _node(sub, "python", "drawn_locks", [edit, in_scalp])
+    drawn.parm("python").set("from apps.houdini import grooming_adapter\n"
+                             "grooming_adapter.cook_drawn_locks(hou.pwd())\n")
+    spines = _node(sub, "null", "SPINES", [drawn])
+    # the lock's mesh on its edited spine (VEX_MESH_CARRY): one geometry every reader of a lock's mesh reads. With
+    # no lock edited it is the mesh itself (the switch), so a groom without edits cooks as before v0.2b
+    carry = _wrangle(sub, "mesh_carry", VEX_MESH_CARRY, POINT, [mesh_pu, measured, spines])
+    any_edit = 'if(detail("../SPINES", "edited_count", 0) > 0, 1, 0)'
+    carry_pick = _node(sub, "switch", "mesh_carry_any", [mesh_pu, carry])
+    carry_pick.parm("input").setExpression(any_edit)
+    mesh_carried = _node(sub, "null", "MESH_CARRIED", [carry_pick])
     # hidden locks (the panel's eye) are not cooked for display; the Groom output (and publish) cooks every lock
     guides_cut = _node(sub, "blast", "guides_keep", [spines], group="@lock_id<0", grouptype=4)
     shown = _wrangle(sub, "lock_shown", VEX_LOCK_SHOWN, PRIM, [guides_cut])
@@ -1749,7 +1891,7 @@ def build_network(sub) -> None:
     frozen.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_frozen_regions(hou.pwd())\n")
     # read only by Update regions (grooming_adapter.split_regions), never by the display
-    _wrangle(sub, "region_mesh", VEX_REGION_MESH, PRIM, [scalp_fine, mesh_pu, spines_locks])
+    _wrangle(sub, "region_mesh", VEX_REGION_MESH, PRIM, [scalp_fine, mesh_carried, spines])
     rpts = _wrangle(sub, "region_points", VEX_REGION_POINTS, POINT, [scalp_fine, frozen, spines])
     rprims = _wrangle(sub, "region_prims", VEX_REGION_PRIMS, PRIM, [rpts, spines, frozen])
     # density layers (v0.2a): the layers of the hidden `mask_layers` parm composed per scope set into point
@@ -1780,7 +1922,7 @@ def build_network(sub) -> None:
     scalp_in = _node(sub, "block_begin", "foreach_scalp", [regions], method=3, blockpath="../foreach_end")
     cut = _wrangle(sub, "region_cut", VEX_REGION_CUT, PRIM, [scalp_in, begin])
     frame0 = _wrangle(sub, "region_frame", VEX_REGION_FRAME, DETAIL, [cut, begin])
-    join = _wrangle(sub, "region_join", VEX_REGION_JOIN, PRIM, [frame0, begin, mesh_pu])
+    join = _wrangle(sub, "region_join", VEX_REGION_JOIN, PRIM, [frame0, begin, mesh_carried])
     frame = _wrangle(sub, "region_start", VEX_REGION_START, DETAIL, [join, begin, mesh_su])
     rdens = _wrangle(sub, "region_density", VEX_REGION_DENSITY, POINT, [frame])
     # hairgen scatters the roots and grows straight unguided strands; fit_to_lock gives them the
@@ -1856,7 +1998,7 @@ def build_network(sub) -> None:
     roots_ab = _node(sub, "merge", "roots_with_layers", [auto_thin, layer_roots])     # the automatic roots first
     roots_in = _node(sub, "switch", "roots_in", [auto, roots_ab])
     roots_in.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
-    place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [roots_in, frame, begin, mesh_pu])
+    place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [roots_in, frame, begin, mesh_carried])
     mask_thin = _wrangle(sub, "mask_thin", VEX_MASK_THIN, PRIM, [place, mask_skin, begin, frame])
     apart_cloud = _wrangle(sub, "apart_cloud", VEX_APART_CLOUD, DETAIL, [mask_thin, frame, begin])
     mask_apart = _wrangle(sub, "mask_apart", VEX_MASK_APART, PRIM, [mask_thin, mask_skin, apart_cloud])
@@ -1872,12 +2014,17 @@ def build_network(sub) -> None:
     piece_pick.parm("group").set('@piece_name=`prim("../foreach_begin", 0, "piece", 0)`')
     piece_cloud = _node(sub, "unpack", "piece_cloud", [piece_pick])
     piece_cloud.parm("transfer_attributes").set("*")
+    # a lock drawn on the skin has no mesh piece (piece -1): no lookup cloud, fit_to_lock's ellipse (an Unpack of
+    # nothing warned "Input has no packed primitives")
+    no_piece = _node(sub, "add", "no_piece")
+    piece_or_none = _node(sub, "switch", "piece_or_none", [no_piece, piece_cloud])
+    piece_or_none.parm("input").setExpression('if(prim("../foreach_begin", 0, "piece", 0) >= 0, 1, 0)')
     # the node's "Fit lookup per lock" (lookup_per_piece, on): off, the whole cloud as v0.1 looked it up.
     # The two find the same spot on the mesh within the lookup's own noise (a nearest-face search in a
     # flattened space with folds): Helen, no layer, 45-57 % of the strand points move, half of them under
     # 0.01 mm, at most 4.7 mm on a fresh groom and 9.6 mm on Helen as v0.1 saved it (t66); every root and
     # strand count is the same
-    fit_cloud = _node(sub, "switch", "fit_cloud", [surface, piece_cloud])
+    fit_cloud = _node(sub, "switch", "fit_cloud", [surface, piece_or_none])
     fit_cloud.parm("input").setExpression('ch("../lookup_per_piece")')
     fit_root = _wrangle(sub, "fit_root", VEX_FIT_ROOT, PRIM, [spread, begin, frame, fit_cloud])
     fit = _wrangle(sub, "fit_to_lock", VEX_FIT, POINT, [fit_root, begin, frame, fit_cloud])
@@ -1960,8 +2107,12 @@ def build_network(sub) -> None:
     modes = _wrangle(sub, "display_modes", VEX_DISPLAY_MODES, DETAIL, [shown])
     nothing_shown = _node(sub, "add", "nothing_shown")
     focus = _wrangle(sub, "focus", VEX_FOCUS, DETAIL, [nothing_shown])
+    # an edited lock's mesh is shown on its edited spine (MESH_CARRIED); with no edit the mesh as it is
+    mesh_show0 = _wrangle(sub, "mesh_show", VEX_MESH_SHOW, POINT, [pieces, mesh_carried])
+    mesh_show = _node(sub, "switch", "mesh_show_any", [pieces, mesh_show0])
+    mesh_show.parm("input").setExpression(any_edit)
     mesh_col0 = _wrangle(sub, "mesh_color", VEX_MESH_COLOR + _vex_ghost(2, "i@lock_id", "prim"), PRIM,
-                         [pieces, shown, focus])
+                         [mesh_show, shown, focus])
     mesh_col = _node(sub, "switch", "mesh_in_use", [nothing_shown, mesh_col0])
     mesh_col.parm("input").setExpression('detail("../display_modes", "any_mesh", 0)')
     guides_vis = _node(sub, "blast", "guides_visible", [shown], group="@shown==0 @disp!=1", grouptype=4)
@@ -2004,6 +2155,18 @@ def build_network(sub) -> None:
     pick = _node(sub, "switch", "anim_packed", [in_anim, polys])
     pick.parm("input").setExpression('detail("../anim_kind", "packed", 0)')
     anim_hair = _wrangle(sub, "ANIM_HAIR", VEX_ANIM_CHECK, DETAIL, [pick, in_hair])
+    # the animated scalp (input 4, v0.2b U2): unpacked the same way, by the rest scalp's prim names
+    s_names = _wrangle(sub, "rest_scalp_names", VEX_REST_NAMES, DETAIL, [in_scalp])
+    s_kind = _wrangle(sub, "anim_scalp_kind", VEX_ANIM_KIND, DETAIL, [in_anim_scalp])
+    s_gprims = _node(sub, "unpackusd", "anim_scalp_gprims", [s_kind], output="packedprims",
+                     unpacktraversal="std:boundables")
+    s_keep = _wrangle(sub, "anim_scalp_keep", VEX_ANIM_KEEP, PRIM, [s_gprims, s_names])
+    s_polys = _node(sub, "unpackusd", "anim_scalp_unpack", [s_keep], output="polygons",
+                    unpacktraversal="std:boundables", importprimvars="", addpathattrib=0, addfilepathattrib=0,
+                    addnameattrib=0, detailattributes=0)
+    s_pick = _node(sub, "switch", "anim_scalp_packed", [in_anim_scalp, s_polys])
+    s_pick.parm("input").setExpression('detail("../anim_scalp_kind", "packed", 0)')
+    anim_scalp = _wrangle(sub, "ANIM_SCALP", VEX_SCALP_CHECK, DETAIL, [s_pick, in_scalp])
     # The mesh and guide parts are captured here (small, and only when some lock shows them) and deformed on
     # their own.
     mesh_guide = _node(sub, "merge", "mesh_guide", [mesh_col, guide_col])
@@ -2017,11 +2180,12 @@ def build_network(sub) -> None:
     # redo, the same frame again) is read back: no capture, no Point Deform. Captured inside the per-lock
     # loop (v0.1) every state of a lock held 800 B a point: with Shot deform on every undo regrew its locks
     # and the cache stayed at 7.5 GB (t64 B6).
-    _d_ckeys, d_captured = _capture_loop(sub, "disp_capture", keys, merged, in_hair)
+    _d_ckeys, d_captured = _capture_loop(sub, "disp_capture", keys, merged, in_hair, in_scalp)
     hair_deform = _node(sub, "pointdeform", "deform", [d_captured, in_hair, anim_hair], mode="deform")
     hair_deform.parm("radius").setExpression('ch("../deform_radius")')
-    no_capture = _node(sub, "attribdelete", "deform_no_capture", [hair_deform], ptdel="pCaptPts pCaptWeights")
-    d_keys = _node(sub, "python", "deform_keys", [keys, anim_hair])
+    hair_split = _deform_drawn(sub, "deform_drawn", d_captured, hair_deform, in_hair, anim_hair, in_scalp, anim_scalp)
+    no_capture = _node(sub, "attribdelete", "deform_no_capture", [hair_split], ptdel="pCaptPts pCaptWeights")
+    d_keys = _node(sub, "python", "deform_keys", [keys, anim_hair, anim_scalp])
     d_keys.parm("python").set("from apps.houdini import grooming_adapter\n"
                               "grooming_adapter.cook_deform_keys(hou.pwd())\n")
     d_store = _node(sub, "python", "deform_store", [no_capture, d_keys])
@@ -2046,7 +2210,7 @@ def build_network(sub) -> None:
     output.setDisplayFlag(True)
     output.setRenderFlag(True)
     section("Shot deform")
-    _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean)
+    _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean, in_scalp, anim_scalp)
     section("Groom (output 1): every lock, full hair, whatever the view")
     _layout_sections(sub, sections)
 
@@ -2092,7 +2256,7 @@ def _copy_loop(sub, nodes, prefix: str, first_input) -> dict:
     return copies
 
 
-def _capture_loop(sub, prefix: str, keys, merged, in_hair):
+def _capture_loop(sub, prefix: str, keys, merged, in_hair, in_scalp):
     """The Point Deform capture of every growing lock of `keys` (keyed spines), made per lock from its cached
     strands and kept apart from the hair (grooming_adapter.cook_capture_*): a lock's capture (800 B a point)
     exists only once a deformed output is read, one a lock. A loop over the locks whose capture for this
@@ -2109,7 +2273,12 @@ def _capture_loop(sub, prefix: str, keys, merged, in_hair):
                               "grooming_adapter.cook_capture_load(hou.pwd())\n")
     c_capt = _node(sub, "pointdeform", prefix + "_lock", [c_load, in_hair], mode="capture")
     c_capt.parm("radius").setExpression('ch("../deform_radius")')
-    c_store = _node(sub, "python", prefix + "_store", [c_capt, c_begin])
+    # a lock drawn on the skin (v0.2b U2) is captured on the rest scalp: in a shot it follows the animated scalp
+    c_capt_s = _node(sub, "pointdeform", prefix + "_lock_scalp", [c_load, in_scalp], mode="capture")
+    c_capt_s.parm("radius").setExpression('ch("../deform_radius")')
+    c_pick = _node(sub, "switch", prefix + "_on_scalp", [c_capt, c_capt_s])
+    c_pick.parm("input").setExpression('prim("../%s_begin", 0, "drawn", 0)' % prefix)
+    c_store = _node(sub, "python", prefix + "_store", [c_pick, c_begin])
     c_store.parm("python").set("from apps.houdini import grooming_adapter\n"
                                "grooming_adapter.cook_capture_store(hou.pwd())\n")
     c_end = _node(sub, "block_end", prefix + "_end", [c_store], itermethod=1, method=1, useattrib=1,
@@ -2121,7 +2290,29 @@ def _capture_loop(sub, prefix: str, keys, merged, in_hair):
     return ckeys, captured
 
 
-def _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean) -> None:
+def _deform_drawn(sub, prefix: str, captured, v01, in_hair, anim_hair, in_scalp, anim_scalp):
+    """The shot deform with locks drawn on the skin (v0.2b U2): the mesh locks deformed by the animated hair mesh as
+    v0.1 does, the drawn locks (captured on the rest scalp, `_capture_loop`) by the animated scalp, or left at rest
+    when it is not wired or has another point count than the rest scalp (the adapter's `animated_scalp` says why).
+    `v01`: the v0.1 Point Deform of all of `captured`, used as it is while no lock is drawn."""
+    group = '`details("../SPINES", "drawn_group")`'
+    mesh_in = _node(sub, "blast", prefix + "_mesh_in", [captured], grouptype=4)
+    mesh_in.parm("group").set(group)
+    mesh_def = _node(sub, "pointdeform", prefix + "_mesh", [mesh_in, in_hair, anim_hair], mode="deform")
+    mesh_def.parm("radius").setExpression('ch("../deform_radius")')
+    drawn_in = _node(sub, "blast", prefix + "_in", [captured], grouptype=4, negate=1)
+    drawn_in.parm("group").set(group)
+    drawn_def = _node(sub, "pointdeform", prefix + "_scalp", [drawn_in, in_scalp, anim_scalp], mode="deform")
+    drawn_def.parm("radius").setExpression('ch("../deform_radius")')
+    drawn_ok = _node(sub, "switch", prefix + "_scalp_ok", [drawn_in, drawn_def])
+    drawn_ok.parm("input").setExpression('if(ch("../scalp_wired"), detail("../ANIM_SCALP", "deform_ok", 0), 0)')
+    both = _node(sub, "merge", prefix + "_merge", [mesh_def, drawn_ok])
+    pick = _node(sub, "switch", prefix + "_any", [v01, both])
+    pick.parm("input").setExpression('if(detail("../SPINES", "drawn_count", 0) > 0, 1, 0)')
+    return pick
+
+
+def _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean, in_scalp, anim_scalp) -> None:
     """Output 1 "Groom": the groom itself, never what the view shows. Every lock that is not excluded
     (hidden, isolated out, out of focus too), full density, only the contract attributes, at rest or
     deformed by the animated hair mesh while Shot deform is on.
@@ -2149,10 +2340,11 @@ def _build_groom(sub, keys, loop, begin, end, in_hair, anim_hair, pub_clean) -> 
     pub_clean.setInput(0, rest)
     # the deform's capture, per lock, apart from the hair: the loop above never captures, so the rest groom
     # and the display share each lock's strands
-    _ckeys, captured = _capture_loop(sub, "groom_capture", gkeys, merged, in_hair)
+    _ckeys, captured = _capture_loop(sub, "groom_capture", gkeys, merged, in_hair, in_scalp)
     deform = _node(sub, "pointdeform", "groom_deform", [captured, in_hair, anim_hair], mode="deform")
     deform.parm("radius").setExpression('ch("../deform_radius")')
-    ok = _node(sub, "switch", "groom_deform_ok", [rest, deform])
+    deformed = _deform_drawn(sub, "groom_drawn", captured, deform, in_hair, anim_hair, in_scalp, anim_scalp)
+    ok = _node(sub, "switch", "groom_deform_ok", [rest, deformed])
     ok.parm("input").setExpression('detail("../ANIM_HAIR", "deform_ok", 0)')
     # output 1 deforms whenever an anim is wired (the Shot deform toggle drives only the display), so a
     # File Cache on it caches the shot as the scene opens; it cooks only when something reads output 1
@@ -2329,6 +2521,11 @@ def _parm_templates() -> hou.ParmTemplateGroup:
         'strcmp(opinputpath(".", 2), "") != 0',), default_expression_language=(hou.scriptLanguage.Hscript,))
     wired.hide(True)
     adv.addParmTemplate(wired)
+    # v0.2b: an animated scalp is wired into input 4 (drawn locks follow it in a shot)
+    s_wired = hou.IntParmTemplate("scalp_wired", "Animated scalp wired in", 1, default_expression=(
+        'strcmp(opinputpath(".", 3), "") != 0',), default_expression_language=(hou.scriptLanguage.Hscript,))
+    s_wired.hide(True)
+    adv.addParmTemplate(s_wired)
     active = hou.IntParmTemplate("deform_active", "Deform in use", 1, default_expression=(
         'ch("shot_deform") && ch("anim_wired")',), default_expression_language=(hou.scriptLanguage.Hscript,))
     active.hide(True)
@@ -2424,12 +2621,12 @@ def build(out_path: str = DEFAULT_OUT) -> str:
 
     geo = hou.node("/obj").createNode("geo", "mono_grooming_build")
     sub = geo.createNode("subnet", "mono_grooming")
-    for i, label in enumerate(("Scalp (UV)", "Hair mesh (rest)", "Animated hair mesh")):
+    for i, label in enumerate(INPUT_LABELS):
         sub.parm(f"label{i + 1}").set(label)
     build_network(sub)
     hda = sub.createDigitalAsset(
         name=config.HDA_TYPE, hda_file_name=out_path, description=config.HDA_LABEL,
-        min_num_inputs=2, max_num_inputs=3, version="0.1", ignore_external_references=True,
+        min_num_inputs=2, max_num_inputs=len(INPUT_LABELS), version="0.1", ignore_external_references=True,
         change_node_type=True, create_backup=False)
     definition = hda.type().definition()
     definition.setParmTemplateGroup(_parm_templates())
