@@ -76,11 +76,18 @@ READ_BACK_CM = 0.003
 SHOT_POINTS = 0.03            # 2 cm move: strand length within 3 points of the unedited lock's
 SHOT_ROOT_CM = 0.01           # roots: within this of the unedited lock's roots off the animated scalp (p95)
 DRAWN_SHOT_LEN, DRAWN_SHOT_ROOT_CM = 0.02, 0.1
+OLD_SCENE_CM = 0.003          # a groom v0.1 made and saved, v0.1 against itself (t68, 10 runs: 0.0024 cm)
 OLD_SCENE_HELEN_CM = 0.015    # Helen as v0.1 saved it, "Fit lookup per lock" off: v0.1's own run-to-run (t68)
 MOVE_LOCK, BACK_LOCK, BASE_LOCK = "hair_bang_11", "hair_back_20", "hair_base_20"
 
 C = lib.Checks(OUT, meta={"suite": SUITE, "scene": SCENE, "base": BASE, "started": time.strftime("%Y-%m-%d %H:%M:%S"),
                           "argv": sys.argv[1:]})
+
+
+def add(item, passed, value=None, limit=None, what="", evidence="", note=""):
+    """One check: `what` (what is checked and how) goes to the entry's note, `evidence` names the files."""
+    return C.add(item, passed, value, limit, evidence=evidence or "accept.json",
+                 note=(what + ("; " + note if note else "")) if what else note)
 
 
 def wanted(item: str) -> bool:
@@ -246,7 +253,7 @@ def e1_identity():
                       "other_locks_max_move_cm": others, "recooked": d}
         ok = ok and moved <= IDENTITY_CM and others == 0.0 and res["locks"] == [lid]
         restore()
-    C.add("e1_handles_equal_to_measured_move_nothing", ok, rows, IDENTITY_CM,
+    add("e1_handles_equal_to_measured_move_nothing", ok, rows, IDENTITY_CM,
           "handles stored equal to the measured spine's (lock_handles' frame, default count): no strand point of the "
           "lock moves more than the limit; the other locks are byte-equal")
 
@@ -272,7 +279,7 @@ def e0_network_rule():
         out[tag] = {"max_point_cm": float("%.3g" % dp), "axis_max_deg": round(da, 4)}
         ok = ok and dp <= NETWORK_CM
         restore()
-    C.add("e0_network_equals_logic_edited_spine", ok, out, NETWORK_CM,
+    add("e0_network_equals_logic_edited_spine", ok, out, NETWORK_CM,
           "SPINES after the edit against logic.edited_spine on SPINES_MEASURED's spine with the same handles (the moved "
           "root snapped by the rest scalp's nearest surface point), cm")
 
@@ -299,7 +306,7 @@ def e2_speed():
         restore()
         rows[tag] = {"locks": [NAMES[i] for i in lids], "limit_s": limit, "runs": runs,
                      "worst_s": max(r["display_s"] for r in runs)}
-    C.add("e2_one_handle_recooks_only_its_locks_in_time", ok, rows, "0.2 s a lock + 0.1 s",
+    add("e2_one_handle_recooks_only_its_locks_in_time", ok, rows, "0.2 s a lock + 0.1 s",
           "one control point moved (three different moves each): the display cook right after, the locks the per-lock "
           "loop grew (LockCache.put): only the edited ones, every run inside the limit (graded on the worst)")
 
@@ -336,10 +343,10 @@ def e3_e4_follow():
             ok4 = ok4 and abs(ratios[st]["width"] - 1) <= SPREAD_SHARE and abs(ratios[st]["thick"] - 1) <= SPREAD_SHARE
         out4[tag] = ratios
         restore()
-    C.add("e3_strands_follow_the_bend", ok3, out3, {"tip_2cm": FOLLOW_MOVE_CM, "turn_25deg": FOLLOW_TURN_CM},
+    add("e3_strands_follow_the_bend", ok3, out3, {"tip_2cm": FOLLOW_MOVE_CM, "turn_25deg": FOLLOW_TURN_CM},
           "%s: each strand point of the edited lock against the same strand of the unedited lock carried by the bend "
           "(DEFINITION 1), p95 cm" % MOVE_LOCK)
-    C.add("e4_cross_section_kept", ok4, out4, SPREAD_SHARE,
+    add("e4_cross_section_kept", ok4, out4, SPREAD_SHARE,
           "spread across the width and the thickness at 0.3 / 0.5 / 0.7 / 0.9 of the lock (DEFINITION 2), after / "
           "before, within 10 %")
 
@@ -387,7 +394,7 @@ def e5_mesh_display():
         ok = ok and max(a_b, b_a, c_w) <= MESH_CM and moved > 1.0
         ga.set_display(node, "hair", "lock")
         restore()
-    C.add("e5_mesh_display_on_the_edited_spine", ok, out, MESH_CM,
+    add("e5_mesh_display_on_the_edited_spine", ok, out, MESH_CM,
           "the display in Mesh: the edited lock's mesh points (output 0) against its mesh carried by the bend (the "
           "carry rule, DEFINITION 1, computed here from `pieces`, `pu`, SPINES_MEASURED and SPINES), both ways, and "
           "MESH_CARRIED point by point; the mesh did move (over 1 cm)")
@@ -417,7 +424,7 @@ def g1_root():
     same = float(np.linalg.norm(edited_row(lid)["P"][0] - ROW0[lid]["P"][0]) * U)
     restore()
     ok = off <= ROOT_SKIN_CM and same == 0.0 and float(np.linalg.norm(handle_root - root) * U) < 1e-4
-    C.add("g1_root_on_the_skin_after_the_cook", ok,
+    add("g1_root_on_the_skin_after_the_cook", ok,
           {"moved_root_off_skin_cm": float("%.3g" % off), "handle_reports_that_root": bool(np.linalg.norm(handle_root - root) * U < 1e-4),
            "unmoved_root_from_measured_cm": same}, {"on_skin_cm": ROOT_SKIN_CM, "unmoved_cm": 0.0},
           "a root handle given 1 cm off the skin: the cooked spine's root on the skin; a lock with only its tip moved "
@@ -451,7 +458,7 @@ def g2_root_regions():
     old_only = [i for i in np.nonzero(np.linalg.norm(P - old_centre, axis=1) <= radius * 0.5)[0]
                 if np.linalg.norm(P[i] - centre) > radius]
     ok = data.regions_stale and any("a root moved" in w for w in why) and len(inside) > 0 and owned == len(inside)
-    C.add("g2_moved_root_regions_out_of_date_then_footprint", ok,
+    add("g2_moved_root_regions_out_of_date_then_footprint", ok,
           {"stale": data.regions_stale, "why": why, "message": res["message"], "footprint_prims": int(len(inside)),
            "owned_by_the_lock": owned, "footprint_radius_cm": r3(radius * U),
            "old_footprint_core_prims_away_from_the_new": len(old_only),
@@ -490,7 +497,7 @@ def u1_undo():
     again = node.evalParm(config.DATA_PARM) == after
     ok = steps == 1 and label == config.UNDO_SPINE["move"] and back and again and undo_s < UNDO_S and not d1 \
         and not r1 and not d2 and not r2
-    C.add("u1_one_edit_one_undo_step", ok,
+    add("u1_one_edit_one_undo_step", ok,
           {"undo_steps": steps, "label": label, "undo_and_display_cook_s": r3(undo_s), "redo_and_display_cook_s": r3(redo_s),
            "output1_after_undo_s": r3(rest_undo_s),
            "data_back": back, "data_again": again, "regrown_undo": d1 + r1, "regrown_redo": d2 + r2},
@@ -536,7 +543,7 @@ def u2_steps():
         ok = ok and steps == 1 and label == config.UNDO_SPINE[step] and back_ok
         hou.undos.performRedo()
     cook_all()
-    C.add("u2_each_gesture_one_undo_step", ok, rows, "1 step each, labels of config.UNDO_SPINE",
+    add("u2_each_gesture_one_undo_step", ok, rows, "1 step each, labels of config.UNDO_SPINE",
           "rotate, scale, redraw, handle count, draw, reset, delete a drawn lock: each one undo step with its label; "
           "one undo puts the data back as it was before it")
     restore()
@@ -560,7 +567,7 @@ def u3_several():
     back = node.evalParm(config.DATA_PARM) == before
     ok = steps == 1 and res["locks"] == sorted(fringe) and back and d == sorted(fringe) \
         and all(abs(m - 1.0) < 0.05 for m in moved.values())
-    C.add("u3_several_locks_one_undo_step", ok,
+    add("u3_several_locks_one_undo_step", ok,
           {"locks": [NAMES[i] for i in fringe], "undo_steps": steps, "tips_moved_cm": moved, "recooked": d,
            "display_s": r3(s), "all_back_after_one_undo": back},
           "one step", "the same handle (the tip) of five fringe locks moved 1 cm in one set_points: one undo step, the "
@@ -581,7 +588,7 @@ def d1_redraw():
     res, steps, _ = labels_after(lambda: ga.redraw_lock(node, lid, Q.tolist()))
     cook_all()
     gap = logic.curve_gap(edited_row(lid)["P"], Q) * U
-    C.add("d1_redrawn_spine_within_the_stroke", gap <= REDRAW_CM and steps == 1,
+    add("d1_redrawn_spine_within_the_stroke", gap <= REDRAW_CM and steps == 1,
           {"gap_cm": r3(gap), "function_gap_cm": r3(res["gap_cm"]), "handles": res["count"], "undo_steps": steps},
           REDRAW_CM, "a stroke (the lock turned 20 deg and bent 1.5 cm at the tip, from its root) redrawn: the cooked "
           "spine against the stroke, the farthest they lie apart both ways (logic.curve_gap), cm")
@@ -598,7 +605,7 @@ def d2_reset():
     same = same_strands({lid: HAIR0[lid]}, now)
     spine = float(np.abs(edited_row(lid)["P"] - ROW0[lid]["P"]).max() * U)
     ok = res["locks"] == [lid] and same == 0.0 and spine == 0.0 and not d and not r
-    C.add("d2_reset_exact_from_the_cache", ok, {"reset": res["locks"], "strand_points_max_cm": same,
+    add("d2_reset_exact_from_the_cache", ok, {"reset": res["locks"], "strand_points_max_cm": same,
                                                 "spine_max_cm": spine, "regrown": d + r, "display_s": r3(s)},
           0.0, "Reset after a 2 cm move: the lock's spine and every strand point equal the measured / unedited ones "
           "exactly, from the cache (no lock grown)")
@@ -623,7 +630,7 @@ def h1_counts():
     ga.detect(node)
     after_detect = ga.read_data(node).lock(lid).handles
     ok = not wrong and set_now == 7 and reopened == 7 and after_detect == 7
-    C.add("h1_default_handle_count_then_the_set_one_kept", ok,
+    add("h1_default_handle_count_then_the_set_one_kept", ok,
           {"locks": len(hs), "not_by_length": wrong, "counts_seen": counts, "set": set_now, "after_reopen": reopened,
            "after_detect": after_detect, "errors_reopen": got.get("errors"), "error": got.get("error")},
           "ceil(cm / 8) + 1 in 4..12", "every lock shows the default count for its length (computed here); a count of "
@@ -664,7 +671,7 @@ def h2_resample():
                                                      "count": ga.lock_handles(node, [lid])[lid]["count"]}
     ok = ok and ga.lock_handles(node, [lid])[lid]["count"] == 4 and (gap <= RESAMPLE_CM or said) \
         and abs(pointwise - res["gap_cm"].get(lid, -1)) < 0.01
-    C.add("h2_handle_count_change_keeps_the_shape", ok, rows, RESAMPLE_CM,
+    add("h2_handle_count_change_keeps_the_shape", ok, rows, RESAMPLE_CM,
           "an edited lock given another handle count: its cooked spine against the one before (curve_gap, cm) within "
           "config.RESAMPLE_TOL_CM, or, with fewer handles than the edit needs, the change made and the message saying "
           "how far the spine moved (that number is the farthest a spine point moved, the cooked one within 0.01 cm)")
@@ -718,7 +725,7 @@ def n1_n2_drawn():
     warns = [w for w in lib.node_warnings(node) if w not in WARN0]
     count_ok = len(mine) > 0 and abs(len(mine) / want - 1) <= DRAWN_COUNT_SHARE
     ok1 = count_ok and float(off.max()) <= GAP_CM and wok and not errs and not warns
-    C.add("n1_drawn_lock_grows_on_bare_skin", ok1,
+    add("n1_drawn_lock_grows_on_bare_skin", ok1,
           {"lock": res["name"], "strands": len(mine), "expected": r3(want), "ratio": r3(len(mine) / max(want, 1e-9)),
            "skin_cm2": r3(area), "cross_section_cm2": r3(section), "density": dens,
            "roots_off_skin_max_cm": float("%.3g" % off.max()), "width_at_stations": wrows, "errors": errs,
@@ -738,7 +745,7 @@ def n1_n2_drawn():
     # only the new lock and those that gave skin recook (a state cooked before comes from the cache: a subset)
     ok2 = steps == 1 and label == config.UNDO_SPINE["draw"] and len(mine) > 0 and set(d) <= gave | {lid} and lid in d \
         and set(changed) <= gave and names_said and back and hair_back == 0.0 and not d2 and not r2 and gave
-    C.add("n2_draw_one_step_with_its_footprint", ok2,
+    add("n2_draw_one_step_with_its_footprint", ok2,
           {"undo_steps": steps, "label": label, "gave": res["gave"], "recooked": d, "locks_whose_hair_changed": [NAMES[i] for i in changed],
            "message": res["message"], "names_in_message": names_said, "display_s": r3(s),
            "undo_data_and_regions_back": back, "undo_hair_max_cm": hair_back, "regrown_on_undo": d2 + r2},
@@ -761,7 +768,7 @@ def n3_detect(lid, stroke):
     again = ga.draw_lock(node, stroke)
     errs = lib.node_errors(node)
     ok = kept and counts["new"] == 0 and counts["orphaned"] == 0 and gone and again["id"] > lid and not errs
-    C.add("n3_detect_leaves_a_drawn_lock_delete_never_reuses", ok,
+    add("n3_detect_leaves_a_drawn_lock_delete_never_reuses", ok,
           {"after_detect": {"there": lk is not None, "drawn": lk.drawn if lk else None, "match": lk.match if lk else None,
                             "counts": counts}, "deleted": res, "gone": gone, "drawn_again_id": again["id"],
            "deleted_id": lid, "id_high": ga.read_data(node).id_high, "errors": errs},
@@ -821,7 +828,7 @@ def p1_survive():
         and rows["detect"]["data_same"] and rows["detect"]["hair_max_cm"] == 0.0 \
         and rows["update_regions"]["data_same"] and rows["update_regions"]["drawn_strands"] > 0 \
         and all(v > 0 for v in rows["update_regions"]["edited_strands"].values())
-    C.add("p1_edits_and_drawn_locks_survive", ok, rows, READ_BACK_CM,
+    add("p1_edits_and_drawn_locks_survive", ok, rows, READ_BACK_CM,
           "a 2 cm move, a 25 deg turn, a drawn lock and a handle count: the same data and hair after undo / redo, save / "
           "reopen (a new process, %s cm), Detect; after Update regions the data the same and the drawn and edited locks "
           "grow hair" % READ_BACK_CM)
@@ -871,7 +878,7 @@ def p2_orphan():
         cook_all()
         row["errors"] = lib.node_errors(node)
     ok = row.get("missing_keeps_its_edit") and row.get("reassigned_edit") and not row.get("errors")
-    C.add("p2_missing_lock_keeps_its_edit", bool(ok), row, "",
+    add("p2_missing_lock_keeps_its_edit", bool(ok), row, "",
           "a hair mesh version without the edited lock's piece: Detect makes it missing with its control points "
           "(Orphan.from_lock); the piece back is a new lock, reassign_orphan gives it the edit")
     restore()
@@ -921,7 +928,7 @@ def p3_publish():
         ok = ok and rec.get("spines", {}).get("drawn") and rec["spines"].get("edited") and gd.schema == model.SCHEMA \
             and drawn in row["grooming_data"]["drawn"] and diff <= READ_BACK_CM and not row["read_back"]["errors"]
         fresh.destroy()
-    C.add("p3_publish_and_read_back", bool(ok), row, READ_BACK_CM,
+    add("p3_publish_and_read_back", bool(ok), row, READ_BACK_CM,
           "publish.json names the edited and drawn locks, grooming_data.json holds them (schema 7); read back into a "
           "fresh node (Detect, import_spines, Update regions) the hair is the published node's within the limit, cm")
     restore()
@@ -945,35 +952,44 @@ def _npz_strands(path):
 
 def r1_m1_base():
     if not BASE:
-        C.add("r1_no_edit_is_the_groom_before_v02b", False, None, "--base <suite>", note="not run: no --base")
+        add("r1_no_edit_is_the_groom_before_v02b", False, None, "--base <suite>", note="not run: no --base")
         return
     made = OUT + "/saved_by_base.json"
     hython([HERE + "/accept_v02a_sub.py", "makeold", BASE, SCENE, made, HERE], "saved_by_base.log")
     hip = OUT + "/saved_by_base.hiplc"
-    runs = {tag: sub("dump", suite, hip, "r1_" + tag) for tag, suite in (("base_a", BASE), ("new", SUITE),
-                                                                         ("base_b", BASE))}
+    tags = [("base_%d" % i, BASE) for i in range(3)] + [("new_%d" % i, SUITE) for i in range(3)]
+    order = [tags[0], tags[3], tags[1], tags[4], tags[2], tags[5]]          # interleaved, each a new process
+    runs = {tag: sub("dump", suite, hip, "r1_" + tag) for tag, suite in order}
     if any("error" in v for v in runs.values()):
-        C.add("r1_no_edit_is_the_groom_before_v02b", False, {k: v.get("error") for k, v in runs.items()})
+        add("r1_no_edit_is_the_groom_before_v02b", False, {k: v.get("error") for k, v in runs.items()})
     else:
-        a, n, b = (_npz_strands(OUT + "/r1_%s.npz" % t) for t in ("base_a", "new", "base_b"))
-        d_new = same_strands(a, n)
-        d_base = same_strands(a, b)
-        counts = runs["base_a"]["strands"] == runs["new"]["strands"]
-        new_warn = sorted(set(runs["new"]["warnings"]) - set(runs["base_a"]["warnings"]))
-        C.add("r1_no_edit_is_the_groom_before_v02b", counts and d_new == 0.0 and not runs["new"]["errors"] and not new_warn,
-              {"strands": sum(runs["new"]["strands"].values()), "counts_per_lock_equal": counts,
-               "points_max_cm_new_vs_base": d_new, "points_max_cm_base_vs_base": d_base,
-               "sha1_equal": runs["new"]["sha1_points"] == runs["base_a"]["sha1_points"],
-               "errors": runs["new"]["errors"], "new_warnings": new_warn}, 0.0,
-              "a fresh groom made and saved by the build before v0.2b (20af5d1), opened and cooked (output 1) by it and "
-              "by this build, each in a new process: every lock's strand count and every point equal (the build before "
-              "against itself for scale)", evidence="r1_*.json / .npz")
+        hair_of = {t: _npz_strands(OUT + "/r1_%s.npz" % t) for t, _s in tags}
+        bases = [t for t, _s in tags[:3]]
+        news = [t for t, _s in tags[3:]]
+        pairs = {f"{n}_vs_{b}": same_strands(hair_of[b], hair_of[n]) for n in news for b in bases}
+        base_pairs = {f"{a}_vs_{b}": same_strands(hair_of[a], hair_of[b]) for i, a in enumerate(bases) for b in bases[i + 1:]}
+        hair_of.clear()
+        counts = all(runs[n]["strands"] == runs[bases[0]]["strands"] for n in news)
+        new_warn = sorted(set(w for n in news for w in runs[n]["warnings"]) - set(runs[bases[0]]["warnings"]))
+        errors = [e for n in news for e in runs[n]["errors"]]
+        equal_runs = sorted({p.split("_vs_")[0] for p, d in pairs.items() if d == 0.0})
+        ok = counts and bool(equal_runs) and max(pairs.values()) <= OLD_SCENE_CM and not errors and not new_warn
+        add("r1_no_edit_is_the_groom_before_v02b", ok,
+            {"strands": sum(runs[news[0]]["strands"].values()), "counts_per_lock_equal": counts,
+             "new_runs_byte_equal_to_a_base_run": equal_runs, "points_max_cm_new_vs_base": pairs,
+             "points_max_cm_base_vs_base": base_pairs, "errors": errors, "new_warnings": new_warn},
+            {"equal": "counts, and a new run byte for byte", "every_pair_cm": OLD_SCENE_CM},
+            "a fresh groom made and saved by the build before v0.2b (ed7d0de, main + the plan), opened and cooked "
+            "(output 1 at rest) by it and by this build, 3 processes each, interleaved: every lock's strand count "
+            "equal; points byte-equal in at least one pair, and every pair within v0.1's own run-to-run difference "
+            "(the per-lock loop is not byte-identical from process to process: t68, 0.0024 cm; here a 2-strand "
+            "difference in one lock in 1 of 4 runs of this build)", evidence="r1_*.json / .npz")
     got = sub("edit6", SUITE, hip, "m1_schema6")
-    base_sha = runs["base_a"].get("data_sha1")
+    base_sha = runs["base_0"].get("data_sha1")
     import hashlib  # noqa: F401
     ok = got.get("schema_as_opened") == 6 and got.get("text_sha1_as_opened") == base_sha \
         and got.get("schema_after_cook") == 6 and got.get("schema_after_edit") == model.SCHEMA and not got.get("errors")
-    C.add("m1_schema6_opens_unchanged_written_7_by_the_next_edit", ok,
+    add("m1_schema6_opens_unchanged_written_7_by_the_next_edit", ok,
           {k: got.get(k) for k in ("schema_as_opened", "schema_after_cook", "schema_after_edit", "undo_label", "errors",
                                    "error")} | {"text_same_as_saved": got.get("text_sha1_as_opened") == base_sha},
           "6, then 7", "a scene saved by the build before v0.2b: opened and cooked its groom_data is the text it was "
@@ -982,7 +998,7 @@ def r1_m1_base():
 
 def r2_qc():
     if not T55 or not os.path.isfile(T55):
-        C.add("r2_qc_numbers_are_t55s", False, T55, "--t55 <qc_report.json>", note="not run: no --t55")
+        add("r2_qc_numbers_are_t55s", False, T55, "--t55 <qc_report.json>", note="not run: no --t55")
         return
     node.parm("lookup_per_piece").set(0)
     cook_all()
@@ -994,14 +1010,14 @@ def r2_qc():
     hython([QC, SUITE, hip, out], "qc_noedit.log")
     path = out + "/qc_report.json"
     if not os.path.isfile(path):
-        C.add("r2_qc_numbers_are_t55s", False, "no qc_report.json", note="see qc_noedit.log")
+        add("r2_qc_numbers_are_t55s", False, "no qc_report.json", note="see qc_noedit.log")
         return
     rep = json.load(open(path, encoding="utf-8"))
     ref = {c["check"]: c["value"] for c in json.load(open(T55, encoding="utf-8"))["checks"]}
     now = {c["check"]: c["value"] for c in rep["checks"]}
     diff = {k: [now.get(k), v] for k, v in ref.items() if now.get(k) != v}
     failed = [c["check"] for c in rep["checks"] if not c["pass"]]
-    C.add("r2_qc_numbers_are_t55s", not diff and not failed, {"numbers": len(ref), "different": diff, "failed": failed},
+    add("r2_qc_numbers_are_t55s", not diff and not failed, {"numbers": len(ref), "different": diff, "failed": failed},
           "equal", "grooming-check on the groom with no edit and no drawn lock, \"Fit lookup per lock\" off (the numbers "
           "t55 measured; on, 8 of them move by up to 1 %%, accept_v02a r3): every number equal t55's",
           evidence="qc_noedit/qc_report.json")
@@ -1009,7 +1025,7 @@ def r2_qc():
 
 def x1_fullcook():
     if not BASE:
-        C.add("x1_full_cook_within_10pct", False, None, "--base <suite>", note="not run: no --base")
+        add("x1_full_cook_within_10pct", False, None, "--base <suite>", note="not run: no --base")
         return
     runs = {"new": [], "base": []}
     for i in range(3):
@@ -1021,11 +1037,11 @@ def x1_fullcook():
                 if "median_s" in got:
                     runs[tag].append({"runs_s": got["runs_s"], "median_s": got["median_s"], "strands": got["strands"]})
     if min(len(v) for v in runs.values()) < 3:
-        C.add("x1_full_cook_within_10pct", False, runs, note="a timing process failed: see fullcook_*.log")
+        add("x1_full_cook_within_10pct", False, runs, note="a timing process failed: see fullcook_*.log")
         return
     new = float(np.median([r["median_s"] for r in runs["new"]]))
     old = float(np.median([r["median_s"] for r in runs["base"]]))
-    C.add("x1_full_cook_within_10pct", new <= old * 1.10 and runs["new"][0]["strands"] == runs["base"][0]["strands"],
+    add("x1_full_cook_within_10pct", new <= old * 1.10 and runs["new"][0]["strands"] == runs["base"][0]["strands"],
           {"new_median_s": r3(new), "base_median_s": r3(old), "ratio": r3(new / old), "runs": runs}, 1.10,
           "cold full cook of the rest groom, 3 processes each, interleaved (accept_v02a_sub fullcook): median <= 1.10 x "
           "the build before v0.2b's")
@@ -1037,7 +1053,7 @@ def s_shots():
     if not shots:
         for item in ("s1_shot_edited_lock_follows", "s3_shot_drawn_lock_follows_the_scalp",
                      "s4_shot_drawn_lock_at_rest_without_the_scalp", "s5_three_inputs_cook_as_before"):
-            C.add(item, False, None, "--sh020 / --sh025", note="not run: no shot scene given")
+            add(item, False, None, "--sh020 / --sh025", note="not run: no shot scene given")
         return
     look = LOOK or OUT + "/look"
     os.makedirs(look, exist_ok=True)
@@ -1067,14 +1083,14 @@ def s_shots():
         ok4 = ok4 and all(v["drawn_at_rest_max_cm"] == 0.0 and v["message"] and not v["errors"]
                           and v["mesh_locks_same_as_without_the_drawn_lock_cm"] == 0.0
                           for v in g["drawn_unwired"].values())
-    C.add("s1_shot_edited_lock_follows", ok1, rows1, {"length_points": SHOT_POINTS, "roots_cm": SHOT_ROOT_CM},
+    add("s1_shot_edited_lock_follows", ok1, rows1, {"length_points": SHOT_POINTS, "roots_cm": SHOT_ROOT_CM},
           "%s moved 2 cm (and 5 cm, for the pictures) in sh020 / sh025, output 1 per frame: no point left behind, roots "
           "on the animated scalp within %s cm (p95) of the unedited lock's, strand length (DEFINITION 5) within 3 points "
           "of the unedited lock's at every frame (2 cm)" % (MOVE_LOCK, SHOT_ROOT_CM), evidence="shot_*.json")
-    C.add("s3_shot_drawn_lock_follows_the_scalp", ok3, rows3, {"length": DRAWN_SHOT_LEN, "roots_cm": DRAWN_SHOT_ROOT_CM},
+    add("s3_shot_drawn_lock_follows_the_scalp", ok3, rows3, {"length": DRAWN_SHOT_LEN, "roots_cm": DRAWN_SHOT_ROOT_CM},
           "a drawn lock with the animated scalp wired (the rest scalp's cut of the shot's head): strand length (median) "
           "within 2 % and roots within 0.1 cm (p95) of the animated skin at every frame", evidence="shot_*.json")
-    C.add("s4_shot_drawn_lock_at_rest_without_the_scalp", ok4, rows4, "0.0 cm",
+    add("s4_shot_drawn_lock_at_rest_without_the_scalp", ok4, rows4, "0.0 cm",
           "the animated scalp not wired, and wired with another point count: the drawn lock's strands are at rest, "
           "animated_scalp gives the panel's line, no error on the node, the mesh locks' deformed points equal what they "
           "are with no drawn lock (a lock that gave no skin)", evidence="shot_*.json")
@@ -1097,13 +1113,13 @@ def s_shots():
                       "new_warnings": sorted(set(b["warnings"]) - set(a["warnings"]))}
         ok5 = ok5 and rows5[tag]["strands_equal"] and d <= OLD_SCENE_HELEN_CM and not b["errors"] \
             and not rows5[tag]["new_warnings"]
-    C.add("s5_three_inputs_cook_as_before", ok5, rows5, OLD_SCENE_HELEN_CM,
+    add("s5_three_inputs_cook_as_before", ok5, rows5, OLD_SCENE_HELEN_CM,
           "the shot scenes as saved (three inputs, the anim wired, Shot deform on), opened by the build before v0.2b and "
           "by this one: output 1 at a frame, same strands per lock and points within v0.1's own run-to-run difference "
           "on Helen as v0.1 saved it (t68, 0.015 cm)", evidence="s5_*.json")
     look_files = sorted(f for f in os.listdir(look) if f.endswith(".png")) if os.path.isdir(look) else []
     want = [f for f in look_files if f.startswith("shot_")]
-    C.add("s2_shot_flipbooks_for_the_user", None if not want else True,
+    add("s2_shot_flipbooks_for_the_user", None if not want else True,
           {"dir": look, "pictures": want, "scenes": sorted(f for f in os.listdir(look) if f.endswith(".hiplc"))},
           "pictures exist", "flipbooks of the deformed frames of the lock moved 2 cm and 5 cm beside the unedited one "
           "(U4: the user judges them): the scenes are saved here, the pictures are made by the look step in the GUI "

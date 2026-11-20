@@ -1,7 +1,8 @@
 """Helpers of accept_v02b.py that run in a hython of their own (not collected by pytest).
 
     hython accept_v02b_sub.py dump <suite> <hip> <out.json> <accept_lib dir> [frame]
-        open a saved scene as it is and cook output 1 (GROOM, deformed when an anim is wired; at `frame` if given):
+        open a saved scene as it is and cook output 1 (at `frame`: GROOM, deformed when an anim is wired; without
+        a frame GROOM_REST, the groom at rest):
         <out>.npz with its points (cm), the points a strand, lock ids and strand ids; the stored groom_data's schema
         and text digest, strands per lock, handle counts, drawn and edited ids, errors and warnings of the node.
     hython accept_v02b_sub.py edit6 <suite> <hip> <out.json> <accept_lib dir>
@@ -63,7 +64,8 @@ try:
         text = node.evalParm("groom_data")
         R["stored_schema"] = json.loads(text).get("schema", 1) if text.strip() else None
         R["data_sha1"] = hashlib.sha1(text.encode("utf-8")).hexdigest()
-        groom = node.node("GROOM")
+        # at a frame: output 1 as a shot reads it (deformed when an anim is wired); else the groom at rest
+        groom = node.node("GROOM" if len(sys.argv) > 6 else "GROOM_REST")
         groom.cook()
         P, nv, lock, sid = strands(groom.geometry(), unit)
         # the points apart, float32 cm, so the caller can map them instead of holding one large array
