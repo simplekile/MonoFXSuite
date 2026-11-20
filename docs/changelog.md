@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+
+## [0.1.42] - 2026-11-20
+
 ### Houdini
 - **Test in Houdini** (anim): a lookdev that gives the anim no material or brings meshes of its own (made on another geometry than the UV publish) is now reported, instead of "reads clean".
 - **MonoFX Loaders**: right-click a Geo / Lookdev / Groom / Cloth cell to open that part's publish folder; Open folder is a submenu with every part.
