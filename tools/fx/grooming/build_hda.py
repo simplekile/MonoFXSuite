@@ -1744,6 +1744,25 @@ VEX_MESH_SHOW = """// the mesh display of an edited lock: its mesh on the edited
 if (point(1, "carried", @ptnum)) @P = point(1, "P", @ptnum);
 """
 
+VEX_FOLLICLE = """// a drawn lock in a shot (U2): each strand follows the skin at its root rigidly, as a hair follows its follicle:
+// the frame at the root on the rest scalp (input 1: the polygon's normal and its first edge made square) to the
+// same polygon of the animated scalp (input 2). Point Deform captured on the scalp (t79 s3) stretched a fringe
+// lock 2-3.5 % on sh025 where mesh-lock hair captured the same way stretched up to 46 %: the scalp's own local
+// stretch, read far from the skin; this keeps strand length (1.0000) and roots on the animated skin (0.003 cm)
+int pr = pointprims(0, @ptnum)[0];
+vector r = point(0, "P", primpoint(0, pr, 0));
+int hp; vector huv;
+xyzdist(1, r, hp, huv);
+if (hp < 0) return;
+int pts[] = primpoints(1, hp);
+vector p0 = primuv(1, "P", hp, huv), n0 = normalize(prim_normal(1, hp, huv));
+vector e0 = point(1, "P", pts[1]) - point(1, "P", pts[0]); e0 = normalize(e0 - n0 * dot(e0, n0));
+vector p1 = primuv(2, "P", hp, huv), n1 = normalize(prim_normal(2, hp, huv));
+vector e1 = point(2, "P", pts[1]) - point(2, "P", pts[0]); e1 = normalize(e1 - n1 * dot(e1, n1));
+matrix3 m0 = set(e0, cross(n0, e0), n0), m1 = set(e1, cross(n1, e1), n1);
+@P = p1 + (@P - p0) * transpose(m0) * m1;
+"""
+
 VEX_SCALP_CHECK = """// a drawn lock follows the animated scalp (input 4, U2) only with the rest scalp's points; otherwise it stays at
 // rest, the adapter says why on the panel's line (`animated_scalp`), and nothing warns here: a warning inside the
 // locked HDA reaches no artist (t56), and a scene without the input is not wrong
@@ -2273,10 +2292,9 @@ def _capture_loop(sub, prefix: str, keys, merged, in_hair, in_scalp):
                               "grooming_adapter.cook_capture_load(hou.pwd())\n")
     c_capt = _node(sub, "pointdeform", prefix + "_lock", [c_load, in_hair], mode="capture")
     c_capt.parm("radius").setExpression('ch("../deform_radius")')
-    # a lock drawn on the skin (v0.2b U2) is captured on the rest scalp: in a shot it follows the animated scalp
-    c_capt_s = _node(sub, "pointdeform", prefix + "_lock_scalp", [c_load, in_scalp], mode="capture")
-    c_capt_s.parm("radius").setExpression('ch("../deform_radius")')
-    c_pick = _node(sub, "switch", prefix + "_on_scalp", [c_capt, c_capt_s])
+    # a lock drawn on the skin (v0.2b U2) needs no capture: in a shot it follows the animated scalp at its roots
+    # (`_deform_drawn`, VEX_FOLLICLE), so its strands pass as they are
+    c_pick = _node(sub, "switch", prefix + "_on_scalp", [c_capt, c_load])
     c_pick.parm("input").setExpression('prim("../%s_begin", 0, "drawn", 0)' % prefix)
     c_store = _node(sub, "python", prefix + "_store", [c_pick, c_begin])
     c_store.parm("python").set("from apps.houdini import grooming_adapter\n"
@@ -2292,7 +2310,8 @@ def _capture_loop(sub, prefix: str, keys, merged, in_hair, in_scalp):
 
 def _deform_drawn(sub, prefix: str, captured, v01, in_hair, anim_hair, in_scalp, anim_scalp):
     """The shot deform with locks drawn on the skin (v0.2b U2): the mesh locks deformed by the animated hair mesh as
-    v0.1 does, the drawn locks (captured on the rest scalp, `_capture_loop`) by the animated scalp, or left at rest
+    v0.1 does, the drawn locks by the animated scalp (each strand rigidly with the skin at its root, VEX_FOLLICLE),
+    or left at rest
     when it is not wired or has another point count than the rest scalp (the adapter's `animated_scalp` says why).
     `v01`: the v0.1 Point Deform of all of `captured`, used as it is while no lock is drawn."""
     group = '`details("../SPINES", "drawn_group")`'
@@ -2302,8 +2321,7 @@ def _deform_drawn(sub, prefix: str, captured, v01, in_hair, anim_hair, in_scalp,
     mesh_def.parm("radius").setExpression('ch("../deform_radius")')
     drawn_in = _node(sub, "blast", prefix + "_in", [captured], grouptype=4, negate=1)
     drawn_in.parm("group").set(group)
-    drawn_def = _node(sub, "pointdeform", prefix + "_scalp", [drawn_in, in_scalp, anim_scalp], mode="deform")
-    drawn_def.parm("radius").setExpression('ch("../deform_radius")')
+    drawn_def = _wrangle(sub, prefix + "_scalp", VEX_FOLLICLE, POINT, [drawn_in, in_scalp, anim_scalp])
     drawn_ok = _node(sub, "switch", prefix + "_scalp_ok", [drawn_in, drawn_def])
     drawn_ok.parm("input").setExpression('if(ch("../scalp_wired"), detail("../ANIM_SCALP", "deform_ok", 0), 0)')
     both = _node(sub, "merge", prefix + "_merge", [mesh_def, drawn_ok])

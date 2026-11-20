@@ -772,3 +772,12 @@ def test_layer_color_shows_one_layer_alone():
     assert logic.layer_color(1.0, 0.0) == pytest.approx(logic.LAYER_UNPAINTED)      # not painted
     mid = logic.layer_color(1.0, 0.5)
     assert logic.LAYER_UNPAINTED[0] < mid[0] < 1.0
+
+
+def test_region_owners_on_a_few_points_gives_no_lock_a_point_it_does_not_reach():
+    """v0.2b: a deleted drawn lock's skin given back runs the rule on those points only (every_lock=False)."""
+    roots = {1: (0.0, 0.0, 0.0), 2: (10.0, 0.0, 0.0), 3: (20.0, 0.0, 0.0)}
+    pts = [(0.1, 0.0, 0.0), (0.2, 0.0, 0.0)]
+    kw = dict(radii={1: 0.05, 2: 0.05, 3: 0.05}, groups_of={1: "", 2: "", 3: ""}, point_groups=["", ""])
+    assert logic.region_owners(pts, roots, **kw, every_lock=False) == [[1], [1]]
+    assert sorted(x for o in logic.region_owners(pts, roots, **kw) for x in o) == [1, 1, 2, 3]

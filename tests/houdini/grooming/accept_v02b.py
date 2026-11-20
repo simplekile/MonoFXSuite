@@ -808,16 +808,22 @@ def n4_delete_gives_skin_back():
     back_as_before = sum(1 for i in freed if sorted(reg2[i]) == sorted(reg0[i]))
     took = set(res["took_ids"])
     named_all = all(NAMES[i] in res["message"] for i in took)
+    # its neighbours: locks that owned skin within 3 cm of its root before it was drawn
+    fz = node.parm("regions").evalAsGeometry()
+    FP = np.frombuffer(fz.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3).astype(np.float64)
+    close = np.linalg.norm(FP - np.asarray(stroke[0]), axis=1) * U <= 3.0
+    neighbours = {o for i in np.nonzero(close)[0] for o in reg0[i]}
     now = hair()
     changed = [k for k in hair1 if k != lid and k in now and same_strands({k: hair1[k]}, now) != 0.0]
     hou.undos.performUndo()
     back = node.evalParm(config.DATA_PARM) == before and \
         node.parm("regions").evalAsGeometry().pointIntListAttribValues("lock_owners") == reg1
     ok = steps == 1 and label == config.UNDO_SPINE["delete"] and freed and not left_bare and still_named == 0 \
-        and took and named_all and set(dc) <= took and set(changed) <= took and back
+        and took and took <= neighbours and named_all and set(dc) <= took and set(changed) <= took and back
     add("n4_delete_gives_skin_back", ok,
         {"deleted": d["name"], "undo_steps": steps, "label": label, "freed_prims": len(freed),
          "left_bare": len(left_bare), "prims_still_naming_it": still_named,
+         "neighbours_within_3cm": sorted(NAMES[i] for i in neighbours if i in NAMES),
          "freed_prims_owned_as_before_the_draw": back_as_before, "took": res["took"], "message": res["message"],
          "recooked": dc, "locks_whose_hair_changed": [NAMES[i] for i in changed], "display_s": r3(s),
          "one_undo_puts_lock_and_regions_back": back},

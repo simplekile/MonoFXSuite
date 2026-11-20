@@ -287,7 +287,7 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
                   groups_of: dict[int, str],
                   point_groups: Sequence[str],
                   mesh_near: Sequence[Sequence[tuple[float, int]]] | None = None,
-                  mesh_share: float = 0.0) -> list[list[int]]:
+                  mesh_share: float = 0.0, every_lock: bool = True) -> list[list[int]]:
     """Locks growing hair at each scalp point: every lock of the point's group whose footprint covers
     it (distance to its root <= its radius, about half its root width), else the lock of the group
     whose MESH lies nearest over it (`mesh_near`: per point, (distance, lock) to each lock's hair mesh;
@@ -299,8 +299,9 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
     first so a cap lying on another one's root keeps its own root area. Past the footprints the scalp
     goes to the lock lying over it: by nearest root, Helen's 0.8 cm wide fringe locks owned 8 x 8 cm of
     scalp, and 59 % of roots spread at the set density sat over 1 cm from their own lock's mesh (under a
-    neighbour's). Every lock of a group that has points gets at least its nearest point. Lists are
-    sorted by distance (nearest first).
+    neighbour's). Every lock of a group that has points gets at least its nearest point (`every_lock`;
+    False for a few points of the scalp only, a deleted drawn lock's skin given back: there it would hand every
+    lock one of them). Lists are sorted by distance (nearest first).
     """
     if mesh_near is not None and len(mesh_near) != len(scalp_points):
         raise ValueError(f"{len(scalp_points)} scalp points but {len(mesh_near)} mesh distance lists")
@@ -328,7 +329,7 @@ def region_owners(scalp_points: Sequence[tuple[float, float, float]],
         else:
             out.append([])
     covered = {lid for owners in out for lid in owners}
-    for lid, (_d, i) in nearest_of.items():
+    for lid, (_d, i) in (nearest_of.items() if every_lock else ()):
         if lid not in covered:
             out[i].append(lid)
     return out

@@ -1056,7 +1056,8 @@ def _split(node, data, only=None):
     if only is not None:
         idx = list(only)
         owners = logic.region_owners([centroids[i] for i in idx], roots, radii, groups_of,
-                                     [prim_groups[i] for i in idx], [mesh_near[i] for i in idx], share)
+                                     [prim_groups[i] for i in idx], [mesh_near[i] for i in idx], share,
+                                     every_lock=False)
         return [centroids[i] for i in idx], owners, [mesh_near[i] for i in idx], roots
     owners = logic.region_owners(centroids, roots, radii, groups_of, prim_groups, mesh_near, share)
     return centroids, owners, mesh_near, roots
