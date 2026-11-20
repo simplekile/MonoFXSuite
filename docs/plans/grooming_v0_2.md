@@ -900,7 +900,7 @@ of the product was changed. Numbers are Helen's, hython unless said.**
      display, the QC's mesh checks and the shot deform see the mesh where it was modelled too. The mesh
      carried by the same bend (each mesh point's `pu`, `ds`, `dt` put on the edited spine, as `fit_to_lock`
      places a strand) is the one geometry all of these should read. Not prototyped.
-3. **How many control points.** Measured, part decided, the default is the user's (U1).
+3. **How many control points.** Measured; the number a lock shows was the user's call (U1, decided below).
    - A curve through K points at equal lengths (Catmull-Rom) against each of the 61 measured spines
      (12.6-89.6 cm): fixed 5 misses by 1.17 cm at the median and 2.79 cm at worst (52 of 61 locks over
      0.25 cm); fixed 8: 0.33 / 0.97 cm; fixed 12: 0.09 / 0.40 cm. By length is no better: one point every
@@ -951,50 +951,67 @@ of the product was changed. Numbers are Helen's, hython unless said.**
      lock's own points as its control points (in the prototype the draw step came after the edit step, so
      an edit on a drawn lock did nothing).
 
-**For the user (contract, or what the artist sees; not decided in the spike).**
+**Decided by the user 2026-11-20 (U1-U4; the options and the numbers that led to each are kept).**
 - **U1. How many handles a lock shows.** (a) 5 for every lock: a drag reaches the whole lock, also on a 90 cm
   one. (b) By length, one every 8 cm, at least 4 and at most 12 (Helen: fringe 4-5, the longest 12).
-  (c) The artist sets the number per lock. Recommended: (b), with (c) later if asked for.
+  (c) The artist sets the number per lock. The spike recommended (b).
+  **Decided: (c), the artist sets the number of handles per lock.** The manager's reading of that answer (not
+  the user's words): a lock starts with rule (b)'s number; a number set for the lock in the panel overrides
+  it and is kept in `groom_data` with the lock; changing the number on an edited lock keeps the edited shape
+  (the stored moves are re-sampled onto the new handles).
 - **U2. What a drawn lock follows in a shot.** (a) A new input "Animated scalp" on the node (contract: a
   fourth input; measured: length within 0.7 %, roots within 0.06 cm of the skin). (b) The nearest hair mesh,
   no contract change (measured: roots 3-5 cm off the skin, strands x 1.4 on sh025). (c) Drawn locks stay out
-  of v0.2b's shots: at rest with a message. Recommended: (a).
+  of v0.2b's shots: at rest with a message.
+  **Decided: (a), a fourth input "Animated scalp" (a contract change: the node's inputs are scalp, hair mesh,
+  animated hair mesh, animated scalp).** Not wired: a drawn lock stays at rest in a shot, with a message on
+  the panel's line and no error.
 - **U3. A drawn lock and the frozen regions.** It has no hair until it owns skin, and owning skin takes it
   from its neighbours. (a) Draw gives the new lock its footprint in the same undo step and says which locks
   gave skin (only those recook; measured: two locks, 61 and 62 strands). (b) v0.1's rule as written: the
-  lock shows as a guide and "Regions out of date" until the artist presses Update regions. Recommended: (a);
-  it is an exception to "a lock never changes another lock's region without telling" only in that it tells
-  at once. A moved root keeps v0.1's rule (regions out of date, reason "a root moved").
+  lock shows as a guide and "Regions out of date" until the artist presses Update regions.
+  **Decided: (a): Draw gives the new lock its footprint in the same undo step, and the message names the
+  locks that gave skin.** A moved root keeps v0.1's rule (regions out of date, reason "a root moved").
 - **U4. Edited locks where the mesh bends in the shot** (4 above): accept v0.1's deform with the measured
-  limit (5 cm off: strands 7-14 % longer on sh020's fringe; 2 cm off: within 2 points of the unedited lock),
-  or ask for a capture choice per shot. Recommended: accept for v0.2b and judge on flipbooks at the User
-  look gate; the numbers are lengths, not a picture.
+  limit, or ask for a capture choice per shot.
+  **Decided: v0.1's deform is accepted for v0.2b, with the limit as measured: hair 2 cm off a mesh that bends
+  stays within 2 points of the unedited lock's strand length, 5 cm off it is 7-14 % longer (sh020's fringe),
+  the 90 cm back lock turned 40 deg 9.5 % against 5.9 % unedited (sh025).** It is judged on flipbooks at the
+  User look gate, so the build's shot check makes flipbooks of the deformed frames of an edited lock.
 - **U5. A root's first move snaps it onto the skin** (the measured root of a lock sits on the middle of its
   mesh's root edge, 0.08-0.5 cm over the skin on the six fringe locks tried): the alternative is to keep
-  that height while it slides. Recommended: on the skin, as the plan says.
+  that height while it slides. Not asked; it stays as the plan says: on the skin.
 
 **Still OPEN (why).**
 - What an edit means under a new hair mesh version: the stored points are places in the lock's root frame,
   so the lock keeps its edited shape at the handles and takes the new mesh's shape only between them;
   storing the moves instead would take the new shape and push it the same way. Not measured: there is no
   second mesh version of Helen in the sandbox. The plan's wording (places) stands until one is tried.
-- The Edit state's own drag by script (1 above): not measurable the two ways tried.
+- The Edit state's own drag by script (1 above): not measurable the two ways tried. Not to be chased (the
+  manager, 2026-11-20): the choice of our own state does not rest on it.
 - The carried mesh, QC on an edited groom, publish and read-back of edits and drawn locks, an edit under
   density layers, a control-point edit on a drawn lock, the redraw and rotate / scale gestures: not
   prototyped; each is a "Done when" item.
 
-**Build, split by files** (after the user's answers to U1-U3 and the mockup pick for the panel).
+**Build, split by files** (U1-U4 are answered above; the panel waits for its mockup pick).
 - **B1 Model and logic**: `tools/fx/grooming/model.py`, `logic.py`, `config.py`, their pytest files. Schema 7
-  (`Lock.spine`, a drawn lock's curve, width, thickness and taper, `Orphan.spine`), `migrate()`,
-  `reassign_orphan` handing the edit on; pure functions: root frame to and from world, the interpolation
-  rule (the same numbers as the VEX), the handle count rule, rotate / scale about the root, a stroke to
-  control points within a tolerance, reset.
+  (`Lock.spine`, the lock's own handle count (empty = the default by length), a drawn lock's curve, width,
+  thickness and taper, the same on `Orphan`), `migrate()`, `reassign_orphan` handing the edit on; pure
+  functions: root frame to and from world, the interpolation rule (the same numbers as the VEX), the default
+  handle count (one every 8 cm, 4 to 12), re-sampling stored moves onto another number of handles, rotate /
+  scale about the root, a stroke to control points within a tolerance, reset.
 - **B2 Network and adapter**: `tools/fx/grooming/build_hda.py`, `apps/houdini/grooming_adapter.py`,
   `otls/mono_grooming.hdalc`, `tests/houdini/grooming/accept_v02b.py`. `cook_assign` writes `edit_cp`; the
   nodes `spine_edit` and `drawn_locks` after `root_skin`; the carried mesh and its readers; `split_regions`
   and `lock_infos` after the edit; Detect and drawn locks; the `piece_cloud` switch; the adapter functions
-  the state and the panel call (handles of a lock, set / reset / transform its points, draw and delete a
-  lock, each one undo step named "MONO Grooming: ..."); the publish record and its read-back; U2's answer.
+  the state and the panel call (handles of a lock, set its handle count, set / reset / transform its points,
+  draw and delete a lock, each one undo step named "MONO Grooming: ..."); Draw giving the lock its footprint
+  in the same undo step and returning the locks that gave skin (U3); the publish record and its read-back.
+  The fourth input "Animated scalp" (U2; `min_num_inputs` stays 2, `max_num_inputs` 4, its label, the same
+  unpack of a packed USD input as the animated hair mesh): drawn locks are captured on the rest scalp at
+  `deform_radius` and deformed by it; not wired, or with another point count than the rest scalp, they stay
+  at rest and a `deform_problem`-style sentence says so for the panel. The contract's input list in
+  `grooming_v0_1.md` changes in the same commit. The shot check's flipbooks of an edited lock (U4).
 - **B3 Viewer state**: new `apps/houdini/grooming_points_state.py` and `tools/fx/grooming/points_keys.py`
   (its pure part, as `brush_keys.py`), a few lines in `grooming_paint_state.py` (one tool at a time),
   `tests/houdini/grooming/accept_v02b_gui.py`. From the prototype `t76_state.py`: handles with X-ray, drag
@@ -1002,8 +1019,9 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   "another node selected" as Paint has them.
 - **B4 Panel**: new `tools/fx/grooming/spine.py` (controller mixin) and `ui_spine.py`, both LF; hooks only in
   `controller.py` / `ui.py` (CRLF); `workspace.py` and the radial menu file for the new entries; pytest.
-  After the design gate (mockups, the user picks): the Edit points tool, "edited" on the row, Reset, Draw
-  lock with width and thickness, delete a drawn lock.
+  After the design gate (mockups, the user picks): the Edit points tool, the lock's number of handles (U1),
+  "edited" on the row, Reset, Draw lock with width and thickness (its message names the locks that gave skin,
+  U3), delete a drawn lock, the line that says a drawn lock stays at rest without an animated scalp (U2).
 - **B5 QC**: `.claude/skills/grooming-check/scripts/qc_metrics.py`. Mesh checks against the carried mesh;
   drawn locks left out of the mesh checks and counted in density.
 - Order: B1 first (it fixes the field names). Then B2 and B3 side by side (different files; B3 runs on the
@@ -1034,9 +1052,16 @@ of the product was changed. Numbers are Helen's, hython unless said.**
 - With several locks being edited, one drag moves the same handle of each, in one undo step.
 - A redrawn lock's spine lies within 0.25 cm of the stroke drawn.
 - Reset returns the lock to its measured spine exactly, from the cache (no lock regrown).
+- A lock shows the default number of handles for its length (one every 8 cm, at least 4, at most 12) until
+  a number is set for it; the set number is kept with the lock through save / reopen and Detect.
+- Changing the number of handles on an edited lock keeps its shape: the spine after the change lies within
+  0.1 cm of the spine before it, for more handles and for fewer down to 4 (a limit to confirm in the build:
+  fewer handles cannot hold every edit; the check states what it measured).
 - A lock drawn on bare skin grows density x max(its skin, its cross-section) strands within 15 %, roots on
   the skin, hair width within 20 % of the set width at four stations, no error or warning on the node.
-- A drawn lock's region is its footprint (0.5 x its width round its root), as U3 decides when it gets it.
+- Draw is one undo step that also gives the lock its footprint (0.5 x its width round its root): it has hair
+  at once, only the locks that gave skin recook, the message names them, and one undo takes the lock and
+  the region change back.
 - Detect leaves a drawn lock alone (not missing, not "new"); it can be deleted; its id is never reused.
 - Edits and drawn locks survive undo / redo, save / reopen, Detect and Update regions.
 - A missing lock keeps its edit; `reassign_orphan` gives it to the lock that takes its place.
@@ -1051,8 +1076,13 @@ of the product was changed. Numbers are Helen's, hython unless said.**
 - Shots (sh020, sh025): an edited lock leaves no point behind, its roots stay on the animated scalp as the
   unedited lock's do, and for a move of 2 cm its strand length stays within 3 points of the unedited lock's
   at every frame checked.
-- Shots: a drawn lock does what U2 decides (with the animated scalp: strand length within 2 %, roots within
-  0.1 cm of the animated skin).
+- Shots: flipbooks of the deformed frames of a lock moved 2 cm and 5 cm, beside the unedited lock, for the
+  User look gate (U4: the look is the user's to judge, the check only makes the pictures).
+- Shots, "Animated scalp" wired: a drawn lock's strand length stays within 2 % and its roots within 0.1 cm
+  of the animated skin at every frame checked.
+- Shots, "Animated scalp" not wired (or with another point count than the rest scalp): a drawn lock stays
+  at rest, the panel's line says why, no error on the node; the mesh locks deform as before.
+- A scene with three inputs wired (every scene before v0.2b) opens and cooks as before.
 - The user's own try with a mouse or pen is the User look gate.
 
 ## v0.2c Brush
