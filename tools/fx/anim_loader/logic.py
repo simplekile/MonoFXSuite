@@ -1553,3 +1553,23 @@ def root_patterns_moved(pattern: str, roots: list[str], prim: str) -> str:
         head = body.split("/", 1)[0]
         out.append(f"/{prim}/{body}" if tok.startswith("/") and head in roots else tok)
     return " ".join(out)
+
+
+# --- where Add puts new nodes (the user's pick, 2026-11-20) ---------------------------------------------------------
+# Beside the selected node, else in the middle of the Network Editor's view. Houdini's moveToGoodPosition put them
+# under every node of the network (y -20 in char_Mermaid's lookdev), out of sight.
+NODE_STEP_Y = 1.2   # one node under the other
+NODE_CLEAR = (2.4, 0.8)  # closer than this to a node already there is a clash
+
+
+def free_spots(start: tuple[float, float], count: int, taken: list[tuple[float, float]],
+               step_y: float = NODE_STEP_Y, clear: tuple[float, float] = NODE_CLEAR) -> list[tuple[float, float]]:
+    """``count`` spots in a column from ``start`` downward; the whole column moves one column right until none of its
+    spots sits on a node already there (``taken``: node positions)."""
+    x, y = start
+    for _ in range(50):
+        spots = [(x, y - i * step_y) for i in range(count)]
+        if not any(abs(sx - tx) < clear[0] and abs(sy - ty) < clear[1] for sx, sy in spots for tx, ty in taken):
+            return spots
+        x += clear[0]
+    return spots

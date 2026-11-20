@@ -421,6 +421,10 @@
 - The manager refreshes itself: a Refresh icon in the top bar, F5, and coming back to the window (at most every 3 s,
   `REFRESH_ON_FOCUS_S`). Before, it read the scene only on open and after its own actions.
 - The headline counts loaders with a part missing on disk ("1 missing"); it read "All up to date" over a red cell.
+- Add puts its nodes beside the selected node of the network, else in the middle of the Network Editor's view of it
+  (the user's pick, 2026-11-20; `_add_anchor`, `logic.free_spots`: a column moved right past nodes already there),
+  then selects them; the result line says where. Houdini's `moveToGoodPosition` put them under every node (y -20 in
+  char_Mermaid's lookdev), out of sight. Without a UI (hython) it still falls back to that.
 - Upgrade turns a publish Sublayer into a loader only when the loader reads that publish (`PublishRef.loader_reads`:
   an asset's `01_modelling/03_uv` or lookdev). A texturing geo (`03_surfacing/02_texturing`) was made into a loader
   that looked for it in 03_uv ("missing", char_Mermaid_texturing_geo); it now stays a Sublayer, its row says why.

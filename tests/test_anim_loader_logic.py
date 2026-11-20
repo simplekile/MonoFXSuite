@@ -675,3 +675,13 @@ def test_part_folders_open_each_column(tmp_path):
     fa = part_folders(asset)
     assert fa["anim"].endswith("01_modelling/03_uv/publish/v002") and fa["groom"].endswith("04_grooming/publish/v002")
     assert "cloth" not in fa and part_word(asset, "anim") == "Model"
+
+
+def test_add_places_a_column_clear_of_other_nodes():
+    """Add's nodes beside the selected node or mid-view (the user's pick, 2026-11-20), never on top of a node."""
+    from tools.fx.anim_loader.logic import NODE_CLEAR, NODE_STEP_Y, free_spots
+
+    assert free_spots((0.0, 0.0), 2, []) == [(0.0, 0.0), (0.0, -NODE_STEP_Y)]
+    spots = free_spots((0.0, 0.0), 2, [(-0.5, -1.0)])                 # the second spot would sit on a node
+    assert spots == [(NODE_CLEAR[0], 0.0), (NODE_CLEAR[0], -NODE_STEP_Y)]
+    assert free_spots((0.0, 0.0), 1, [(5.0, 0.0)]) == [(0.0, 0.0)]    # far enough: stays

@@ -388,8 +388,9 @@ class Controller:
         if not names:
             self.message = "Pick the assets to add."
             return
-        created, kept = self.backend.add_assets(self.target_root, names)
-        bits = [f"Added {_plural(len(created), 'asset')}"]
+        created, kept, *rest = self.backend.add_assets(self.target_root, names)
+        where = rest[0][0] if rest and rest[0] else ""  # "beside mesh_edit", "in the middle of the view"
+        bits = [f"Added {_plural(len(created), 'asset')}" + (f" {where}" if where else "")]
         if kept:
             bits.append(f"{', '.join(kept)} already in the network")
         self.message = "; ".join(bits) + "."
