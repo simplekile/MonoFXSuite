@@ -168,3 +168,51 @@ UNDO_CACHE_GB = 2.0
 # tools/fx/grooming/CLAUDE.md, "t67"
 UNDO_DEFORM_PARM = "undo_deform_gb"
 UNDO_DEFORM_GB = 4.0
+
+# ---- v0.2b lock redraw and control points (docs/plans/grooming_v0_2.md "v0.2b"; logic.py "Control points") ----
+# Field names in `groom_data` (model.Lock / model.Orphan, schema 7) are the contract for the network (B2), the
+# viewer state (B3) and the panel (B4): `spine` (K control points in the root frame, [] = the measured spine),
+# `handles` (the artist's count, None = by length), and for a drawn lock `source` SOURCE_DRAWN, `curve`,
+# `width_cm`, `thick_cm`, `taper`.
+SOURCE_MESH = "mesh"           # a lock detected from a hair mesh piece
+SOURCE_DRAWN = "drawn"         # a lock drawn on the skin (no mesh; Detect leaves it alone)
+LOCK_SOURCES: tuple[str, ...] = (SOURCE_MESH, SOURCE_DRAWN)
+# How many handles a lock shows (the user, U1, 2026-11-20): one every HANDLE_SPACING_CM of its length, at least
+# HANDLES_MIN, at most HANDLES_MAX (Helen: fringe 4-5, the 89.6 cm back locks 12); a per-lock number (`handles`)
+# overrides it, in the same range
+HANDLE_SPACING_CM = 8.0
+HANDLES_MIN = 4
+HANDLES_MAX = 12
+# A redrawn or drawn curve keeps as few control points as hold it within this of the stroke (spike t76 Q4:
+# 4 to 15 a lock on curves like Helen's); a stroke needing more than STROKE_HANDLES_MAX is stored with that many
+STROKE_TOL_CM = 0.25
+STROKE_HANDLES_MAX = 24
+# Changing the handle count of an edited lock re-fits its moves (logic.resample_spine); the edited spine is
+# expected to stay within this. Fewer handles than the edit was made with may not hold it (a local bend needs
+# handles close together): the function returns the distance so the caller can say so
+RESAMPLE_TOL_CM = 0.25
+# A stored root at the root frame's origin (within this, scene units) was never moved: it stays the measured root
+# (the spike's VEX rule); a moved root goes onto the skin (U5)
+ROOT_MOVED_EPS = 1e-7
+# A drawn lock (U3: it gets its footprint, REGION_FOOTPRINT x its width round its root, in the same undo step)
+DRAWN_WIDTH_CM = 2.0           # the panel's first values for a new drawn lock (spike t76 Q5's test lock)
+DRAWN_THICK_CM = 0.6
+DRAWN_TAPER_DEFAULT = 0.3      # share of the width and thickness left at the tip
+# prim attributes the network writes on a spine (B2): the stored control points as a flat float array (in each
+# lock's cache key like any prim attribute), and 1 on a lock whose spine the edit moved
+ATTR_EDIT_CP = "edit_cp"
+ATTR_EDITED = "edited"
+POINTS_STATE = "mono_grooming_control_points"   # the Python viewer state of the handles (B3)
+# Undo step names (one undo step each, docs/plans/grooming_v0_2.md "Done when")
+UNDO_SPINE: dict[str, str] = {
+    "move": "MONO Grooming: Move control points",
+    "rotate": "MONO Grooming: Rotate lock",
+    "scale": "MONO Grooming: Scale lock",
+    "redraw": "MONO Grooming: Redraw lock",
+    "reset": "MONO Grooming: Reset lock",
+    "handles": "MONO Grooming: Set handle count",
+    "draw": "MONO Grooming: Draw lock",
+    "delete": "MONO Grooming: Delete drawn lock",
+}
+# a drawn lock's curve through its handles is sampled this many times a segment (the spike's Q4 fit)
+CURVE_SAMPLES = 40

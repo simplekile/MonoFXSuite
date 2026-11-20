@@ -793,3 +793,360 @@ def layer_color(value: float, coverage: float = 1.0) -> tuple[float, float, floa
     k = min(max(coverage, 0.0), 1.0)
     v = min(max(value, 0.0), 1.0)
     return tuple(u + (v - u) * k for u in LAYER_UNPAINTED)   # type: ignore[return-value]
+
+
+# ---------------------------------------------------------------------------
+# Control points and drawn locks (v0.2b; docs/plans/grooming_v0_2.md "v0.2b Lock redraw and control points",
+# the spike's rule: VEX_SPINE_EDIT in sandbox tests/t76_redraw_spike/build_proto.py).
+#
+# A spine is a polyline P (n, 3) with, per point, its tangent T and its width axis A (`tangentu`, `lock_axis`),
+# scene units. Its ROOT FRAME: origin P[0], rows tangent t0, width axis a0 (A[0] made square to t0), thickness
+# axis m0 = t0 x a0. A lock's control points (`Lock.spine`) are K places in that frame. The edit:
+#     m_k = the measured spine at k / (K - 1) of its length;  c_k = the stored place in world;
+#     D_k = c_k - m_k  (the move of handle k; a moved root c_0 goes onto the skin first, `snap_root`)
+#     each spine point i, at x = s_i / L x (K - 1), moves by the Catmull-Rom (uniform, ends clamped) of the D_k
+# and the frame turns with the new tangent (the shortest turn from the old one), so the offsets `fit_to_lock`
+# reads carry the mesh along. Handles equal to the measured ones (`measured_handles`) move nothing.
+# Every function takes and returns plain sequences or numpy arrays; nothing here knows of `hou`.
+# ---------------------------------------------------------------------------
+
+def _arr(points, n_cols: int = 3):
+    np = _np()
+    out = np.asarray(points, dtype=float)
+    return out.reshape(-1, n_cols) if out.size else np.zeros((0, n_cols))
+
+
+def _unit(v, eps: float = 1e-12):
+    np = _np()
+    n = np.linalg.norm(v, axis=-1, keepdims=True)
+    return v / np.maximum(n, eps)
+
+
+def arc_lengths(P):
+    """Cumulative length along polyline P (n, 3): s_0 = 0 ... s_(n-1) = its length."""
+    np = _np()
+    P = _arr(P)
+    return np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+
+
+def at_lengths(P, s):
+    """The points of polyline P at lengths s along it (clamped to its ends)."""
+    np = _np()
+    P = _arr(P)
+    S = arc_lengths(P)
+    s = np.clip(np.asarray(s, dtype=float), 0.0, S[-1])
+    j = np.clip(np.searchsorted(S, s, side="right") - 1, 0, len(P) - 2)
+    f = ((s - S[j]) / np.maximum(S[j + 1] - S[j], 1e-12))[:, None]
+    return P[j] * (1 - f) + P[j + 1] * f
+
+
+def root_frame(P, T, A):
+    """(origin, R) of a spine: R's rows are the tangent, the width axis and the thickness axis at its root, so a
+    place p in the frame is origin + p @ R in world."""
+    np = _np()
+    P, T, A = _arr(P), _arr(T), _arr(A)
+    t0 = _unit(T[0])
+    a0 = _unit(A[0] - t0 * np.dot(A[0], t0))
+    return P[0].copy(), np.stack([t0, a0, np.cross(t0, a0)])
+
+
+def frame_to_world(points, origin, R):
+    """Places in a root frame -> world (scene units)."""
+    return _np().asarray(origin, dtype=float) + _arr(points) @ _np().asarray(R, dtype=float)
+
+
+def world_to_frame(points, origin, R):
+    """World places -> the root frame (the inverse of `frame_to_world`, R being a rotation)."""
+    np = _np()
+    return (_arr(points) - np.asarray(origin, dtype=float)) @ np.asarray(R, dtype=float).T
+
+
+def direction_to_frame(vector, R):
+    """A direction (a rotation axis, a drag on the view plane) from world into the root frame."""
+    np = _np()
+    return np.asarray(R, dtype=float) @ np.asarray(vector, dtype=float)
+
+
+def direction_to_world(vector, R):
+    np = _np()
+    return np.asarray(vector, dtype=float) @ np.asarray(R, dtype=float)
+
+
+def catmull_rom(D, x):
+    """Uniform Catmull-Rom through the rows of D (K, ...), ends clamped, at parameters x in [0, K - 1]: the
+    spike's VEX rule."""
+    np = _np()
+    D = np.asarray(D, dtype=float)
+    K = len(D)
+    x = np.clip(np.asarray(x, dtype=float), 0.0, K - 1)
+    k = np.minimum(np.floor(x).astype(int), K - 2)
+    f = (x - k).reshape((-1,) + (1,) * (D.ndim - 1))
+    p0, p1, p2, p3 = D[np.maximum(k - 1, 0)], D[k], D[k + 1], D[np.minimum(k + 2, K - 1)]
+    return 0.5 * ((2 * p1) + (-p0 + p2) * f + (2 * p0 - 5 * p1 + 4 * p2 - p3) * f * f
+                  + (-p0 + 3 * p1 - 3 * p2 + p3) * f ** 3)
+
+
+def handle_weights(shares, K: int):
+    """(len(shares), K): row i holds how much each handle's move adds at share `shares[i]` of the length (the
+    Catmull-Rom of `catmull_rom` written as a matrix: moves at the points = weights @ D)."""
+    np = _np()
+    return catmull_rom(np.eye(K), np.asarray(shares, dtype=float) * (K - 1))
+
+
+def handle_shares(K: int):
+    """Where the K handles sit along the lock: k / (K - 1) of its length."""
+    return _np().linspace(0.0, 1.0, K)
+
+
+def measured_handles(P, T, A, K: int):
+    """The measured spine's K handles in its root frame: what "no edit" stores (moves nothing)."""
+    S = arc_lengths(P)
+    origin, R = root_frame(P, T, A)
+    out = world_to_frame(at_lengths(P, S[-1] * handle_shares(K)), origin, R)
+    out[0] = 0.0
+    return out
+
+
+def handle_count(length_cm: float, override: int | None = None) -> int:
+    """How many handles a lock shows (U1): the artist's number when set, else one every HANDLE_SPACING_CM of its
+    length; both kept in HANDLES_MIN..HANDLES_MAX (Helen: fringe 4-5, the 89.6 cm back locks 12)."""
+    if override is not None and not isinstance(override, bool):
+        n = int(override)
+    else:
+        n = int(math.ceil(max(float(length_cm), 0.0) / config.HANDLE_SPACING_CM - 1e-9)) + 1
+    return min(config.HANDLES_MAX, max(config.HANDLES_MIN, n))
+
+
+def lock_handle_count(lock, length_cm: float) -> int:
+    """The handles a lock has now: an edit's own count, a drawn lock's curve, else `handle_count`."""
+    if getattr(lock, "source", config.SOURCE_MESH) == config.SOURCE_DRAWN and getattr(lock, "curve", None):
+        return len(lock.curve)
+    if getattr(lock, "spine", None):
+        return len(lock.spine)
+    return handle_count(length_cm, getattr(lock, "handles", None))
+
+
+def root_moved(handles) -> bool:
+    """The root handle is off the root frame's origin: the artist moved it (it then goes onto the skin, U5)."""
+    h = _arr(handles)
+    return len(h) > 0 and float(_np().linalg.norm(h[0])) > config.ROOT_MOVED_EPS
+
+
+@dataclass
+class EditedSpine:
+    """A spine after the edit, per point what the network writes back (`P`, `tangentu`, `lock_axis`,
+    `lock_minor`, `curveu`) and per prim `root`, `direction`; `edited` False = the measured spine as given."""
+    P: "object"
+    tangent: "object"
+    axis: "object"
+    minor: "object"
+    curveu: "object"
+    root: "object"
+    direction: "object"
+    edited: bool
+
+
+def _turn(v, old, new):
+    """v turned by the shortest rotation taking unit `old` to unit `new` (VEX `dihedral` + `qrotate`), per row."""
+    np = _np()
+    axis = np.cross(old, new)
+    s = np.linalg.norm(axis, axis=-1, keepdims=True)
+    c = np.sum(old * new, axis=-1, keepdims=True)
+    k = axis / np.maximum(s, 1e-12)
+    out = v * c + np.cross(k, v) * s + k * np.sum(k * v, axis=-1, keepdims=True) * (1 - c)
+    return np.where(s > 1e-12, out, v)
+
+
+def edited_spine(P, T, A, handles, snap_root=None) -> EditedSpine:
+    """The spike's rule (module notes above): the measured spine P with tangents T and width axes A (scene
+    units), bent by `handles` (K places in its root frame; fewer than 2 = no edit). `snap_root(world_point) ->
+    world_point` puts a moved root on the skin (the network's scalp lookup); without it the root stays where it
+    was stored. A root stored at the frame's origin is the measured root, never snapped."""
+    np = _np()
+    P, T, A = _arr(P), _arr(T), _arr(A)
+    H = _arr(handles)
+    n, K = len(P), len(H)
+    if K < 2 or n < 2:
+        t = _unit(T)
+        a = _unit(A - t * np.sum(A * t, axis=1, keepdims=True))
+        S = arc_lengths(P) if n else np.zeros(0)
+        L = S[-1] if n else 0.0
+        return EditedSpine(P.copy(), t, a, np.cross(t, a), S / L if L > 0 else np.zeros(n),
+                           P[0].copy() if n else None, _unit(P[-1] - P[0]) if n else None, False)
+    S = arc_lengths(P)
+    L = max(S[-1], 1e-9)
+    origin, R = root_frame(P, T, A)
+    marks = at_lengths(P, L * handle_shares(K))
+    places = frame_to_world(H, origin, R)
+    if snap_root is not None and root_moved(H):
+        places[0] = np.asarray(snap_root(places[0]), dtype=float)
+    D = places - marks
+    N = P + catmull_rom(D, S / L * (K - 1))
+    tn = _unit(N[np.minimum(np.arange(n) + 1, n - 1)] - N[np.maximum(np.arange(n) - 1, 0)])
+    told = _unit(T)
+    a = _turn(_unit(A - told * np.sum(A * told, axis=1, keepdims=True)), told, tn)
+    a = _unit(a - tn * np.sum(a * tn, axis=1, keepdims=True))
+    S2 = arc_lengths(N)
+    return EditedSpine(N, tn, a, np.cross(tn, a), S2 / S2[-1] if S2[-1] > 0 else np.zeros(n), N[0].copy(),
+                       _unit(N[-1] - N[0]), True)
+
+
+def _poly_dist(X, C):
+    """The distance of each point of X to the polyline C."""
+    np = _np()
+    a, b = C[:-1], C[1:]
+    ab = b - a
+    l2 = np.maximum((ab ** 2).sum(1), 1e-18)
+    t = np.clip(((X[:, None, :] - a[None]) * ab[None]).sum(-1) / l2[None], 0, 1)
+    return np.linalg.norm(X[:, None, :] - (a[None] + t[..., None] * ab[None]), axis=-1).min(1)
+
+
+def curve_gap(X, C) -> float:
+    """How far apart two polylines lie at most, each against the other (scene units)."""
+    X, C = _arr(X), _arr(C)
+    return float(max(_poly_dist(X, C).max(), _poly_dist(C, X).max()))
+
+
+def resample_spine(P, T, A, handles, K: int, unit_cm: float):
+    """An edit given another handle count (U1: changing the number on an edited lock keeps its shape): the K new
+    handles' moves are fitted (least squares over the spine's points, root and tip moves kept exactly) to the
+    moves the old handles give, so the edited spine stays where it was. Returns (new handles in the root frame,
+    how far the new edited spine lies from the old one at most, cm). No edit -> ([], 0). The root handle is kept
+    as stored (a root not moved stays at the origin). Going down in count may not hold a local bend (expect
+    more than config.RESAMPLE_TOL_CM then; the caller says so)."""
+    np = _np()
+    H = _arr(handles)
+    if len(H) < 2:
+        return np.zeros((0, 3)), 0.0
+    K = int(K)
+    if K < 2:
+        raise ValueError("a lock needs at least 2 handles")
+    P, T, A = _arr(P), _arr(T), _arr(A)
+    S = arc_lengths(P)
+    L = max(S[-1], 1e-9)
+    shares = S / L
+    origin, R = root_frame(P, T, A)
+    D_old = frame_to_world(H, origin, R) - at_lengths(P, L * handle_shares(len(H)))
+    moves = handle_weights(shares, len(H)) @ D_old
+    W = handle_weights(shares, K)
+    D = np.zeros((K, 3))
+    D[0], D[-1] = D_old[0], D_old[-1]
+    rhs = moves - W[:, :1] @ D[:1] - W[:, -1:] @ D[-1:]
+    if K > 2:
+        D[1:-1] = np.linalg.lstsq(W[:, 1:-1], rhs, rcond=None)[0]
+    new = world_to_frame(at_lengths(P, L * handle_shares(K)) + D, origin, R)
+    new[0] = H[0]
+    gap = float(np.linalg.norm(edited_spine(P, T, A, new).P - edited_spine(P, T, A, H).P, axis=1).max())
+    return new, gap * float(unit_cm)
+
+
+def rotate_about_root(points, axis, degrees: float):
+    """`points` (handles in a root frame, or a drawn lock's curve in world) turned about their first point (the
+    root) round `axis` (in the same space), right-handed: the root stays."""
+    np = _np()
+    X = _arr(points)
+    if len(X) == 0:
+        return X
+    k = _unit(np.asarray(axis, dtype=float))
+    a = math.radians(float(degrees))
+    v = X - X[0]
+    out = v * math.cos(a) + np.cross(k, v) * math.sin(a) + k * (v @ k)[:, None] * (1 - math.cos(a))
+    return X[0] + out
+
+
+def scale_about_root(points, factor: float):
+    """`points` scaled about their first point (the root), which stays: a longer or shorter lock."""
+    X = _arr(points)
+    if len(X) == 0:
+        return X
+    return X[0] + (X - X[0]) * float(factor)
+
+
+def _fit_stroke(Q, K: int):
+    """K places at equal lengths along polyline Q (the handles a curve through them keeps)."""
+    S = arc_lengths(Q)
+    return at_lengths(Q, S[-1] * handle_shares(K))
+
+
+def curve_points(handles, per_segment: int = config.CURVE_SAMPLES):
+    """The Catmull-Rom curve through a drawn lock's handles (uniform, ends clamped), sampled densely."""
+    np = _np()
+    H = _arr(handles)
+    if len(H) < 2:
+        return H.copy()
+    return catmull_rom(H, np.linspace(0, len(H) - 1, per_segment * (len(H) - 1) + 1))
+
+
+def drawn_spine(handles, n_points: int):
+    """A drawn lock's spine: its handles' curve (`curve_points`) at n_points equal lengths, root first."""
+    np = _np()
+    C = curve_points(handles)
+    if len(C) < 2:
+        return C
+    return at_lengths(C, np.linspace(0.0, arc_lengths(C)[-1], int(n_points)))
+
+
+def stroke_handles(stroke, unit_cm: float, tol_cm: float = config.STROKE_TOL_CM):
+    """A drawn stroke (world, root first) as the fewest handles, config.HANDLES_MIN up, at equal lengths along it,
+    whose curve (`curve_points`) lies within tol_cm of the stroke. Returns (handles, gap cm); past
+    config.STROKE_HANDLES_MAX it gives that many and the gap they leave."""
+    Q = _arr(stroke)
+    if len(Q) < 2 or arc_lengths(Q)[-1] <= 0:
+        raise ValueError("a stroke needs two points apart")
+    for K in range(config.HANDLES_MIN, config.STROKE_HANDLES_MAX + 1):
+        H = _fit_stroke(Q, K)
+        gap = curve_gap(Q, curve_points(H)) * float(unit_cm)
+        if gap <= tol_cm:
+            break
+    return H, gap
+
+
+def redraw_handles(P, T, A, stroke, unit_cm: float, tol_cm: float = config.STROKE_TOL_CM, snap_root=None):
+    """A lock redrawn along `stroke` (world, root first): the fewest handles (config.HANDLES_MIN up) placed on the
+    stroke at k / (K - 1) of its length whose edit (`edited_spine`) lies within tol_cm of it. Returns (handles in
+    the root frame, gap cm); past config.STROKE_HANDLES_MAX, that many and the gap. A stroke starting off the
+    measured root moves the root (onto the skin with `snap_root`, as the network does)."""
+    Q = _arr(stroke)
+    if len(Q) < 2 or arc_lengths(Q)[-1] <= 0:
+        raise ValueError("a stroke needs two points apart")
+    origin, R = root_frame(P, T, A)
+    for K in range(config.HANDLES_MIN, config.STROKE_HANDLES_MAX + 1):
+        H = world_to_frame(_fit_stroke(Q, K), origin, R)
+        if not root_moved(H):
+            H[0] = 0.0
+        gap = curve_gap(Q, edited_spine(P, T, A, H, snap_root).P) * float(unit_cm)
+        if gap <= tol_cm:
+            break
+    return H, gap
+
+
+def drawn_footprint_cm(width_cm: float) -> float:
+    """The radius round its root of the skin a drawn lock owns (U3; the same rule as a measured lock's
+    footprint): config.REGION_FOOTPRINT x its width."""
+    return config.REGION_FOOTPRINT * max(float(width_cm), 0.0)
+
+
+def drawn_profile(curveu, width_cm: float, thick_cm: float, taper: float = config.DRAWN_TAPER_DEFAULT):
+    """A drawn lock's width and thickness (cm) along it: the set values at the root, `taper` of them at the tip,
+    falling as 1 - (1 - taper) u^2 (the spike's drawn lock)."""
+    np = _np()
+    u = np.clip(np.asarray(curveu, dtype=float), 0.0, 1.0)
+    prof = 1 - (1 - min(1.0, max(0.0, float(taper)))) * u ** 2
+    return width_cm * prof, thick_cm * prof
+
+
+def flat_handles(handles) -> list[float]:
+    """Handles as the flat float array the network stores on a spine prim (config.ATTR_EDIT_CP)."""
+    return [float(c) for row in _arr(handles) for c in row]
+
+
+def unflat_handles(values) -> list[tuple[float, float, float]]:
+    """The inverse of `flat_handles`; a length that is not a multiple of 3 drops the tail."""
+    v = [float(c) for c in values]
+    return [tuple(v[i:i + 3]) for i in range(0, len(v) - len(v) % 3, 3)]   # type: ignore[misc]
+
+
+def reset_locks(locks, ids) -> list[int]:
+    """Reset the locks with ids `ids` to their measured spines (`Lock.reset_spine`): the ids that had an edit."""
+    wanted = set(ids)
+    return [lk.id for lk in locks if lk.id in wanted and lk.reset_spine()]

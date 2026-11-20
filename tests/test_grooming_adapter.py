@@ -313,7 +313,7 @@ def test_publish_record_fields():
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1234, "/obj/g/n", "22.0")
     assert rec["asset"] == "char_Helen" and rec["version"] == "v007"
     assert rec["locks"] == 1 and rec["strands"] == 1234 and rec["department"] == "grooming"
-    assert rec["masks"] == {} and rec["schema"] == 6
+    assert rec["masks"] == {} and rec["schema"] == 7
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1, "/obj/g/n", masks={"file": "m.bgeo"})
     assert rec["masks"] == {"file": "m.bgeo"}
 

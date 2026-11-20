@@ -133,9 +133,9 @@ def test_v01_data_migrates_to_layers_without_changing_anything_else():
     assert d.lock(1).overrides == {"clump": 0.4} and d.id_high == 1
     # the automatic groom is the base layer, always there; nothing else
     assert [(m.id, m.kind, m.name) for m in d.masks] == [(-1, "base", "Automatic")]
-    assert not d.has_layers() and d.density_layers() == [] and d.mask_id_high == -1 and d.schema == SCHEMA == 6
+    assert not d.has_layers() and d.density_layers() == [] and d.mask_id_high == -1 and d.schema == SCHEMA == 7
     new = migrate(dict(old))
-    assert new["schema"] == 6 and "masks" not in old and new["masks_dropped"] == []     # the input is not changed
+    assert new["schema"] == 7 and "masks" not in old and new["masks_dropped"] == []     # the input is not changed
     with pytest.raises(ValueError, match="newer than this tool"):
         migrate({"schema": SCHEMA + 1})
     layer = MaskLayer(0, "x")
@@ -265,7 +265,7 @@ def test_schema_3_layers_carry_over_what_has_a_meaning_and_name_what_is_dropped(
     ]}
     text = json.dumps(old)
     d = GroomData.from_json(text)
-    assert d.schema == 6
+    assert d.schema == SCHEMA
     assert [(m.id, m.kind, m.name, m.parent) for m in d.masks[1:]] == [
         (8, "density", "Older build 1", None), (0, "paint", "Half", 8),
         (9, "density", "Thin skin", None), (1, "paint", "Mask", 9),

@@ -8,13 +8,16 @@ only holds settings, groups, ids and names, and how settings resolve for a lock.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from tools.fx.grooming import config
 
-SCHEMA = 6      # 2: `masks` (v0.2a); 3: fill layers, folders; 4: only "= D" layers; 5: one 0..1 mask, blend modes;
-                # 6: density layers, each with its own number and its own mask stack
+SCHEMA = 7      # 2: `masks` (v0.2a); 3: fill layers, folders; 4: only "= D" layers; 5: one 0..1 mask, blend modes;
+                # 6: density layers, each with its own number and its own mask stack; 7 (v0.2b): a lock's control
+                # points (`spine`, `handles`) and drawn locks (`source` "drawn": `curve`, `width_cm`, `thick_cm`,
+                # `taper`)
 
 # Built-in defaults: the bottom of the resolution chain (defaults -> data.defaults -> group -> lock).
 BUILTIN_DEFAULTS: dict[str, float] = {
@@ -49,12 +52,46 @@ class Group:
     display: str | None = None  # None = follow the node's display mode
 
 
+Point = tuple[float, float, float]
+
+
+def _points(raw) -> list[Point]:
+    """Stored [x, y, z] rows as tuples; a row that is not three numbers drops the whole list (it cannot be
+    guessed which handle it was)."""
+    out: list[Point] = []
+    for row in raw or ():
+        try:
+            x, y, z = (float(c) for c in row)
+        except (TypeError, ValueError):
+            return []
+        out.append((x, y, z))
+    return out
+
+
+def _handles(raw) -> int | None:
+    """A per-lock handle count, None when unset or not a whole number in config.HANDLES_MIN..HANDLES_MAX."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or int(raw) != raw:
+        return None
+    n = int(raw)
+    return n if config.HANDLES_MIN <= n <= config.HANDLES_MAX else None
+
+
 @dataclass
 class Lock:
+    """One lock. `source` "mesh": detected from a hair mesh piece; "drawn" (v0.2b): drawn on the skin by the
+    artist, no mesh, kept by Detect, its id never reused.
+
+    Control points (v0.2b, docs/plans/grooming_v0_2.md "v0.2b"): `spine` holds K HANDLES on the measured spine in
+    the lock's ROOT FRAME (origin the measured spine's first point after Root to skin; axes its tangent, width
+    axis, thickness axis there; scene units). Empty = the measured spine, unedited. What bends the lock is each
+    handle's move against where the measured spine is at the same share of its length (`logic.edited_spine`).
+    `handles` is the artist's handle count for this lock, None = the default by length (`logic.handle_count`);
+    an edited lock has len(spine) handles. A drawn lock keeps its own shape in `curve` instead (its control
+    points, rest scene space, root first: it has no measured spine and no root frame) and leaves `spine` empty."""
     id: int
     name: str
     group: str
-    source: str = "mesh"        # "mesh" (detected from the hair mesh); "drawn" arrives in v0.2
+    source: str = config.SOURCE_MESH   # config.LOCK_SOURCES
     root: tuple[float, float, float] = (0.0, 0.0, 0.0)  # root position at detection, for re-import matching
     length: float = 0.0          # measured length at detection, for re-import matching
     direction: tuple[float, float, float] | None = None  # unit root -> tip at detection, for shape matching
@@ -64,10 +101,34 @@ class Lock:
     match: str = "ok"            # "ok" | "unsure" | "new" after a re-import
     root_flip: bool = False      # the root is the mesh piece's other end (Detect takes the one nearer the scalp)
     excluded: bool = False       # the piece grows no hair (an accessory, a floating strand); guide and mesh stay
+    spine: list[Point] = field(default_factory=list)   # control points in the root frame; [] = measured spine
+    handles: int | None = None   # the artist's handle count; None = the config.HANDLE_SPACING_CM rule
+    # a drawn lock (source "drawn"): its control points in rest scene space (scene units, root on the skin first),
+    # its width and thickness at the root (cm) and the share of them left at the tip
+    curve: list[Point] = field(default_factory=list)
+    width_cm: float = 0.0
+    thick_cm: float = 0.0
+    taper: float = config.DRAWN_TAPER_DEFAULT
 
     def shown(self, group: "Group | None") -> bool:
         """Drawn in the viewport: its own eye and its group's (the group wins, the lock's own state stays)."""
         return self.visible and (group is None or group.visible)
+
+    @property
+    def drawn(self) -> bool:
+        return self.source == config.SOURCE_DRAWN
+
+    @property
+    def edited(self) -> bool:
+        """Its spine differs from the measured one: control points stored (a drawn lock is never "edited", it has
+        no measured spine to differ from)."""
+        return not self.drawn and bool(self.spine)
+
+    def reset_spine(self) -> bool:
+        """Back to the measured spine (the handle count the artist set stays). False when there was no edit."""
+        had = bool(self.spine)
+        self.spine = []
+        return had
 
 
 @dataclass
@@ -79,6 +140,14 @@ class Orphan:
     overrides: dict[str, float] = field(default_factory=dict)
     root_flip: bool = False
     excluded: bool = False
+    spine: list[Point] = field(default_factory=list)   # its control points (v0.2b), kept for the lock that comes back
+    handles: int | None = None
+
+    @classmethod
+    def from_lock(cls, lk: "Lock") -> "Orphan":
+        """What a lock that went missing keeps: settings, flags and its edit."""
+        return cls(id=lk.id, name=lk.name, group=lk.group, overrides=dict(lk.overrides), root_flip=lk.root_flip,
+                   excluded=lk.excluded, spine=list(lk.spine), handles=lk.handles)
 
 
 @dataclass
@@ -304,13 +373,17 @@ class GroomData:
     def reassign_orphan(self, orphan_id: int, lock_id: int) -> list[str] | None:
         """A missing lock's settings go to lock `lock_id` (usually one Detect marked new: the same hair come
         back under a new id) and the missing lock leaves the list: its overrides, and the density layers it
-        owned, which now belong to the lock. Returns the names of those layers, None when either id is
-        unknown (nothing changes). The lock keeps its id and name; its match is ok."""
+        owned, which now belong to the lock, and its control points (`spine`, `handles`; not onto a drawn lock,
+        which keeps its own curve). Returns the names of those layers, None when either id is unknown (nothing
+        changes). The lock keeps its id and name; its match is ok."""
         orphan = next((o for o in self.orphans if o.id == orphan_id), None)
         lk = self.lock(lock_id)
         if orphan is None or lk is None:
             return None
         lk.overrides = dict(orphan.overrides)
+        if not lk.drawn:
+            # its control points too (v0.2b): places in the root frame, so they fit the lock that takes its place
+            lk.spine, lk.handles = list(orphan.spine), orphan.handles
         lk.match = "ok"
         self.orphans.remove(orphan)
         return self.reassign_mask_lock(orphan_id, lock_id)
@@ -324,6 +397,50 @@ class GroomData:
                 m.locks = sorted((set(m.locks) - {old_id}) | {new_id})
                 moved.append(m.name)
         return moved
+
+    # ---- drawn locks (v0.2b) ----
+    def add_drawn_lock(self, group: str, curve, width_cm: float, thick_cm: float,
+                       taper: float = config.DRAWN_TAPER_DEFAULT, name: str = "") -> Lock:
+        """A lock drawn on the skin: a new id (never one a lock had), `curve` its control points in rest scene
+        space, root first. Its `root`, `length` and `direction` are the curve's, so the panel can show it before
+        the network has cooked it. Regions are marked out of date ("<name> drawn"); U3: the caller gives it its
+        footprint in the same undo step and clears that."""
+        pts = _points(curve)
+        if len(pts) < 2:
+            raise ValueError("a drawn lock needs a curve of at least 2 points")
+        if width_cm <= 0 or thick_cm <= 0:
+            raise ValueError("a drawn lock needs a width and a thickness over 0")
+        lock_id = self.next_lock_id()
+        if not name:
+            from tools.fx.grooming import logic
+            name = logic.lock_name(group, [lk.name for lk in self.locks] + [o.name for o in self.orphans])
+        length = sum(math.dist(a, b) for a, b in zip(pts, pts[1:]))
+        span = math.dist(pts[0], pts[-1])
+        direction = tuple((b - a) / span for a, b in zip(pts[0], pts[-1])) if span > 0 else None
+        lk = Lock(id=lock_id, name=name, group=group, source=config.SOURCE_DRAWN, root=pts[0], length=length,
+                  direction=direction, curve=pts, width_cm=float(width_cm), thick_cm=float(thick_cm),  # type: ignore[arg-type]
+                  taper=min(1.0, max(0.0, float(taper))))
+        self.locks.append(lk)
+        self.note_ids()
+        self.mark_stale(f"{name} drawn")
+        return lk
+
+    def remove_drawn_lock(self, lock_id: int) -> bool:
+        """Delete a drawn lock (a lock of the mesh is never deleted here: Detect makes it an orphan). Its id stays
+        used (`id_high`); density layers that named it lose it. False when it is no drawn lock."""
+        lk = self.lock(lock_id)
+        if lk is None or not lk.drawn:
+            return False
+        self.locks.remove(lk)
+        for m in self.masks:
+            if lock_id in m.locks:
+                m.locks = [i for i in m.locks if i != lock_id]
+        self.mark_stale(f"{lk.name} deleted")
+        return True
+
+    def edited_locks(self) -> list[int]:
+        """Ids of the locks whose control points differ from the measured spine."""
+        return [lk.id for lk in self.locks if lk.edited]
 
     # ---- settings ----
     def resolve(self, lock_id: int) -> dict[str, float]:
@@ -410,13 +527,19 @@ class GroomData:
                     visible=bool(lk.get("visible", True)), display=lk.get("display"),
                     match=str(lk.get("match", "ok")),
                     root_flip=bool(lk.get("root_flip", False)), excluded=bool(lk.get("excluded", False)),
+                    spine=_points(lk.get("spine")), handles=_handles(lk.get("handles")),
+                    curve=_points(lk.get("curve")),
+                    width_cm=max(0.0, _number(lk.get("width_cm"), 0.0)),
+                    thick_cm=max(0.0, _number(lk.get("thick_cm"), 0.0)),
+                    taper=min(1.0, max(0.0, _number(lk.get("taper"), config.DRAWN_TAPER_DEFAULT))),
                 )
                 for lk in raw.get("locks", [])
             ],
             orphans=[
                 Orphan(id=int(o["id"]), name=str(o.get("name", "")), group=str(o.get("group", "")),
                        overrides=_clean_overrides(o.get("overrides")),
-                       root_flip=bool(o.get("root_flip", False)), excluded=bool(o.get("excluded", False)))
+                       root_flip=bool(o.get("root_flip", False)), excluded=bool(o.get("excluded", False)),
+                       spine=_points(o.get("spine")), handles=_handles(o.get("handles")))
                 for o in raw.get("orphans", [])
             ],
             regions_stale=bool(raw.get("regions_stale", False)),
@@ -457,6 +580,12 @@ def migrate(raw: dict[str, Any]) -> dict[str, Any]:
         raw["masks_converted"] = converted
         raw["mask_id_high"] = high
         raw["schema"] = 6
+    if int(raw.get("schema", 6)) < 7:
+        # 6 -> 7 (v0.2b): control points and drawn locks. A schema 6 file has neither (no `spine`: every lock is
+        # its measured spine; every lock is of the mesh), so only the number changes; the JSON on the node is
+        # rewritten only by the next edit
+        raw = dict(raw)
+        raw["schema"] = 7
     return raw
 
 
@@ -613,6 +742,6 @@ def dropped_text(names: list[str], converted: list[str] | None = None) -> str:
 
 __all__ = [
     "SCHEMA", "BUILTIN_DEFAULTS", "SETTING_KEYS",
-    "Group", "Lock", "Orphan", "MaskLayer", "GroomData", "migrate", "dropped_masks", "converted_masks",
+    "Group", "Lock", "Orphan", "MaskLayer", "Point", "GroomData", "migrate", "dropped_masks", "converted_masks",
     "dropped_text", "base_layer",
 ]

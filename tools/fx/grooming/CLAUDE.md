@@ -987,3 +987,34 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     `QT_QPA_FONTDIR` (Windows fonts): without it Qt falls back to a font about twice as wide.
   - In Houdini a `ui.grab()` right after a scroll can show the tree's rows below the first two from the older
     scroll position (seen in t74 `gui_panel8` and later; not on screen): sample the top rows only.
+- v0.2b lock redraw, B1 model and logic (2026-11-20; plan `docs/plans/grooming_v0_2.md` "v0.2b", spike t76;
+  tests `tests/test_grooming_spine.py` on three Helen spines in `tests/fixtures/grooming/t76_spines.json`). The field
+  names are the contract for B2-B4:
+  - `groom_data` schema 7. `Lock.spine`: K control points (handles) in the lock's ROOT FRAME (origin the measured
+    spine's first point after Root to skin, rows tangent / width axis / thickness axis there, scene units), [] = the
+    measured spine. `Lock.handles`: the artist's handle count (U1), None = by length. A drawn lock is a `Lock` with
+    `source` "drawn" (`config.SOURCE_DRAWN`): `curve` its handles in REST SCENE SPACE (no measured spine, no root
+    frame, no mesh: U2's animated scalp moves it in a shot), `width_cm`, `thick_cm` at the root, `taper` (share left
+    at the tip); its `spine` stays []. `Orphan.spine` / `.handles` keep a missing lock's edit; `Orphan.from_lock`
+    is what Detect should build orphans with (the adapter's `apply_detect` still lists fields by hand: B2), and
+    `reassign_orphan` hands the edit on (not onto a drawn lock). `migrate()` 6 -> 7 sets the number only.
+    `GroomData.add_drawn_lock` (new id via `next_lock_id`, marks regions out of date "<name> drawn") /
+    `remove_drawn_lock` (drawn only; the id stays used) / `edited_locks`; `Lock.edited`, `.drawn`, `.reset_spine()`.
+  - The rule (`logic.edited_spine`, the spike's VEX line for line; the test carries a scalar port of the VEX and
+    matches it to 1e-13 cm): each handle's MOVE against the measured spine at k / (K - 1) of its length,
+    Catmull-Rom (uniform, ends clamped) along the spine, added to its points; the frame turns with the tangent by
+    the shortest turn; a root stored at the origin (`config.ROOT_MOVED_EPS`) is the measured root, a moved one goes
+    through `snap_root` (the network's scalp lookup, U5). Also: `root_frame`, `frame_to_world` / `world_to_frame`,
+    `direction_to_frame` / `_world`, `measured_handles` (the no-edit handles), `handle_count` (ceil(cm / 8) + 1 in
+    4..12, or the override), `lock_handle_count`, `resample_spine` (another count: least-squares fit of the moves,
+    root and tip kept; returns the gap in cm), `rotate_about_root` / `scale_about_root` (about the first point, any
+    space), `stroke_handles` (drawn stroke -> fewest handles within `STROKE_TOL_CM`), `redraw_handles` (a lock
+    redrawn: handles on the stroke so its EDITED spine lies within the tolerance), `curve_points` / `drawn_spine`
+    (a drawn lock's curve and its n-point spine), `drawn_footprint_cm` (`REGION_FOOTPRINT` x width), `drawn_profile`,
+    `flat_handles` / `unflat_handles` (the `edit_cp` prim array), `reset_locks`, `curve_gap`.
+  - Constants in `config.py` "v0.2b": `HANDLE_SPACING_CM` 8, `HANDLES_MIN` 4, `HANDLES_MAX` 12, `STROKE_TOL_CM` 0.25,
+    `STROKE_HANDLES_MAX` 24, `RESAMPLE_TOL_CM` 0.25, `ATTR_EDIT_CP` / `ATTR_EDITED`, `POINTS_STATE`, `UNDO_SPINE`
+    (the undo step names), `DRAWN_*` first values.
+  - Measured on the fixture (sandbox `tests/t77_redraw_model/numbers.json`): re-sampling 5 -> 8 -> 5 moves the
+    edited spine 0.017-0.058 cm, but 0.22 cm for the 89.6 cm lock turned 25 deg (its tip 34 cm away): near the
+    0.25 cm tolerance; fewer handles than the edit was made with can miss a local bend (the caller says so).
