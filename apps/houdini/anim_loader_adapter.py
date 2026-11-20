@@ -808,6 +808,9 @@ def add_assets(parent, root: str, names: list[str]) -> LoadResult:
 
     result = LoadResult()
     taken = {_s(n, config.P_INSTANCE) for n in parent.children() if n.type().name() == config.HDA_TYPE}
+    start, where = _add_anchor(parent)  # read before anything is made: the artist's selection and view
+    had = {n.path() for n in parent.children()}
+    made = []
     with undo_group(f"Add {len(names)} asset{'s' if len(names) != 1 else ''}"), manual_update():
         merge = None
         for name in names:
@@ -822,7 +825,9 @@ def add_assets(parent, root: str, names: list[str]) -> LoadResult:
             set_use_prim(node, i > 1)
             write_state(node, state)
             refresh(node)
-            _place_new_node(node)
+            if start is None:
+                _place_new_node(node)
+            made.append(node)
             # the shot layout: characters with the actors, everything else in the environments
             group = logic.asset_group_of(root, name)
             target = layout_merge(parent, "actors" if group == "_characters" else "environments")
@@ -832,7 +837,51 @@ def add_assets(parent, root: str, names: list[str]) -> LoadResult:
             target.setNextInput(node)
             taken.add(prim)
             result.created.append(node.name())
+        if start is not None and made:
+            new_merge = merge if merge is not None and merge.path() not in had else None
+            _place_column(parent, made + ([new_merge] if new_merge is not None else []), start)
+        for k, node in enumerate(made):  # the new loaders selected: the artist sees what Add made
+            node.setSelected(True, clear_all_selected=(k == 0))
+    if made and where:
+        result.notes.append(where)
     return result
+
+
+def _network_editor(parent):
+    """The Network Editor showing ``parent`` (the one under the cursor first is not knowable from a window: the
+    current one, else any)."""
+    try:
+        tabs = [t for t in hou.ui.paneTabs() if t.type() == hou.paneTabType.NetworkEditor and t.pwd() == parent]
+    except Exception:  # hython: no UI
+        return None
+    current = [t for t in tabs if t.isCurrentTab()]
+    return (current or tabs or [None])[0]
+
+
+def _add_anchor(parent) -> tuple[tuple[float, float] | None, str]:
+    """Where Add puts its nodes (the user's pick, 2026-11-20): beside the selected node of this network, else in
+    the middle of the Network Editor's view of it, else (no UI) Houdini's own free spot. (start, words for the
+    result line)."""
+    sel = [n for n in hou.selectedNodes() if n.parent() == parent]
+    if sel:
+        a = sel[-1]
+        return (a.position()[0] + a.size()[0] + 1.5, a.position()[1]), f"beside {a.name()}"
+    editor = _network_editor(parent)
+    if editor is not None:
+        try:
+            c = editor.visibleBounds().center()
+            return (c[0] - 0.5, c[1]), "in the middle of the view"
+        except Exception:
+            pass
+    return None, ""
+
+
+def _place_column(parent, nodes: list, start: tuple[float, float]) -> None:
+    """``nodes`` one under the other from ``start``, the column moved right past any node already there."""
+    mine = {n.path() for n in nodes}
+    taken = [tuple(n.position()) for n in parent.children() if n.path() not in mine]
+    for node, (x, y) in zip(nodes, logic.free_spots(start, len(nodes), taken)):
+        node.setPosition(hou.Vector2(x, y))
 
 
 def _place_new_node(node) -> None:
@@ -1675,7 +1724,7 @@ class HoudiniBackend:
 
     def add_assets(self, root, names):
         r = add_assets(hou.node(self.parent_path), root, list(names))
-        return r.created, r.kept
+        return r.created, r.kept, r.notes
 
     @staticmethod
     def solo(paths):

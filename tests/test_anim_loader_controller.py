@@ -266,3 +266,18 @@ def test_hulls_without_a_stage_viewer_says_so():
     b.set_hulls_only = lambda: 4
     c.draw_hulls()
     assert c.message.startswith("Draw Hulls Only on in 4 viewports") and "less memory" in c.message
+
+
+def test_add_says_where_the_nodes_went():
+    """The result line says where Add put the nodes (beside the selected node, mid-view); an older backend that
+    returns two values still works."""
+    from tools.fx.anim_loader.controller import Controller
+
+    b = FakeBackend()
+    b.add_assets = lambda root, names: (list(names), [], ["beside mesh_edit"])
+    c = Controller(b)
+    c.add_assets(["char_A"])
+    assert c.message == "Added 1 asset beside mesh_edit."
+    b.add_assets = lambda root, names: (list(names), [])
+    c.add_assets(["char_A", "prop_B"])
+    assert c.message == "Added 2 assets."
