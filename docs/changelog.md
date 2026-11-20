@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+
+## [0.1.44] - 2026-11-20
+
 ### Houdini
 - **MonoFX Loader**: an anim loaded with a lookdev keeps its frames. The lookdev decided the anim's timing: a lookdev that says no fps (veh_Spaceship V001) squeezed sh002's 30 fps anim into frames 0-24 while the camera ran to 30, and one at another fps stretched it.
 - **MONO Grooming** panel, density layers: the lock tree shows each owner's density layers (All locks, a group, a lock) with their paint and fill mask layers under them; **New density layer**, **New paint layer**, Move up / down and Delete sit at the tree's head (right click for a fill layer, rename, move). A density layer's row shows its value ("75", the unit in the tooltip); the bar under the tree sets D and opacity, or a mask layer's blend and opacity. Properties show the selected layer's details, values with quick picks (0, 75, 150, 300) and its owner. Every change is one undo step.
