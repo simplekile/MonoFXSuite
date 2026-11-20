@@ -38,7 +38,12 @@ from tools.fx.grooming.logic import DetectReport, LockInfo, MeshPiece, PublishRe
 # Internal nodes of the HDA the adapter reads (names fixed by build_hda.py).
 NODE_SPINES_RAW = "SPINES_RAW"       # one spine per hair-mesh piece, measured, no lock ids yet
 NODE_SPINES_LOCKS = "SPINES_LOCKS"   # spines with lock_id / name / group and resolved settings
-NODE_SPINES = "SPINES"               # spines after settings (width_mult, twist_add ...)
+NODE_SPINES = "SPINES"               # spines after settings (width_mult, twist_add ...), the edit and drawn locks
+NODE_SPINES_MEASURED = "SPINES_MEASURED"   # v0.2b: spines after Root to skin, before the edit (handles are on them)
+NODE_MESH_CARRIED = "MESH_CARRIED"   # v0.2b: the hair mesh with each edited lock's piece on its edited spine
+NODE_ANIM_SCALP = "ANIM_SCALP"       # v0.2b: the animated scalp (input 4) with detail deform_ok / point counts
+ATTR_DRAWN = "drawn"                 # v0.2b: prim attribute on spines, 1 for a lock drawn on the skin
+ROOT_SAME_CM = 1e-4                  # a handle given within this of where the root is now: the root did not move
 NODE_SCALP_FINE = "SCALP_FINE"       # scalp after the bilinear subdivision used for regions
 NODE_SCALP_REGIONS = "SCALP_REGIONS" # scalp prims with lock_owners (shared when stacked), share, density, area_cm2
 ATTR_OWNER_DIST = "owner_dist"
@@ -76,7 +81,7 @@ _KEY_SKIP_PARMS = {config.DATA_PARM, PARM_REGIONS, config.MASK_PARM, config.UNDO
                    PARM_FOCUS, PARM_DRAG_FACTOR, PARM_COOK_ALL, PARM_XRAY,
                    "shot_deform", "deform_active", "anim_wired",   # per lock: do_capture; deform_radius stays
                    PARM_DISPLAY_EFF, PARM_PLAYING, "play_display",
-                   "rest_frame", "detect", "split_regions", "publish"}
+                   "rest_frame", "detect", "split_regions", "publish", "scalp_wired"}
 # Spine prim attributes the hair loop does not read (display, filters, cache bookkeeping).
 _KEY_SKIP_ATTRIBS = {"visible", "shown", "grows", "lock_cd", "group_cd", "lock_match", "cached", "cache_key",
                      "cache_mode", "disp", "row_display",   # a lock's display reaches its key as its factor
@@ -86,7 +91,7 @@ _CACHE_ATTR = "_mono_grooming_hair_cache"
 _PLAYBAR_ATTR = "_mono_grooming_playbar_callback"
 MERGED_LOCK = -1                     # LockCache slot of a whole merge (hair_cache / groom_cache), not a lock
 MERGED_MODE = "merged:"
-CACHE_NET_VERSION = "partial-1-root-spread-6-mask-23"      # bump when the per-lock network changes what it makes
+CACHE_NET_VERSION = "partial-1-root-spread-6-mask-23-spine-1"      # bump when the per-lock network changes what it makes
 
 DEFAULT_GROUP = "main"
 UNDO_PREFIX = "MONO Grooming: "
@@ -516,9 +521,14 @@ def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_group
         stale = True
     for lid in report.orphaned:
         lk = old[lid]
-        out.orphans.append(model.Orphan(id=lk.id, name=lk.name, group=lk.group, overrides=dict(lk.overrides),
-                                        root_flip=lk.root_flip, excluded=lk.excluded))
+        if lk.drawn:          # a lock drawn on the skin has no mesh piece to miss: Detect leaves it alone
+            continue
+        # what a missing lock keeps: its settings, flags and control-point edit (v0.2b)
+        out.orphans.append(model.Orphan.from_lock(lk))
         stale = True
+    # locks drawn on the skin (v0.2b) are not the hair mesh's: kept as they are, never missing, never "new"
+    taken_ids = {lk.id for lk in locks}
+    locks.extend(lk for lk in old.values() if lk.drawn and lk.id not in taken_ids)
     out.locks = sorted(locks, key=lambda lk: lk.id)
     have = {g.id for g in out.groups}
     for lk in out.locks:
@@ -536,6 +546,22 @@ def apply_detect(data: model.GroomData, pieces: Sequence[MeshPiece], piece_group
             if lk.match == "new":
                 lk.match = "ok"
     out.note_ids()
+    return out
+
+
+def mesh_locks(data: model.GroomData) -> list[model.Lock]:
+    """Pure: the locks of the hair mesh (Detect matches them to its pieces); locks drawn on the skin left out."""
+    return [lk for lk in data.locks if not lk.drawn]
+
+
+def edit_cp_values(data: model.GroomData, lock_ids: Sequence[int]) -> list[list[float]]:
+    """Pure: per spine prim (lock id or -1) the stored control points as the flat array `config.ATTR_EDIT_CP`
+    (`logic.flat_handles`), [] for a lock not edited (or drawn, or unknown): what cook_assign writes. The array is
+    a prim attribute, so it is in that lock's cache key only."""
+    out = []
+    for lid in lock_ids:
+        lk = data.lock(lid) if lid >= 0 else None
+        out.append(logic.flat_handles(lk.spine) if lk is not None and lk.edited else [])
     return out
 
 
@@ -576,6 +602,8 @@ def publish_record(asset: str, version: str, usd: str, scene: str, data: model.G
         "date": _dt.datetime.now().isoformat(timespec="seconds"),
         "locks": len(data.locks), "groups": len(data.groups), "strands": strands,
         "regions_stale": data.regions_stale, "schema": data.schema,
+        # v0.2b: which locks carry a control-point edit and which were drawn (grooming_data.json holds them)
+        "spines": spine_record(data),
     }
 
 
@@ -710,8 +738,11 @@ def write_data_live(node, data: model.GroomData) -> None:
 
 
 def lock_infos(node) -> list[LockInfo]:
-    """From the cooked spines: id, name, group, root, length, width, thick, twist, strands, region area."""
+    """From the cooked spines: id, name, group, root, length, width, thick, twist, strands, region area.
+    Widths and thicknesses are measured (SPINES_LOCKS); root and length are the spine's after the edit (v0.2b:
+    an edited lock's length is the edited one), and a drawn lock is read from SPINES (it has no measured spine)."""
     geo = _cooked(node, NODE_SPINES_LOCKS)
+    after = _cooked(node, NODE_SPINES)
     scalp = _cooked(node, NODE_SCALP_REGIONS)
     area: dict[int, float] = {}   # a shared prim counts 1/share for each of its owners
     floating: dict[int, float] = {}   # skin under floating mesh, weighted by the falloff (region_join far_w)
@@ -731,7 +762,19 @@ def lock_infos(node) -> list[LockInfo]:
                         floating[lid] = floating.get(lid, 0.0) + w * a / len(own)
     infos = []
     rows: dict[int, dict] = {}
-    for prim in geo.iterPrims():
+    # v0.2b: the root and length after the edit, and the drawn locks (in SPINES only)
+    edited_at: dict[int, tuple] = {}
+    drawn_prims = []
+    if after.findPrimAttrib(config.ATTR_EDITED) is not None or after.findPrimAttrib(ATTR_DRAWN) is not None:
+        for prim in after.iterPrims():
+            lid = prim.intAttribValue(config.ATTR_LOCK_ID)
+            if lid < 0:
+                continue
+            if after.findPrimAttrib(ATTR_DRAWN) is not None and prim.intAttribValue(ATTR_DRAWN):
+                drawn_prims.append(prim)
+            elif after.findPrimAttrib(config.ATTR_EDITED) is not None and prim.intAttribValue(config.ATTR_EDITED):
+                edited_at[lid] = (tuple(prim.attribValue("root")), prim.floatAttribValue("length"))
+    for prim in list(geo.iterPrims()) + drawn_prims:
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
         if lid < 0:
             continue
@@ -743,12 +786,15 @@ def lock_infos(node) -> list[LockInfo]:
         section = logic.section_cm2(max(widths, default=0.0), max(thicks, default=0.0), node.evalParm("unit_cm"))
         strands = logic.lock_strands(prim.floatAttribValue("density"), a, section)
         root = tuple(prim.attribValue("root"))
+        length = prim.floatAttribValue("length")
+        if lid in edited_at:
+            root, length = edited_at[lid]
         # region_frame's footprint: REGION_FOOTPRINT x the widest band of the lock's first tenth
         rows[lid] = {"strands": strands, "root": root,
                      "foot": config.REGION_FOOTPRINT * max(widths[:max(1, len(widths) // 10) + 1], default=0.0)}
         infos.append(LockInfo(
             id=lid, name=prim.stringAttribValue(config.ATTR_NAME), group=prim.stringAttribValue(config.ATTR_GROUP),
-            root=root, length=prim.floatAttribValue("length"),  # type: ignore[arg-type]
+            root=root, length=length,  # type: ignore[arg-type]
             width=sum(widths) / max(len(widths), 1), thick=sum(thicks) / max(len(thicks), 1),
             twist=pts[-1].floatAttribValue(config.ATTR_LOCK_TWIST) if pts else 0.0,
             strands=int(round(strands)), region_area_cm2=a, floating_cm2=floating.get(lid, 0.0),
@@ -790,7 +836,8 @@ def detect(node) -> DetectReport:
     """Detect locks from the hair mesh, match ids against the JSON (logic.match_locks), write the JSON."""
     pieces, groups = _pieces(node)
     data = read_data(node)
-    report = logic.match_locks(pieces, data.locks, data.next_lock_id())
+    # only the hair mesh's locks are matched to its pieces: a drawn lock has none (v0.2b)
+    report = logic.match_locks(pieces, mesh_locks(data), data.next_lock_id())
     asset = asset_from_scene(hou.hipFile.basename())
     new = apply_detect(data, pieces, groups, report, asset=asset)
     first_split = node.parm(PARM_REGIONS) is not None and node.parm(PARM_REGIONS).evalAsGeometry() is None
@@ -918,16 +965,16 @@ def split_regions(node) -> None:
     share), else the nearest lock; stacked locks share. Frozen as one point per prim with `lock_owners`
     (int array) and the detail `region_rule` (config.REGION_RULE)."""
     data = read_data(node)
-    spines = _cooked(node, NODE_SPINES_LOCKS)
+    measured = _cooked(node, NODE_SPINES_LOCKS)
+    spines = _cooked(node, NODE_SPINES)        # v0.2b: after the edit (a moved root) and with the drawn locks
     scalp = _cooked(node, NODE_SCALP_FINE)
     roots: dict[int, tuple[float, float, float]] = {}
     radii: dict[int, float] = {}
     excluded = {lk.id for lk in data.locks if lk.excluded}   # grows no hair: takes no scalp from another lock
-    for prim in spines.iterPrims():
+    for prim in measured.iterPrims():
         lid = prim.intAttribValue(config.ATTR_LOCK_ID)
         if lid < 0 or lid in excluded:
             continue
-        roots[lid] = tuple(prim.attribValue("root"))  # type: ignore[assignment]
         # The root band of a lock is often tapered to almost nothing, so the footprint takes the widest
         # section near the root (first 10 % of the spine). Not further: Helen's hair_base caps widen
         # to 20 cm a little up, and a 10 cm footprint grew a cone of strands converging on the lock.
@@ -935,6 +982,16 @@ def split_regions(node) -> None:
         head = pts0[:max(2, len(pts0) // 10)]
         width = max((p.floatAttribValue(config.ATTR_LOCK_WIDTH) for p in head), default=0.0)
         radii[lid] = config.REGION_FOOTPRINT * width
+    unit_cm = max(float(node.evalParm("unit_cm")), 1e-6)
+    for prim in spines.iterPrims():
+        lid = prim.intAttribValue(config.ATTR_LOCK_ID)
+        if lid < 0 or lid in excluded:
+            continue
+        lk = data.lock(lid)
+        if lk is not None and lk.drawn:   # its set width (logic.drawn_footprint_cm, the same footprint rule)
+            radii[lid] = logic.drawn_footprint_cm(lk.width_cm) / unit_cm
+        if lid in radii:
+            roots[lid] = tuple(prim.attribValue("root"))  # type: ignore[assignment]
     has_group = scalp.findPointAttrib(config.ATTR_GROUP) is not None
     centroids: list[tuple[float, float, float]] = []
     prim_groups: list[str] = []
@@ -1403,7 +1460,7 @@ def cook_assign(sop) -> None:
     names = _prim_values(geo, "mesh_name", "s") or [""] * len(geo.iterPrims())
     uniq = unique_names(names)
     pieces = list(zip(uniq, _prim_values(geo, "root", "v"), _prim_values(geo, "length", "f")))
-    ids = assign_pieces(pieces, data.locks)
+    ids = assign_pieces(pieces, mesh_locks(data))     # a drawn lock (v0.2b) is never a mesh piece
     attrs = lock_display_attribs(data, ids)
     geo.addAttrib(hou.attribType.Prim, config.ATTR_LOCK_ID, -1)
     geo.setPrimIntAttribValues(config.ATTR_LOCK_ID, ids)
@@ -1419,6 +1476,12 @@ def cook_assign(sop) -> None:
     for key in model.SETTING_KEYS:
         geo.addAttrib(hou.attribType.Prim, key, 0.0)
         geo.setPrimFloatAttribValues(key, attrs[key])
+    # v0.2b: each lock's control points (spine_edit bends its spine by them), and the drawn flag (0: of the mesh)
+    edit = geo.addArrayAttrib(hou.attribType.Prim, config.ATTR_EDIT_CP, hou.attribData.Float, 1)
+    for prim, values in zip(geo.prims(), edit_cp_values(data, ids)):
+        if values:
+            prim.setAttribValue(edit, values)
+    geo.addAttrib(hou.attribType.Prim, ATTR_DRAWN, 0)
     missing = ids.count(-1)
     if missing:
         sop.addWarning(f"{missing} locks are not in the groom data yet: press Detect locks")
@@ -2086,6 +2149,9 @@ def cook_deform_keys(sop) -> None:
     it costs at rest. Input 0 the keyed spines (`lock_keys`), input 1 ANIM_HAIR."""
     keyed, anim = (i.geometry() for i in sop.inputs()[:2])
     key = _deform_key(sop, keyed, anim)
+    if len(sop.inputs()) > 2 and keyed.findPrimAttrib(ATTR_DRAWN) is not None and any(keyed.primIntAttribValues(ATTR_DRAWN)):
+        # drawn locks follow the animated scalp (v0.2b U2): its points at this frame are part of the state
+        key = lock_key([key, sop.inputs()[2].geometry().pointFloatAttribValuesAsString("P")])
     geo = sop.geometry()
     geo.clear()
     geo.addAttrib(hou.attribType.Global, "deform_key", "")
@@ -2289,6 +2355,681 @@ def cook_frozen_regions(sop) -> None:
         geo.merge(frozen)
 
 
+# ---------------------------------------------------------------------------
+# v0.2b lock redraw and control points (docs/plans/grooming_v0_2.md "v0.2b"; B1's model and logic)
+#
+# Places are in the node's own space (its SOP geometry, scene units) unless said: a viewer state turns world
+# rays into it with the object's transform. A lock of the hair mesh keeps its handles in its ROOT FRAME (B1:
+# `Lock.spine`, relative to SPINES_MEASURED, the spine as Root to skin left it); a drawn lock keeps its curve in
+# rest scene space (`Lock.curve`). Every change below is ONE undo step named from config.UNDO_SPINE and may act
+# on several locks at once.
+# ---------------------------------------------------------------------------
+
+def drawn_spine_arrays(curve, n_points: int, unit_cm: float, width_cm: float, thick_cm: float,
+                       taper: float = config.DRAWN_TAPER_DEFAULT, width_mult: float = 1.0, thick_mult: float = 1.0,
+                       twist_add: float = 0.0, root_on_skin=None, skin_normal=None) -> dict:
+    """Pure (numpy): a drawn lock's spine as the network writes it (`cook_drawn_locks`). Its curve through the
+    handles at `n_points` equal lengths (`logic.drawn_spine`); the root moved onto the skin (`root_on_skin`), the
+    move fading over the first quarter (the spike's drawn lock); the frame from "across the lock, lying on the
+    skin" at the root (`skin_normal` x the tangent), carried along without twist, then turned by `twist_add` x u as
+    apply_settings turns a measured lock's; width and thickness by `logic.drawn_profile` x the lock's width_mult /
+    thick_mult, in scene units. Returns P, tangent, axis, minor, curveu, width, thick, twist (per point) and root,
+    direction, length."""
+    import numpy as np
+    P = np.asarray(logic.drawn_spine(curve, int(n_points)), dtype=float)
+    S = logic.arc_lengths(P)
+    U = S / S[-1] if S[-1] > 0 else np.zeros(len(P))
+    if root_on_skin is not None:
+        P = P + (np.asarray(root_on_skin, dtype=float) - P[0]) * (1 - np.clip(U * 4, 0, 1))[:, None]
+        S = logic.arc_lengths(P)
+        U = S / S[-1] if S[-1] > 0 else np.zeros(len(P))
+    n = len(P)
+    idx = np.arange(n)
+    T = P[np.minimum(idx + 1, n - 1)] - P[np.maximum(idx - 1, 0)]
+    T /= np.maximum(np.linalg.norm(T, axis=1, keepdims=True), 1e-12)
+    nrm = np.asarray(skin_normal if skin_normal is not None else (0.0, 1.0, 0.0), dtype=float)
+    a = np.cross(nrm, T[0])
+    if np.linalg.norm(a) < 1e-4:
+        a = np.cross(T[0], (0.0, 1.0, 0.0) if abs(T[0][1]) < 0.9 else (1.0, 0.0, 0.0))
+    A = np.zeros_like(P)
+    for i in range(n):
+        a = a - T[i] * np.dot(a, T[i])
+        a = a / max(np.linalg.norm(a), 1e-12)
+        A[i] = a
+    tw = float(twist_add) * U
+    A = A * np.cos(tw)[:, None] + np.cross(T, A) * np.sin(tw)[:, None]      # about the tangent, right-handed
+    W, TH = logic.drawn_profile(U, width_cm, thick_cm, taper)
+    unit = max(float(unit_cm), 1e-9)
+    span = P[-1] - P[0]
+    return {"P": P, "tangent": T, "axis": A, "minor": np.cross(T, A), "curveu": U,
+            "width": W / unit * float(width_mult), "thick": TH / unit * float(thick_mult), "twist": tw,
+            "root": P[0].copy(), "direction": span / max(np.linalg.norm(span), 1e-12), "length": float(S[-1])}
+
+
+def drawn_group(lock_ids: Iterable[int]) -> str:
+    """Pure: the Blast group of the strands of these locks (the deform's split, `build_hda._deform_drawn`)."""
+    return " ".join(f"@lock_id=={int(i)}" for i in lock_ids)
+
+
+def footprint_owners(centres, owners: Sequence[Sequence[int]], root, radius: float) -> tuple[list[int], list[int]]:
+    """Pure (numpy): the frozen region points (one per fine scalp prim, its centre) a drawn lock takes as its
+    footprint (U3): those within `radius` of its root on the skin, at least the nearest one. Returns (their
+    indices, the other locks that owned them before, sorted)."""
+    import numpy as np
+    c = np.asarray(centres, dtype=float).reshape(-1, 3)
+    if not len(c):
+        return [], []
+    d = np.linalg.norm(c - np.asarray(root, dtype=float), axis=1)
+    sel = [int(i) for i in np.nonzero(d <= radius)[0]] or [int(np.argmin(d))]
+    gave = sorted({int(o) for i in sel for o in owners[i]})
+    return sel, gave
+
+
+def scalp_text(drawn: int, wired: bool, anim_points: int, rest_points: int) -> str:
+    """Pure: the panel's line for the drawn locks in a shot (U2), "" when there is nothing to say (no drawn lock,
+    or the animated scalp follows)."""
+    if drawn <= 0:
+        return ""
+    locks = "the drawn lock stays" if drawn == 1 else f"the {drawn} drawn locks stay"
+    if not wired:
+        return f"No animated scalp wired into input 4: {locks} at rest in a shot (the mesh locks deform as before)"
+    if anim_points != rest_points or rest_points <= 0:
+        return (f"Animated scalp: {anim_points} points, rest scalp {rest_points}: {locks} at rest "
+                "(the mesh locks deform as before)")
+    return ""
+
+
+def _spine_rows(geo) -> dict[int, dict]:
+    """{lock id: P, tangent, axis (numpy, scene units), prim number} of a spine geometry, read in bulk."""
+    import numpy as np
+    if geo.findPrimAttrib(config.ATTR_LOCK_ID) is None:
+        return {}
+
+    def pts(name):
+        return np.frombuffer(geo.pointFloatAttribValuesAsString(name), np.float32).reshape(-1, 3).astype(np.float64)
+
+    P, T, A = pts("P"), pts("tangentu"), pts("lock_axis")
+    vprim, vpoint = grooming_masks._vertex_tables(geo)
+    order = np.argsort(vprim, kind="stable")
+    n = geo.intrinsicValue("primitivecount")
+    rows = np.split(vpoint[order], np.cumsum(np.bincount(vprim, minlength=n))[:-1]) if n else []
+    out = {}
+    for k, lid in enumerate(geo.primIntAttribValues(config.ATTR_LOCK_ID)):
+        if lid >= 0:
+            idx = rows[k]
+            out[int(lid)] = {"P": P[idx], "tangent": T[idx], "axis": A[idx], "prim": k}
+    return out
+
+
+def _skin_snap(node):
+    """A function putting a place (node space) on the rest scalp, as the network's xyzdist does, and the scalp's
+    normal there: (snap(p) -> p, normal(p) -> n)."""
+    geo = _cooked(node, "IN_SCALP")
+
+    def nearest(p):
+        hit = geo.nearestPrim(hou.Vector3(*[float(c) for c in p]))
+        return hit[0], hit[1], hit[2]
+
+    def snap(p):
+        prim, u, v = nearest(p)
+        return tuple(prim.positionAtInterior(u, v)) if prim is not None else tuple(float(c) for c in p)
+
+    def normal(p):
+        prim, _u, _v = nearest(p)
+        return tuple(prim.normal()) if prim is not None else (0.0, 1.0, 0.0)
+
+    return snap, normal
+
+
+def _unit(node) -> float:
+    return max(float(node.evalParm("unit_cm")), 1e-9)
+
+
+def _lock_or_raise(data: model.GroomData, lock_id: int) -> model.Lock:
+    lk = data.lock(int(lock_id))
+    if lk is None:
+        raise KeyError(f"no lock {lock_id}")
+    return lk
+
+
+def _handles_now(lk: model.Lock, row: dict | None, unit: float):
+    """(handles in the root frame, origin, R) of a lock of the mesh now: its edit, else the measured spine's at its
+    count (`logic.handle_count`). `row` is its SPINES_MEASURED row."""
+    origin, R = logic.root_frame(row["P"], row["tangent"], row["axis"])
+    if lk.edited:
+        H = logic._arr(lk.spine)
+    else:
+        length_cm = float(logic.arc_lengths(row["P"])[-1]) * unit
+        H = logic.measured_handles(row["P"], row["tangent"], row["axis"], logic.handle_count(length_cm, lk.handles))
+    return H, origin, R
+
+
+def lock_handles(node, lock_ids: Sequence[int] | None = None) -> dict[int, dict]:
+    """The handles of these locks (None: every lock), for the viewer state (B3) and the panel (B4). Per lock id:
+    `points` the handles in the node's space (a moved root where the network put it, on the skin), `frame` the
+    same in its root frame (a drawn lock: in its drawn spine's root frame), `origin` / `axes` that frame (rows:
+    tangent, width axis, thickness axis), `count`, `edited`, `drawn`, `root_moved`, `spine` (the cooked spine after
+    the edit, node space), `measured` (the spine before it; a drawn lock: its spine), `length_cm` (the measured
+    length; a drawn lock its own), `default_count` (by length), `count_set` (the artist's number or None)."""
+    import numpy as np
+    data = read_data(node)
+    unit = _unit(node)
+    measured = _spine_rows(_cooked(node, NODE_SPINES_MEASURED))
+    after = _spine_rows(_cooked(node, NODE_SPINES))
+    want = [lk.id for lk in data.locks] if lock_ids is None else [int(i) for i in lock_ids]
+    out: dict[int, dict] = {}
+    for lid in want:
+        lk = data.lock(lid)
+        if lk is None or lid not in after:
+            continue
+        cooked = after[lid]
+        if lk.drawn:
+            origin, R = logic.root_frame(cooked["P"], cooked["tangent"], cooked["axis"])
+            world = logic._arr(lk.curve).copy()
+            world[0] = cooked["P"][0]                       # on the skin, as the network put it
+            H = logic.world_to_frame(world, origin, R)
+            length_cm = float(logic.arc_lengths(cooked["P"])[-1]) * unit
+            base = cooked["P"]
+            moved = False
+        else:
+            row = measured.get(lid)
+            if row is None:
+                continue
+            H, origin, R = _handles_now(lk, row, unit)
+            world = logic.frame_to_world(H, origin, R)
+            moved = logic.root_moved(H)
+            if moved:
+                world[0] = cooked["P"][0]
+            length_cm = float(logic.arc_lengths(row["P"])[-1]) * unit
+            base = row["P"]
+        out[lid] = {
+            "points": [tuple(map(float, p)) for p in world], "frame": [tuple(map(float, p)) for p in H],
+            "origin": tuple(map(float, origin)), "axes": [tuple(map(float, r)) for r in R], "count": int(len(H)),
+            "edited": bool(lk.edited), "drawn": bool(lk.drawn), "root_moved": bool(moved),
+            "spine": np.asarray(cooked["P"]).tolist(), "measured": np.asarray(base).tolist(),
+            "length_cm": length_cm, "default_count": logic.handle_count(length_cm), "count_set": lk.handles}
+    return out
+
+
+def _measured_rows(node) -> dict[int, dict]:
+    return _spine_rows(_cooked(node, NODE_SPINES_MEASURED))
+
+
+def _store_points(lk: model.Lock, row: dict | None, points, space: str, unit: float, data: model.GroomData,
+                  snap=None) -> tuple[bool, bool]:
+    """Write new handles on `lk` (in `data`). `space` "points" (node space) or "frame". Returns (changed, root
+    moved by this write). A root given where it already is keeps the stored root (a root never moved stays the
+    measured one); a moved root marks the regions out of date with its reason (v0.1's rule, U3)."""
+    import numpy as np
+    same = ROOT_SAME_CM / unit
+    if lk.drawn:
+        if space == "frame":
+            raise ValueError("a drawn lock's points are given in the node's space")
+        new = logic._arr(points)
+        if len(new) < 2:
+            raise ValueError("a lock needs at least 2 handles")
+        old = logic._arr(lk.curve)
+        # given where the root is stored, or where the network put it on the skin (`row`: its cooked spine): not moved
+        root_moved = float(np.linalg.norm(new[0] - old[0])) > same and (
+            row is None or float(np.linalg.norm(new[0] - row["P"][0])) > same)
+        if root_moved and snap is not None:
+            new[0] = snap(new[0])
+        if not root_moved:
+            new[0] = old[0]
+        if len(old) == len(new) and np.array_equal(old, new):
+            return False, False
+        lk.curve = [tuple(map(float, p)) for p in new]
+        lk.root = lk.curve[0]
+        lk.length = float(logic.arc_lengths(new)[-1])
+        span = new[-1] - new[0]
+        lk.direction = tuple(float(c) for c in span / max(np.linalg.norm(span), 1e-12))
+        if root_moved:
+            data.mark_stale(f"{lk.name}: a root moved")
+        return True, root_moved
+    H_now, origin, R = _handles_now(lk, row, unit)
+    H = logic._arr(points) if space == "frame" else logic.world_to_frame(points, origin, R)
+    if len(H) < 2:
+        raise ValueError("a lock needs at least 2 handles")
+    # where the root is now (frame): the stored root, or the origin (the measured root)
+    root_was = H_now[0] if len(H_now) else np.zeros(3)
+    root_moved = float(np.linalg.norm(H[0] - root_was)) > same
+    if not root_moved:
+        H[0] = root_was
+    new = [tuple(map(float, p)) for p in H]
+    if lk.spine == new:
+        return False, False
+    lk.spine = new
+    if root_moved:
+        data.mark_stale(f"{lk.name}: a root moved")
+    return True, root_moved
+
+
+def _spine_result(changed: list[int], roots: list[int], data: model.GroomData, what: str) -> dict:
+    names = [(data.lock(i).name if data.lock(i) else str(i)) for i in changed]
+    msg = f"{what}: {', '.join(names)}" if names else f"{what}: nothing changed"
+    if roots:
+        msg += "; regions out of date (a root moved): Update regions"
+    return {"locks": changed, "roots_moved": roots, "message": msg}
+
+
+def set_points(node, points: dict, space: str = "points", step: str = "move") -> dict:
+    """Set the handles of one or several locks in ONE undo step (config.UNDO_SPINE[step], "move" by default: a
+    viewer-state drag writes once on release). `points`: {lock id: K places}, in the node's space ("points") or the
+    lock's root frame ("frame"; locks of the mesh only). A different K re-counts the handles. Returns {"locks":
+    ids changed, "roots_moved": ids, "message"}."""
+    if space not in ("points", "frame"):
+        raise ValueError(f"space {space!r}")
+    data = read_data(node)
+    unit = _unit(node)
+    rows = _measured_rows(node)
+    snap = _skin_snap(node)[0]
+    drawn_rows = _spine_rows(_cooked(node, NODE_SPINES)) if any(
+        (data.lock(int(i)) is not None and data.lock(int(i)).drawn) for i in points) else {}
+    changed, roots = [], []
+    for lid, pts in points.items():
+        lk = _lock_or_raise(data, lid)
+        row = drawn_rows.get(lk.id) if lk.drawn else rows.get(lk.id)
+        ch, rm = _store_points(lk, row, pts, space, unit, data, snap)
+        if ch:
+            changed.append(lk.id)
+        if rm:
+            roots.append(lk.id)
+    if changed:
+        write_data(node, data, config.UNDO_SPINE[step])
+    return _spine_result(changed, roots, data, {"move": "Moved", "rotate": "Turned", "scale": "Scaled",
+                                                "redraw": "Redrawn"}.get(step, "Changed"))
+
+
+def reset_points(node, lock_ids: Iterable[int]) -> dict:
+    """Back to the measured spine (one undo step "Reset lock"); a drawn lock has none and is left. The hair comes
+    from the cache (no lock regrown). A root that had moved comes back: regions out of date."""
+    data = read_data(node)
+    moved = [lk.id for lk in data.locks if lk.id in set(int(i) for i in lock_ids) and lk.edited
+             and logic.root_moved(lk.spine)]
+    done = logic.reset_locks([lk for lk in data.locks if not lk.drawn], [int(i) for i in lock_ids])
+    for lid in moved:
+        data.mark_stale(f"{data.lock(lid).name}: a root moved")
+    if done:
+        write_data(node, data, config.UNDO_SPINE["reset"])
+    return _spine_result(done, moved, data, "Reset")
+
+
+def _transform(node, lock_ids, fn, step: str) -> dict:
+    data = read_data(node)
+    unit = _unit(node)
+    rows = _measured_rows(node)
+    changed = []
+    for lid in lock_ids:
+        lk = _lock_or_raise(data, lid)
+        if lk.drawn:
+            new = fn(logic._arr(lk.curve), None)
+            ch, _ = _store_points(lk, None, new, "points", unit, data)
+        else:
+            row = rows.get(lk.id)
+            if row is None:
+                continue
+            H, _origin, R = _handles_now(lk, row, unit)
+            ch, _ = _store_points(lk, row, fn(H, R), "frame", unit, data)
+        if ch:
+            changed.append(lk.id)
+    if changed:
+        write_data(node, data, config.UNDO_SPINE[step])
+    return _spine_result(changed, [], data, {"rotate": "Turned", "scale": "Scaled"}[step])
+
+
+def rotate_points(node, lock_ids: Iterable[int], axis, degrees: float) -> dict:
+    """Turn these locks about their roots by `degrees` round `axis` (a direction in the node's space), one undo
+    step "Rotate lock". The root stays."""
+    import numpy as np
+    ax = np.asarray(axis, dtype=float)
+    return _transform(node, [int(i) for i in lock_ids],
+                      lambda H, R: logic.rotate_about_root(H, ax if R is None else logic.direction_to_frame(ax, R),
+                                                           degrees), "rotate")
+
+
+def scale_points(node, lock_ids: Iterable[int], factor: float) -> dict:
+    """Scale these locks about their roots (a longer or shorter lock), one undo step "Scale lock"."""
+    if factor <= 0:
+        raise ValueError("a scale factor over 0")
+    return _transform(node, [int(i) for i in lock_ids], lambda H, R: logic.scale_about_root(H, factor), "scale")
+
+
+def set_handle_count(node, lock_ids: Iterable[int], count: int | None) -> dict:
+    """The number of handles of these locks (U1; None: back to the default by length), one undo step "Set handle
+    count". An edited lock keeps its shape: its moves are re-fitted onto the new handles (`logic.resample_spine`);
+    a drawn lock's curve is sampled again. Returns {"locks", "gap_cm": {id: how far the spine moved}, "message"}:
+    past config.RESAMPLE_TOL_CM the message says how far (the change is still made)."""
+    import numpy as np
+    if count is not None and not config.HANDLES_MIN <= int(count) <= config.HANDLES_MAX:
+        raise ValueError(f"a handle count from {config.HANDLES_MIN} to {config.HANDLES_MAX}")
+    data = read_data(node)
+    unit = _unit(node)
+    rows = _measured_rows(node)
+    gaps: dict[int, float] = {}
+    changed = []
+    for lid in lock_ids:
+        lk = _lock_or_raise(data, lid)
+        if lk.drawn:
+            length_cm = float(logic.arc_lengths(logic.curve_points(lk.curve))[-1]) * unit
+            K = logic.handle_count(length_cm, count)
+            if K == len(lk.curve) and lk.handles == count:
+                continue
+            old = logic.curve_points(lk.curve)
+            new = logic.at_lengths(old, np.linspace(0.0, logic.arc_lengths(old)[-1], K))
+            gaps[lk.id] = logic.curve_gap(logic.curve_points(new), old) * unit
+            lk.curve = [tuple(map(float, p)) for p in new]
+        else:
+            row = rows.get(lk.id)
+            if row is None:
+                continue
+            length_cm = float(logic.arc_lengths(row["P"])[-1]) * unit
+            K = logic.handle_count(length_cm, count)
+            if lk.edited and K != len(lk.spine):
+                new, gap = logic.resample_spine(row["P"], row["tangent"], row["axis"], lk.spine, K, unit)
+                lk.spine = [tuple(map(float, p)) for p in new]
+                gaps[lk.id] = gap
+            elif lk.handles == count:
+                continue
+            else:
+                gaps[lk.id] = 0.0
+        lk.handles = None if count is None else int(count)
+        changed.append(lk.id)
+    if changed:
+        write_data(node, data, config.UNDO_SPINE["handles"])
+    res = _spine_result(changed, [], data, "Handles")
+    far = {i: g for i, g in gaps.items() if g > config.RESAMPLE_TOL_CM}
+    if far:
+        res["message"] += "; the spine moved " + ", ".join(
+            f"{data.lock(i).name} {g:.2f} cm" for i, g in sorted(far.items())) + " (fewer handles cannot hold the edit)"
+    res["gap_cm"] = gaps
+    return res
+
+
+def redraw_lock(node, lock_id: int, stroke, tol_cm: float = config.STROKE_TOL_CM) -> dict:
+    """The lock redrawn along `stroke` (node space, root first), one undo step "Redraw lock": a lock of the mesh
+    takes the fewest handles whose edit lies within `tol_cm` of the stroke (`logic.redraw_handles`), a drawn lock
+    the fewest whose curve does (`logic.stroke_handles`). A stroke starting off the root moves the root (on the
+    skin). Returns {"locks", "roots_moved", "gap_cm", "count", "message"}."""
+    data = read_data(node)
+    unit = _unit(node)
+    lk = _lock_or_raise(data, lock_id)
+    snap = _skin_snap(node)[0]
+    if lk.drawn:
+        H, gap = logic.stroke_handles(stroke, unit, tol_cm)
+        ch, rm = _store_points(lk, None, H, "points", unit, data, snap)
+    else:
+        row = _measured_rows(node).get(lk.id)
+        if row is None:
+            raise KeyError(f"lock {lock_id} has no spine (not detected)")
+        H, gap = logic.redraw_handles(row["P"], row["tangent"], row["axis"], stroke, unit, tol_cm, snap)
+        ch, rm = _store_points(lk, row, H, "frame", unit, data)
+    if ch:
+        write_data(node, data, config.UNDO_SPINE["redraw"])
+    res = _spine_result([lk.id] if ch else [], [lk.id] if rm else [], data, "Redrawn")
+    res.update(gap_cm=float(gap), count=int(len(H)))
+    return res
+
+
+def _default_group(data: model.GroomData, frozen, root) -> str:
+    """A drawn lock's group: the group of the lock owning the skin under its root, else the first group."""
+    import numpy as np
+    if frozen is not None and len(frozen.iterPoints()):
+        P = np.frombuffer(frozen.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3)
+        i = int(np.argmin(((P - np.asarray(root, dtype=np.float32)) ** 2).sum(1)))
+        for lid in frozen.iterPoints()[i].intListAttribValue(ATTR_LOCK_OWNERS):
+            lk = data.lock(lid)
+            if lk is not None:
+                return lk.group
+    return data.groups[0].id if data.groups else DEFAULT_GROUP
+
+
+def draw_lock(node, stroke, width_cm: float = config.DRAWN_WIDTH_CM, thick_cm: float = config.DRAWN_THICK_CM,
+              taper: float = config.DRAWN_TAPER_DEFAULT, group: str | None = None, name: str = "",
+              tol_cm: float = config.STROKE_TOL_CM) -> dict:
+    """A new lock drawn on bare skin along `stroke` (node space, root first; the root goes onto the skin), with
+    its width, thickness and tip taper. ONE undo step "Draw lock" that also gives it its footprint (U3: the frozen
+    region points within `logic.drawn_footprint_cm(width)` of its root, taken from the locks that owned them), so
+    it has hair at once and only the locks that gave skin recook. Returns {"id", "name", "gave": [names of the
+    locks that gave skin], "gave_ids", "gap_cm", "count", "message"}."""
+    import numpy as np
+    data = read_data(node)
+    unit = _unit(node)
+    snap = _skin_snap(node)[0]
+    Q = logic._arr(stroke).copy()
+    if len(Q) < 2:
+        raise ValueError("a stroke needs two points apart")
+    Q[0] = snap(Q[0])
+    H, gap = logic.stroke_handles(Q, unit, tol_cm)
+    H = np.asarray(H, dtype=float)
+    H[0] = Q[0]
+    frozen = node.parm(PARM_REGIONS).evalAsGeometry()
+    stale_before = (data.regions_stale, list(data.stale_why))
+    lk = data.add_drawn_lock(group or _default_group(data, frozen, Q[0]), H.tolist(), width_cm, thick_cm, taper, name)
+    gave_ids: list[int] = []
+    regions = None
+    if frozen is not None and len(frozen.iterPoints()):
+        regions = hou.Geometry(frozen)
+        P = np.frombuffer(regions.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3)
+        owners = regions.pointIntListAttribValues(ATTR_LOCK_OWNERS)
+        sel, gave_ids = footprint_owners(P, owners, Q[0], logic.drawn_footprint_cm(width_cm) / unit)
+        pts = regions.points()
+        for i in sel:
+            pts[i].setAttribValue(ATTR_LOCK_OWNERS, [lk.id])
+            pts[i].setAttribValue(config.ATTR_LOCK_OWNER, lk.id)
+            if regions.findPointAttrib(ATTR_OWNER_DIST) is not None:
+                pts[i].setAttribValue(ATTR_OWNER_DIST, [-1.0])
+        # the footprint is given: the regions are as up to date as before the draw
+        data.regions_stale, data.stale_why = stale_before
+    with hou.undos.group(config.UNDO_SPINE["draw"]):
+        if regions is not None:
+            node.parm(PARM_REGIONS).set(regions)
+        node.parm(config.DATA_PARM).set(data.to_json())
+    gave = [data.lock(i).name for i in gave_ids if data.lock(i) is not None]
+    msg = f"Drew {lk.name}" + (f"; skin from {', '.join(gave)}" if gave else "")
+    if regions is None:
+        msg += "; no regions yet: Update regions gives it skin"
+    return {"id": lk.id, "name": lk.name, "gave": gave, "gave_ids": gave_ids, "gap_cm": float(gap),
+            "count": int(len(H)), "message": msg}
+
+
+def set_drawn(node, lock_ids: Iterable[int], width_cm: float | None = None, thick_cm: float | None = None,
+              taper: float | None = None) -> dict:
+    """Width, thickness (cm, at the root) and tip taper (0..1) of drawn locks, one undo step (config.UNDO_SPINE
+    "draw"). A new width changes the footprint the lock would get: regions out of date with that reason."""
+    data = read_data(node)
+    changed = []
+    for lid in lock_ids:
+        lk = _lock_or_raise(data, lid)
+        if not lk.drawn:
+            continue
+        before = (lk.width_cm, lk.thick_cm, lk.taper)
+        if width_cm is not None:
+            if width_cm <= 0:
+                raise ValueError("a width over 0")
+            lk.width_cm = float(width_cm)
+        if thick_cm is not None:
+            if thick_cm <= 0:
+                raise ValueError("a thickness over 0")
+            lk.thick_cm = float(thick_cm)
+        if taper is not None:
+            lk.taper = min(1.0, max(0.0, float(taper)))
+        if (lk.width_cm, lk.thick_cm, lk.taper) != before:
+            changed.append(lk.id)
+            if lk.width_cm != before[0]:
+                data.mark_stale(f"{lk.name}: width changed")
+    if changed:
+        write_data(node, data, config.UNDO_SPINE["draw"])
+    return _spine_result(changed, [], data, "Drawn lock")
+
+
+def delete_drawn_locks(node, lock_ids: Iterable[int]) -> dict:
+    """Delete drawn locks, one undo step "Delete drawn lock"; their ids are never used again. The skin they owned
+    grows nothing until Update regions gives it to the locks around (regions out of date)."""
+    data = read_data(node)
+    names = []
+    done = []
+    for lid in lock_ids:
+        lk = data.lock(int(lid))
+        if lk is not None and lk.drawn:
+            names.append(lk.name)
+            if data.remove_drawn_lock(lk.id):
+                done.append(lk.id)
+    if done:
+        write_data(node, data, config.UNDO_SPINE["delete"])
+    msg = (f"Deleted {', '.join(names)}; Update regions gives their skin to the locks around" if done
+           else "Deleted: no drawn lock among these")
+    return {"locks": done, "message": msg}
+
+
+def edited_ids(node) -> list[int]:
+    """Locks whose control points differ from the measured spine."""
+    return read_data(node).edited_locks()
+
+
+def drawn_ids(node) -> list[int]:
+    """Locks drawn on the skin."""
+    return [lk.id for lk in read_data(node).locks if lk.drawn]
+
+
+def scalp_wired(node) -> bool:
+    """An animated scalp is wired into input 4 (U2)."""
+    return len(node.inputs()) > 3 and node.inputs()[3] is not None
+
+
+def animated_scalp(node) -> dict:
+    """What the drawn locks do in a shot (U2): {"wired", "ok" (they follow it), "anim_points", "rest_points",
+    "drawn", "message"} (the panel's line, "" when nothing needs saying). Never an error or a warning on the node:
+    unwired or with another point count than the rest scalp they stay at rest. Cooks ANIM_SCALP when wired."""
+    drawn = len(drawn_ids(node))
+    wired = scalp_wired(node)
+    a = r = 0
+    if wired:
+        try:
+            g = _cooked(node, NODE_ANIM_SCALP)
+            a, r = int(g.attribValue("anim_points")), int(g.attribValue("rest_points"))
+        except (hou.Error, hou.OperationFailed):
+            pass
+    msg = scalp_text(drawn, wired, a, r)
+    return {"wired": wired, "ok": wired and a == r and r > 0, "anim_points": a, "rest_points": r, "drawn": drawn,
+            "message": msg}
+
+
+def spine_record(data: model.GroomData) -> dict:
+    """Pure: what publish.json says of the v0.2b edits (grooming_data.json holds them in full)."""
+    return {"edited": sorted(lk.name for lk in data.locks if lk.edited),
+            "drawn": sorted(lk.name for lk in data.locks if lk.drawn)}
+
+
+def spines_from_publish(data: model.GroomData, published: model.GroomData) -> tuple[model.GroomData, dict]:
+    """Pure: `data` with a publish's control-point edits and drawn locks (its grooming_data.json): an edit goes to
+    the lock of the mesh with the same name (its handle count too); a drawn lock comes in with its id when no lock
+    here ever had that id (the id seeds its scatter: the same hair), else a new one. Regions are marked out of date.
+    Returns (new data, {"edited": names, "drawn": names, "not_found": names})."""
+    out = model.GroomData.from_json(data.to_json())
+    by_name = {lk.name: lk for lk in out.locks if not lk.drawn}
+    got = {"edited": [], "drawn": [], "not_found": []}
+    for p in published.locks:
+        if p.drawn:
+            if any(lk.drawn and lk.name == p.name and lk.curve == p.curve for lk in out.locks):
+                continue
+            lk = replace(p, curve=list(p.curve), overrides=dict(p.overrides), spine=[])
+            if lk.id <= out.id_high or out.lock(lk.id) is not None:
+                lk.id = out.next_lock_id()
+            if lk.group not in {g.id for g in out.groups}:
+                lk.group = out.groups[0].id if out.groups else DEFAULT_GROUP
+            out.locks.append(lk)
+            out.note_ids()
+            got["drawn"].append(lk.name)
+        elif p.edited or p.handles is not None:
+            lk = by_name.get(p.name)
+            if lk is None:
+                got["not_found"].append(p.name)
+                continue
+            lk.spine, lk.handles = list(p.spine), p.handles
+            if p.edited:
+                got["edited"].append(p.name)
+    if got["drawn"] or got["edited"]:
+        out.locks.sort(key=lambda x: x.id)
+        out.mark_stale("edits from a publish")
+    return out, got
+
+
+def import_spines(node, tool_dir: str) -> dict:
+    """A publish's edits and drawn locks (its `_grooming/` folder) into this node, one undo step. Regions out of
+    date: Update regions gives the drawn locks their skin (then the hair is the published one)."""
+    with open(os.path.join(tool_dir, "grooming_data.json"), encoding="utf-8") as fh:
+        published = model.GroomData.from_json(fh.read())
+    new, got = spines_from_publish(read_data(node), published)
+    if got["drawn"] or got["edited"]:
+        write_data(node, new, UNDO_PREFIX + "Edits from a publish")
+    return got
+
+
+def cook_drawn_locks(sop) -> None:
+    """Python SOP "drawn_locks" (after spine_edit): every lock drawn on the skin (v0.2b) becomes one more spine,
+    shaped like the measured ones (the same point count and attributes), piece -1 (no mesh), `drawn` 1, with its
+    own resolved settings (defaults -> group -> lock, `lock_display_attribs`) and its width / thickness / taper.
+    The detail attributes the network switches on: `edited_count` (spines the edit moved), `drawn_count`,
+    `drawn_group` (the Blast group of the drawn locks' strands). Input 1 the rest scalp (the root on the skin)."""
+    import numpy as np
+    top = sop.parent()
+    geo = sop.geometry()
+    data = read_data(top)
+    drawn = [lk for lk in data.locks if lk.drawn and len(lk.curve) >= 2]
+    edited = int(sum(geo.primIntAttribValues(config.ATTR_EDITED))) if geo.findPrimAttrib(config.ATTR_EDITED) else 0
+    for name, value in (("edited_count", edited), ("drawn_count", len(drawn)),
+                        ("drawn_group", drawn_group(lk.id for lk in drawn))):
+        geo.addAttrib(hou.attribType.Global, name, "" if isinstance(value, str) else 0)
+        geo.setGlobalAttribValue(name, value)
+    if not drawn:
+        return
+    scalp = sop.inputs()[1].geometry() if len(sop.inputs()) > 1 and sop.inputs()[1] is not None else None
+    unit = _unit(top)
+    prims = geo.prims()
+    n = len(prims[0].vertices()) if prims else int(top.evalParm("spine_points")) + 1
+    ids = [lk.id for lk in drawn]
+    attrs = lock_display_attribs(data, ids)
+    for name, default in (("piece", 0), (ATTR_DRAWN, 0), (config.ATTR_EDITED, 0)):
+        if geo.findPrimAttrib(name) is None:
+            geo.addAttrib(hou.attribType.Prim, name, default)
+    for name, default in (("curveu", 0.0), ("tangentu", (0.0, 0.0, 0.0)), ("lock_axis", (0.0, 0.0, 0.0)),
+                          ("lock_minor", (0.0, 0.0, 0.0)), ("lock_width", 0.0), ("lock_thick", 0.0),
+                          ("lock_twist", 0.0)):
+        if geo.findPointAttrib(name) is None:
+            geo.addAttrib(hou.attribType.Point, name, default)
+    for k, lk in enumerate(drawn):
+        s = data.resolve(lk.id)
+        on = nrm = None
+        if scalp is not None and len(scalp.iterPrims()):
+            hit = scalp.nearestPrim(hou.Vector3(*lk.curve[0]))
+            if hit[0] is not None:
+                on, nrm = tuple(hit[0].positionAtInterior(hit[1], hit[2])), tuple(hit[0].normal())
+        a = drawn_spine_arrays(lk.curve, n, unit, lk.width_cm, lk.thick_cm, lk.taper, s.get("width_mult", 1.0),
+                               s.get("thick_mult", 1.0), s.get("twist_add", 0.0), on, nrm)
+        pts = geo.createPoints([tuple(p) for p in a["P"]])
+        for i, pt in enumerate(pts):
+            pt.setAttribValue("curveu", float(a["curveu"][i]))
+            pt.setAttribValue("tangentu", tuple(a["tangent"][i]))
+            pt.setAttribValue("lock_axis", tuple(a["axis"][i]))
+            pt.setAttribValue("lock_minor", tuple(a["minor"][i]))
+            pt.setAttribValue("lock_width", float(a["width"][i]))
+            pt.setAttribValue("lock_thick", float(a["thick"][i]))
+            pt.setAttribValue("lock_twist", float(a["twist"][i]))
+        poly = geo.createPolygon(is_closed=False)
+        for pt in pts:
+            poly.addVertex(pt)
+        own: dict[str, Any] = {key: attrs[key][k] for key in attrs}
+        own.update({config.ATTR_LOCK_ID: lk.id, "piece": -1, "mesh_name": "", "root": tuple(a["root"]),
+                    "direction": tuple(a["direction"]), "length": a["length"], ATTR_DRAWN: 1, config.ATTR_EDITED: 0})
+        for key, value in own.items():
+            attr = geo.findPrimAttrib(key)
+            if attr is None or attr.isArrayType():
+                continue
+            if isinstance(value, (list, tuple)) and attr.size() != len(value):
+                continue
+            poly.setAttribValue(attr, value)
+
+
 def radial_on() -> bool:
     """The viewport's radial menu becomes MONO Grooming while the panel is shown (grooming_workspace)."""
     from apps.houdini import grooming_workspace
@@ -2313,4 +3054,8 @@ __all__ = [
     "mask_cover", "mask_dropped",
     "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush", "paint_enter", "paint_exit", "paint_layer",
     "import_masks", "masks_from_publish",
+    # v0.2b control points and drawn locks (the viewer state B3 and the panel B4)
+    "lock_handles", "set_points", "reset_points", "rotate_points", "scale_points", "set_handle_count", "redraw_lock",
+    "draw_lock", "set_drawn", "delete_drawn_locks", "edited_ids", "drawn_ids", "scalp_wired", "animated_scalp",
+    "import_spines", "spines_from_publish", "spine_record", "NODE_SPINES_MEASURED", "NODE_MESH_CARRIED",
 ]
