@@ -1055,8 +1055,10 @@ of the product was changed. Numbers are Helen's, hython unless said.**
 - A lock shows the default number of handles for its length (one every 8 cm, at least 4, at most 12) until
   a number is set for it; the set number is kept with the lock through save / reopen and Detect.
 - Changing the number of handles on an edited lock keeps its shape: the spine after the change lies within
-  0.1 cm of the spine before it, for more handles and for fewer down to 4 (a limit to confirm in the build:
-  fewer handles cannot hold every edit; the check states what it measured).
+  0.25 cm of the spine before it (`config.RESAMPLE_TOL_CM`; set by the manager 2026-11-20 from B1's t77:
+  5 -> 8 -> 5 on Helen's spines 0.017-0.058 cm a step, 0.22 cm on the 89.6 cm lock turned 25 deg; the first
+  0.1 cm was not measured). Fewer handles cannot hold every edit: past the limit the change is still made
+  and the message line says how far the spine moved.
 - A lock drawn on bare skin grows density x max(its skin, its cross-section) strands within 15 %, roots on
   the skin, hair width within 20 % of the set width at four stations, no error or warning on the node.
 - Draw is one undo step that also gives the lock its footprint (0.5 x its width round its root): it has hair
