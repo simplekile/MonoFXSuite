@@ -801,11 +801,7 @@ def p1_survive():
     hou.hipFile.save(hip)
     got = sub("dump", SUITE, hip, "p1_reopen")
     if "error" not in got:
-        z = np.load(OUT + "/p1_reopen.npz")
-        reopened = {}
-        st = np.concatenate([[0], np.cumsum(z["nv"])])
-        for k in range(len(z["lock"])):
-            reopened.setdefault(int(z["lock"][k]), []).append((int(z["sid"][k]), z["P"][st[k]:st[k + 1]]))
+        reopened = _npz_strands(OUT + "/p1_reopen.npz")
         rows["save_reopen"] = {"hair_max_cm": float("%.3g" % same_strands(h0, reopened)), "schema": got.get("stored_schema"),
                                "edited": got.get("edited"), "drawn": got.get("drawn"), "errors": got.get("errors")}
     else:
@@ -936,11 +932,14 @@ def p3_publish():
 # r / m / x: the build before v0.2b, a schema 6 scene, the full cook; s: shots (processes of their own)
 # ---------------------------------------------------------------------------
 def _npz_strands(path):
+    """{lock: [(strand id, points cm)]} of a dump (accept_v02b_sub.py): the points are mapped from <tag>_P.npy and
+    copied strand by strand (one 96 MB array failed to allocate in this long-running process, twice)."""
     z = np.load(path)
+    P = np.load(os.path.splitext(path)[0] + "_P.npy", mmap_mode="r")
     out = {}
     st = np.concatenate([[0], np.cumsum(z["nv"])])
     for k in range(len(z["lock"])):
-        out.setdefault(int(z["lock"][k]), []).append((int(z["sid"][k]), z["P"][st[k]:st[k + 1]]))
+        out.setdefault(int(z["lock"][k]), []).append((int(z["sid"][k]), np.array(P[st[k]:st[k + 1]], dtype=np.float64)))
     return out
 
 

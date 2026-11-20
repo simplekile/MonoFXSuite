@@ -66,7 +66,9 @@ try:
         groom = node.node("GROOM")
         groom.cook()
         P, nv, lock, sid = strands(groom.geometry(), unit)
-        np.savez(os.path.splitext(OUTF)[0] + ".npz", P=P, nv=nv, lock=lock, sid=sid)
+        # the points apart, float32 cm, so the caller can map them instead of holding one large array
+        np.save(os.path.splitext(OUTF)[0] + "_P.npy", P.astype(np.float32))
+        np.savez(os.path.splitext(OUTF)[0] + ".npz", nv=nv, lock=lock, sid=sid)
         u, c = np.unique(lock, return_counts=True)
         R["strands"] = {str(int(a)): int(b) for a, b in zip(u, c)}
         R["sha1_points"] = hashlib.sha1(P.tobytes()).hexdigest()

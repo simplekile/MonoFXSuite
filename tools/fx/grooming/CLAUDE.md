@@ -1030,7 +1030,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - `spine_edit` moves the prim `root` only when the root handle moved: the measured `root` is spine_build's, not
     the spine's first point after Root to skin, and rewriting it on an unmoved-root edit moved the footprint (an
     identity edit of hair_back_20 moved hair 0.04 cm). `length` is scaled by the spine's length change; `curveu`
-    is the edited spine's arc length (only keys read it after SPINES).
+    stays the measured one. Handles all within `SPINE_STILL` (1e-6 scene units) of the measured spine leave the
+    spine untouched and `edited` 0: the per-lock loop is chaotic in the last bit (float noise of 1e-7 in P and
+    2e-6 in the frame moved hair_back_20's strands 0.04 cm; a recook with no change is exact, 0.0).
   - The carried mesh: `mesh_carry` (point wrangle `VEX_MESH_CARRY` on `mesh_pu`, inputs SPINES_MEASURED and
     SPINES) puts each point of an EDITED lock's piece at its `pu` on the edited spine with the same offset in the
     square frame (tangent, width axis, thickness axis) -> switch `mesh_carry_any` (the mesh itself while no lock
