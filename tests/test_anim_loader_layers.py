@@ -47,3 +47,16 @@ def test_patterns_move_under_the_loader_prim():
     roots = ["Cliff01_Low", "_materials", "SeaGrass"]
     assert root_patterns_moved("/Cliff01_Low /_materials /SeaGrass/** /Other %type:Mesh", roots, "Cliff01") == \
         "/Cliff01/Cliff01_Low /Cliff01/_materials /Cliff01/SeaGrass/** /Other %type:Mesh"
+
+
+def test_only_uv_models_and_lookdevs_become_loaders():
+    """char_Mermaid_texturing_geo (the user's report, 2026-11-20): a Sublayer of the texturing geo was upgraded to a
+    loader looking for the file in 03_uv, "missing". It is a texturing publish and stays a Sublayer."""
+    base = "D:/Job/proj/01_assets/_characters/char_Mermaid"
+    tex = parse_publish_path(f"{base}/03_surfacing/02_texturing/publish/v001/char_Mermaid_texturing_v001.usd")
+    uv = parse_publish_path(f"{base}/01_modelling/03_uv/publish/v002/char_Mermaid_uv_publish.usd")
+    ld = parse_publish_path(f"{base}/05_lookdev/publish/V001/char_Mermaid_lookdev_publish.usd")
+    shot = parse_publish_path("D:/Job/proj/02_shots/sh011/01_anim/publish/v003/geo_char_Mermaid.usd")
+    assert (tex.word, tex.loader_reads) == ("texturing", False)
+    assert (uv.word, uv.loader_reads) == ("model", True) and (ld.word, ld.loader_reads) == ("lookdev", True)
+    assert (shot.word, shot.loader_reads) == ("anim", False)

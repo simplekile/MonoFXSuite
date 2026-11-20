@@ -48,6 +48,7 @@ class Row:
     weight: int = 0  # bytes of the files its lookdev pulls (textures), 0 when unknown
     layer: str = ""  # a Sublayer / Reference reading a publish: what it reads ("lookdev v001 of prop_Cliff01")
     baked: bool = False  # a loader baked to plain nodes (no MonoFX inside); Upgrade restores it
+    convertible: bool = True  # a layer row: Upgrade can make a MonoFX Loader of it (a UV model or a lookdev)
 
     @property
     def behind(self) -> bool:
@@ -135,7 +136,8 @@ class Controller:
             if ref is not None:  # a Sublayer / Reference reading a publish: kind "layer"
                 rows.append(Row(info.path, "", info.legacy_name or info.path.rsplit("/", 1)[-1], "layer", ref.entity,
                                 self._status.get(info.path, {}), False, "", {ref.part: ref.version},
-                                layer=f"{ref.word} {ref.version} of {ref.entity}"))
+                                layer=f"{ref.word} {ref.version} of {ref.entity}",
+                                convertible=getattr(ref, "loader_reads", True)))
                 continue
             if st is None:
                 rows.append(Row(info.path, "", info.legacy_name or info.path.rsplit("/", 1)[-1], "geo", None,
@@ -164,17 +166,20 @@ class Controller:
     def legacy_paths(self) -> list[str]:
         """Everything Upgrade turns into a MonoFX Loader: old loaders (2.2, 2.1, Character Loader) and Sublayers /
         References reading a publish. One action, not Upgrade and Convert (the user's call, 2026-11-17)."""
-        return [r.node_path for r in self._rows if r.legacy or r.kind == "layer"]
+        return [r.node_path for r in self._rows if r.legacy or (r.kind == "layer" and r.convertible)]
 
     def headline(self) -> str:
         behind = len(self.behind_paths())
         asset = sum(1 for r in self._rows if r.needs_asset)
+        missing = sum(1 for r in self._rows if r.missing and not r.legacy)
         legacy = len(self.legacy_paths())
         if not self._rows:
             return "No loaders in the scene"
         parts = [f"{behind} behind"] if behind else []
         if legacy and not behind:
             parts.append(f"{legacy} to upgrade")
+        if missing:  # a file gone from disk is not "All up to date" (char_Mermaid_texturing_geo, 2026-11-20)
+            parts.append(f"{missing} missing")
         if asset:
             parts.append(f"{asset} {'needs' if asset == 1 else 'need'} an asset")
         if legacy and behind:
@@ -426,6 +431,16 @@ class Controller:
 
     def open_folder(self, path: str) -> None:
         self.message = "" if self.backend.open_folder(path) else "No folder for this loader."
+
+    def part_folders(self, path: str) -> dict[str, tuple[str, str]]:
+        """{part: (word, folder)} for a row's Open folder menu; {} for a backend without them."""
+        fn = getattr(self.backend, "part_folders", None)
+        return fn(path) if fn else {}
+
+    def open_part_folder(self, path: str, part: str) -> None:
+        found = self.part_folders(path).get(part)
+        ok = found is not None and self.backend.open_part_folder(path, part)
+        self.message = "" if ok else f"No {part} publish folder for this loader."
 
     def open_monos(self, path: str) -> None:
         self.message = "" if self.backend.open_monos(path) else "Monos could not open this loader's asset or shot."

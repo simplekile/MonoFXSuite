@@ -22,7 +22,7 @@ from tools.fx.anim_loader.logic import LoaderState, Output, Resolved
 
 __all__ = [
     "read_state", "write_state", "refresh", "create_loader", "cb_parm_changed", "cb_refresh", "cb_reload",
-    "cb_open_manager", "cb_apply_timeline", "apply_timeline", "menu_versions", "menu_anim_versions",
+    "cb_open_manager", "cb_open_folder", "cb_apply_timeline", "apply_timeline", "menu_versions", "menu_anim_versions",
     "menu_anim_files", "menu_assets", "menu_shots", "menu_model_versions", "menu_model_files", "menu_asset_groups", "on_created", "find_loaders", "load_shot", "update", "set_asset",
     "upgrade", "LoadResult", "on_loaded", "check_heavy_shot",
 ]
@@ -35,6 +35,45 @@ _F_RE = re.compile(r"\$F(\d*)")
 def _s(node, name: str) -> str:
     p = node.parm(name)
     return p.evalAsString().strip() if p is not None else ""
+
+
+def use_prim(node) -> bool:
+    """Prim Name on (graft under /<Prim Name>); a node without the parm (older HDA) grafts."""
+    p = node.parm(config.P_USE_PRIM) if node is not None else None
+    return True if p is None else bool(p.eval())
+
+
+def set_use_prim(node, on: bool) -> None:
+    p = node.parm(config.P_USE_PRIM)
+    if p is not None:
+        p.set(1 if on else 0)
+
+
+def instance_root(node) -> str | None:
+    """Where the instance sits: "/<Prim Name>", "" with Prim Name off (the publish's own root prims), None when
+    there is nothing to work on (on, and no name)."""
+    inst = _s(node, config.P_INSTANCE)
+    if not use_prim(node):
+        return ""
+    return "/" + inst if inst else None
+
+
+def instance_paths(node) -> list[str]:
+    """The instance's top prims: /<Prim Name>, or with Prim Name off the branch's own root prims (input 0's prims
+    pass through the loader and are not its own)."""
+    root = instance_root(node)
+    if root is None:
+        return []
+    if root:
+        return [root]
+    topo = node.node("groom_topology")
+    try:
+        stage = topo.stage() if topo is not None else None
+    except hou.OperationFailed:
+        stage = None
+    if stage is None:
+        return []
+    return ["/" + c.GetName() for c in stage.GetPseudoRoot().GetChildren() if c.GetName() != "HoudiniLayerInfo"]
 
 
 def _set(node, name: str, value) -> None:
@@ -266,6 +305,7 @@ def create_loader(parent, root: str, shot: str, anim_version: str, output: Outpu
 
     state = logic.initial_state(Path(root), shot, anim_version, output)
     node = parent.createNode(config.HDA_TYPE, _unique_name(parent, state.instance_name))
+    set_use_prim(node, True)  # a shot's instances each under /<instance> (on_created turned it off in an asset scene)
     write_state(node, state)
     node.setUserData(config.USER_DATA, json.dumps({"shot": shot, "anim_file": output.file}))
     refresh(node)
@@ -283,6 +323,7 @@ def on_created(node) -> None:
     asset = logic.detect_asset(root, hip) if root is not None else None
     if asset and not _s(node, config.P_ROOT):  # a scene in an asset folder (grooming, lookdev): the asset's model
         write_state(node, logic.initial_asset_state(root, asset))
+        set_use_prim(node, False)  # the asset as published (/Geo...); load_shot / Upgrade set it on again
     elif root is not None and not _s(node, config.P_ROOT):
         _set(node, config.P_ROOT, root.as_posix())
         shot = logic.detect_shot(hip)
@@ -731,6 +772,7 @@ def _upgrade_character_loader(node):
     display = node.isDisplayFlagSet()
     node.setName(_unique_name(parent, name + "_3_2"))
     new = parent.createNode(config.HDA_TYPE, name)
+    set_use_prim(new, True)  # its prims move under /<asset> (the docstring); nodes after it were made for that
     new.setPosition(pos)
     for index, src, out_index in ins:
         new.setInput(index, src, out_index)
@@ -775,6 +817,9 @@ def add_assets(parent, root: str, names: list[str]) -> LoadResult:
                 prim = f"{name}_inst{i:02d}"
             state = dataclasses.replace(logic.initial_asset_state(Path(root), name), instance_name=prim)
             node = parent.createNode(config.HDA_TYPE, _unique_name(parent, prim))
+            # Source Asset: Prim Name off (the user's ask, 2026-11-20); a second instance of the asset here needs
+            # its own /<asset>_inst02, or both would sit at /Geo
+            set_use_prim(node, i > 1)
             write_state(node, state)
             refresh(node)
             _place_new_node(node)
@@ -818,7 +863,7 @@ def solo(paths: list[str]) -> int:
         if display is None:
             continue
         mine = [n for n in nodes if n.parent() == net]
-        prims = [f"/{_s(n, config.P_INSTANCE)}" for n in mine if _s(n, config.P_INSTANCE)]
+        prims = [p for n in mine for p in instance_paths(n)]
         rule = hou.LopSelectionRule()
         rule.setPathPattern(" ".join(prims))  # empty: no solo
         with net.viewportOverrides(display) as overrides:  # Houdini edits overrides only inside a with block
@@ -886,6 +931,24 @@ def publish_folder(path: str) -> str:
         return ""
     folder = logic.list_asset_dirs(root).get(state.asset or "")
     return str(folder) if folder else str(root / "02_shots" / state.shot)
+
+
+def part_folders(path: str) -> dict[str, tuple[str, str]]:
+    """{part: (word, folder)} of a loader, in column order (``logic.part_folders``); a layer row has its version
+    folder as "anim"."""
+    if LAYER_SEP in path:
+        folder = publish_folder(path)
+        return {"anim": ("Publish", folder)} if folder else {}
+    node = hou.node(path)
+    state = read_state(node) if node is not None else None
+    if state is None:
+        return {}
+    return {part: (logic.part_word(state, part), folder) for part, folder in logic.part_folders(state).items()}
+
+
+def open_part_folder(path: str, part: str) -> bool:
+    found = part_folders(path).get(part)
+    return open_external(found[1]) if found else False
 
 
 def monos_link_for(path: str) -> str:
@@ -993,11 +1056,16 @@ def handoff(paths: list[str], out_dir: str) -> list[str]:
         tex.mkdir(parents=True, exist_ok=True)
         flat = node.stage().Flatten()
         layer = Sdf.Layer.CreateNew(str(folder / f"{inst}.usd"))
-        if not flat.GetPrimAtPath(f"/{inst}"):
-            lines.append(f"{inst}: nothing at /{inst}")
+        # Prim Name off: the instance's top prims at their own paths (/Geo, /_materials), not wrapped (a wrap would
+        # leave bindings to /_materials pointing outside); the default prim is Geo when there is one
+        tops = [t for t in instance_paths(node) if flat.GetPrimAtPath(t)]
+        if not tops:
+            lines.append(f"{inst}: nothing at {instance_root(node) or '/'}")
             continue
-        Sdf.CopySpec(flat, f"/{inst}", layer, f"/{inst}")
-        layer.defaultPrim = inst
+        for top in tops:
+            Sdf.CopySpec(flat, top, layer, top)
+        names = [t.strip("/") for t in tops]
+        layer.defaultPrim = inst if inst in names else ("Geo" if "Geo" in names else names[0])
         for key in ("framesPerSecond", "timeCodesPerSecond", "startTimeCode", "endTimeCode", "metersPerUnit",
                     "upAxis"):
             if flat.pseudoRoot.GetInfo(key) is not None and flat.pseudoRoot.HasInfo(key):
@@ -1118,6 +1186,10 @@ def convert_layers(paths: list[str]) -> tuple[list[str], list[str]]:
             if n_files != 1 or ref.kind != "asset":
                 notes.append(f"{node.name()}: not converted ({'several files' if n_files != 1 else 'a shot file'})")
                 continue
+            if not ref.loader_reads:  # e.g. a texturing geo: the loader would look for it in 03_uv, "missing"
+                notes.append(f"{node.name()}: not converted (a {ref.word} publish; the MonoFX Loader reads UV "
+                             "models and lookdevs)")
+                continue
             root = Path(ref.root)
             state = logic.initial_asset_state(root, ref.entity)
             if ref.part == "lookdev":
@@ -1135,6 +1207,7 @@ def convert_layers(paths: list[str]) -> tuple[list[str], list[str]]:
             branch = _branch_after(node)
             node.setName(_unique_name(parent, name + "_sublayer"))
             loader = parent.createNode(config.HDA_TYPE, name)
+            set_use_prim(loader, True)  # the nodes after it are moved under /<prim> below
             loader.setPosition(pos)
             write_state(loader, dataclasses.replace(state, instance_name=prim))
             _set(loader, "mx_hide_enable", 0)  # the sublayer showed every prim: the loader hides none either
@@ -1186,39 +1259,40 @@ BAKED_USER_DATA = "monofx_baked_loader"  # JSON {"type": <loader type>}: a baked
 BAKED_SHOW_CODE = """hda = hou.pwd().parent()
 stage = hou.pwd().editableStage()
 from pxr import UsdGeom
-inst = hda.evalParm("mx_instance_name")
+@ROOT@
 # Each prim's own visibility and purpose, baked from the MonoFX Loader
 RULES = %s
-for rule in RULES if inst else []:
-    prim = stage.GetPrimAtPath("/" + inst + ("" if rule["pattern"] == "." else "/" + rule["pattern"]))
-    if not prim or not prim.IsA(UsdGeom.Imageable):
-        continue
-    img = UsdGeom.Imageable(prim)
-    if "vis" in rule:
-        img.CreateVisibilityAttr().Set(rule["vis"])
-    if "purpose" in rule:
-        img.CreatePurposeAttr().Set(rule["purpose"])
-"""
+for rule in RULES if root is not None else []:
+    tops = instance_prims(stage) if rule["pattern"] == "." else [stage.GetPrimAtPath(root + "/" + rule["pattern"])]
+    for prim in tops:
+        if not prim or not prim.IsA(UsdGeom.Imageable):
+            continue
+        img = UsdGeom.Imageable(prim)
+        if "vis" in rule:
+            img.CreateVisibilityAttr().Set(rule["vis"])
+        if "purpose" in rule:
+            img.CreatePurposeAttr().Set(rule["purpose"])
+""".replace("@ROOT@", config.ROOT_CODE)
 
 BAKED_SUBD_CODE = """hda = hou.pwd().parent()
 stage = hou.pwd().editableStage()
 from pxr import Sdf, Usd, UsdGeom
-inst = hda.evalParm("mx_instance_name")
-root = stage.GetPrimAtPath("/" + inst) if inst else None
+@ROOT@
 vp = hda.evalParm("mx_viewport")
 look_vp, groom_vp = vp & 1, vp & 2
 # Subdivision per mesh, baked from the MonoFX Loader (shot rule > lookdev > anim > none): mesh -> (scheme, dicing)
 PLAN = %s
-if root:
+if root is not None:
     for mesh, (scheme, dicing) in PLAN.items():
-        prim = stage.GetPrimAtPath("/" + inst + mesh)
+        prim = stage.GetPrimAtPath(root + mesh)
         if not prim:
             continue
         UsdGeom.Mesh(prim).GetSubdivisionSchemeAttr().Set(scheme)
         if dicing is not None:
             UsdGeom.PrimvarsAPI(prim).CreatePrimvar("karma:object:dicingquality", Sdf.ValueTypeNames.Float,
                                                     UsdGeom.Tokens.constant).Set(dicing)
-    for prim in Usd.PrimRange(root):
+for top in instance_prims(stage):
+    for prim in Usd.PrimRange(top):
         if not look_vp:
             rel = prim.GetRelationship("material:binding")
             targets = rel.GetTargets() if rel else []
@@ -1227,7 +1301,7 @@ if root:
                 rel.SetTargets([])
         if not groom_vp and prim.IsA(UsdGeom.BasisCurves):
             UsdGeom.Imageable(prim).CreatePurposeAttr().Set(UsdGeom.Tokens.render)
-"""
+""".replace("@ROOT@", config.ROOT_CODE)
 
 
 def _plain_templates(group) -> "hou.ParmTemplateGroup":
@@ -1348,6 +1422,7 @@ def find_baked(root=None) -> list:
 def restore_baked(node):
     """A baked subnet -> the MonoFX Loader again, from the loader parms it kept (edits made inside are lost)."""
     loader = node.parent().createNode(config.HDA_TYPE, _unique_name(node.parent(), node.name() + "_loader"))
+    set_use_prim(loader, True)  # baked before Prim Name had a toggle: it grafted; baked after: its value is copied
     _copy_parm_values(node, loader)
     refresh(loader)
     _replace(node, loader)
@@ -1623,6 +1698,14 @@ class HoudiniBackend:
         return open_external(publish_folder(path))
 
     @staticmethod
+    def part_folders(path):
+        return part_folders(path)
+
+    @staticmethod
+    def open_part_folder(path, part):
+        return open_part_folder(path, part)
+
+    @staticmethod
     def open_monos(path):
         return open_external(monos_link_for(path))
 
@@ -1749,12 +1832,12 @@ def author_subd(node, stage) -> None:
     """Called by the HDA's Python LOP after the graft: the scheme and dicing of every anim mesh of the instance."""
     from pxr import Sdf, UsdGeom
 
-    inst = _s(node, config.P_INSTANCE)
-    if not inst:
+    root = instance_root(node)
+    if root is None:
         return
     plan, _ = node_subd_plan(node)
     for mesh, choice in plan.items():
-        prim = stage.GetPrimAtPath("/" + inst + mesh)
+        prim = stage.GetPrimAtPath(root + mesh)
         if not prim:
             continue
         UsdGeom.Mesh(prim).GetSubdivisionSchemeAttr().Set(choice.scheme)
@@ -1837,20 +1920,21 @@ def author_show(node, stage) -> None:
     """Called by the HDA's show_rules Python LOP, last: what the shot shows of each prim it names."""
     from pxr import UsdGeom
 
-    inst = _s(node, config.P_INSTANCE)
-    if not inst:
+    root = instance_root(node)
+    if root is None:
         return
     # each prim's own eye and purpose, as Houdini authors them: hiding prunes (the children keep their own
     # visibility for when the parent shows again), purpose inherits where a prim has none of its own
     for rule in logic.parse_show_rules(_s(node, config.P_SHOW_RULES)):
-        prim = stage.GetPrimAtPath(f"/{inst}" if rule["pattern"] == logic.ROOT else f"/{inst}/{rule['pattern']}")
-        if not prim or not prim.IsA(UsdGeom.Imageable):
-            continue
-        img = UsdGeom.Imageable(prim)
-        if "vis" in rule:
-            img.CreateVisibilityAttr().Set(rule["vis"])
-        if "purpose" in rule:
-            img.CreatePurposeAttr().Set(rule["purpose"])
+        paths = instance_paths(node) if rule["pattern"] == logic.ROOT else [f"{root}/{rule['pattern']}"]
+        for prim in (stage.GetPrimAtPath(p) for p in paths):  # the root rule: each top prim with Prim Name off
+            if not prim or not prim.IsA(UsdGeom.Imageable):
+                continue
+            img = UsdGeom.Imageable(prim)
+            if "vis" in rule:
+                img.CreateVisibilityAttr().Set(rule["vis"])
+            if "purpose" in rule:
+                img.CreatePurposeAttr().Set(rule["purpose"])
 
 
 # --- the camera's settings on the loader (layout B: edited from the inspector) ---------------------------------
@@ -1934,6 +2018,23 @@ def cb_reload(kwargs: dict) -> None:
     n_loaders, n_files = reload_from_disk([node.path()])
     _set(node, config.P_STATUS, f"Reloaded {n_files} file{'s' if n_files != 1 else ''} from disk." if n_files
          else "Nothing to reload: no file on disk.")
+
+
+def cb_open_folder(kwargs: dict) -> None:
+    """The Open Folder strip (Geo | Lookdev | Groom | Cloth): the clicked part's publish folder in Explorer. The strip
+    is a toggle strip set back to nothing at once, so every click is a click, also on the same button twice."""
+    node = kwargs["node"]
+    parm = node.parm(config.P_OPEN_FOLDER)
+    value = int(parm.eval()) if parm is not None else 0
+    if parm is not None:
+        parm.set(0)
+    part = next((p for p, bit in config.OPEN_FOLDER_BITS.items() if value & bit), "")
+    state = read_state(node)
+    if not part or state is None:
+        return
+    word = logic.part_word(state, part)
+    if not open_part_folder(node.path(), part):
+        _set(node, config.P_STATUS, f"No {word.lower()} publish folder for this loader.")
 
 
 def shot_subd_load() -> list[tuple[str, int]]:

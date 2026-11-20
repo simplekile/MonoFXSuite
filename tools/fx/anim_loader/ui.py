@@ -25,11 +25,12 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEasingCurve, QEvent, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -438,6 +439,18 @@ class _ListDelegate(QStyledItemDelegate):
             x -= w + pt.px(8)
         return out, x
 
+    def part_at(self, rect: QRect, pos) -> str:
+        """The part column ("anim", "lookdev", "groom", "cloth") under ``pos`` in a row's ``rect``, else ""."""
+        pt = self.pt
+        if rect.width() >= pt.px(NARROW_ROW_PX):
+            cols, _ = self.columns(QRect(rect.left(), rect.top(), rect.width(), rect.height()))
+            hits = [(cols[p], p) for p in ALL_PARTS if p in cols]
+        else:
+            hits = [(QRect(c.left(), rect.top() + pt.px(36), c.width(), pt.px(20)), p) for c, p in self.cells(rect)]
+        gap = pt.px(4)  # half the gap between columns belongs to each side
+        return next((p for r, p in hits if r.left() - gap <= pos.x() <= r.right() + gap
+                     and rect.top() <= pos.y() <= rect.bottom()), "")
+
     def cells(self, rect: QRect) -> list[tuple[QRect, str]]:
         """Narrow rows: the four versions' cells across the row."""
         pad = self.pt.px(LIST_PAD)
@@ -804,6 +817,14 @@ class AnimLoaderManager(QWidget):
             b.clicked.connect(lambda _=False, k=key: self.set_view(k))
             self.view_buttons.addButton(b)
             t.addWidget(b)
+        # Refresh (the user's "no refresh?", 2026-11-20): the scene and the publishes read again. Also F5, and on
+        # coming back to the window (a node changed, a new publish meanwhile), at most every few seconds
+        self.refresh_button = self._icon_button("rotate-cw", "Refresh: read the scene's loaders and the publishes "
+                                                             "again (F5)", STYLE_ICON_FLAT)
+        self.refresh_button.clicked.connect(self.refresh)
+        t.addWidget(self.refresh_button)
+        refresh_key = QShortcut(QKeySequence(Qt.Key.Key_F5), self)
+        refresh_key.activated.connect(self.refresh)
         self.load_button = self._icon_button("plus", "Add: load a shot, or add assets", STYLE_ICON_FLAT)
         self.load_menu = self._menu_for(self.load_button)
         t.addWidget(self.load_button)
@@ -1012,8 +1033,17 @@ class AnimLoaderManager(QWidget):
     def current_view(self) -> QListWidget:
         return self.grid_view if self._view_key == "grid" else self.list_view
 
+    REFRESH_ON_FOCUS_S = 3.0  # coming back to the window scans again, not more often than this
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() == QEvent.Type.ActivationChange and self.isActiveWindow() and self._pending is None \
+                and time.monotonic() - getattr(self, "_last_refresh", 0.0) > self.REFRESH_ON_FOCUS_S:
+            self.refresh()
+
     def refresh(self) -> None:
         """Reads the loaders now (main thread) and scans the disk on the worker thread."""
+        self._last_refresh = time.monotonic()
         token, infos = self.ctl.begin_scan()
         self._pending = (token, self._pool.submit(self.ctl.scan_job, infos))
         self._poll.start()
@@ -1379,27 +1409,62 @@ class AnimLoaderManager(QWidget):
 
     def _menu(self, view: QListWidget, pos) -> None:
         item = view.itemAt(pos)
-        menu = self.row_menu(item) if item is not None else None
+        part = ""
+        delegate = view.itemDelegate()
+        if item is not None and hasattr(delegate, "part_at"):
+            part = delegate.part_at(view.visualItemRect(item), pos)
+        menu = self.row_menu(item, part) if item is not None else None
         if menu is not None:
             menu.exec(view.viewport().mapToGlobal(pos))
 
-    def row_menu(self, item) -> QMenu | None:
-        """The right-click menu of a row: its actions (the inspector only shows information)."""
+    def _folder_menu(self, menu: QMenu, row: Row, part: str) -> None:
+        """Open folder: the clicked column's publish folder first (the user's ask, 2026-11-20), then a submenu with
+        every part's folder (Anim / Model, Lookdev, Groom, Cloth)."""
+        folders = self.ctl.part_folders(row.node_path)
+        if not folders:
+            menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))
+            return
+        sub = QMenu("Open folder", menu)  # QMenu(title, parent): addMenu(title)'s submenu died with its wrapper
+        sub.setStyleSheet(self.css(STYLE_MENU_SQ))
+        for key, (word, folder) in folders.items():
+            act = sub.addAction(f"{word} publish", lambda k=key: self._open_part(row.node_path, k))
+            act.setToolTip(folder)
+        sub.setToolTipsVisible(True)
+        menu.addMenu(sub)
+
+    def _open_part(self, path: str, part: str) -> None:
+        self.ctl.open_part_folder(path, part)
+        self.result.setText(self.ctl.message)
+
+    def row_menu(self, item, part: str = "") -> QMenu | None:
+        """The right-click menu of a row: its actions (the inspector only shows information). ``part``: the column
+        clicked, whose publish folder comes first."""
         row: Row | None = item.data(ROLE_ROW) if item else None
         if row is None:
             return None
         menu = QMenu(self)
         menu.setStyleSheet(self.css(STYLE_MENU_SQ))
+        column = self.ctl.part_folders(row.node_path).get(part) if part and row.kind != "layer" else None
+        if column is not None:
+            act = menu.addAction(f"Open {column[0].lower()} publish folder",
+                                 lambda: self._open_part(row.node_path, part))
+            act.setToolTip(column[1])
         menu.addAction("Select node", lambda: self._select_node(item))
         menu.addSeparator()
         if row.kind == "layer":
             sel = self.ctl.layer_paths(self.ctl.selection) if row.node_path in self.ctl.selection else []
-            paths = sel or [row.node_path]
+            convertible = set(self.ctl.legacy_paths())
+            paths = [p for p in (sel or [row.node_path]) if p in convertible]
             st, newer = row.parts.get(next(iter(row.parts), ""), (logic.STATUS_OFF, None))
             if newer and st == logic.STATUS_NEWER:
                 menu.addAction(f"Update to {newer}", self._run(lambda: self.ctl._update([row.node_path])))
-            n = f" ({len(paths)})" if len(paths) > 1 else ""
-            menu.addAction(f"Upgrade to MonoFX Loader{n}", self._run(lambda: self.ctl.upgrade_paths(list(paths))))
+            if paths:
+                n = f" ({len(paths)})" if len(paths) > 1 else ""
+                menu.addAction(f"Upgrade to MonoFX Loader{n}",
+                               self._run(lambda: self.ctl.upgrade_paths(list(paths))))
+            elif not row.convertible:  # a texturing geo and the like: the loader reads UV models and lookdevs
+                act = menu.addAction("Stays a Sublayer: the loader reads UV models and lookdevs")
+                act.setEnabled(False)
             menu.addSeparator()
             menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))
             return menu
@@ -1420,7 +1485,7 @@ class AnimLoaderManager(QWidget):
             act.setToolTip("Read the files again, for a publish written again into the same version")
         if not row.legacy:
             menu.addSeparator()
-            menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))
+            self._folder_menu(menu, row, part)
             if row.kind != "cam":
                 menu.addAction("Open in Monos", lambda: self._link(row.node_path, "monos"))
             menu.addAction("Frame in the viewport", lambda: self._link(row.node_path, "frame"))
@@ -1481,8 +1546,11 @@ class AnimLoaderManager(QWidget):
             shots.add(guess[1])
         self.shots = sorted(shots, key=str.lower)
         loaded = [x for x in self.ctl.shots() if x in shots]  # an unsaved scene: the shot its loaders are from
+        # a saved scene of the project that is no shot's (an asset's lookdev) starts on no shot: the project's first
+        # shot read as the scene's (sh001 in char_Mermaid's lookdev, the user's report 2026-11-20)
+        first = self.shots[0] if self.shots and not guess[0] else ""
         shot = ((self._picked_shot if self._picked_shot in shots else "") or (guess[1] if guess[1] in shots else "")
-                or (loaded[0] if loaded else "") or (self.shots[0] if self.shots else ""))
+                or (loaded[0] if loaded else "") or first)
         self.ctl.scene_shot = guess[1]
         self.ctl.target_shot = shot
         self.ctl.target_root = root
@@ -1492,7 +1560,7 @@ class AnimLoaderManager(QWidget):
             act.setCheckable(True)
             act.setChecked(name == shot)
             act.triggered.connect(lambda _=False, x=name: self.pick_shot(x))
-        self.shot_button.setText(f"{shot} \u25be" if shot else "No shot")
+        self.shot_button.setText(f"{shot} \u25be" if shot else ("Pick a shot \u25be" if self.shots else "No shot"))
         self.shot_button.setVisible(bool(root))
         self._fill_load_menu()
 

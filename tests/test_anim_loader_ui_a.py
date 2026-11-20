@@ -352,3 +352,80 @@ def test_timeline_reads_the_anim_publish_and_not_an_asset(tmp_path):
     c.refresh()
     assert c.timeline("/stage/h") == (30.0, 0, 45)
     assert c.timeline("/stage/nothing") is None
+
+
+def test_column_right_click_opens_that_part_folder(win):
+    """The user's ask (2026-11-20): right-click a column's cell -> that part's publish folder first; Open folder is a
+    submenu of every part's folder."""
+    w, ui = win
+    b = w.backend
+    b.part_folders = lambda path: {"anim": ("Anim", "P:/a/v006"), "lookdev": ("Lookdev", "P:/l/v003"),
+                                   "groom": ("Groom", "P:/g/v001/char_Ata")}
+    b.open_part_folder = lambda path, part: b.calls.append(("part", path, part)) or True
+    item = _item(w, ui, "/stage/a")
+    menu = w.row_menu(item, "lookdev")
+    first = menu.actions()[0]
+    assert first.text() == "Open lookdev publish folder" and first.toolTip() == "P:/l/v003"
+    first.trigger()
+    assert b.calls[-1] == ("part", "/stage/a", "lookdev")
+    sub = _act(menu, "Open folder").menu()
+    assert [a.text() for a in sub.actions()] == ["Anim publish", "Lookdev publish", "Groom publish"]
+    _act(sub, "Groom publish").trigger()
+    assert b.calls[-1] == ("part", "/stage/a", "groom")
+    assert w.row_menu(item, "cloth").actions()[0].text() == "Select node"  # nothing for cloth: no first item
+    # the delegate finds the column under the cursor
+    view = w.list_view
+    rect = view.visualItemRect(item)
+    cols, _ = view.itemDelegate().columns(rect)
+    for part in ("anim", "lookdev", "groom", "cloth"):
+        assert view.itemDelegate().part_at(rect, cols[part].center()) == part
+    assert view.itemDelegate().part_at(rect, rect.topLeft()) == ""
+
+
+def test_texturing_sublayer_is_not_upgraded_and_missing_is_said(app, tmp_path, monkeypatch):
+    """The user's report (2026-11-20): Upgrade turned a texturing geo Sublayer into a loader that was "missing" while
+    the headline read "All up to date"."""
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from tests.test_anim_loader_controller import FakeBackend, LoaderInfo
+    from tools.fx.anim_loader import ui
+    from tools.fx.anim_loader.logic import STATUS_MISSING, parse_publish_path
+
+    b = FakeBackend()
+    ref = parse_publish_path("D:/Job/proj/01_assets/_characters/char_Mermaid/03_surfacing/02_texturing/publish/"
+                             "v001/char_Mermaid_texturing_v001.usd")
+    b.infos = [LoaderInfo("/stage/tex#1", None, False, "char_Mermaid_texturing_geo", "", ref)]
+    b.status = {}
+    w = ui.AnimLoaderManager(b)
+    w.wait()
+    assert w.ctl.legacy_paths() == [] and w.primary.isHidden() and w.headline.text() == "All up to date"
+    item = w.list_view.item(next(i for i in range(w.list_view.count())
+                                 if w.list_view.item(i).data(ui.ROLE_ROW)))
+    row = item.data(ui.ROLE_ROW)
+    assert row.layer == "texturing v001 of char_Mermaid"
+    acts = {a.text(): a for a in w.row_menu(item).actions()}
+    assert "Upgrade to MonoFX Loader" not in acts
+    assert not acts["Stays a Sublayer: the loader reads UV models and lookdevs"].isEnabled()
+    w.close()
+    b2 = FakeBackend()
+    first = next(i for i in b2.infos if i.state is not None)
+    b2.status = {**{i.path: {} for i in b2.infos if i.state is not None}, first.path: {"anim": (STATUS_MISSING, None)}}
+    w2 = ui.AnimLoaderManager(b2)
+    w2.wait()
+    assert "1 missing" in w2.headline.text() and w2.headline.text() != "All up to date"
+    w2.close()
+
+
+def test_refresh_button_f5_and_coming_back_scan_again(win):
+    """The user's "no refresh in the UI?" (2026-11-20): the manager read the scene once and after its own actions."""
+    w, ui = win
+    calls = []
+    w.ctl.begin_scan, real = (lambda: calls.append(1) or real()), w.ctl.begin_scan
+    w.refresh_button.click(); w.wait()
+    assert calls == [1] and w.refresh_button.toolTip().startswith("Refresh")
+    w._last_refresh = 0.0  # long ago: coming back to the window scans
+    ev = ui.QEvent(ui.QEvent.Type.ActivationChange)
+    w.isActiveWindow = lambda: True
+    w.changeEvent(ev); w.wait()
+    assert calls == [1, 1]
+    w.changeEvent(ev); w.wait()  # again at once: not twice in a row
+    assert calls == [1, 1]

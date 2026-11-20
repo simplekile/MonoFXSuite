@@ -57,8 +57,9 @@ def main():
               and bool(second.stage().GetPrimAtPath("/prop_Rock_inst02/Geo")), again.created)
         second.destroy() if second else None
         node = net.node("prop_Rock")
-        check("added on Source Asset, newest model", node.evalParm(config.P_SOURCE) == "asset"
-              and node.evalParm(config.P_MODEL_VERSION) == "v001" and bool(node.stage().GetPrimAtPath("/prop_Rock/Geo")))
+        check("added on Source Asset, newest model, Prim Name off (its own /Geo)", node.evalParm(config.P_SOURCE) == "asset"
+              and node.evalParm(config.P_MODEL_VERSION) == "v001" and node.evalParm(config.P_USE_PRIM) == 0
+              and bool(node.stage().GetPrimAtPath("/Geo")))
 
         # the shot layout: characters with the actors, the rest in the environments; Load shot uses them too
         lay = hou.node("/obj").createNode("lopnet", "layout")
@@ -212,7 +213,7 @@ def main():
                         absolute.append(v.path)
             layer.Traverse(Sdf.Path.absoluteRootPath, scan)
         check("hand off writes one USD of the instance, no MonoFX needed", st is not None
-              and st.GetDefaultPrim().GetName() == "prop_Rock" and not layer.subLayerPaths
+              and st.GetDefaultPrim().GetName() == "Geo" and not layer.subLayerPaths  # Prim Name off: its own /Geo
               and any(p.IsA(UsdGeom.Mesh) for p in st.Traverse()), lines)
         check("hand off leaves no absolute asset path", not absolute, absolute[:3])
     finally:

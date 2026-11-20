@@ -236,6 +236,11 @@
   from the checkout or `vendor/`): loader / import errors, broken material bindings, meshes without an authored
   `subdivisionScheme`, fps not authored or not the same, the model's default prim not `kind = component`, anim files
   without time samples (read from each publish file, not the loaded stage: the loader writes a scheme on every mesh).
+  Houdini adds, for a shot, each loader's lookdev on its anim (`publish_checks.lookdev_facts`, by path under the
+  instance prim): a lookdev that binds none of the anim's meshes or adds meshes of its own is a problem (instances
+  with the same finding make one). char_Mermaid V001 is made on the texturing geo (`/Mermaid_h`, cm): on sh011 v003
+  it gave /Geo no material and three static Mermaids at the origin while the line read clean; Blender, which imports
+  only the anim files, never shows that.
   One line on the status bar (never a dialog); the full list in a sticky note in /stage or the text block "MonoFX
   test". Houdini's hip is named into `%TEMP%/MonoFX/houdini_test`; the Blender file stays unsaved (process in
   `%TEMP%/MonoFX/blender_test`). Neither is ever saved in the project (Monos would take it for a work file).
@@ -405,6 +410,31 @@
   parms, so the hair driver is still hidden by default and scenes keep what they had; the inspector's eye shows it.
   Configure Primitive authors that visibility as a time sample at the current frame (its toggle is an expression):
   read it at a frame, `ComputeVisibility(Usd.TimeCode(f))`; at the default time it reads inherited.
+- Publish folders per part (the user's ask, 2026-11-20; `logic.part_folders`): the folder of the version on the node
+  (groom / cloth: the instance's own folder in it), the part's publish folder when that version is not on disk or
+  none is picked. Manager: a right-click on a Geo / Lookdev / Groom / Cloth cell puts "Open <part> publish folder"
+  first (`_ListDelegate.part_at`), and Open folder is a submenu of every part. Node: the Open Folder strip
+  (`mx_open_folder`, Geo | Lookdev | Groom | Cloth) under Manager / Refresh / Reload; a StringToggle strip set back
+  to 0 by `cb_open_folder`, since a Normal strip does not call back when the same button is clicked again.
+- Shot crumb: a saved scene in the project that is no shot's (an asset's lookdev) starts on no shot ("Pick a shot");
+  it showed the project's first shot (sh001 in char_Mermaid's lookdev). An unsaved scene still falls back to it.
+- The manager refreshes itself: a Refresh icon in the top bar, F5, and coming back to the window (at most every 3 s,
+  `REFRESH_ON_FOCUS_S`). Before, it read the scene only on open and after its own actions.
+- The headline counts loaders with a part missing on disk ("1 missing"); it read "All up to date" over a red cell.
+- Upgrade turns a publish Sublayer into a loader only when the loader reads that publish (`PublishRef.loader_reads`:
+  an asset's `01_modelling/03_uv` or lookdev). A texturing geo (`03_surfacing/02_texturing`) was made into a loader
+  that looked for it in 03_uv ("missing", char_Mermaid_texturing_geo); it now stays a Sublayer, its row says why.
+- Prim Name on / off (`mx_use_prim`, the user's ask 2026-11-20): on grafts under /<Prim Name>, off grafts at "/"
+  (Graft Stages `primpath="/"`), so the publish's own root prims stay (/Geo, /_materials, /Groom) and the graft still
+  flattens the branch (clips and `groom_unanimate` unchanged). Set when a loader is made: off for Source Asset
+  (`on_created` in an asset scene, Add assets' first instance; a second instance is on, /<asset>_inst02), on for a shot
+  and wherever nodes after the loader expect /<prim> (load_shot, Upgrade of a Sublayer or Character Loader, restoring
+  a bake). Switching Source never changes it: the mesh paths stay what the nodes after it name. Hand off with it off
+  writes the top prims at their own paths (default prim Geo). The parm's default is on, so
+  scenes saved before it keep their graft. Every Python LOP starts with `config.ROOT_CODE` (`root`, `instance_prims`);
+  the adapter has `instance_root` / `instance_paths`. Off: the top prims are the branch's own root prims, read from
+  the inner `groom_topology` (input 0's prims pass through), Uniform Scale goes on the branch before the graft
+  (`branch_scale`), and the "." show rule acts on each top prim.
 - Reload from disk (the user's ask, 2026-11-19): the node's Reload button (beside Refresh) and the manager's row menu
   re-read every file a loader uses (`adapter.files_of`: main file, lookdev with its sublayers, every frame of groom /
   cloth, sublayer slots, groom topology; `logic.loader_files`) for a publish written again into the same version,
