@@ -212,6 +212,40 @@ def _node(parent, kind, name, inputs=(), **parms):
     return n
 
 
+# Camera aperture (config.P_CAM_APERTURE): nothing on the publish's own (default); else the loader's width in mm and
+# the height from the publish camera's own ratio, or from the loader's ratio. Only the cameras of the loaded file:
+# input 0's cameras pass through untouched. USD lens values are tenths of a scene unit.
+CAM_APERTURE_CODE = '''hda = hou.pwd().parent()
+mode = hda.parm("@MODE@")
+mode = mode.evalAsString() if mode is not None else "@PUBLISH@"  # a menu: its token, not its index
+path = hda.evalParm("@PATH@")
+if mode != "@PUBLISH@" and path:
+    from pxr import Sdf, Usd, UsdGeom
+    src = Sdf.Layer.FindOrOpen(path)
+    stage = hou.pwd().editableStage()
+    cams = []
+    if src is not None:
+        src.Traverse(Sdf.Path.absoluteRootPath, lambda p: cams.append(p) if p.IsPrimPath()
+                     and src.GetPrimAtPath(p).typeName == "Camera" else None)
+    tenths = 1.0 / (100.0 * UsdGeom.GetStageMetersPerUnit(stage))
+    width = hda.evalParm("horizontalAperture") * tenths
+    for p in cams:
+        prim = stage.GetPrimAtPath(p)
+        if not prim or not prim.IsA(UsdGeom.Camera):
+            continue
+        cam = UsdGeom.Camera(prim)
+        if mode == "@RATIO@":
+            rx, ry = hda.evalParm("aspectratiox"), hda.evalParm("aspectratioy")
+        else:
+            t = Usd.TimeCode.EarliestTime()
+            rx, ry = cam.GetHorizontalApertureAttr().Get(t), cam.GetVerticalApertureAttr().Get(t)
+        cam.GetHorizontalApertureAttr().Set(width)
+        if rx and ry and rx > 0 and ry > 0:
+            cam.GetVerticalApertureAttr().Set(width * ry / rx)
+'''.replace("@MODE@", config.P_CAM_APERTURE).replace("@PATH@", config.P_ANIM_PATH).replace(
+    "@PUBLISH@", config.CAM_APERTURE_PUBLISH).replace("@RATIO@", config.CAM_APERTURE_RATIO)
+
+
 def build_network(sub) -> None:
     src = sub.indirectInputs()[0]
     layers = _node(sub, "sublayer", "branch_layers", num_files=len(config.P_LAYERS))
@@ -244,17 +278,20 @@ def build_network(sub) -> None:
     # camera: 2.1's chain (cam_Loader -> transform1 -> camera_edit1 -> transform4), on top of input 0
     cam = _node(sub, "sublayer", "cam_layer", (src,), filepath1=f'`chs("../{config.P_ANIM_PATH}")`')
     cam_scale = _node(sub, "xform", "cam_scale", (cam,), usexformcommonapi=0, scale='=ch("../scale2")')
-    edit = _node(sub, "camera", "camera_edit", (cam_scale,), primpattern="%type:Camera", createprims=0)
-    keep = ("horizontalAperture", "clippingRange", "houdiniguidescale")
+    # before camera_edit: cam_x100 works on its input's last modified prims, which a Camera LOP sets to the cameras
+    # and a Python LOP does not (the camera lost its x100 scale with cam_aperture last)
+    aperture = _node(sub, "pythonscript", "cam_aperture", (cam_scale,), python=CAM_APERTURE_CODE)
+    edit = _node(sub, "camera", "camera_edit", (aperture,), primpattern="%type:Camera", createprims=0)
+    # clipping and guide scale only: the aperture is cam_aperture's (2.1 set the width alone here, 36 mm by default,
+    # and left the height, so a 16:9 publish came out 3.05:1); nothing else is touched (transform, lens, focus)
+    keep = ("clippingRange", "houdiniguidescale")
     for p in edit.parms():
         if p.name().endswith("_control") and not any(k in p.name() for k in keep):
             try:
                 p.set("none")
             except hou.OperationFailed:
                 pass
-    edit.parm("aperture").set("setratio")
-    for name in ("horizontalAperture", "clippingRange1", "clippingRange2", "aspectratiox", "aspectratioy",
-                 "xn__houdiniguidescale_s3a"):
+    for name in ("clippingRange1", "clippingRange2", "xn__houdiniguidescale_s3a"):
         edit.parm(name).setExpression(f'ch("../{name}")', hou.exprLanguage.Hscript)
     cam_x100 = _node(sub, "xform", "cam_x100", (edit,), xforminworldspace=0, usexformcommonapi=0, scale=100.0)
 
@@ -430,10 +467,20 @@ def _parm_templates() -> hou.ParmTemplateGroup:
 
     cam = T.FolderParmTemplate("f_cam", "Camera", folder_type=T.folderType.Simple)
     cam.setConditional(T.parmCondType.HideWhen, cam_only)
-    cam.addParmTemplate(T.FloatParmTemplate("horizontalAperture", "Horizontal Aperture", 1, default_value=(36.0,),
-                                            min=1, max=100))
-    cam.addParmTemplate(T.FloatParmTemplate("aspectratio", "Aspect Ratio", 2, default_value=(16.0, 9.0),
-                                            naming_scheme=T.parmNamingScheme.XYZW))
+    # The publish's aperture by default: Blender writes its camera's real sensor (sh011: 20.955 x 11.787 mm, 16:9)
+    ap = config.P_CAM_APERTURE
+    cam.addParmTemplate(T.MenuParmTemplate(
+        ap, "Aperture", (config.CAM_APERTURE_PUBLISH, config.CAM_APERTURE_WIDTH, config.CAM_APERTURE_RATIO),
+        ("Publish's aperture", "Set width, keep the publish's ratio", "Set width and ratio"), default_value=0,
+        help="The publish's camera as Blender wrote it, or a sensor width in mm with the height from the publish's "
+             "ratio or from Aspect Ratio."))
+    width = T.FloatParmTemplate("horizontalAperture", "Horizontal Aperture", 1, default_value=(36.0,), min=1, max=100)
+    width.setConditional(T.parmCondType.HideWhen, f'{{ {ap} == "{config.CAM_APERTURE_PUBLISH}" }}')
+    cam.addParmTemplate(width)
+    ratio = T.FloatParmTemplate("aspectratio", "Aspect Ratio", 2, default_value=(16.0, 9.0),
+                                naming_scheme=T.parmNamingScheme.XYZW)
+    ratio.setConditional(T.parmCondType.HideWhen, f'{{ {ap} != "{config.CAM_APERTURE_RATIO}" }}')
+    cam.addParmTemplate(ratio)
     # Base1 names (clippingRange1 / 2), as in 2.1 and as the inner camera reads them; the default XYZW named them
     # clippingRangex / y and the clipping never reached the camera
     cam.addParmTemplate(T.FloatParmTemplate("clippingRange", "Clipping Range", 2, default_value=(0.0001, 1e6),

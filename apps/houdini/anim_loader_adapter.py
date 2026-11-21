@@ -1992,8 +1992,19 @@ CAM_PARMS = ("clippingRange1", "clippingRange2", "horizontalAperture", "aspectra
 
 
 def cam_parms(path: str) -> dict[str, float]:
+    """The settings the camera uses now: aperture / ratio only when the node's Aperture mode sets them (on the
+    publish's aperture they do nothing, so the inspector leaves those fields empty and off)."""
     node = hou.node(path)
-    return {n: node.parm(n).eval() for n in CAM_PARMS if node is not None and node.parm(n) is not None}
+    if node is None:
+        return {}
+    mode = node.parm(config.P_CAM_APERTURE)
+    mode = mode.evalAsString() if mode is not None else config.CAM_APERTURE_WIDTH  # older node: it set the width
+    unused = set()
+    if mode == config.CAM_APERTURE_PUBLISH:
+        unused = {"horizontalAperture", "aspectratiox", "aspectratioy"}
+    elif mode == config.CAM_APERTURE_WIDTH:
+        unused = {"aspectratiox", "aspectratioy"}
+    return {n: node.parm(n).eval() for n in CAM_PARMS if n not in unused and node.parm(n) is not None}
 
 
 def set_cam_parm(path: str, name: str, value: float) -> bool:

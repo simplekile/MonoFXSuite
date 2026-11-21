@@ -51,6 +51,11 @@ P_OPEN_FOLDER = "mx_open_folder"
 # the publish's own root prims (/Geo, /Groom: Source Asset default, a lookdev scene sees the asset as published).
 # The parm's own default is on, so a scene saved before it keeps its graft.
 P_USE_PRIM = "mx_use_prim"
+# Camera aperture (2026-11-22): the publish's own (default; Blender writes its real sensor), or the loader's width
+# (horizontalAperture, mm) with the publish's ratio or the loader's (aspectratio). The default once forced 36 mm on
+# the width alone and left the height: sh011's 20.955 x 11.787 mm camera came out 36 x 11.787 (3.05:1).
+P_CAM_APERTURE = "mx_cam_aperture"
+CAM_APERTURE_PUBLISH, CAM_APERTURE_WIDTH, CAM_APERTURE_RATIO = "publish", "width", "ratio"
 
 # Every Python LOP of the loader (and of a baked one: no MonoFX import) starts with this: ``root`` is "/<inst>", ""
 # when Prim Name is off (the publish's own root prims), None when there is nothing to work on; ``instance_prims``
