@@ -407,6 +407,15 @@
   function of that name broke every groom loader). Remove the shot's overrides clears subdivision and show rules;
   Same overrides copies both; a change keeps the table's scroll, selection and folds. A camera has "On the loader":
   clipping, aperture, ratio, guide scale as parm fields (Enter sets the parm, one undo step).
+- Camera aperture (2026-11-22, `config.P_CAM_APERTURE`, the `cam_aperture` Python LOP): the loader keeps the publish's
+  aperture by default. Blender's `wm.usd_export` writes the camera's real sensor (sh011: 20.955 x 11.787 mm, 16:9,
+  as `sh011_anim_v003.blend` has it; sh025: 36 x 20.25), so nothing is forced. Up to v0.1.44 `camera_edit` set the
+  width alone (Horizontal Aperture, 36 mm by default) and left the height: sh011 came out 36 x 11.787 (3.05:1). The
+  Aperture menu can set a width in mm with the height from the publish camera's own ratio (never a hard-coded 16:9),
+  or a width and Aspect Ratio. Only the cameras of the loader's file are edited, never input 0's. `cam_aperture`
+  sits before `camera_edit`: `cam_x100` scales its input's last modified prims, which a Python LOP does not set.
+  `camera_edit` sets clipping and guide scale only. The inspector shows Aperture / Ratio only in a mode that uses
+  them. Check: hython `tests/houdini/anim_loader/accept_camera_aperture.py <out>`.
 - The HDA's PythonModule is `from apps.houdini.anim_loader_adapter import *`, which takes only `__all__`: every
   `hou.phm().<name>` in `build_hda.py` must be in it (v0.1.36's Reload button raised AttributeError, cb_reload was
   missing; `tests/test_anim_loader_hda_callbacks.py` checks it). A button is tested by `parm.pressButton()` in hython,
