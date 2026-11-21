@@ -1013,7 +1013,7 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     (a drawn lock's curve and its n-point spine), `drawn_footprint_cm` (`REGION_FOOTPRINT` x width), `drawn_profile`,
     `flat_handles` / `unflat_handles` (the `edit_cp` prim array), `reset_locks`, `curve_gap`.
   - Constants in `config.py` "v0.2b": `HANDLE_SPACING_CM` 8, `HANDLES_MIN` 4, `HANDLES_MAX` 12, `STROKE_TOL_CM` 0.25,
-    `STROKE_HANDLES_MAX` 24, `RESAMPLE_TOL_CM` 0.25, `ATTR_EDIT_CP` / `ATTR_EDITED`, `POINTS_STATE`, `UNDO_SPINE`
+    (`STROKE_HANDLES_MAX` 24 until 2026-11-21: now HANDLES_MAX), `RESAMPLE_TOL_CM` 0.25, `ATTR_EDIT_CP` / `ATTR_EDITED`, `POINTS_STATE`, `UNDO_SPINE`
     (the undo step names), `DRAWN_*` first values.
   - Measured on the fixture (sandbox `tests/t77_redraw_model/numbers.json`): re-sampling 5 -> 8 -> 5 moves the
     edited spine 0.017-0.058 cm, but 0.22 cm for the 89.6 cm lock turned 25 deg (its tip 34 cm away): near the
@@ -1047,11 +1047,16 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     nothing that warned "Input has no packed primitives") feeds `fit_cloud`; fit_to_lock's ellipse does the rest.
   - Input 4 "Animated scalp" (U2, `build_hda.INPUT_LABELS`, max inputs 4, hidden `scalp_wired`, in
     `_KEY_SKIP_PARMS`): unpacked as input 2 (`rest_scalp_names`, `anim_scalp_*`), `ANIM_SCALP` (detail
-    `deform_ok`, `anim_points`, `rest_points`; never a warning). The capture loops (`_capture_loop`) capture a
-    drawn lock on the rest scalp (`*_lock_scalp`, switch `*_on_scalp` by its `drawn`); `_deform_drawn` (display
+    `deform_ok`, `anim_points`, `rest_points`; never a warning). The capture loops (`_capture_loop`) pass a drawn
+    lock's strands without a capture (switch `*_on_scalp` by its `drawn`); `_deform_drawn` (display
     `deform_drawn_*`, output 1 `groom_drawn_*`) deforms the mesh locks as v0.1 and the drawn ones by the animated
-    scalp, or leaves them at rest when it is not wired or has another point count; while no lock is drawn the
-    v0.1 Point Deform is used as it is. `deform_keys` takes ANIM_SCALP as input 2 (its points in the key only
+    scalp, each strand rigidly with the skin frame at its root (`VEX_FOLLICLE`: the hit polygon's normal and first
+    edge, rest scalp -> animated scalp), or leaves them at rest when it is not wired or has another point count;
+    while no lock is drawn the v0.1 Point Deform is used as it is. Point Deform captured on the scalp (the first
+    build, and the spike's choice) stretched a fringe drawn lock 1.9-3.5 % on sh025 (limit 2 %): mesh-lock hair on
+    the same skin captured that way stretched up to 46 %, the scalp's local stretch read far from the skin; a
+    larger radius helped the fringe and made the back of the head worse (1.37 at 0.1 m); Point Deform's piece
+    attribute moved nothing. The follicle frame: length 1.0000, roots 0.003 cm off the animated skin (t79 s3). `deform_keys` takes ANIM_SCALP as input 2 (its points in the key only
     with drawn locks).
   - Adapter (every change one undo step named from `config.UNDO_SPINE`, several locks at once; places in the
     node's space): `lock_handles(node, ids)` -> per lock `points`, `frame`, `origin`, `axes`, `count`, `edited`,
@@ -1062,11 +1067,25 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     `set_handle_count(node, ids, count|None)` -> also `gap_cm` per lock, the message says how far past
     `RESAMPLE_TOL_CM`; `redraw_lock(node, id, stroke)` -> also `gap_cm`, `count`; `draw_lock(node, stroke, width_cm,
     thick_cm, taper, group, name)` -> {id, name, gave, gave_ids, gap_cm, count, message}, the footprint
-    (`footprint_owners`) in the same undo step (U3); `set_drawn(node, ids, width_cm, thick_cm, taper)` (step
-    "draw": UNDO_SPINE has no label of its own for it); `delete_drawn_locks(node, ids)` (its skin grows nothing
-    until Update regions); `edited_ids`, `drawn_ids`, `scalp_wired`, `animated_scalp(node)` -> {wired, ok,
+    (`footprint_owners`) in the same undo step (U3); the group of the lock that gave it most skin
+    (`most_skin_group`), named `drawn_NN` (the user, 2026-11-20); a stroke 12 handles cannot hold is taken and
+    the message gives the gap (`_gap_text`, also for redraw); `set_drawn(node, ids, width_cm, thick_cm, taper)` (step
+    "drawn"); `delete_drawn_locks(node, ids)` -> {locks, took, took_ids, message}: the skin it owned alone goes
+    to its neighbours in the same undo step by the rule of Update regions on those prims only (`_split(only=)`,
+    `logic.region_owners(every_lock=False)`: with every_lock the last rule gave EVERY lock one of the freed prims,
+    all 61 recooked), shared skin keeps its other owners (`give_back`); `edited_ids`, `drawn_ids`, `scalp_wired`, `animated_scalp(node)` -> {wired, ok,
     anim_points, rest_points, drawn, message} (`scalp_text`, the panel's line); `import_spines(node, tool_dir)`
     (`spines_from_publish`: edits by lock name, drawn locks with their id when unused here, regions out of date).
+  - Model after t80 (2026-11-21, B2 now owns model / logic / config): `Lock.drawn_curve` (the curve as drawn;
+    absent on load = the curve), a drawn lock whose `curve` differs is `edited`, `reset_spine` puts it back; one
+    clamp for a handle count (4..12, on load too); at most 12 handles for a stroke (`STROKE_HANDLES_MAX` gone);
+    `logic.drawn_handle_count`; `reassign_orphan` hands an edit on only when the orphan has one; rotate / scale with
+    a zero or non-finite axis / factor change nothing; a stroke with a non-finite point raises; `add_drawn_lock`
+    refuses a curve without length; a stored `source` outside `LOCK_SOURCES` is mesh; `UNDO_SPINE["drawn"]`.
+  - Shots as saved are not byte-reproducible on the build before v0.2b either (t79 s5): 7 runs of it on sh025
+    differ up to 0.084 cm at frame 30 in 10 locks (hair_back_03 / 06 / 11 / 18, hair_bang_09 / 10 / 19,
+    hair_base_02 / 04 / 13), the same locks and per-lock maxima as this build; at rest the same runs already differ
+    up to 0.0065 cm (the per-lock loop with "Fit lookup per lock" off, an old scene), the deform amplifies it.
   - Detect: `match_locks` and `apply_detect` leave drawn locks alone (never missing, never new) and build orphans
     with `Orphan.from_lock` (a missing lock keeps its edit). Publish: grooming_data.json holds the edits (schema
     7), publish.json `spines` names the edited and drawn locks (`spine_record`).
