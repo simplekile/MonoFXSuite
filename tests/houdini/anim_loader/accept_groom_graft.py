@@ -71,6 +71,9 @@ def time_sampled_copy() -> Path:
         # a rest-pose extent, as Helen's lookdev V009 authors: the groom's bounds stayed there while it moved
         prim.CreateAttribute("extent", Sdf.ValueTypeNames.Float3Array).Set(
             Vt.Vec3fArray([Gf.Vec3f(500, 500, 500), Gf.Vec3f(501, 501, 501)]))
+        # the lookdev's curve shape, as Helen's V009: cubic B-spline with pinned roots (the cache: linear, 8 CVs)
+        for name, value in (("type", "cubic"), ("basis", "bspline"), ("wrap", "pinned")):
+            prim.CreateAttribute(name, Sdf.ValueTypeNames.Token).Set(value)
         stage.GetRootLayer().Export(look + ".tmp.usd")
         del stage
         os.replace(look + ".tmp.usd", look)
@@ -124,6 +127,8 @@ def main():
     check("the topology copy holds no animated value", topo is not None and not sampled, sampled[:3])
     graft_prim = next(p for p in graft.stage().Traverse() if p.IsA(UsdGeom.BasisCurves)
                       and "/char_Robot/" in p.GetPath().pathString)
+    shape = [graft_prim.GetAttribute(n).Get() for n in ("type", "basis", "wrap")]
+    check("the lookdev's curve shape wins over the cache's", shape == ["cubic", "bspline", "pinned"], shape)
     extent = graft_prim.GetAttribute("extent")
     check("the lookdev's rest extent is gone", not (extent and extent.HasAuthoredValue()),
           extent.Get(Usd.TimeCode(first)) if extent else None)

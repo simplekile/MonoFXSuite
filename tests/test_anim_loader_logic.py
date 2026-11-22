@@ -783,13 +783,14 @@ def test_curve_overrides_and_karma_values():
     assert width_word(1.5) == "\u00d71.5" and width_word(1.0) == "\u00d71"
 
 
-def test_a_shot_groom_cache_keeps_its_own_shape_over_the_lookdev():
-    """sh025 (Karma, 2026-11-22): the cache's topology copy sits above the lookdev, so Helen's lookdev B-spline does
-    not render; the inspector must say linear. Its Karma primvars still count."""
+def test_the_lookdevs_curve_shape_wins_unless_cubic_meets_short_curves():
+    """The user's call (2026-11-22): Helen's lookdev cubic B-spline renders, not her cache's linear; a cubic lookdev
+    over a cache with a 2-CV curve keeps the cache's linear (Karma drops cubic curves under 4 CVs)."""
     from tools.fx.anim_loader.logic import curve_plan
 
     look = {"/Groom/Hair_Back": {"type": "cubic", "basis": "bspline", "width_scale": 2.0}}
-    shot = curve_plan(HELEN_CURVES, look, [], lookdev_shape=False)["/Groom/Hair_Back"]
-    assert (shot.basis, shot.basis_source, shot.width, shot.width_source) == ("linear", "publish", 2.0, "lookdev")
-    asset = curve_plan(HELEN_CURVES, look, [], lookdev_shape=True)["/Groom/Hair_Back"]
-    assert (asset.basis, asset.basis_source) == ("bspline", "lookdev")
+    hb = curve_plan(HELEN_CURVES, look, [])["/Groom/Hair_Back"]
+    assert (hb.basis, hb.basis_source, hb.width, hb.width_source) == ("bspline", "lookdev", 2.0, "lookdev")
+    short = {"/Groom/Hair_Back": {**HELEN_CURVES["/Groom/Hair_Back"], "min_cvs": 2}}
+    st = curve_plan(short, look, [])["/Groom/Hair_Back"]
+    assert (st.basis, st.basis_source, st.width) == ("linear", "publish", 2.0)

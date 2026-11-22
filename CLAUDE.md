@@ -597,12 +597,15 @@
   none of these, so a default beats nothing (sh025: values reach `beauty_pass`, points keep 46 samples). Rules: hidden
   `mx_curve_rules`, JSON `pattern` (as subdivision) + `basis` / `width` / `style`, a later rule wins field by field
   (`set_curve_rules`: KEEP keeps a field, None takes it off, an empty rule goes). What the publish says: the groom
-  file's type / basis (`groom_curve_facts`, first frame); a shot's cache is copied onto the branch by
-  `groom_topology`, above the lookdev, so its type / basis win and the lookdev's do not count
-  (`curve_plan(lookdev_shape=False)`): Helen's V009 says cubic B-spline pinned, sh025 renders the cache's linear
-  (Karma close-ups, 2026-11-22: linear and "as published" identical; a B-spline override visibly smooths). On Source
-  Asset the groom publish sits under the lookdev, whose type / basis win. The lookdev's Karma primvars count in both
-  (`lookdev_curve_opinions`). Inspector:
+  file's type / basis (`groom_curve_facts`, first frame) under the lookdev's (`lookdev_curve_opinions`, Karma
+  primvars too). The lookdev's curve shape wins (the user's call, 2026-11-22): `groom_topology` copies the cache
+  above the lookdev and used to hide it (sh025 rendered Helen linear although V009 says cubic B-spline pinned; Karma
+  close-ups showed "as published" = linear), so it now takes type / basis / wrap off its copy wherever the lookdev
+  authors them, except a cubic lookdev over a cache with a curve under 4 CVs (Karma drops those). `pinned` matters:
+  a non-periodic B-spline starts at (P0 + 4 P1 + P2) / 6, which leaves Helen's Hair_Back roots ~2 cm (max 2.8) off
+  the scalp; pinned starts at P0. A shot's "Render curves smooth" (Karma's curve_basis) does not change the wrap: on a
+  linear, non-periodic cache without a lookdev shape the roots may float like that (not checked in a render).
+  Inspector:
   a curves row's SCHEME is its basis, FROM its source, WIDTH (col 8, `COL_WIDTH`, shown only when the tree has curves)
   its scale; the curves rows' menu has Render curves smooth / Width / Render as (Karma CPU). Clear overrides, Same
   overrides on the other loaders and Bake (`BAKED_SUBD_CODE`'s `CURVES`) include them. No viewport thinning: Houdini GL

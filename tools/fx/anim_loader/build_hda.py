@@ -73,6 +73,25 @@ if path and pairs:
                     spec.typeName = "Xform"
                 spec = layer.GetPrimAtPath(spec.path.GetParentPath())
             Sdf.CopySpec(src, a, layer, c)
+        # The lookdev's curve shape wins (the user's call, 2026-11-22): this copy sits above the lookdev, and the
+        # cache's own type / basis / wrap (Helen's: linear) hid the lookdev's (cubic B-spline pinned). Each one the
+        # lookdev authors is taken off the copy. Not when the lookdev makes it cubic and a curve has under 4 CVs:
+        # Karma would drop those curves.
+        below = hou.pwd().inputs()[0].stage() if hou.pwd().inputs() else None
+        for a, c in pairs:
+            spec = layer.GetPrimAtPath(c)
+            prim = below.GetPrimAtPath(c) if below is not None and spec is not None else None
+            if not prim:
+                continue
+            counts = spec.attributes["curveVertexCounts"].default if "curveVertexCounts" in spec.attributes else None
+            few = bool(counts) and min(counts) < 4
+            look_type = prim.GetAttribute("type")
+            if few and look_type and look_type.HasAuthoredValue() and look_type.Get() == "cubic":
+                continue
+            for name in ("type", "basis", "wrap"):
+                attr = prim.GetAttribute(name)
+                if attr and attr.HasAuthoredValue() and name in spec.attributes:
+                    spec.RemoveProperty(spec.attributes[name])
         if hda.evalParm("@MODE@") == "clip":
             # The clips give every animated value: take the copied frame's own values off (time samples and the
             # default) so nothing in this layer can beat a clip. A Graft Stages after the loader (the shot layout's
