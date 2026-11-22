@@ -259,6 +259,23 @@ class Controller:
             lines += self.backend.update(rest, ALL_PARTS)
         self.message = "; ".join(lines) if lines else "Already up to date."
 
+    def version_picks(self, path: str, part: str) -> list:
+        """The versions of a part on disk for the manager's version menu (logic.VersionPick), newest first."""
+        fn = getattr(self.backend, "version_picks", None)
+        return fn(path, part) if fn else []
+
+    def set_version(self, paths: list[str], part: str, version: str, word: str) -> None:
+        """Sets one part's version on these loaders (one undo step); the result line says what moved and what not."""
+        moved, left = self.backend.set_part_version(list(paths), part, version)
+        if moved:
+            self.message = (moved[0].split(": ", 1)[0] + f": {word} {version}." if len(moved) == 1
+                            else f"{_plural(len(moved), 'loader')} on {word} {version}.")
+        else:
+            self.message = f"Already on {word} {version}." if not left else ""
+        if left:
+            self.message = (self.message + " " if self.message else "") + "Left: " + "; ".join(left) + "."
+        self.details = "\n".join(moved + left)
+
     def update_all(self) -> None:
         self._update(self.behind_paths())
 
@@ -550,6 +567,18 @@ class Controller:
     def camera_parms(self, path: str) -> dict:
         fn = getattr(self.backend, "cam_parms", None)
         return fn(path) if fn else {}
+
+    def camera_mode(self, path: str) -> str:
+        """The loader's Aperture mode (config.CAM_APERTURE_*), "" when the backend cannot say."""
+        fn = getattr(self.backend, "cam_mode", None)
+        return fn(path) if fn else ""
+
+    def set_camera_mode(self, path: str, token: str) -> None:
+        ok = self.backend.set_cam_mode(path, token)
+        words = {"publish": "the publish's aperture", "width": "a set width, the publish's ratio",
+                 "ratio": "a set width and ratio"}
+        self.message = (f"{path.rsplit('/', 1)[-1]}: aperture from {words.get(token, token)}." if ok
+                        else "That setting is not on the node.")
 
     def set_camera_parm(self, path: str, name: str, label: str, value: float) -> None:
         ok = self.backend.set_cam_parm(path, name, value)

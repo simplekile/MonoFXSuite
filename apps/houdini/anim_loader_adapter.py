@@ -657,6 +657,36 @@ def update(nodes: list, parts: tuple[str, ...] = ("anim", "lookdev", "groom", "c
     return lines
 
 
+def set_part_version(nodes: list, part: str, version: str) -> tuple[list[str], list[str]]:
+    """Sets ``part`` ("anim": the anim, or the model on Source Asset; "lookdev", "groom", "cloth") to ``version`` on
+    each MonoFX Loader, as the node's own version menu does (its parm callback runs: a model version keeps the
+    picked file when it has it); one undo step. A loader without that version on disk is left as it is.
+    Returns (what moved, what was left and why)."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    moved, left = [], []
+    with undo_group(f"Set {part} {version}"):
+        for node in nodes:
+            if node.type().name() != config.HDA_TYPE:
+                left.append(f"{node.name()}: Upgrade first")
+                continue
+            state = read_state(node)
+            asset = logic.is_asset(state)
+            name = (config.P_MODEL_VERSION if asset else config.P_ANIM_VERSION) if part == "anim" \
+                else config.P_VERSION[part]
+            if _s(node, name) == version:
+                continue
+            if version not in {p.version for p in logic.version_picks(state, part, limit=10_000)}:
+                left.append(f"{node.name()}: no {part} {version}")
+                continue
+            old = _s(node, name)
+            _set(node, name, version)
+            cb_parm_changed({"node": node, "parm_name": name})
+            word = ("model" if asset else "anim") if part == "anim" else part
+            moved.append(f"{node.name()}: {word} {old or '-'} -> {version}")
+    return moved, left
+
+
 def retarget(nodes: list, shot: str) -> tuple[list[str], list[str]]:
     """Loaders copied from another shot, moved to ``shot`` (``logic.retarget_state``); one undo step.
     (what moved, what was left and why). Never a second loader for an instance the shot already has. A shot merge
@@ -1656,6 +1686,14 @@ class HoudiniBackend:
         return set_cam_parm(path, name, value)
 
     @staticmethod
+    def cam_mode(path):
+        return cam_mode(path)
+
+    @staticmethod
+    def set_cam_mode(path, token):
+        return set_cam_mode(path, token)
+
+    @staticmethod
     def thumbnail(state) -> str:
         if not state.asset or not state.project_root:
             return ""
@@ -1666,6 +1704,17 @@ class HoudiniBackend:
     @staticmethod
     def update(paths, parts):
         return update([hou.node(p) for p in paths if hou.node(p)], tuple(parts))
+
+    @staticmethod
+    def version_picks(path, part):
+        node = hou.node(path)
+        if node is None or node.type().name() not in (config.HDA_TYPE, config.OLD_TYPE):
+            return []
+        return logic.version_picks(read_state(node), part)
+
+    @staticmethod
+    def set_part_version(paths, part, version):
+        return set_part_version([hou.node(p) for p in paths if hou.node(p)], part, version)
 
     def load_shot(self, root, shot, version):
         r = load_shot(hou.node(self.parent_path), root, shot, version)
@@ -2031,6 +2080,29 @@ def cam_parms(path: str) -> dict[str, float]:
     elif mode == config.CAM_APERTURE_WIDTH:
         unused = {"aspectratiox", "aspectratioy"}
     return {n: node.parm(n).eval() for n in CAM_PARMS if n not in unused and node.parm(n) is not None}
+
+
+def cam_mode(path: str) -> str:
+    """The loader's Aperture mode; an older node without the menu set the width (config.CAM_APERTURE_WIDTH)."""
+    node = hou.node(path)
+    parm = node.parm(config.P_CAM_APERTURE) if node is not None else None
+    if node is None:
+        return ""
+    return parm.evalAsString() if parm is not None else config.CAM_APERTURE_WIDTH
+
+
+def set_cam_mode(path: str, token: str) -> bool:
+    """The loader's Aperture mode (publish / width / ratio); one undo step."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    node = hou.node(path)
+    parm = node.parm(config.P_CAM_APERTURE) if node is not None else None
+    if parm is None or token not in (config.CAM_APERTURE_PUBLISH, config.CAM_APERTURE_WIDTH,
+                                     config.CAM_APERTURE_RATIO):
+        return False
+    with undo_group(f"Camera aperture {node.name()}"):
+        parm.set(token)
+    return True
 
 
 def set_cam_parm(path: str, name: str, value: float) -> bool:

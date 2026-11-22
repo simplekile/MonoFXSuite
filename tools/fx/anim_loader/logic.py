@@ -1645,3 +1645,71 @@ def drawn_roots(prims: dict[str, set[str]], loaders: dict[str, tuple[str, list[s
         if len(found) == 1:
             out[loader] = found[0]
     return out
+
+
+# --- picking a part's version from the manager (the user's pick, 2026-11-22: click a version cell) ----------------
+@dataclass(frozen=True)
+class VersionPick:
+    """One version of a part on disk, for the manager's version menu."""
+
+    version: str
+    date: str = ""       # the version folder's date
+    author: str = ""     # who saved its Monos work file, "" when unknown
+    holds: bool = True   # holds this instance's file (a groom / cloth cache of another instance does not)
+    current: bool = False
+
+
+VERSION_PICK_LIMIT = 15  # the newest few; older ones stay on the node's parm menu
+
+
+def version_picks(state: LoaderState, part: str, limit: int = VERSION_PICK_LIMIT) -> list[VersionPick]:
+    """The versions of ``part`` ("anim" = the shot's anim, or the asset's model on Source Asset; "lookdev", "groom",
+    "cloth") on disk, newest first, the node's own among them even when it is gone from disk."""
+    if not state.project_root:
+        return []
+    root = Path(state.project_root)
+    who: tuple[Path, str] | None = None
+    if part == "anim":
+        if is_asset(state):
+            asset_dir = _asset_dir(root, state)
+            if asset_dir is None:
+                return []
+            pub, current = model_publish_dir(asset_dir), state.model_version
+            found = _anim_versions(root, state)
+            who = (asset_dir, PART_DEPARTMENT["model"])
+        else:
+            if not state.shot:
+                return []
+            pub, current = anim_publish_dir(root, state.shot), state.anim_version
+            found = _anim_versions(root, state) if state.anim_file else []
+            who = (root / "02_shots" / state.shot, PART_DEPARTMENT["anim"])
+        versions = list_versions(pub)
+        holds_all = False
+    else:
+        if not _applies(state, part) or state.asset is None:
+            return []
+        asset_dir = _asset_dir(root, state)
+        if part == "lookdev":
+            pub = asset_dir / "05_lookdev" / "publish" if asset_dir else None
+        elif is_asset(state):
+            pub = groom_publish_dir(asset_dir) if asset_dir else None
+        else:
+            pub = fx_publish_dir(root, state.shot, part)
+        if pub is None:
+            return []
+        current = state.versions.get(part, "")
+        versions = _part_versions(root, state, part)
+        found = (_found_versions(root, state, part, _geo_count(root, state))
+                 if (state.anim_file or is_asset(state)) else [])
+        holds_all = part == "lookdev"  # a lookdev is the asset's: every version applies
+        if asset_dir is not None and part in PART_DEPARTMENT and (part == "lookdev" or is_asset(state)):
+            who = (asset_dir, PART_DEPARTMENT[part])
+    newest = sorted(versions, key=_vnum, reverse=True)[:limit]
+    if current and current not in newest:
+        newest = sorted([*newest, current], key=_vnum, reverse=True)
+    out = []
+    for v in newest:
+        author = work_author(who[0], who[1], v) if who else None
+        out.append(VersionPick(v, _folder_date(pub / v) if v in versions else "", author[0] if author else "",
+                               holds_all or v in found or not found, v == current))
+    return out

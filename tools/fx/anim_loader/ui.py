@@ -54,7 +54,7 @@ from PySide6.QtWidgets import (
 )
 
 from tools.fx import look
-from tools.fx.anim_loader import logic
+from tools.fx.anim_loader import config, logic
 from tools.fx.anim_loader.controller import ALL_PARTS, Controller, Row
 from tools.fx.auto_material.ui import (
     ACCENT,
@@ -150,8 +150,9 @@ STYLE_MENU_SQ = STYLE_MENU.replace("border-radius: 10px", "border-radius: 0px").
 
 WINDOW_NAME = "AnimLoaderManager"
 PREFS = Path(os.environ.get("APPDATA", Path.home())) / "MonoFXSuite" / "anim_loader_prefs.json"
-# "Geo": the geometry a row reads, a shot's anim or an asset's model (the user asked why mushroom had "anim v003")
-PART_LABEL = {"anim": "Geo", "lookdev": "Lookdev", "groom": "Groom", "cloth": "Cloth"}
+# the geometry a row reads: a shot's anim, an asset's model. The list's column says both ("Anim / Model", the user's
+# pick 2026-11-22: "Geo" hid the anim version; before it, "anim v003" on a mushroom asked why); narrow, "Anim"
+PART_LABEL = {"anim": "Anim", "lookdev": "Lookdev", "groom": "Groom", "cloth": "Cloth"}
 
 
 def part_word(row, part: str) -> str:
@@ -297,7 +298,9 @@ class _Painter:
                    text.upper())
 
 
-NARROW_ROW_PX = 560  # under this width a list row puts its versions on a second line
+# the list stays a table at any width and scrolls sideways (the user's ask, 2026-11-22: a narrow window put the
+# versions on a second line and lost the columns); 0 = never the two-line row
+NARROW_ROW_PX = 0
 LIST_PAD = 6  # the list's side margins: tight to the edges (the user's ask, 2026-11-17)
 ZEBRA = "#151519"       # every other row, a step over the window (TEXT_LABEL on it 7.2:1)
 MESH_BAND = "#1a1e27"   # the inspector's meshes table header
@@ -319,7 +322,7 @@ STYLE_ICON_FLAT = (f"QPushButton {{ background: transparent; border: none; borde
                    f"QPushButton:checked {{ background: #2a2a32; }}"
                    f"QPushButton:checked:hover {{ background: #31313a; }}"
                    "QPushButton::menu-indicator { image: none; width: 0; }")
-COLUMNS = (("anim", "Geo", 76), ("lookdev", "Lookdev", 76), ("groom", "Groom", 76), ("cloth", "Cloth", 76),
+COLUMNS = (("anim", "Anim / Model", 112), ("lookdev", "Lookdev", 76), ("groom", "Groom", 76), ("cloth", "Cloth", 76),
            ("subd", "Subd", 92), ("tex", "Textures", 76))
 
 
@@ -330,6 +333,48 @@ def subd_cell(row: Row) -> tuple[str, str]:
     n, polys = row.subd
     return f"~{polys / 1e6:.1f} M", (STATUS_COLORS[AM_WARN] if polys > logic.HEAVY_SUBD_POLYGONS
                                                  else TEXT_LABEL)
+
+
+class _ToggleMenu(QMenu):
+    """A menu of on / off items (which columns show) that stays open while they are clicked, its checks following;
+    only a click outside or Esc closes it (the user's ask, 2026-11-22)."""
+
+    def __init__(self, parent, size: int) -> None:
+        super().__init__(parent)
+        self._size = size
+        self._toggles: list[tuple[object, object]] = []  # (action, is_on)
+
+    def add_toggle(self, text: str, is_on, flip):
+        act = self.addAction(text)
+        act.triggered.connect(lambda _=False: (flip(), self.refresh()))
+        self._toggles.append((act, is_on))
+        self.refresh()
+        return act
+
+    def refresh(self) -> None:
+        for act, is_on in self._toggles:
+            on = bool(is_on())
+            act.setIcon(_crisp_icon("check", self._size, ACCENT) if on else QIcon())
+            act.setData("shown" if on else "")
+
+    def _is_toggle(self, act) -> bool:
+        return act is not None and act.isEnabled() and any(a is act for a, _ in self._toggles)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 (Qt)
+        act = self.actionAt(event.position().toPoint())
+        if self._is_toggle(act):
+            act.trigger()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 (Qt)
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space) and self._is_toggle(
+                self.activeAction()):
+            self.activeAction().trigger()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 def _when_idle(poll):
@@ -381,15 +426,17 @@ class _ListDelegate(QStyledItemDelegate):
         super().__init__(parent)
         self.pt = painter
         self.view = view
+        self.hidden: set[str] = set()  # columns the artist turned off (the header's right-click menu)
 
     def visible_columns(self, width: int) -> tuple:
-        """Every column: the list scrolls sideways when they do not fit (the user's ask, 2026-11-17)."""
-        return COLUMNS
+        """The columns the artist keeps on: the list scrolls sideways when they do not fit (the user's ask,
+        2026-11-17); the header's right-click menu turns them on and off (2026-11-22)."""
+        return tuple(c for c in COLUMNS if c[0] not in self.hidden)
 
     def table_width(self) -> int:
-        """The narrowest the table gets: a 160 px name column and every column beside it."""
+        """The narrowest the table gets: a 160 px name column and every column shown beside it."""
         pt = self.pt
-        return pt.px(LIST_PAD + 28 + 10 + 160) + sum(pt.px(w) + pt.px(8) for _, _, w in COLUMNS) + pt.px(LIST_PAD)
+        return pt.px(LIST_PAD + 28 + 10 + 160) + sum(pt.px(w) + pt.px(8) for _, _, w in self.visible_columns(0))             + pt.px(LIST_PAD)
 
     def columns(self, rect: QRect) -> tuple[dict[str, QRect], int]:
         """Each visible column's rect from the right edge, and where the name column ends."""
@@ -478,15 +525,15 @@ class _ListDelegate(QStyledItemDelegate):
                 t_text, t_color = tex_cell(row)
                 self._text(p, cols["tex"], t_text, t_color, FS_SMALL, align=Qt.AlignmentFlag.AlignHCenter)
         if wide:
-            cells = [(cols[part], part) for part in ALL_PARTS]
+            cells = [(cols[part], part) for part in ALL_PARTS if part in cols]
         else:  # the versions on a second line, under the column names of the first header
             cells = [(QRect(c.left(), rect.top() + pt.px(36), c.width(), pt.px(20)), part)
                      for c, part in self.cells(rect)]
-        if unread:
+        if unread and cells:
             first = cells[0][0]
             self._text(p, QRect(first.left(), first.top(), rect.right() - pad - first.left(), first.height()),
                        "Upgrade to MonoFX Loader keeps its settings", STATUS_COLORS[AM_WARN], FS_SMALL)
-        else:
+        elif not unread:
             for r, part in cells:
                 if row.kind == "cam" and part != "anim":
                     continue
@@ -534,7 +581,12 @@ class _ColumnHeader(QWidget):
     def __init__(self, view: QListWidget, delegate: _ListDelegate, painter: _Painter) -> None:
         super().__init__(view)
         self.view, self.delegate, self.pt = view, delegate, painter
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.on_menu = None  # (global pos): the columns menu, set by the window
+        self.setToolTip("Right-click to choose the columns")
+
+    def contextMenuEvent(self, event) -> None:  # noqa: N802 (Qt)
+        if self.on_menu is not None:
+            self.on_menu(event.globalPos())
 
     def place(self) -> None:
         vp = self.view.viewport()
@@ -634,7 +686,7 @@ class _GridDelegate(QStyledItemDelegate):
                 p.setFont(_font(pt.px(FS_SMALL)))
                 p.setPen(QColor(TEXT_LABEL))
                 p.drawText(QRect(x, y, w, pt.px(18)), Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                           PART_LABEL[part])
+                           part_word(row, part).title())  # a card is one row: anim or model
                 p.setFont(_font(pt.px(FS_SMALL), QFont.Weight.DemiBold))
                 p.setPen(QColor(c))
                 p.drawText(QRect(x, y, w, pt.px(18)), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -980,6 +1032,8 @@ class AnimLoaderManager(QWidget):
             v.setItemDelegate(delegate)
             v.setViewportMargins(0, self.px(30), 0, 0)  # room for the sticky column header
             self.column_header = _ColumnHeader(v, delegate, self._paint)
+            delegate.hidden = {k for k in self.prefs.get("list_hidden_columns", []) if k in {c[0] for c in COLUMNS}}
+            self.column_header.on_menu = lambda pos: self.list_columns_menu().exec(pos)
             v.horizontalScrollBar().valueChanged.connect(lambda _v: self.column_header.update())
         v.viewport().installEventFilter(self)  # rows / cards follow the view's own width (the splitter moves it)
         v.itemSelectionChanged.connect(lambda view=v: self._selection_changed(view))
@@ -1314,7 +1368,88 @@ class AnimLoaderManager(QWidget):
             self._top_layout.insertWidget(0, self.nav_box, 1)  # first: the title label is gone
         self.nav_row.setVisible(narrow)
 
+    def list_columns_menu(self) -> QMenu:
+        """Which of the list's columns show (the user's ask, 2026-11-22, as the inspector's header): a shown column
+        has the check, a click turns it on or off, remembered per viewer. The name always shows."""
+        menu = _ToggleMenu(self, self.px(16))  # stays open while columns are toggled
+        menu.setStyleSheet(self.css(STYLE_MENU_SQ))
+        delegate = self.list_view.itemDelegate()
+        for i, (key, label, _w) in enumerate(COLUMNS):
+            if i == len(ALL_PARTS):
+                menu.addSeparator()  # the versions, then subdivision and textures
+            menu.add_toggle(label, lambda k=key: k not in delegate.hidden, lambda k=key: self._toggle_list_column(k))
+        return menu
+
+    def _toggle_list_column(self, key: str) -> None:
+        delegate = self.list_view.itemDelegate()
+        delegate.hidden ^= {key}
+        self.prefs["list_hidden_columns"] = sorted(delegate.hidden)
+        _save_prefs(self.prefs)
+        self.list_view.doItemsLayout()
+        self.list_view.viewport().update()
+        self.column_header.update()
+
+    def _version_cell(self, view, pos) -> tuple:
+        """(row, part) when ``pos`` is on a version cell a menu can change, else (None, "")."""
+        item = view.itemAt(pos)
+        row = item.data(ROLE_ROW) if item is not None else None
+        delegate = view.itemDelegate()
+        if row is None or row.legacy or row.kind == "layer" or not hasattr(delegate, "part_at"):
+            return None, ""
+        part = delegate.part_at(view.visualItemRect(item), pos)
+        if not part or (part != "anim" and part not in row.versions and part not in row.parts):
+            return None, ""
+        if row.kind == "cam" and part != "anim":
+            return None, ""
+        return row, part
+
+    def version_menu(self, row, part: str, paths: list[str]) -> QMenu:
+        """The versions of one part on disk, newest first: date and who saved the work file on the right, the
+        current one checked, a version without this instance's file greyed. A pick sets it on ``paths`` (the
+        clicked row, or the selection it is part of), one undo step (the user's pick, 2026-11-22)."""
+        word = part_word(row, part)
+        menu = QMenu(self)
+        menu.setStyleSheet(self.css(STYLE_MENU_SQ))
+        size = self.px(16)
+        others = len(paths) - 1
+        note = f"+{others} selected" if others else ""
+        menu.addAction(self.subd_panel._menu_head(menu, _crisp_icon("layers", size, TEXT_LABEL).pixmap(size),
+                                                  f"{word.title()} of {row.instance}", note))
+        picks = self.ctl.version_picks(row.node_path, part)
+        if not picks:
+            menu.addAction("None published").setEnabled(False)
+        for i, p in enumerate(picks):
+            side = "  ".join(x for x in (p.date[:10], p.author) if x) if p.date else "missing on disk"
+            if not p.holds:
+                side = f"no {row.instance}"
+            act = menu.addAction(_crisp_icon("check", size, ACCENT) if p.current else QIcon(),
+                                 f"{p.version}{'  newest' if i == 0 and not p.current else ''}\t{side}")
+            act.setEnabled(p.holds and not p.current or (p.current and others > 0))
+            act.triggered.connect(self._run(lambda v=p.version: self.ctl.set_version(paths, part, v, word)))
+        menu.addSeparator()
+        folder = menu.addAction(_crisp_icon("folder", size, TEXT_LABEL), f"Open {word} publish folder")
+        folder.triggered.connect(lambda: self._open_part(row.node_path, part))
+        return menu
+
+    def _open_version_menu(self, view, row, part: str, paths: list[str], pos) -> None:
+        self.version_menu(row, part, paths).exec(view.viewport().mapToGlobal(pos))
+
     def eventFilter(self, obj, event) -> bool:
+        # a click on a version cell opens that part's version menu (the user's pick, 2026-11-22); Shift / Ctrl keep
+        # selecting rows. On a row that is part of a selection, the selection stays and the pick sets them all
+        view = getattr(self, "list_view", None)
+        if (view is not None and obj is view.viewport() and event.type() == QEvent.Type.MouseButtonPress
+                and event.button() == Qt.MouseButton.LeftButton
+                and not event.modifiers() & (Qt.KeyboardModifier.ShiftModifier | Qt.KeyboardModifier.ControlModifier)):
+            pos = event.position().toPoint()
+            row, part = self._version_cell(view, pos)
+            if row is not None:
+                if row.node_path in self.ctl.selection and len(self.ctl.selection) > 1:
+                    paths = [p for p in self.ctl.selection
+                             if any(r.node_path == p and not r.legacy and r.kind != "layer" for r in self.ctl.rows())]
+                    QTimer.singleShot(0, lambda: self._open_version_menu(view, row, part, paths, pos))
+                    return True  # keep the selection
+                QTimer.singleShot(0, lambda: self._open_version_menu(view, row, part, [row.node_path], pos))
         if event.type() == QEvent.Type.Resize and obj is getattr(self, "left", None):
             self._place_nav()
         if event.type() == QEvent.Type.Resize:
@@ -2229,18 +2364,30 @@ ROLE_LOADER = Qt.ItemDataRole.UserRole + 24  # the loader node a row belongs to 
 
 class _CamEdit(QWidget):
     """The camera's settings the loader holds (layout B, the user's pick 2026-11-17): parm rows, label left, fields
-    right; Enter or leaving a field sets the node's parm, one undo step each."""
+    right; Enter or leaving a field sets the node's parm, one undo step each. Aperture is the node's mode menu
+    (the user's pick, 2026-11-22: the empty, disabled fields read as missing values): under it, the camera's
+    aperture now (the publish's on Publish's); Width shows only in the modes that set it, Ratio only in
+    Width and ratio; the focal length is read from the camera."""
 
-    ROWS = (("Clipping", ("clippingRange1", "clippingRange2"), "to", "m"),
-            ("Aperture", ("horizontalAperture",), "", "mm"),
-            ("Ratio", ("aspectratiox", "aspectratioy"), ":", ""),
-            ("Guide scale", ("xn__houdiniguidescale_s3a",), "", ""))
+    MODES = ((config.CAM_APERTURE_PUBLISH, "Publish's", "Publish's aperture"),
+             (config.CAM_APERTURE_WIDTH, "Width", "Set width, keep the publish's ratio"),
+             (config.CAM_APERTURE_RATIO, "Width and ratio", "Set width and ratio"))
+    # (key, label, field names, joint, unit); a row without fields shows a value or the mode menu
+    ROWS = (("clip", "Clipping", ("clippingRange1", "clippingRange2"), "to", "m"),
+            ("mode", "Aperture", (), "", ""),
+            ("sensor", "", (), "", ""),
+            ("width", "Width", ("horizontalAperture",), "", "mm"),
+            ("ratio", "Ratio", ("aspectratiox", "aspectratioy"), ":", ""),
+            ("focal", "Focal length", (), "", ""),
+            ("guide", "Guide scale", ("xn__houdiniguidescale_s3a",), "", ""))
 
     def __init__(self, owner) -> None:
         from PySide6.QtWidgets import QGridLayout, QLineEdit
 
         super().__init__()
-        self.owner, self.path, self.fields = owner, "", {}
+        self.owner, self.path, self.fields, self.mode = owner, "", {}, ""
+        self._rows: dict[str, tuple] = {}
+        self._values: dict = {}
         grid = QGridLayout(self)
         grid.setContentsMargins(0, owner.px(2), 0, owner.px(4))
         grid.setHorizontalSpacing(owner.px(12))
@@ -2249,9 +2396,12 @@ class _CamEdit(QWidget):
         style = owner.css(f"QLineEdit {{ background: {BG_APP}; color: {TEXT_PRIMARY}; border: 2px solid #2c2c33;"
                           f" border-radius: 6px; padding: 2px 6px; font-size: {FS_SMALL}px; }}"
                           f"QLineEdit:focus {{ border-color: {ACCENT}; }}")
-        for i, (label, names, joint, unit) in enumerate(self.ROWS):
-            grid.addWidget(owner._label(label, FS_SMALL, color=TEXT_LABEL), i, 0)
-            row = QHBoxLayout()
+        for i, (key, label, names, joint, unit) in enumerate(self.ROWS):
+            lab = owner._label(label, FS_SMALL, color=TEXT_LABEL)
+            grid.addWidget(lab, i, 0)
+            box = QWidget()
+            row = QHBoxLayout(box)
+            row.setContentsMargins(0, 0, 0, 0)
             row.setSpacing(owner.px(6))
             for j, name in enumerate(names):
                 if j:
@@ -2265,19 +2415,79 @@ class _CamEdit(QWidget):
                 edit.editingFinished.connect(lambda n=name, lab=label, e=edit: self._set(n, lab, e))
                 self.fields[name] = edit
                 row.addWidget(edit)
+            if key == "mode":
+                self.mode_button = QPushButton()
+                self.mode_button.setObjectName("camMode")
+                self.mode_button.setAccessibleName("Aperture")
+                self.mode_button.setToolTip("The publish's camera as Blender wrote it, or a sensor width in mm with "
+                                            "the height from the publish's ratio or from Ratio")
+                self.mode_button.setMinimumWidth(owner.px(176))
+                self.mode_button.setStyleSheet(owner.css(
+                    f"QPushButton#camMode {{ background: {BG_APP}; color: {TEXT_PRIMARY}; border: 2px solid #2c2c33;"
+                    f" border-radius: 6px; padding: 3px 8px; text-align: left; font-size: {FS_SMALL}px; }}"
+                    f"QPushButton#camMode:hover {{ background: {BG_HOVER}; }}"
+                    "QPushButton#camMode::menu-indicator { image: none; width: 0; }"))
+                self.mode_button.clicked.connect(self._mode_menu)
+                row.addWidget(self.mode_button)
+            elif key in ("sensor", "focal"):
+                value = owner._label("", FS_SMALL, color=TEXT_PRIMARY if key == "focal" else TEXT_LABEL)
+                value.setObjectName(key)
+                setattr(self, f"{key}_label", value)
+                row.addWidget(value)
             if unit:
                 row.addWidget(owner._label(unit, FS_SMALL, color=TEXT_LABEL))
             row.addStretch(1)
-            grid.addLayout(row, i, 1)
+            grid.addWidget(box, i, 1)
+            self._rows[key] = (lab, box)
 
-    def load(self, path: str, values: dict) -> None:
+    def _show_row(self, key: str, on: bool) -> None:
+        for w in self._rows[key]:
+            w.setVisible(on)
+
+    def load(self, path: str, values: dict, mode: str = "", cam: dict | None = None) -> None:
+        """The node's settings (``values``: parm name -> value, the ones its mode uses), its Aperture mode and the
+        camera as the loader puts it out (``Controller.camera``: aperture, focal length)."""
         self.path = path
+        if not mode:  # an older backend: the mode from which settings it uses
+            mode = (config.CAM_APERTURE_RATIO if "aspectratiox" in values else
+                    config.CAM_APERTURE_WIDTH if "horizontalAperture" in values else config.CAM_APERTURE_PUBLISH)
+        self.mode = mode
         for name, edit in self.fields.items():
             edit.blockSignals(True)
             edit.setText(_num(values[name]).replace(",", "") if name in values else "")
             edit.setEnabled(name in values)
             edit.blockSignals(False)
         self._values = dict(values)
+        self.mode_button.setText(next((short for m, short, _ in self.MODES if m == mode), mode) + "   ▾")
+        cam = cam or {}
+        h, v = cam.get("h_aperture"), cam.get("v_aperture")
+        self.sensor_label.setText(f"{_num(h)} x {_num(v)} mm, {ratio_word(h, v)}" if h and v else "")
+        self.sensor_label.setToolTip("The camera's aperture as the loader puts it out"
+                                     + (", as published" if mode == config.CAM_APERTURE_PUBLISH else ""))
+        focal = cam.get("focal")
+        self.focal_label.setText("" if focal is None else _num(focal) + " mm"
+                                 + (", animated" if cam.get("focal_animated") else ""))
+        self._show_row("sensor", bool(h and v))
+        self._show_row("width", mode in (config.CAM_APERTURE_WIDTH, config.CAM_APERTURE_RATIO))
+        self._show_row("ratio", mode == config.CAM_APERTURE_RATIO)
+        self._show_row("focal", focal is not None)
+
+    def mode_menu(self) -> QMenu:
+        menu = QMenu(self)
+        menu.setStyleSheet(self.owner.css(STYLE_MENU_SQ))
+        size = self.owner.px(16)
+        for token, _short, label in self.MODES:
+            act = menu.addAction(_crisp_icon("check", size, ACCENT) if token == self.mode else QIcon(), label)
+            act.triggered.connect(lambda _=False, t=token: self._set_mode(t))
+        return menu
+
+    def _mode_menu(self) -> None:
+        self.mode_menu().exec(self.mode_button.mapToGlobal(self.mode_button.rect().bottomLeft()))
+
+    def _set_mode(self, token: str) -> None:
+        if self.path and token != self.mode:
+            path = self.path
+            self.owner._run(lambda: self.owner.ctl.set_camera_mode(path, token))()
 
     def _set(self, name: str, label: str, edit) -> None:
         try:
@@ -2289,6 +2499,15 @@ class _CamEdit(QWidget):
             self._values[name] = value
             path = self.path
             self.owner._run(lambda: self.owner.ctl.set_camera_parm(path, name, label.lower(), value))()
+
+
+def ratio_word(h: float, v: float) -> str:
+    """An aperture's ratio as people say it: 16:9, 4:3, 2.39:1."""
+    r = h / v
+    for a, b in ((16, 9), (4, 3), (3, 2), (1, 1), (21, 9), (5, 4), (2, 1)):
+        if abs(r - a / b) < 0.005:
+            return f"{a}:{b}"
+    return f"{r:.3g}:1"
 
 
 class InspectorPanel(QWidget):
@@ -2399,7 +2618,7 @@ class InspectorPanel(QWidget):
         head.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)  # drag its edge: the name column's width
         for col in range(1, COLS):
             head.setSectionResizeMode(col, QHeaderView.ResizeMode.Fixed if col in TOGGLE_COLS
-                                      else QHeaderView.ResizeMode.ResizeToContents)
+                                      else QHeaderView.ResizeMode.Interactive)  # sized by _fit_name
         for col in TOGGLE_COLS:
             self.tree.setColumnWidth(col, TOGGLE_W(owner))
         for i, col in enumerate(sorted(TOGGLE_COLS)):  # first, before the name (the user's ask): never scrolled away
@@ -2413,9 +2632,8 @@ class InspectorPanel(QWidget):
         self._hidden_cols = {int(c) for c in _load_prefs().get("inspector_hidden_columns", [1, 2])
                              if str(c).isdigit() and 0 < int(c) < COLS}
         self._name_width = 0  # the width the artist dragged the name column to (kept across loaders)
-        head.sectionResized.connect(lambda i, _old, new: setattr(self, "_name_width", new) if i == 0
-                                    and QApplication.mouseButtons() != Qt.MouseButton.NoButton
-                                    and not getattr(self, "_filling", False) else None)
+        self._content_w: dict[int, int] = {}  # each column's width for its contents, from the last fit
+        head.sectionResized.connect(self._section_resized)
         self.tree.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.tree.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         lay.addWidget(self.tree, 1)  # the meshes take all the room; without them the stretch below does
@@ -2522,7 +2740,8 @@ class InspectorPanel(QWidget):
         self.news.set_rows(news_rows)
         self.news_head.apply(bool(news_rows))
         cam_parms = self.owner.ctl.camera_parms(row.node_path) if row.kind == "cam" and not row.legacy else {}
-        self.cam_edit.load(row.node_path, cam_parms)
+        self.cam_edit.load(row.node_path, cam_parms, self.owner.ctl.camera_mode(row.node_path) if cam_parms else "",
+                           self.owner.ctl.camera(row.node_path) if cam_parms else None)
         self.cam_head.apply(bool(cam_parms))
         self.tree.setVisible(bool(self.path))
         self.filter.setVisible(bool(self.path))
@@ -2632,16 +2851,12 @@ class InspectorPanel(QWidget):
     def columns_menu(self) -> QMenu:
         """Which columns show (the user's ask: Faces and From are seldom needed); the name always shows. A column
         that shows has the check; a click shows or hides it, remembered per viewer."""
-        menu = QMenu(self)
+        menu = _ToggleMenu(self, self.owner.px(16))  # stays open while columns are toggled
         menu.setStyleSheet(self.owner.css(STYLE_MENU_SQ))
-        size = self.owner.px(16)
         for i, (col, name) in enumerate(self.COLUMN_NAMES.items()):
             if i == 3:
                 menu.addSeparator()  # the toggles, then the subdivision columns
-            shown = col not in self._hidden_cols
-            act = menu.addAction(_crisp_icon("check", size, ACCENT) if shown else QIcon(), name)
-            act.setData("shown" if shown else "")
-            act.triggered.connect(lambda _=False, c=col: self._toggle_column(c))
+            menu.add_toggle(name, lambda c=col: c not in self._hidden_cols, lambda c=col: self._toggle_column(c))
         return menu
 
     def _toggle_column(self, col: int) -> None:
@@ -2786,19 +3001,47 @@ class InspectorPanel(QWidget):
             self._quiet -= 1
 
     def _fit_name(self) -> None:
-        """The name column fills what the other columns leave (never a strip of nothing on the right, never a name
-        column squeezed to nothing); dragging its edge wider keeps that width, with a sideways scroll."""
+        """The name column fills what the other columns leave, never under 170 px. Once the artist drags its edge it
+        keeps that width, narrower or wider (wider: a sideways scroll); the last column shown takes what the name
+        leaves (the user's report, 2026-11-22: a narrower PRIM left an empty strip and SCHEME stayed short)."""
         self._filling = True
-        for col in range(1, COLS):
-            if col in TOGGLE_COLS:
-                self.tree.setColumnWidth(col, TOGGLE_W(self.owner))
+        try:
+            self._content_w = {}
+            for col in range(1, COLS):
+                if col in TOGGLE_COLS:
+                    self.tree.setColumnWidth(col, TOGGLE_W(self.owner))
+                else:
+                    self.tree.resizeColumnToContents(col)
+                    self._content_w[col] = self.tree.columnWidth(col)
+            if self._name_width:
+                self.tree.setColumnWidth(0, self._name_width)
             else:
-                self.tree.resizeColumnToContents(col)
-        rest = sum(self.tree.columnWidth(c) for c in range(1, COLS) if not self.tree.isColumnHidden(c))
-        free = self.tree.viewport().width() - rest  # exactly the width: no strip, no sideways scroll
-        # names before numbers: the name keeps room for the deepest rows; FACES / FROM / SCHEME scroll sideways
-        self.tree.setColumnWidth(0, max(self.owner.px(170), free, self._name_width))
-        self._filling = False
+                rest = sum(self.tree.columnWidth(c) for c in range(1, COLS) if not self.tree.isColumnHidden(c))
+                # names before numbers: the name keeps room for the deepest rows; the rest scrolls sideways
+                self.tree.setColumnWidth(0, max(self.owner.px(170), self.tree.viewport().width() - rest))
+            self._fill_last()
+        finally:
+            self._filling = False
+
+    def _fill_last(self) -> None:
+        """The last column shown (SCHEME, or DICE when it shows) is as wide as its contents plus what the others
+        leave of the tree's width: never a strip of nothing on the right."""
+        was, self._filling = getattr(self, "_filling", False), True
+        try:
+            head = self.tree.header()
+            cols = [c for c in self._content_w if not self.tree.isColumnHidden(c)]
+            last = max(cols, key=head.visualIndex) if cols else 0
+            used = sum(self.tree.columnWidth(c) for c in range(COLS) if c != last and not self.tree.isColumnHidden(c))
+            own = self._content_w.get(last, self.tree.columnWidth(last)) if last else self.owner.px(60)
+            self.tree.setColumnWidth(last, max(own, self.tree.viewport().width() - used))
+        finally:
+            self._filling = was
+
+    def _section_resized(self, col: int, _old: int, new: int) -> None:
+        """The artist dragged the name column's edge: it keeps that width and the last column follows at once."""
+        if col == 0 and not getattr(self, "_filling", False)                 and QApplication.mouseButtons() != Qt.MouseButton.NoButton:
+            self._name_width = new
+            self._fill_last()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

@@ -119,7 +119,8 @@ def test_inspector_is_information_and_actions_are_on_the_row_menu(win):
     assert news["Meshes added"] == "Fin_L, Fin_R"
     assert p.details.rows()["Kind"] == "Shot loader" and p.details.rows()["Shot"] == "sh025"
     # Monos: the inspector shows, it does not act; its only buttons fold its sections (view state)
-    assert all(isinstance(b, ui._Section) for b in p.findChildren(ui.QPushButton))
+    # (the camera's Aperture menu is a setting of the loader, like the camera fields beside it)
+    assert all(isinstance(b, ui._Section) or b.objectName() == "camMode" for b in p.findChildren(ui.QPushButton))
     menu = w.row_menu(_item(w, ui, "/stage/a"))
     texts = [a.text() for a in menu.actions() if not a.isSeparator()]
     assert "Update to lookdev v003" in texts and "Switch to Source Asset" in texts
