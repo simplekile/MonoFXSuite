@@ -1033,6 +1033,10 @@ of the product was changed. Numbers are Helen's, hython unless said.**
 - **A density layer naming only a deleted drawn lock** stays, with no lock (t80 N4); B4's row says so.
 - **The shot deform of an edited lock** keeps its capture on the rest hair mesh (U4, v0.1's deform); the
   carried mesh is for display, regions and QC.
+- **B4 as built (t82, 2026-11-22)**: the `edited` / `drawn` row words are neutral, not blue / violet (the
+  mockup's review wins over "left as mocked"); the strip's handle count is the adapter's (`lock_handles`); in
+  the radial menu Scalp X-ray moved into Display to free a slot for Draw lock; "Skin from" shows only for a
+  lock drawn in this session (not stored).
 - **Limits are not moved to pass** (s3 drawn lock stretch 2 %, s5 unedited groom in shots): a failing
   number is traced to its cause first, with the v0.1 locks beside it on the same shot as the baseline.
 
