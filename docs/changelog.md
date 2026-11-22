@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Houdini
+- **Mono Solaris desktop**: Houdini's Solaris layout with the MonoFX Loaders manager docked on the left (Desktop menu > Mono_Solaris); the floating manager window still opens as before.
 - **MonoFX Loader manager**: drawn at Houdini's own text size by default (it read about 1.2x bigger); right-click the list's header for the panel size (Like Houdini, Medium, Large), remembered.
 - **MonoFX Loader manager, Add assets**: picks stay when a type chip or the search hides them (the line under the cards says how many are hidden), and are cleared after Add or a drop, so a second Add no longer makes them again. Shift+click picks a range, **Clear** unpicks all, double-click adds that asset at once. Dragging a card that is not picked carries that card alone; dragging a picked card carries every pick. The cards say "in the scene" as soon as an asset is added.
 - **MonoFX Loader manager**: **+** opens Add assets at once; loading a shot's anim version moved to the shot's menu (sh025 ▾). The row's right-click menu is shorter (what changes the loader, where to find it, then Bake), with an icon on every item; the version menu is compact. The top bar's icons stay together when the window is narrow.

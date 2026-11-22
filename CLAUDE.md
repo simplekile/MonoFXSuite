@@ -631,6 +631,13 @@
   Show in Viewport is one button strip `mx_viewport` (bit 1 lookdev, 2 groom; it replaced PR #21's two toggles).
   Measured: `button_icon` draws label + icon (not a button), a one-icon strip does not draw, `script_action` shows
   on every row, and joined rows wider than checkbox + field overflow a docked pane: none of them is used.
+- Desktop **Mono_Solaris** (`desktop/Mono_Solaris.desk`, 2026-11-22): Houdini 22's own `Solaris.desk` (its
+  `/stage/motionblur/` paths made `/stage/`) with a left pane of 24 % holding only the Python Panel `monofx_loader`
+  (`python_panels/monofx_loader.pypanel` -> `ui.create_panel("/stage")`, a manager of its own per pane, the narrow
+  stacked layout at ~450-900 px). The floating `open_manager` window is unchanged and apart from it. Both folders
+  are at the suite root (package `hpath`) and the installer already ships them (`tests/test_mono_solaris_desk.py`).
+  To rebuild it from a newer Solaris desk: wrap SideFX's `root { ... }` in `split 0.24 H` after the loader's
+  `tabs`, keep its pane settings, add `pythonpanel -s on -t off -n monofx_loader panetab20`.
 - Manager window (`ui.py` view, `controller.py` no Qt, `HoudiniBackend` in the adapter): List and Grid (the
   user's pick), Monos asset thumbnails (`thumbnail.user.png`, else `.meta/thumb_lookdev.user.png`, else the
   newest `.meta/thumb_*.user.png`), Load shot finds existing loaders by user data `monofx_anim_loader`
