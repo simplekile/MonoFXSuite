@@ -102,6 +102,7 @@ from tools.fx.auto_material.ui import (
 from tools.fx.grooming import config
 from tools.fx.grooming import ui_look as K
 from tools.fx.grooming import ui_layers as L
+from tools.fx.grooming import ui_spine as SP
 from tools.fx.grooming.layers import SEL_LAYER
 from tools.fx.grooming.controller import (
     COLOR_BY_LABELS,
@@ -194,7 +195,9 @@ MESSAGE_MS = 6000    # the result line fades after this; errors stay twice as lo
 FILTER_WORDS = {      # words the tree's filter knows besides names
     "new": lambda r: "new" in r.get("badges", []),
     "check": lambda r: "unsure" in r.get("badges", []),
-    "edited": lambda r: "edited" in r.get("badges", []),
+    "edited": lambda r: bool(r.get("shape_edited")),          # v0.2b: the lock's SHAPE was edited
+    "own": lambda r: "edited" in r.get("badges", []),         # its own settings (the grey dot)
+    "drawn": lambda r: bool(r.get("drawn")),
     "hidden": lambda r: not r.get("visible", True) or bool(r.get("hidden_by_group")),
     "excluded": lambda r: bool(r.get("excluded")),
     "flipped": lambda r: bool(r.get("root_flip")),
@@ -796,7 +799,7 @@ class _RowDelegate(QStyledItemDelegate):
             parts.append(("root flipped", TEXT_LABEL))
         if row.get("excluded"):
             parts.append(("excluded", TEXT_LABEL))
-        return parts
+        return parts + SP.status_parts(row)   # v0.2b: edited, drawn (neutral), the at-rest icon
 
     def _status(self, painter: QPainter, r: QRect, index) -> None:
         """Status: ● edited (neutral), "check match" / "new" in their status colours, the row's own display mode
@@ -812,6 +815,14 @@ class _RowDelegate(QStyledItemDelegate):
         left = r.left() + z.px(6)
         for text, color in self.parts(row):
             room = x - left
+            if text == SP.WARN_ICON:   # a drawn lock at rest in a shot (review 10): the icon, its tooltip says why
+                size = z.px(13)
+                if room < size:
+                    break
+                pm = SP.warn_pixmap(size)
+                painter.drawPixmap(QRect(x - size, cy - size // 2, size, size), pm)
+                x -= size + z.px(6)
+                continue
             if room < metrics.horizontalAdvance("…") + z.px(2):
                 break
             text = metrics.elidedText(text, Qt.TextElideMode.ElideRight, room)
@@ -834,7 +845,8 @@ class _RowDelegate(QStyledItemDelegate):
         z = self._tree.z
         metrics = QFontMetrics(z.font("small"))
         parts = self.parts(row)
-        w = sum(metrics.horizontalAdvance(t) for t, _c in parts) + z.px(8) * max(0, len(parts) - 1)
+        w = sum(z.px(13) if t == SP.WARN_ICON else metrics.horizontalAdvance(t) for t, _c in parts)
+        w += z.px(8) * max(0, len(parts) - 1)
         if "edited" in row.get("badges", []):
             w += z.px(14)
         # 8 right + 6 left of padding is what _status uses, plus slack: in Houdini the painter's metrics came out
@@ -1339,6 +1351,10 @@ class GroomingUI(QWidget):
         root.addWidget(self._view_line)
         # while painting, what the scalp shows and the legend, across the window: in the left column (the mockup)
         # the legend's numbers and its caption collided at 760 px
+        # v0.2b: the Tool bar (Select / Edit points / Draw lock / Paint) and the strip of the tool in hand (ui_spine)
+        root.addWidget(SP.build_tool_bar(self))
+        root.addWidget(_line())
+        root.addWidget(SP.build_tool_strip(self))
         root.addWidget(L.build_paint_strip(self))
         # the left column: the Scalp strip (while painting) over the tree; Properties beside it run from the top
         # bar to the action bar (the Loader's full-height inspector), under it when narrow
@@ -1381,6 +1397,8 @@ class GroomingUI(QWidget):
             sc = QShortcut(QKeySequence(seq), self)
             sc.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
             sc.activated.connect(lambda e=event: self._fire(e))
+        SP.install_keys(self)
+        SP.install_tree_tools(self)
         self._apply_size(refresh=False)
 
     # =====================================================================
@@ -1389,7 +1407,7 @@ class GroomingUI(QWidget):
 
     def _apply_size(self, refresh: bool = True) -> None:
         z = self.z
-        self.setStyleSheet(_sheet(z))
+        self.setStyleSheet(_sheet(z) + SP.sheet(z))
         self.setMinimumSize(z.px(400), z.px(480))
         if not self._docked and not self.isVisible():
             self.resize(z.px(1100), z.px(800))
@@ -1398,6 +1416,8 @@ class GroomingUI(QWidget):
             widget.setIconSize(QSize(z.px(size), z.px(size)))
         for b in self._icon_buttons:
             b.setFixedSize(z.px(28), z.px(28))
+        for b in getattr(self, "_icon_buttons_small", []):
+            b.setFixedSize(z.px(24), z.px(28))
         self._hda_label.setPixmap(_hda_icon(z.px(20)))
         self._tree.z = z
         self._tree.setIndentation(z.px(18))
@@ -1630,11 +1650,11 @@ class GroomingUI(QWidget):
         self._tree_head = head
 
         self._filter = QLineEdit()
-        self._filter.setPlaceholderText("Filter: name, or new, check, hidden, edited, excluded")
+        self._filter.setPlaceholderText("Filter: name, or new, check, hidden, edited, drawn, own, excluded")
         self._filter.setClearButtonEnabled(True)
         self._filter.addAction(_lucide_icon("search", 16, TEXT_META), QLineEdit.ActionPosition.LeadingPosition)
         self._filter.setToolTip("Shows the locks whose name holds the text. Words: new, check (match to check),"
-                                " hidden, edited, excluded, flipped")
+                                " hidden, edited (shape edited), drawn, own (own settings), excluded, flipped")
         self._filter.textChanged.connect(lambda _t: self._apply_filter())
         lay.addWidget(self._filter)
 
@@ -1706,8 +1726,7 @@ class GroomingUI(QWidget):
         tree.itemChanged.connect(self._on_item_renamed)
         delete = QShortcut(QKeySequence(Qt.Key.Key_Delete), tree)
         delete.setContext(Qt.ShortcutContext.WidgetShortcut)
-        delete.activated.connect(lambda: self._fire("delete_layer")
-                                 if self._props.get("kind") == SEL_LAYER else None)
+        delete.activated.connect(lambda: SP.delete_selected(self))   # a layer, or a drawn lock (v0.2b)
         self._tree = tree
         lay.addWidget(tree, stretch=1)
         # The selected layer's blend / opacity or D / opacity, UNDER the tree: above it, showing it on a click
@@ -1923,6 +1942,7 @@ class GroomingUI(QWidget):
         self._props_lay.setContentsMargins(z.px(14 if narrow else 22), z.px(14), z.px(12 if narrow else 18), z.px(14))
         self._asset_label.setVisible(self.width() >= z.px(1000))   # the node path gets the room first
         self._show_node_label()
+        SP.relayout(self)   # the Tool bar's words, the strip
         if self._props:
             self.show_properties(self._props)   # stat cells and setting rows in their narrow / wide sizes
 
@@ -2172,14 +2192,15 @@ class GroomingUI(QWidget):
             hexc = DIM if row["dimmed"] else "#%02x%02x%02x" % tuple(int(max(0.0, min(1.0, c)) * 255) for c in rgb)
             item.setIcon(COL_NAME, _lucide_icon("folder", z.px(16), hexc))
         elif "color" in row:
-            item.setIcon(COL_NAME, _swatch(row["color"], z.px(14), 0.35 if row["dimmed"] else 1.0))
+            item.setIcon(COL_NAME, SP.row_icon(self, row) or
+                         _swatch(row["color"], z.px(14), 0.35 if row["dimmed"] else 1.0))
         elif kind == SEL_DEFAULTS:
             item.setIcon(COL_NAME, QIcon(_hda_icon(z.px(14))))
         elif kind == ORPHANS_ROW:
             item.setIcon(COL_NAME, _lucide_icon("unlink", z.px(14), WARN))
         if kind == SEL_ORPHAN or row["dimmed"]:
             item.setForeground(COL_NAME, QColor(DIM if row["dimmed"] else TEXT_LABEL))
-        help_lines = [STATUS_HELP[b] for b in row.get("badges", []) if b in STATUS_HELP]
+        help_lines = [STATUS_HELP[b] for b in row.get("badges", []) if b in STATUS_HELP] + SP.status_help(row)
         if row.get("display"):
             help_lines.append(f"Shows {DISPLAY_LABELS[row['display']]} (its own display; right click › Display)")
         item.setToolTip(COL_STATUS, "\n".join(help_lines))
@@ -2242,6 +2263,7 @@ class GroomingUI(QWidget):
         self._props = props
         L.show_row_bar(self, props)
         L.update_tree_tools(self, props)
+        SP.update_tree_tools(self, props)
         if self._settings_open:   # the settings page stays until Back or another selection
             return
         scroll = self._scroll.verticalScrollBar().value()
@@ -2272,6 +2294,7 @@ class GroomingUI(QWidget):
         if props.get("state"):
             lay.addWidget(self._action_row(props["state"]))
             lay.addSpacing(z.px(14))
+        SP.drawn_section(self, props)   # a drawn lock: Width, Thickness, Tip taper, Delete lock
         if kind == SEL_ORPHAN:
             self._orphan_actions(props)
         if props.get("measured"):
@@ -2376,6 +2399,7 @@ class GroomingUI(QWidget):
             b.setToolTip(tip + (". The selected locks differ" if mixed and state.get(mixed) is None else ""))
             b.clicked.connect(act)
             made.append(b)
+        made += SP.action_buttons(self, state)   # Reset shape while no tool is on
         return _WrapRow(made, z.px(6))
 
     def _measured_box(self, measured: list[tuple[str, str]]) -> QWidget:
@@ -2426,13 +2450,13 @@ class GroomingUI(QWidget):
         items = self._tree.selectedItems()
         return items[0].data(COL_NAME, ROLE_ROW)["id"] if items else None
 
-    def set_message(self, text: str, error: bool = False) -> None:
+    def set_message(self, text: str, error: bool = False, warn: bool = False) -> None:
         """The result line; it fades after MESSAGE_MS (errors stay twice as long). A state that lasts
         (isolate, strands, hidden locks at Publish) is told by the banner or the warning, not here."""
         self._message_full = text or ""
         self._message_label.setToolTip("")
         self._fit_message()
-        self._message_label.setStyleSheet(f"color: {TEXT_ERROR if error else TEXT_LABEL};")
+        self._message_label.setStyleSheet(f"color: {TEXT_ERROR if error else (WARN if warn else TEXT_LABEL)};")
         if text:
             self._message_timer.start(MESSAGE_MS * (2 if error else 1))
         else:
@@ -2527,6 +2551,10 @@ class GroomingUI(QWidget):
 
     def publish_warning(self) -> str:
         return self._warning_label.text() if self._warning.isVisibleTo(self) else ""
+
+    def show_tools(self, cells: list[dict], strip: dict) -> None:
+        """The Tool bar (one tool on, Paint dimmed with its reason) and the strip of the tool in hand (v0.2b)."""
+        SP.show_tools(self, cells, strip)
 
     def set_paint_state(self, on: bool, brush: dict, reference: float | None = None) -> None:
         """Paint on / off and the brush: the strip of what the scalp shows, the legend."""
@@ -2640,6 +2668,7 @@ class GroomingUI(QWidget):
             excl.setCheckable(True)
             excl.setChecked(bool(row.get("excluded")))
             excl.triggered.connect(lambda on: self._fire("set_excluded", ids, on))
+            SP.row_menu(self, row, menu, ids)
         if row["kind"] == SEL_GROUP:
             colors = menu.addMenu(_lucide_icon("palette", z.px(15)), "Color")
             for rgb in SWATCHES:

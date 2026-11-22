@@ -70,6 +70,8 @@ def _fmt_d(value: float) -> str:
 def layer_parts(row: dict) -> list[tuple[str, str]]:
     """What the status column says on a layer row, right to left: painting, then the numbers."""
     parts: list[tuple[str, str]] = []
+    if row.get("no_lock"):   # its lock was a drawn lock, deleted (t80 N4): the layer stays, with no lock
+        parts.append(("no lock", _ui().WARN))
     if row.get("painting"):
         parts.append(("painting", TEXT_PRIMARY))   # the word in the text colour: ACCENT on SELECTED is 3.95:1
     kind = row["layer"]
@@ -119,7 +121,7 @@ def make_layer_item(ui, row: dict) -> QTreeWidgetItem:
         item.setToolTip(U.COL_NAME, f"Fill layer: {row['value']:g} over all the skin, {MODE_LABELS[row['mode']]}")
     else:
         icon = _lucide_icon("brush", z.px(15), ACCENT if row.get("painting") else (TEXT_META if off else TEXT_LABEL))
-        item.setToolTip(U.COL_NAME, "Paint layer: select it and press Paint to paint it in the viewport")
+        item.setToolTip(U.COL_NAME, "Paint layer: select it, then the Tool bar's Paint paints it in the viewport")
     item.setIcon(U.COL_NAME, icon)
     if off:
         item.setForeground(U.COL_NAME, QColor(U.DIM))
@@ -638,16 +640,7 @@ def layer_props(ui, props: dict) -> None:
     sec = _section(ui, "Brush", "brush")
     tools = QHBoxLayout()
     tools.setSpacing(z.px(6))
-    paint = QToolButton()
-    paint.setText("  Painting" if painting else "  Paint")
-    paint.setProperty("toggle", True)
-    paint.setCheckable(True)
-    paint.setChecked(painting)
-    paint.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-    paint.setIcon(_lucide_icon("brush", z.px(15), ACCENT if painting else TEXT_LABEL))
-    paint.setToolTip("Paint this layer in the viewport (Esc ends). Each stroke is one undo step")
-    paint.clicked.connect(lambda _on: ui._fire("toggle_paint"))
-    tools.addWidget(paint)
+    # Paint itself is the Tool bar's Paint cell (v0.2b, the user 2026-11-20: one way in, it replaced the button here)
     eraser = QToolButton()
     eraser.setText("  Eraser")
     eraser.setProperty("toggle", True)

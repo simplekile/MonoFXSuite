@@ -36,17 +36,29 @@
 			"script",
 			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('erase')"
 		],
+		"top_left",
+		[
+			"script",
+			"label",
+			"Edit points",
+			"icon",
+			"SOP_edit",
+			"check",
+			"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('points')",
+			"script",
+			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('points')"
+		],
 		"right",
 		[
 			"script",
 			"label",
-			"Scalp X-ray",
+			"Draw lock",
 			"icon",
-			"VIEW_display_xray",
+			"SOP_curve",
 			"check",
-			"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('scalp_xray')",
+			"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('draw')",
 			"script",
-			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('scalp_xray')"
+			"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('draw')"
 		],
 		"bottom_right",
 		[
@@ -118,6 +130,18 @@
 				"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('hair')",
 				"script",
 				"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('hair')"
+			],
+			"bottom",
+			[
+				"script",
+				"label",
+				"Scalp X-ray",
+				"icon",
+				"VIEW_display_xray",
+				"check",
+				"from apps.houdini import grooming_workspace\nreturn grooming_workspace.checked('scalp_xray')",
+				"script",
+				"from apps.houdini import grooming_workspace\ngrooming_workspace.radial('scalp_xray')"
 			]
 		]
 	]

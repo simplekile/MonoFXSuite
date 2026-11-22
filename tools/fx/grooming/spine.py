@@ -559,6 +559,14 @@ class SpineMixin:
             self.show_tools()
         return done
 
+    def select_layer(self, layer_id: int) -> None:
+        """A layer row: the Paint cell is usable only on one paint layer, so the Tool bar follows."""
+        super().select_layer(layer_id)   # type: ignore[misc]
+        if self.tool == TOOL_POINTS:
+            self.spine_follow()
+        else:
+            self.show_tools()
+
     def _on_paint_exit(self) -> None:
         super()._on_paint_exit()   # type: ignore[misc]
         self.show_tools()

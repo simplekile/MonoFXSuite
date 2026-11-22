@@ -147,12 +147,15 @@ BUTTONS = {
     "isolate": lambda b: ("isolate", (), {}),
     "update_regions": lambda b: ("split_regions", (), {}),
     "detect": lambda b: ("detect", (), {}),
+    "points": lambda b: ("toggle_tool", ("points",), {}),
+    "draw": lambda b: ("toggle_tool", ("draw",), {}),
 }
 
 
 def _state(adapter, c) -> tuple:
     return (adapter.text, adapter.painting, json.dumps(adapter.BRUSH, sort_keys=True), list(adapter.display),
-            getattr(adapter, "isolated", None), c.display_mode, c.paint_layer_id, c.isolated, list(adapter.writes))
+            getattr(adapter, "isolated", None), c.display_mode, c.paint_layer_id, c.isolated, list(adapter.writes),
+            c.tool_now())
 
 
 @pytest.mark.parametrize("entry", ws.entry_ids())
@@ -163,7 +166,7 @@ def test_every_radial_entry_leaves_the_node_as_its_panel_button(entry) -> None:
         adapter, view, c, ids = _panel_env()
         if entry in ("paint", "erase"):              # the panel's Paint and Eraser sit on a paint layer
             c.select(SEL_LAYER, (ids["crown"],))
-        elif entry == "isolate":
+        elif entry in ("isolate", "points"):
             c.select(ctl.SEL_LOCKS, (1, 2))
         if how == "radial":
             ws.run(c, entry)

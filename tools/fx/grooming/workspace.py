@@ -8,7 +8,9 @@ controller and switches the radial menu.
 Every radial entry calls the SAME controller function as the panel's button (no second code path):
 Paint -> toggle_paint (the layer's Paint), Erase -> set_brush(erase) (Eraser), Guides / Hair preview / Hair ->
 set_display (the view bar's Display), Isolate -> toggle_isolate (I), Scalp X-ray -> set_brush(xray) (the paint
-strip's X-ray), Update regions -> split_regions, Detect locks -> detect.
+strip's X-ray), Update regions -> split_regions, Detect locks -> detect; v0.2b: Edit points / Draw lock ->
+toggle_tool (the Tool bar's cell; Enter for Edit points). Draw lock took the right slot and Scalp X-ray moved into
+the Display submenu (8 slots; the user's own try of the pie, the User look gate, was still to come).
 """
 
 from __future__ import annotations
@@ -27,17 +29,19 @@ RADIAL_BY_HAND = ("Radial menu: Houdini did not let the panel switch it; pick MO
 ENTRIES: tuple[tuple[str, str, str, str], ...] = (
     ("paint", "Paint", "SOP_paint", "top"),
     ("erase", "Erase", "SOP_paint", "top_right"),
-    ("scalp_xray", "Scalp X-ray", "VIEW_display_xray", "right"),
+    ("points", "Edit points", "SOP_edit", "top_left"),
+    ("draw", "Draw lock", "SOP_curve", "right"),
     ("update_regions", "Update regions", "SOP_hairgen", "bottom_right"),
     ("detect", "Detect locks", "SOP_hairgen", "bottom"),
     ("isolate", "Isolate selected locks", "VIEW_visualization_isolate", "bottom_left"),
     ("guide", "Guides", "SOP_guidegroom", "display/top_left"),
     ("hair_preview", "Hair preview", "SOP_hairgen", "display/left"),
     ("hair", "Hair", "SOP_hairgen", "display/bottom_left"),
+    ("scalp_xray", "Scalp X-ray", "VIEW_display_xray", "display/bottom"),
 )
 DISPLAY_AT = "left"
 DISPLAYS = ("guide", "hair_preview", "hair")
-TOGGLES = ("paint", "erase", "scalp_xray", "guide", "hair_preview", "hair")   # shown with a check mark
+TOGGLES = ("paint", "erase", "scalp_xray", "guide", "hair_preview", "hair", "points", "draw")   # shown with a check mark
 
 
 def entry_ids() -> list[str]:
@@ -56,6 +60,8 @@ def run(controller: Any, entry: str) -> bool:
         return False
     if entry == "paint":
         return bool(controller.toggle_paint())
+    if entry in ("points", "draw"):
+        return bool(controller.toggle_tool(entry))
     if entry == "erase":
         # the panel's Eraser sits on a paint layer's Properties: the radial one asks for the same (t73)
         needs = getattr(controller, "paint_needs", None)
@@ -83,6 +89,9 @@ def checked(controller: Any, entry: str) -> bool:
         return False
     if entry == "paint":
         return getattr(controller, "paint_layer_id", None) is not None
+    if entry in ("points", "draw"):
+        now = getattr(controller, "tool_now", None)
+        return bool(now is not None and now() == entry)
     if entry in ("erase", "scalp_xray"):
         return bool(controller.brush_state().get("erase" if entry == "erase" else "xray"))
     if entry in DISPLAYS:
