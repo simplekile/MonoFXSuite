@@ -430,6 +430,34 @@ class Controller:
     def frame(self, path: str) -> None:
         self.message = "" if self.backend.frame(path) else "No Scene Viewer to frame it in."
 
+    # the viewport's prim selection and the inspector tree follow each other (view state, no undo)
+    def viewport_prims(self) -> dict[str, tuple[str, ...]]:
+        """{LOP network: prims selected in a Scene Viewer showing it}; {} without a viewer (or a backend without)."""
+        fn = getattr(self.backend, "viewport_prims", None)
+        return fn() if fn else {}
+
+    def instance_roots(self, paths: list[str]) -> dict[str, str]:
+        """{loader: its instance root, "/<Prim Name>" or "" with Prim Name off}; loaders with none are left out."""
+        fn = getattr(self.backend, "instance_roots", None)
+        return fn(list(paths)) if fn else {}
+
+    def displayed_loaders(self, network: str) -> set[str] | None:
+        """The nodes the network's viewer draws the stage of (its display node and the inputs above it); None: no
+        filter (a backend without, or no display node)."""
+        fn = getattr(self.backend, "displayed_loaders", None)
+        found = fn(network) if fn else None
+        return None if found is None else set(found)
+
+    def display_roots(self, network: str, loaders: dict[str, tuple[str, list[str]]]) -> dict[str, str]:
+        """{loader: where its instance root sits on the stage the network's viewer draws}; without a backend for
+        it, the roots as they are."""
+        fn = getattr(self.backend, "display_roots", None)
+        return fn(network, loaders) if fn else {p: r for p, (r, _t) in loaders.items()}
+
+    def select_prims(self, network: str, prims: list[str]) -> bool:
+        fn = getattr(self.backend, "select_prims", None)
+        return bool(fn and fn(network, list(prims)))
+
     def open_folder(self, path: str) -> None:
         self.message = "" if self.backend.open_folder(path) else "No folder for this loader."
 

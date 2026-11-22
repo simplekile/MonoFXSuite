@@ -647,6 +647,11 @@ class AnimLoaderManager(QWidget):
         self._poll = QTimer(self)
         self._poll.setInterval(50)
         self._poll.timeout.connect(self._collect)
+        self._vp_seen: dict | None = None  # the viewport selection last read or set
+        self._vp_poll = QTimer(self)  # Houdini has no callback for a Scene Viewer's prim selection: read it
+        self._vp_poll.setInterval(self.SELECTION_POLL_MS)
+        self._vp_poll.timeout.connect(self.sync_from_viewport)
+        self._vp_poll.start()
         self._thumbs = _Thumbnails(self._repaint_views)
         self._paint = _Painter(self._thumbs, scale)
         self.setStyleSheet(self.css(STYLE_WINDOW.replace("AutoMaterialWindow", WINDOW_NAME) + STYLE_MENU_SQ))
@@ -1111,6 +1116,86 @@ class AnimLoaderManager(QWidget):
         self.ctl.selection = [i.data(ROLE_ROW).node_path for i in view.selectedItems() if i.data(ROLE_ROW)]
         self._update_bar()
         self._show_subd()
+
+    SELECTION_POLL_MS = 300  # the viewport's prim selection is read this often while the window shows
+
+    def _tops(self, path: str) -> set[str]:
+        """The first names of a loader's prims under its root ("Geo", "Groom")."""
+        d = self.ctl.subd_detail(path) or {}
+        return {m.strip("/").split("/", 1)[0] for m in [*d.get("plan", {}), *d.get("curves", {})]}
+
+    def _drawn_roots(self, net: str, paths: list[str]) -> tuple[dict[str, str], dict[str, set[str]]]:
+        """{loader: where its instance root sits on the stage the viewer draws}, for the loaders of ``net`` that
+        feed the viewer's node (the display flag, not the selected node: the user's case), and their top names. A
+        shot layout moves the root (sh025: /char_Helen -> /World/anim/actors/char_Helen); a loader not found there
+        is left out."""
+        roots = self.ctl.instance_roots([p for p in paths if p.rpartition("/")[0] == net])
+        shown = self.ctl.displayed_loaders(net)
+        mine = {p: r for p, r in roots.items() if shown is None or p in shown}
+        tops = {p: self._tops(p) for p in mine}
+        return self.ctl.display_roots(net, {p: (r, sorted(tops[p])) for p, r in mine.items()}), tops
+
+    def sync_from_viewport(self, force: bool = False) -> None:
+        """Prims selected in a Scene Viewer select their rows in the inspector tree and, when they belong to other
+        loaders than the selected ones, those loaders in the list (the user's ask, 2026-11-22). View state only."""
+        if not force and (not self.isVisible() or self._pending is not None):
+            return
+        sel = self.ctl.viewport_prims()
+        if sel == self._vp_seen:
+            return
+        self._vp_seen = sel
+        paths = [r.node_path for r in self.ctl.rows() if r.kind != "layer" and not r.legacy]
+        by: dict[str, list[str]] = {}
+        for net, prims in sel.items():
+            if prims:
+                roots, tops = self._drawn_roots(net, paths)
+                by.update(logic.prims_by_loader(list(prims), roots, tops))
+        if by and not set(by) <= set(self.ctl.selection):
+            self._select_loaders(list(by))
+        if hasattr(self, "subd_panel"):
+            self.subd_panel.select_prims(by)
+
+    def _select_loaders(self, paths: list[str]) -> None:
+        """Selects these loaders in the list and the grid (one inspector update), the first one scrolled to."""
+        for view in (self.list_view, self.grid_view):
+            view.blockSignals(True)
+            first = None
+            for i in range(view.count()):
+                r = view.item(i).data(ROLE_ROW)
+                on = bool(r) and r.node_path in paths
+                view.item(i).setSelected(on)
+                if on and first is None:
+                    first = view.item(i)
+            view.blockSignals(False)
+            if first is not None and view is self.current_view():
+                view.scrollToItem(first)
+        self._selection_changed(self.current_view())
+
+    def push_viewport_selection(self, by: dict[str, list[str]], shown: list[str]) -> None:
+        """The rows picked in the inspector ({loader: patterns}) become the Scene Viewer's prim selection in each
+        shown loader's network (nothing picked there: the viewer's selection is cleared). A picked loader the
+        viewport does not draw is said on the result line."""
+        loaders = list(dict.fromkeys([*shown, *by]))
+        nets: dict[str, list[str]] = {p.rpartition("/")[0]: [] for p in loaders}
+        outside = []
+        for net in list(nets):
+            roots, _tops = self._drawn_roots(net, loaders)
+            for loader, patterns in by.items():
+                if loader.rpartition("/")[0] != net:
+                    continue
+                if loader not in roots:
+                    outside.append(loader.rsplit("/", 1)[-1])
+                    continue
+                for pattern in patterns:
+                    prim = logic.row_prim(roots[loader], pattern or "")
+                    if prim and prim not in nets[net]:
+                        nets[net].append(prim)
+        for net, prims in nets.items():
+            self.ctl.select_prims(net, prims)
+        self._vp_seen = self.ctl.viewport_prims()  # what the viewer took: no echo on the next read
+        if outside:
+            self.ctl.message = f"{', '.join(outside)} not in what the viewport draws (its display node)."
+            self._update_bar()
 
     DIALOG_IN_MS, DIALOG_OUT_MS = 160, 120  # Monos motion tokens: enter faster than exit
 
@@ -1975,8 +2060,46 @@ def _mesh_tree_class():
             self.setItemDelegate(_MeshDelegate(self, px))
             self.setMouseTracking(True)
 
+        def on_chevron(self, index, x: int) -> bool:
+            """Whether x falls on the row's chevron: the last indentation step before its name."""
+            if not index.isValid() or not self.model().hasChildren(index):
+                return False
+            left = self.visualRect(index.siblingAtColumn(0)).left()
+            return left - self.indentation() <= x < left
+
+        def set_branch_expanded(self, index, on: bool) -> None:
+            """Opens or folds the row and every row under it."""
+            if on:
+                self.expandRecursively(index)
+                return
+            todo = [index]
+            while todo:
+                i = todo.pop()
+                todo += [self.model().index(r, 0, i) for r in range(self.model().rowCount(i))]
+                self.collapse(i)
+
+        def set_all_expanded(self, on: bool) -> None:
+            if on:
+                self.expandAll()
+            else:
+                self.collapseAll()
+
         def mousePressEvent(self, event):  # noqa: N802 (Qt)
             index = self.indexAt(event.position().toPoint())
+            mods = event.modifiers()
+            # Shift+click a chevron: that branch and everything under it; Ctrl+click: the whole tree (the user's
+            # ask, 2026-11-22); both to the state the clicked row goes to
+            if (event.button() == Qt.MouseButton.LeftButton and mods & (Qt.KeyboardModifier.ShiftModifier
+                                                                       | Qt.KeyboardModifier.ControlModifier)
+                    and self.on_chevron(index, event.position().toPoint().x())):
+                on = not self.isExpanded(index.siblingAtColumn(0))
+                if mods & Qt.KeyboardModifier.ControlModifier:
+                    self.set_all_expanded(on)
+                else:
+                    self.set_branch_expanded(index.siblingAtColumn(0), on)
+                self.scrollTo(index)
+                event.accept()
+                return
             if (event.button() == Qt.MouseButton.LeftButton and index.isValid() and index.column() in TOGGLE_COLS
                     and index.data(ROLE_TOGGLE) and self.on_toggle is not None):
                 self.on_toggle(self.itemFromIndex(index), index.column())
@@ -2177,6 +2300,8 @@ class InspectorPanel(QWidget):
             self.tree.headerItem().setToolTip(col, tip)  # no icon in the header (the user's ask): the rows show them
         self.tree.on_toggle = self._toggle
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self._quiet = 0  # > 0 while the tree is rebuilt or follows the viewport: no selection goes back to it
+        self.tree.itemSelectionChanged.connect(self._tree_selection_changed)
         self.tree.setRootIsDecorated(True)
         self.tree.setUniformRowHeights(True)
         self.tree.set_px(owner.px)
@@ -2238,6 +2363,13 @@ class InspectorPanel(QWidget):
         return QSize(self.owner.px(360), self.owner.px(400))
 
     def show_row(self, row) -> None:
+        self._quiet += 1
+        try:
+            self._show_row(row)
+        finally:
+            self._quiet -= 1
+
+    def _show_row(self, row) -> None:
         from PySide6.QtWidgets import QTreeWidgetItem
 
         from tools.fx.anim_loader.logic import HEAVY_SUBD_POLYGONS, mesh_groups, subd_polygons
@@ -2329,7 +2461,8 @@ class InspectorPanel(QWidget):
         self.tree.setVisible(bool(self.path))
         self.filter.setVisible(bool(self.path))
         self.hint.setVisible(False)
-        self.tree.setToolTip("Right-click a row: subdivision, dicing, hide, render only, viewport only")
+        self.tree.setToolTip("Right-click a row: subdivision, dicing, hide, render only, viewport only.\n"
+                           "Shift+click an arrow: that group and all under it; Ctrl+click: every group")
         if not self.path:
             return
         any_dicing = self._build_tree(self.path, detail, None)
@@ -2491,6 +2624,13 @@ class InspectorPanel(QWidget):
     def show_rows(self, rows: list) -> None:
         """The selection: one loader shows its details and prims; several share one tree, a branch each (the user's
         ask), each row acting on its own loader."""
+        self._quiet += 1
+        try:
+            self._show_rows(rows)
+        finally:
+            self._quiet -= 1
+
+    def _show_rows(self, rows: list) -> None:
         rows = [r for r in rows if r is not None]
         if len(rows) <= 1:
             self.paths = [rows[0].node_path] if rows else []
@@ -2535,6 +2675,49 @@ class InspectorPanel(QWidget):
         self.hint.setVisible(False)
         if has:
             self._finish_tree(keep, any_dicing)
+
+    def _tree_selection_changed(self) -> None:
+        """The artist picked rows: the Scene Viewer selects their prims (the user's ask, 2026-11-22)."""
+        if self._quiet:
+            return
+        by: dict[str, list[str]] = {}
+        for it in self.tree.selectedItems():
+            by.setdefault(it.data(0, ROLE_LOADER) or self.path, []).append(it.data(0, ROLE_PATTERN))
+        self.owner.push_viewport_selection(by, list(self.paths))
+
+    def select_prims(self, by: dict[str, list[str]]) -> None:
+        """Selects the rows of what the viewport selected ({loader: paths under its instance root}, "" its root):
+        each the deepest row at or above it, its groups opened, the first one scrolled to."""
+        rows: dict[tuple, object] = {}
+        for it in self._all_items():
+            rows[(it.data(0, ROLE_LOADER) or self.path, logic.show_target(it.data(0, ROLE_PATTERN) or ""))] = it
+        names: dict[str, set[str]] = {}
+        for loader, target in rows:
+            names.setdefault(loader, set()).add(target)
+        want = []
+        for loader, rels in by.items():
+            for rel in rels:
+                target = logic.nearest_row(rel, names.get(loader, set()))
+                if target is not None and rows[(loader, target)] not in want:
+                    want.append(rows[(loader, target)])
+        if {id(i) for i in want} == {id(i) for i in self.tree.selectedItems()}:
+            return
+        from PySide6.QtCore import QItemSelectionModel
+
+        self._quiet += 1
+        try:
+            self.tree.clearSelection()
+            for it in want:
+                it.setSelected(True)
+                parent = it.parent()
+                while parent is not None:
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+            if want:
+                self.tree.setCurrentItem(want[0], 0, QItemSelectionModel.SelectionFlag.NoUpdate)
+                self.tree.scrollToItem(want[0])
+        finally:
+            self._quiet -= 1
 
     def _fit_name(self) -> None:
         """The name column fills what the other columns leave (never a strip of nothing on the right, never a name
