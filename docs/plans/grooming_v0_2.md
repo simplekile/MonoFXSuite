@@ -1044,6 +1044,15 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   move seen in the lock's own moving frame), with no hook, no stretch (strand length within 2 % of rest, as
   a drawn lock) and roots as the unedited lock's. An unedited lock's deform stays byte-equal to v0.1's.
   First step: compare the lock at rest with the lock in the shot, to tell what the deform adds.
+- **The edited lock's shot deform, checks (the manager, 2026-11-22, from B2's t79/u4 numbers)**: where the
+  piece bends in the shot, "same offset" and "no stretch" cannot both hold (a fixed offset from a bending
+  centreline stretched strands up to 13 %). No stretch wins: the edited spine is rebuilt from its root,
+  each rest segment turned by the unedited spine's local rotation with its length kept. Graded: strand
+  length within 2 % of rest; roots as the unedited lock's; no point left behind; the tip's turn against the
+  unedited lock within 5 deg of its value at rest (the hook the user saw: 22 deg at rest became 59-92);
+  the offset change in the moving frame within 0.25 cm p95 on sh025, where the piece moves rigidly
+  (measured 0.02-0.10, the unedited lock's own noise 0.02-0.05). On sh020 the offset change is reported per
+  frame, not graded (0.66-2.07 cm against noise 0.36-0.56).
 - **Limits are not moved to pass** (s3 drawn lock stretch 2 %, s5 unedited groom in shots): a failing
   number is traced to its cause first, with the v0.1 locks beside it on the same shot as the baseline.
 
