@@ -1096,6 +1096,17 @@ of the product was changed. Numbers are Helen's, hython unless said.**
     against the same at rest, the move against v0.1, the frame-to-frame motion against the piece's (no
     jump), and the frame cost (v0.1 about 1.0 s; over 1.5 s is reported as a problem, not hidden).
   - Switching a lock between two deforms by frame is not done (it jumps).
+- **Length and root lines measured against the piece, not against rest (the manager, 2026-11-23, from 037's
+  s6 run17)**: the animation itself stretches the pieces (sh025's back pieces are 5.2-8.5 % longer than at
+  rest at every frame, sh020's fringe pieces stretch 1.2-1.4 x near their tips), and hair that follows its
+  piece stretches with it. A deform that keeps strand length instead moved hair off its piece. So:
+  - Unedited lock: strand length ratio within 5 % (p95) of its own piece's length ratio at that frame,
+    measured along the piece over the strand's span. The ratio against rest is reported.
+  - Edited lock: median strand length within 2 % of the unedited lock's at the same frame (the edit adds no
+    stretch of its own). Against rest it is reported. Tip turn as before.
+  - Roots: within 0.1 cm (p95 per lock-frame) of the animated scalp, the drawn lock's limit; v0.1 set no
+    absolute limit for mesh locks. The difference against v0.1 is reported.
+  These replace the three "against rest" readings above; the cause was traced first and no number was widened.
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
