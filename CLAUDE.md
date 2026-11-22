@@ -615,7 +615,13 @@
   viewport toggle and the lookdev's proxy meshes keep the viewport light. Check: hython
   `tests/houdini/anim_loader/accept_curve_rules.py <fake_project> <out>` (10 checks); sh025's char_Helen was checked
   the same way and in the GUI (sandbox copy `sh025_curves_041.hiplc`, groom set to v004: it pointed at a v900 not on
-  disk).
+  disk). Seeing curves in the viewport (2026-11-22): Houdini 22's VK viewport in **MatCap** shading draws no
+  BasisCurves at all, and the stock SolarisLookDev desk opens its viewer in MatCap; the sh025 copies were saved with
+  that desk, so Helen looked bald and framing a groom prim missed. Smooth shading (the Solaris desk) draws them, and
+  framing /<instance>/Groom lands on the hair. Helen's lookdev also gives every groom curve `purpose = render`: in the
+  viewport they show only with each curve row's viewport toggle on (the Groom row's alone does not reach them).
+  Viewport check: published shape = smooth arcs, Linear = straight segments, as in Karma. A viewer inside a
+  ContextViewer is found by `adapter.scene_viewers`, not `hou.ui.paneTabOfType`; script it with flipbooks.
 - Manager › Subdivision column (the user's pick of three mockups, 2026-11-17: beside List / Grid, under them when
   narrower than 760 px): the selected loader's anim meshes by group (`logic.mesh_groups`, first two path levels),
   faces, where the scheme comes from (shot / lookdev / publish / default; on a mesh only when it differs from its
