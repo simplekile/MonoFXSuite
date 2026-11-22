@@ -999,6 +999,37 @@ def split_regions(node) -> None:
 
 
 
+def _prim_centres(scalp, has_group: bool):
+    """Per prim of a polygon geometry its centre (the mean of its points, summed in vertex order as the per-prim
+    loop it replaces did) and the `group` of its first point, read in bulk (the loop made ~250 k hou calls on Helen's
+    fine scalp: 3.6 s of every Update regions and of a drawn lock's delete)."""
+    import numpy as np
+    n = scalp.intrinsicValue("primitivecount")
+    if not n:
+        return [], []
+    P = np.frombuffer(scalp.pointFloatAttribValuesAsString("P"), np.float32).reshape(-1, 3).astype(np.float64)
+    vprim, vpoint = grooming_masks._vertex_tables(scalp)
+    order = np.argsort(vprim, kind="stable")
+    vprim, vpoint = vprim[order], vpoint[order]
+    counts = np.bincount(vprim, minlength=n)
+    starts = np.concatenate([[0], np.cumsum(counts)[:-1]])
+    pts = P[vpoint]
+    # sums per prim strictly in vertex order, one vertex slot at a time: the same floats as the old loop, bit for bit
+    # (np.add.reduceat did not add in order: 4e-19 off, which may flip a footprint test)
+    sums = np.zeros((n, 3))
+    for k in range(int(counts.max()) if n else 0):
+        has_k = counts > k
+        sums[has_k] = sums[has_k] + pts[starts[has_k] + k]
+    cen = sums / np.maximum(counts, 1)[:, None]
+    centroids = [tuple(float(c) for c in row) for row in cen]
+    if has_group:
+        names = scalp.pointStringAttribValues(config.ATTR_GROUP)
+        groups = [names[vpoint[st]] if c else "" for st, c in zip(starts, counts)]
+    else:
+        groups = [""] * n
+    return centroids, groups
+
+
 def _split(node, data, only=None):
     """The split rule of Update regions on the spines as cooked (locks not in `data` left out): (prim centres,
     owners per prim, each prim's mesh distances, the locks' roots on the skin). `only`: the prim indices to give
@@ -1033,25 +1064,16 @@ def _split(node, data, only=None):
         if lid in radii:
             roots[lid] = tuple(prim.attribValue("root"))  # type: ignore[assignment]
     has_group = scalp.findPointAttrib(config.ATTR_GROUP) is not None
-    centroids: list[tuple[float, float, float]] = []
-    prim_groups: list[str] = []
-    for prim in scalp.iterPrims():
-        pp = prim.points()
-        n = max(len(pp), 1)
-        c = [0.0, 0.0, 0.0]
-        for p in pp:
-            pos = p.position()
-            c[0] += pos[0]; c[1] += pos[1]; c[2] += pos[2]
-        centroids.append((c[0] / n, c[1] / n, c[2] / n))
-        prim_groups.append(pp[0].stringAttribValue(config.ATTR_GROUP) if has_group and pp else "")
+    centroids, prim_groups = _prim_centres(scalp, has_group)
     roots = _roots_on_skin(roots, centroids)
     if has_group:
         groups_of = {lk.id: lk.group for lk in data.locks}
     else:  # scalp without regions: every prim may grow any lock
         groups_of = {lid: "" for lid in roots}
     near = _cooked(node, NODE_REGION_MESH)
-    mesh_near = [list(zip(pr.floatListAttribValue("mesh_dist"), pr.intListAttribValue("mesh_lock")))
-                 for pr in near.iterPrims()]
+    # in bulk: one hou call per prim (24 k on Helen) cost most of a drawn lock's delete (t82: 5 s in the panel)
+    mesh_near = [list(zip(d, k)) for d, k in zip(near.primFloatListAttribValues("mesh_dist"),
+                                                  near.primIntListAttribValues("mesh_lock"))]
     share = config.REGION_MESH_SHARE_CM / max(float(node.evalParm("unit_cm")), 1e-6)
     if only is not None:
         idx = list(only)
@@ -2425,8 +2447,10 @@ def drawn_spine_arrays(curve, n_points: int, unit_cm: float, width_cm: float, th
 
 
 def drawn_group(lock_ids: Iterable[int]) -> str:
-    """Pure: the Blast group of the strands of these locks (the deform's split, `build_hda._deform_drawn`)."""
-    return " ".join(f"@lock_id=={int(i)}" for i in lock_ids)
+    """Pure: the Blast group of the strands of these locks (the deform's split, `build_hda._deform_drawn`). No lock:
+    a group that matches no strand (an EMPTY Blast group deletes everything: with an edited lock and no drawn one,
+    every strand went to the drawn branch and stayed at rest)."""
+    return " ".join(f"@lock_id=={int(i)}" for i in lock_ids) or "@lock_id==-1"
 
 
 def footprint_owners(centres, owners: Sequence[Sequence[int]], root, radius: float) -> tuple[list[int], list[int]]:
@@ -3073,9 +3097,12 @@ def cook_drawn_locks(sop) -> None:
     geo = sop.geometry()
     data = read_data(top)
     drawn = [lk for lk in data.locks if lk.drawn and len(lk.curve) >= 2]
-    edited = int(sum(geo.primIntAttribValues(config.ATTR_EDITED))) if geo.findPrimAttrib(config.ATTR_EDITED) else 0
+    flags = geo.primIntAttribValues(config.ATTR_EDITED) if geo.findPrimAttrib(config.ATTR_EDITED) else ()
+    edited_ids = [lid for lid, e in zip(geo.primIntAttribValues(config.ATTR_LOCK_ID), flags) if e] if flags else []
+    edited = len(edited_ids)
+    # edited_group: the Blast group of the edited locks' strands (U4 changed: they ride their spine in a shot)
     for name, value in (("edited_count", edited), ("drawn_count", len(drawn)),
-                        ("drawn_group", drawn_group(lk.id for lk in drawn))):
+                        ("drawn_group", drawn_group(lk.id for lk in drawn)), ("edited_group", drawn_group(edited_ids))):
         geo.addAttrib(hou.attribType.Global, name, "" if isinstance(value, str) else 0)
         geo.setGlobalAttribValue(name, value)
     if not drawn:

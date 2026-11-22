@@ -13,6 +13,7 @@ into the look folder for the pictures (qc_capture.py, GUI)."""
 from __future__ import annotations
 
 import os
+import time
 
 import hou
 import numpy as np
@@ -76,8 +77,10 @@ def run(ga, node, frames_text, look, unit):
     hou.setFrame(rest_frame)
     row = alib.rows(node, ga.NODE_SPINES_MEASURED)[lid]
     K = ga.lock_handles(node, [lid])[lid]["count"]
-    cases = {"unedited": None, "move_2cm": alib.bend(row, K, 2.0, unit), "move_5cm": alib.bend(row, K, 5.0, unit)}
+    cases = {"unedited": None, "move_2cm": alib.bend(row, K, 2.0, unit), "move_5cm": alib.bend(row, K, 5.0, unit),
+             "turn_25deg": alib.turn(row, K, 25.0)}
     edited = {"lock": LOCK, "handles": K, "frames": {str(f): {} for f in frames}}
+    kept = {}           # per case: rest strands and each frame's, for the moving frame below
     for case, H in cases.items():
         hou.setFrame(rest_frame)
         if H is None:
@@ -86,10 +89,41 @@ def run(ga, node, frames_text, look, unit):
             ga.set_points(node, {lid: H.tolist()}, space="frame")
         R0 = strands_of(rest, lid)
         hou.hipFile.save(f"{look}/{shot}_{case}.hiplc")
+        kept[case] = {"rest": R0}
         for f in frames:
             hou.setFrame(f)
-            edited["frames"][str(f)][case] = _measure(R0, strands_of(groom, lid), a_scalp.geometry(), unit)
+            t_cook = time.perf_counter()
+            groom.cook()
+            cook_s = round(time.perf_counter() - t_cook, 3)      # this frame of output 1 (the deform, this case)
+            G = strands_of(groom, lid)
+            kept[case][f] = G
+            edited["frames"][str(f)][case] = _measure(R0, G, a_scalp.geometry(), unit)
+            edited["frames"][str(f)][case]["cook_s"] = cook_s
         edited.setdefault("errors", {})[case] = lib.node_errors(node)
+    # U4 as changed by the user (2026-11-22): the edited lock against the unedited one in the lock's moving frame
+    # (accept_v02b_moving: the unedited spine deformed by v0.1's capture, outside the node), and the tip's turn
+    import accept_v02b_moving as mv
+    hou.setFrame(rest_frame)
+    mf = mv.MovingFrame(node, lid, unit, "u4mf")
+    U = kept["unedited"]
+    u_rest = mv.sample(U["rest"], unit)
+
+    def tipdir(st):
+        return {sid: alib._unit(P[-1] - P[-4]) for sid, P in st}
+
+    for f in frames:
+        hou.setFrame(f)
+        u_now = mv.sample(U[f], unit)
+        edited["frames"][str(f)]["unedited"]["own_noise"] = mv.own_noise(mf, u_rest, u_now)
+        for case in ("move_2cm", "move_5cm", "turn_25deg"):
+            E = kept[case]
+            row_f = edited["frames"][str(f)][case]
+            row_f["moving_frame"] = mv.offsets(mf, u_rest, mv.sample(E["rest"], unit), u_now, mv.sample(E[f], unit))
+            a0u, a0e, a1u, a1e = tipdir(U["rest"]), tipdir(E["rest"]), tipdir(U[f]), tipdir(E[f])
+            ids = [x for x in a0e if x in a0u and x in a1u and x in a1e]
+            ang = lambda A, B: np.degrees(np.arccos(np.clip([np.dot(A[x], B[x]) for x in ids], -1, 1)))  # noqa: E731
+            row_f["tip_turn_rest_deg"] = round(float(np.median(ang(a0u, a0e))), 2)
+            row_f["tip_turn_frame_deg"] = round(float(np.median(ang(a1u, a1e))), 2)
     out["edited"] = edited
     hou.setFrame(rest_frame)
     ga.reset_points(node, [lid])

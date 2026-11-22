@@ -107,7 +107,7 @@ def test_drawn_spine_arrays_without_skin_is_the_curve():
 
 
 def test_drawn_group_is_a_blast_group_of_lock_ids():
-    assert ga.drawn_group([]) == ""
+    assert ga.drawn_group([]) == "@lock_id==-1"          # matches no strand: an empty Blast group deletes all
     assert ga.drawn_group([61, 64]) == "@lock_id==61 @lock_id==64"
 
 

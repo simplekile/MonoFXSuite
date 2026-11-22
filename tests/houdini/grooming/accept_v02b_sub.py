@@ -66,7 +66,9 @@ try:
         R["data_sha1"] = hashlib.sha1(text.encode("utf-8")).hexdigest()
         # at a frame: output 1 as a shot reads it (deformed when an anim is wired); else the groom at rest
         groom = node.node("GROOM" if len(sys.argv) > 6 else "GROOM_REST")
+        t0 = time.perf_counter()
         groom.cook()
+        R["cook_s"] = round(time.perf_counter() - t0, 3)      # output 1 cold in this process (a shot frame: before / after)
         P, nv, lock, sid = strands(groom.geometry(), unit)
         # the points apart, float32 cm, so the caller can map them instead of holding one large array
         np.save(os.path.splitext(OUTF)[0] + "_P.npy", P.astype(np.float32))

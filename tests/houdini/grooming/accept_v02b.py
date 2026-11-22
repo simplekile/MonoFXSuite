@@ -25,6 +25,10 @@ Definitions this script makes on its own (for the checker to judge):
   4. "A root on the skin": its distance to the rest scalp's surface (nearestPrim), cm.
   5. "Strand length within N points" in a shot: the median of the lock's strands' length at the frame over their
      length at rest, edited against unedited (absolute difference of the two ratios).
+  7. "The tip's turn" in a shot: the angle between the direction of the last tenth of an edited strand and of the
+     unedited strand of the same id (median over strands), at rest and at the frame.
+  8. "The lock's moving frame": accept_v02b_moving.MovingFrame (its unedited spine and offset copies deformed by v0.1's
+     capture, outside the node); offset_change and own_noise as defined there.
   6. "Cooks as before" for a shot scene as saved: the build before v0.2b is not byte-identical with itself there
      (0.05 cm between its own runs, measured in t79), so this build is held to that spread (s5).
 """
@@ -77,7 +81,10 @@ RESAMPLE_CM = config.RESAMPLE_TOL_CM      # 0.25
 DRAWN_COUNT_SHARE, DRAWN_WIDTH_SHARE = 0.15, 0.20
 GAP_CM = 0.0025               # a root on the skin (accept_v02a's z_roots_on_the_skin: the scalp quads are not planar)
 READ_BACK_CM = 0.003
-SHOT_POINTS = 0.03            # 2 cm move: strand length within 3 points of the unedited lock's
+SHOT_POINTS = 0.03            # (v0.1's deform, before U4 changed) 2 cm move: length within 3 points of the unedited's
+SHOT_LENGTH = 0.02            # U4 changed: an edited lock's strand length within 2 % of rest at every frame
+TIP_TURN_DEG = 5.0            # U4 changed: the tip's turn against the unedited lock within this of its rest value
+EDIT_CASES = ("move_2cm", "move_5cm", "turn_25deg")
 SHOT_ROOT_CM = 0.01           # roots: within this of the unedited lock's roots off the animated scalp (p95)
 DRAWN_SHOT_LEN, DRAWN_SHOT_ROOT_CM = 0.02, 0.1
 OLD_SCENE_CM = 0.003          # a groom v0.1 made and saved, v0.1 against itself (t68, 10 runs: 0.0024 cm)
@@ -1200,7 +1207,7 @@ def s_shots():
     look = LOOK or OUT + "/look"
     os.makedirs(look, exist_ok=True)
     got = {tag: sub("shot", SUITE, hip, "shot_" + tag, frames, look) for tag, hip, frames in shots}
-    rows1, rows3, rows4 = {}, {}, {}
+    rows1, rows1b, rows3, rows4 = {}, {}, {}, {}
     ok1 = ok3 = ok4 = True
     for tag, g in got.items():
         if "error" in g:
@@ -1209,14 +1216,18 @@ def s_shots():
             continue
         rows1[tag] = g["edited"]
         for f, row in g["edited"]["frames"].items():
-            for case in ("move_2cm", "move_5cm"):
+            ok1 = ok1 and row["unedited"]["left_behind"] == 0
+            for case in EDIT_CASES:
                 c = row[case]
-                c["length_points_from_unedited"] = r3(abs(c["length_p50"] - row["unedited"]["length_p50"]))
-            c2 = row["move_2cm"]
-            ok1 = ok1 and row["unedited"]["left_behind"] == 0 and c2["left_behind"] == 0 \
-                and row["move_5cm"]["left_behind"] == 0 \
-                and c2["length_points_from_unedited"] <= SHOT_POINTS \
-                and c2["roots_p95_cm"] <= row["unedited"]["roots_p95_cm"] + SHOT_ROOT_CM
+                c["tip_turn_change_deg"] = r3(abs(c["tip_turn_frame_deg"] - c["tip_turn_rest_deg"]))
+                ok1 = ok1 and c["left_behind"] == 0 and abs(c["length_p50"] - 1) <= SHOT_LENGTH \
+                    and c["roots_p95_cm"] <= row["unedited"]["roots_p95_cm"] + SHOT_ROOT_CM \
+                    and c["tip_turn_change_deg"] <= TIP_TURN_DEG
+                noise = row["unedited"]["own_noise"]["p95_cm"]
+                rows1b.setdefault(tag, {}).setdefault(f, {})[case] = {
+                    "change_p95_cm": c["moving_frame"]["change_p95_cm"], "change_max_cm": c["moving_frame"]["change_max_cm"],
+                    "unedited_own_noise_p95_cm": noise,
+                    "ratio_to_noise": r3(c["moving_frame"]["change_p95_cm"] / max(noise, 1e-9))}
         rows3[tag] = g["drawn_wired"]
         ok3 = ok3 and g["drawn_wired"]["scalp_ok"] and all(
             abs(r["length_p50"] - 1) <= DRAWN_SHOT_LEN and r["roots_p95_cm"] <= DRAWN_SHOT_ROOT_CM
@@ -1225,10 +1236,17 @@ def s_shots():
         ok4 = ok4 and all(v["drawn_at_rest_max_cm"] == 0.0 and v["message"] and not v["errors"]
                           and v["mesh_locks_same_as_without_the_drawn_lock_cm"] == 0.0
                           for v in g["drawn_unwired"].values())
-    add("s1_shot_edited_lock_follows", ok1, rows1, {"length_points": SHOT_POINTS, "roots_cm": SHOT_ROOT_CM},
-          "%s moved 2 cm (and 5 cm, for the pictures) in sh020 / sh025, output 1 per frame: no point left behind, roots "
-          "on the animated scalp within %s cm (p95) of the unedited lock's, strand length (DEFINITION 5) within 3 points "
-          "of the unedited lock's at every frame (2 cm)" % (MOVE_LOCK, SHOT_ROOT_CM), evidence="shot_*.json")
+    add("s1_shot_edited_lock_keeps_its_shape", ok1, rows1,
+        {"length": SHOT_LENGTH, "roots_cm": SHOT_ROOT_CM, "tip_turn_deg": TIP_TURN_DEG},
+        "U4 as changed by the user (2026-11-22): %s moved 2 cm, 5 cm and turned 25 deg in sh020 / sh025, output 1 per "
+        "frame: no point left behind; strand length (median, at the frame over at rest) within 2 %%; roots on the "
+        "animated scalp within %s cm (p95) of the unedited lock's; the tip's turn against the unedited lock "
+        "(DEFINITION 7) within %s deg of its rest value: no hook" % (MOVE_LOCK, SHOT_ROOT_CM, TIP_TURN_DEG),
+        evidence="shot_*.json")
+    add("s1b_shot_edited_offset_in_the_moving_frame", None, rows1b, "the manager's to set",
+        "the edited lock's offset from the unedited lock in the lock's moving frame (DEFINITION 8), its change from rest "
+        "per frame, beside the unedited lock's own noise in that frame; KNOWN until the manager sets the limit (where "
+        "the piece bends, the same offset and no stretch cannot both hold)", evidence="shot_*.json")
     add("s3_shot_drawn_lock_follows_the_scalp", ok3, rows3, {"length": DRAWN_SHOT_LEN, "roots_cm": DRAWN_SHOT_ROOT_CM},
           "two drawn locks (on the bare skin farthest from every root, Helen's fringe; on the hair_back skin farthest "
           "from the roots, where the spike drew) with the animated scalp wired (the rest scalp's cut of the shot's "
@@ -1263,7 +1281,8 @@ def s_shots():
         ulp = float(np.spacing(np.float32(np.abs(np.asarray(P["base_0"])).max())))
         limit = base_spread + 2 * ulp
         b0 = got["base_0"]
-        rows5[tag] = {"frame": f, "strands_equal": all(g["strands"] == b0["strands"] for g in got.values()),
+        rows5[tag] = {"frame": f, "cook_s_of_a_shot_frame": {t: g.get("cook_s") for t, g in got.items()},
+                      "strands_equal": all(g["strands"] == b0["strands"] for g in got.values()),
                       "same_points_a_strand": same_layout, "base_vs_base_max_cm": base_spread,
                       "new_vs_base_cm": new_vs, "float32_step_cm": ulp, "limit_cm": limit,
                       "errors": [e for n in news for e in got[n]["errors"]],
