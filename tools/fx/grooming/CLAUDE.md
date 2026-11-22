@@ -1162,6 +1162,45 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - Deleting a drawn lock: 3.8 s -> 0.49 s (`_prim_centres`: the fine scalp's prim centres and groups read in bulk,
     summed in vertex order, bit-identical to the per-prim loop; mesh distances by `primFloatListAttribValues`).
     Update regions gains the same (2.2 s on Helen).
+- v0.2b B2 after the independent check t84 (2026-11-22; FAIL on B-1 / B-2 / B-3; `t79_redraw_network/report.md`
+  section 8 answers each item):
+  - Every adapter write that takes numbers goes through ONE guard, `_finite` (with `_places` for handles and strokes,
+    `_in_range` for a factor / width / thickness, `_reach`): a NaN / inf, a wrong shape, a count outside
+    HANDLES_MIN..HANDLES_MAX (set_points took 2, 3 and 100) or a value past a limit raises ValueError naming it,
+    BEFORE anything is written. A NaN handle had been stored, written as `NaN` into groom_data (not JSON) and lost on
+    reload. `set_handle_count` takes a whole number only (7.5 and "7" went through int()); `draw_lock` refuses an
+    unknown group.
+  - Limits in config (B-2; scale 1e9 segfaulted the cook, width 1e6 cm and a stroke 1e6 cm off the skin ran for
+    minutes): LOCK_REACH_MAX_CM 300 (every handle / stroke point from the lock's root; floor-length hair on a 2 m
+    character is under 2 m; measured on Helen a 30 m stroke and an 8 x scale still cook in ~1 s, so the cost is far
+    off: the hang was 1e6 cm), STROKE_SKIN_MAX_CM 5 (a stroke starts on the skin; a few cm allows one started over
+    the hair; t84 minor 4's 80 cm redraw is refused), SCALE_RANGE 0.1-10 a call, DRAWN_WIDTH_RANGE_CM 0.05-10 (the
+    footprint is 0.5 x the width round the root: 10 cm took skin from 5 locks, 20 cm from 42 of 61, 40 cm from all),
+    DRAWN_THICK_RANGE_CM 0.02-5. Costs in `t79/limits.out`, `reach*.log`.
+  - A result within `config.SPINE_STILL` of what is stored or measured writes nothing (no undo step, "nothing
+    changed"): rotate with a zero axis or 0 deg, scale 1, the measured handles given back (minor 1). SPINE_STILL,
+    ROOT_SAME_CM and DRAWN_ROOT_FADE (the drawn root's fade, 0.25 of the length) live in config (minor 6).
+  - `lock_spines(node, ids)` (public, for the viewer state): per lock `spine` (SPINES) and `measured`
+    (SPINES_MEASURED, None for a drawn lock), each P / tangent / axis as numpy, and `drawn`. The viewer state
+    still reads `_spine_rows(_cooked(...))` (B3's to switch).
+  - accept_v02b: e1's identity passes by construction now (nothing written), so e1 adds the case that can fail:
+    every handle but the root 5 x SPINE_STILL off, the spine = logic.edited_spine within 0.001 cm (9e-6 / 1.3e-5 cm).
+    Found there: that 0.0005 cm spine move regrows hair_back_20 with 2.4 % of its strand points moved past 0.01 cm,
+    0.5 cm at most (hair_bang_11: 0.0005 cm everywhere): reported, not graded. v1 replays t84's bad inputs on the
+    node. s1 adds hair_bang_05 moved 2 cm (B-3) on sh020 frames 10 / 25 / 75 / 105 / 135 (and the earlier ones).
+    r1 and s5 grade against the old build's own spread over 7 of its runs, kept in `<base>_samples/<base key>/
+    <scene>_<sha1>/` and reused (`against_base`): NO BUILD IS BYTE-STABLE FROM RUN TO RUN (old build: Helen 0.0022 cm,
+    sh020 0.05 cm, sh025 0.084 cm); byte-equal pairs are reported, not required.
+  - B-3, hair_bang_05 moved 2 cm in sh020 under U4's deform: length 1.005 at frame 10, then 1.02-1.05 (median; p95 to
+    1.17) from frame 25 on, past s1's 2 %. Cause: v0.1's capture folds this lock's unedited spine BACK on itself there
+    (its turn total 466-493 deg against 228 at rest, 86-90 deg at one point), so the rest -> frame rotation the
+    edited lock rides spins ~180 deg over two spine points and strands 1 cm out are thrown (a 0.76 cm segment became
+    2.1 cm). Tried and dropped: the rotations smoothed along the spine (quaternion Gaussian, 2 cm: frame 10 1.005 ->
+    1.000, the fold-back frames 1.042, but the tip turn rose to 8.65 deg on hair_bang_11 and 14 deg on hair_bang_05
+    against 5; 5 cm: 1.040); the place along the spine kept monotone along a strand and the previous axis carried
+    where the width copy is weak (no effect). The deform is run11's. The unedited lock under v0.1 stretches there too
+    (p95 1.08). Left to the manager: the line holds on hair_bang_11 and on sh025, not where the hair mesh folds a
+    piece back.
 - v0.2b lock redraw, B3 viewer state (2026-11-22; sandbox `tests/t81_points_state/`, `report.md` there; GUI acceptance
   `tests/houdini/grooming/accept_v02b_gui.py`, pytest `tests/test_grooming_points_keys.py`):
   - `apps/houdini/grooming_points_state.py`: ONE Python state `config.POINTS_STATE` for Edit points and Draw lock,

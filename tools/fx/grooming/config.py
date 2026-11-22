@@ -194,10 +194,37 @@ RESAMPLE_TOL_CM = 0.25
 # A stored root at the root frame's origin (within this, scene units) was never moved: it stays the measured root
 # (the spike's VEX rule); a moved root goes onto the skin (U5)
 ROOT_MOVED_EPS = 1e-7
+# Handles within this (scene units) of where they are now change nothing: the network's spine_edit leaves a spine
+# whose every handle lies this close to the measured one untouched (the per-lock loop is chaotic in the last bit:
+# 1e-7 in P moved hair 0.04 cm), and the adapter writes nothing for a result this close to what is stored or
+# measured (t84 minor 1: no undo step, "nothing changed"). 1e-4 cm in Helen's metres
+SPINE_STILL = 1e-6
+# A handle given within this of where the root is now (cm): the root did not move (it stays the measured one)
+ROOT_SAME_CM = 1e-4
+# A drawn lock's root goes onto the skin, the move fading out over this share of its length (the spike's drawn lock)
+DRAWN_ROOT_FADE = 0.25
 # A drawn lock (U3: it gets its footprint, REGION_FOOTPRINT x its width round its root, in the same undo step)
 DRAWN_WIDTH_CM = 2.0           # the panel's first values for a new drawn lock (spike t76 Q5's test lock)
 DRAWN_THICK_CM = 0.6
 DRAWN_TAPER_DEFAULT = 0.3      # share of the width and thickness left at the tip
+# Limits of what an edit may ask for (t84 B-2: a scale of 1e9 crashed the cook, a width of 1e6 cm or a stroke
+# 1e6 cm off the skin ran for minutes). Past them the adapter raises ValueError naming the limit and writes nothing.
+# Chosen from what an artist can mean, with room (Helen: locks 12.6-89.6 cm, a drawn lock 2 x 0.6 cm):
+# - LOCK_REACH_MAX_CM: every handle (and stroke point) within this of the lock's root. Floor-length hair on a 2 m
+#   character is under 2 m; 3 m leaves room for a lock laid out and back. Cost measured on Helen (t79 limits.out).
+# - STROKE_SKIN_MAX_CM: a stroke (draw, redraw) starts this close to the skin: the viewer state starts it on the
+#   skin; a few cm allows a start over the hair. Its root goes onto the skin, so further off the lock gets a jump
+#   (t84 minor 4: an 80 cm one was taken).
+# - SCALE_RANGE: one Scale is one drag; 0.1 x to 10 x (a 12.6 cm fringe lock to 126 cm), the result still within
+#   the reach.
+# - DRAWN_WIDTH_RANGE_CM / DRAWN_THICK_RANGE_CM: a drawn lock from a few strands to 10 cm wide. Its footprint is
+#   REGION_FOOTPRINT x the width round its root: on Helen 10 cm took skin from 5 locks, 20 cm from 42 of 61 (half
+#   the head) and 40 cm from all of them, which no artist means by one lock (t79 limits.out).
+LOCK_REACH_MAX_CM = 300.0
+STROKE_SKIN_MAX_CM = 5.0
+SCALE_RANGE = (0.1, 10.0)
+DRAWN_WIDTH_RANGE_CM = (0.05, 10.0)
+DRAWN_THICK_RANGE_CM = (0.02, 5.0)
 # prim attributes the network writes on a spine (B2): the stored control points as a flat float array (in each
 # lock's cache key like any prim attribute), and 1 on a lock whose spine the edit moved
 ATTR_EDIT_CP = "edit_cp"

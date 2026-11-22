@@ -98,7 +98,10 @@ try:
         R["errors"] = lib.node_errors(node)
         lid = ga.read_data(node).locks[0].id
         h = ga.lock_handles(node, [lid])[lid]
-        res = ga.set_points(node, {lid: h["points"]})
+        pts = [list(p) for p in h["points"]]
+        # a real edit: the tip 1 cm along the width axis (the measured handles given back write nothing since t84)
+        pts[-1] = [c + a * 1.0 / float(node.evalParm("unit_cm")) for c, a in zip(pts[-1], h["axes"][1])]
+        res = ga.set_points(node, {lid: pts})
         R["edit"] = res
         R["schema_after_edit"] = json.loads(node.evalParm("groom_data")).get("schema")
         R["undo_label"] = hou.undos.undoLabels()[0] if hou.undos.undoLabels() else ""

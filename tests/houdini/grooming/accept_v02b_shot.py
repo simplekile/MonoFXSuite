@@ -22,6 +22,9 @@ import accept_lib as lib
 import accept_v02b_lib as alib
 
 LOCK = "hair_bang_11"
+# t84 B-3: a second fringe lock, the one the independent check found (sh020: its mesh piece bends in the shot), moved
+# 2 cm at the tip along the width axis
+MORE_LOCKS = {"hair_bang_05": ("unedited", "move_2cm")}
 
 
 def _lengths(strands):
@@ -65,7 +68,6 @@ def run(ga, node, frames_text, look, unit):
     a_scalp.setName("accept_anim_scalp", unique_name=True)
     rest, groom = node.node("GROOM_REST"), node.node("GROOM")
     ids = {lk.name: lk.id for lk in ga.read_data(node).locks}
-    lid = ids[LOCK]
     out = {"shot": shot, "frames": frames, "rest_frame": rest_frame, "anim_wired": node.evalParm("anim_wired"),
            "deform_problem": ga.deform_problem(node)}
 
@@ -73,13 +75,26 @@ def run(ga, node, frames_text, look, unit):
         geo_node.cook()
         return alib.strands(geo_node.geometry(), unit).get(which, [])
 
-    # ---- an edited lock (moved 2 cm, 5 cm) against the unedited one ----
+    out["edited"] = _edited(ga, node, ids[LOCK], LOCK, ("unedited", "move_2cm", "move_5cm", "turn_25deg"), frames,
+                            rest_frame, rest, groom, a_scalp, unit, look, shot, strands_of, "")
+    out["edited_more"] = {name: _edited(ga, node, ids[name], name, cases, frames, rest_frame, rest, groom, a_scalp, unit,
+                                        look, shot, strands_of, name + "_")
+                          for name, cases in MORE_LOCKS.items() if name in ids}
+    hou.setFrame(rest_frame)
+    return _drawn_part(ga, node, out, frames, rest_frame, rest, groom, a_scalp, net, unit, look, shot, strands_of)
+
+
+def _edited(ga, node, lid, name, case_names, frames, rest_frame, rest, groom, a_scalp, unit, look, shot, strands_of,
+            prefix):
+    """One lock unedited and edited (the cases named), per frame: what the deform did (_measure), the moving-frame
+    offsets and the tip's turn (accept_v02b.py DEFINITIONS 7, 8). Saves <shot>_<prefix><case>.hiplc into `look`."""
     hou.setFrame(rest_frame)
     row = alib.rows(node, ga.NODE_SPINES_MEASURED)[lid]
     K = ga.lock_handles(node, [lid])[lid]["count"]
-    cases = {"unedited": None, "move_2cm": alib.bend(row, K, 2.0, unit), "move_5cm": alib.bend(row, K, 5.0, unit),
-             "turn_25deg": alib.turn(row, K, 25.0)}
-    edited = {"lock": LOCK, "handles": K, "frames": {str(f): {} for f in frames}}
+    every = {"unedited": None, "move_2cm": lambda: alib.bend(row, K, 2.0, unit),
+             "move_5cm": lambda: alib.bend(row, K, 5.0, unit), "turn_25deg": lambda: alib.turn(row, K, 25.0)}
+    cases = {c: (every[c]() if every[c] else None) for c in case_names}
+    edited = {"lock": name, "handles": K, "frames": {str(f): {} for f in frames}}
     kept = {}           # per case: rest strands and each frame's, for the moving frame below
     for case, H in cases.items():
         hou.setFrame(rest_frame)
@@ -88,7 +103,7 @@ def run(ga, node, frames_text, look, unit):
         else:
             ga.set_points(node, {lid: H.tolist()}, space="frame")
         R0 = strands_of(rest, lid)
-        hou.hipFile.save(f"{look}/{shot}_{case}.hiplc")
+        hou.hipFile.save(f"{look}/{shot}_{prefix}{case}.hiplc")
         kept[case] = {"rest": R0}
         for f in frames:
             hou.setFrame(f)
@@ -104,7 +119,7 @@ def run(ga, node, frames_text, look, unit):
     # (accept_v02b_moving: the unedited spine deformed by v0.1's capture, outside the node), and the tip's turn
     import accept_v02b_moving as mv
     hou.setFrame(rest_frame)
-    mf = mv.MovingFrame(node, lid, unit, "u4mf")
+    mf = mv.MovingFrame(node, lid, unit, "u4mf" + prefix)
     U = kept["unedited"]
     u_rest = mv.sample(U["rest"], unit)
 
@@ -115,7 +130,7 @@ def run(ga, node, frames_text, look, unit):
         hou.setFrame(f)
         u_now = mv.sample(U[f], unit)
         edited["frames"][str(f)]["unedited"]["own_noise"] = mv.own_noise(mf, u_rest, u_now)
-        for case in ("move_2cm", "move_5cm", "turn_25deg"):
+        for case in [c for c in cases if c != "unedited"]:
             E = kept[case]
             row_f = edited["frames"][str(f)][case]
             row_f["moving_frame"] = mv.offsets(mf, u_rest, mv.sample(E["rest"], unit), u_now, mv.sample(E[f], unit))
@@ -124,10 +139,12 @@ def run(ga, node, frames_text, look, unit):
             ang = lambda A, B: np.degrees(np.arccos(np.clip([np.dot(A[x], B[x]) for x in ids], -1, 1)))  # noqa: E731
             row_f["tip_turn_rest_deg"] = round(float(np.median(ang(a0u, a0e))), 2)
             row_f["tip_turn_frame_deg"] = round(float(np.median(ang(a1u, a1e))), 2)
-    out["edited"] = edited
     hou.setFrame(rest_frame)
     ga.reset_points(node, [lid])
+    return edited
 
+
+def _drawn_part(ga, node, out, frames, rest_frame, rest, groom, a_scalp, net, unit, look, shot, strands_of):
     # ---- drawn locks: one on the bare skin farthest from every root (the fringe on Helen), one on the hair_back skin
     # farthest from the roots (where the spike drew its lock) ----
     f1 = frames[min(1, len(frames) - 1)]
