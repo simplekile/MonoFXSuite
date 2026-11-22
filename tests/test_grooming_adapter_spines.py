@@ -347,3 +347,123 @@ def test_limits_live_in_config():
     assert config.DRAWN_ROOT_FADE == 0.25
     src = (ROOT / "tools/fx/grooming/build_hda.py").read_text(encoding="utf-8")
     assert "config.SPINE_STILL" in src and "\nSPINE_STILL =" not in src
+
+
+# --- t84 recheck (second round): names stored raw, ids, axis, tol_cm, stroke cap, drawn names -------------------
+
+class _RawParm:
+    """A string parm as Houdini stores it: `set` keeps the text, `unexpandedString` gives it back as is, `eval`
+    expands like Houdini (a backslash escapes, `$` starts a variable, backticks an expression)."""
+
+    def __init__(self):
+        self.text = ""
+
+    def set(self, text):
+        self.text = text
+
+    def unexpandedString(self):
+        return self.text
+
+    def eval(self):
+        raise AssertionError("groom_data must be read raw, never evaluated")
+
+
+class _RawNode:
+    def __init__(self):
+        self.p = _RawParm()
+
+    def parm(self, name):
+        assert name == config.DATA_PARM
+        return self.p
+
+    def evalParm(self, name):
+        return self.p.eval()
+
+
+@pytest.mark.parametrize("name", ["c\\", "wip\\old", "a`b`c", "cost $5", "a${HIP}b", 'q"uote', "new\nline"])
+def test_groom_data_is_read_back_raw(name):
+    data = _data_with_drawn()
+    data.locks[-1].name = name
+    data.groups[0].name = name
+    node = _RawNode()
+    node.p.set(data.to_json())
+    back = ga.read_data(node)
+    assert back.locks[-1].name == name and back.groups[0].name == name
+    assert ga.data_text(node) == data.to_json()
+
+
+def test_masks_read_groom_data_raw_too():
+    src = (ROOT / "apps/houdini/grooming_masks.py").read_text(encoding="utf-8")
+    src_ad = (ROOT / "apps/houdini/grooming_adapter.py").read_text(encoding="utf-8")
+    assert "evalParm(config.DATA_PARM)" not in src and "evalParm(config.DATA_PARM)" not in src_ad
+
+
+@pytest.mark.parametrize("value, want", [(7, 7), (7.0, 7), (np.int64(7), 7), (np.float32(7.0), 7), ("7", 7)])
+def test_lock_id_takes_whole_numbers(value, want):
+    assert ga._lock_id(value) == want and type(ga._lock_id(value)) is int
+
+
+@pytest.mark.parametrize("value", [True, False, np.bool_(True), 31.5, float("nan"), float("inf"), "7.5", "x", None,
+                                   [7], (7,)])
+def test_lock_id_refuses_a_bool_or_a_fraction(value):
+    with pytest.raises(ValueError):
+        ga._lock_id(value)
+
+
+def test_lock_ids_count_a_duplicate_once_in_their_order():
+    assert ga._lock_ids([7, 3, 7, 7.0, "3", 9]) == [7, 3, 9]
+
+
+def test_writes_refuse_a_bool_id_before_reading_the_node():
+    for call in (lambda: ga.rotate_points(None, [True], (0, 1, 0), 10),
+                 lambda: ga.scale_points(None, [True], 2.0),
+                 lambda: ga.set_handle_count(None, [1, True], 6),
+                 lambda: ga.reset_points(None, [False]),
+                 lambda: ga.set_points(None, {True: [(0, 0, 0)] * 4})):
+        with pytest.raises(ValueError):
+            call()
+
+
+def test_set_points_refuses_a_lock_given_twice():
+    with pytest.raises(ValueError, match="twice"):
+        ga.set_points(None, {3: [(0, 0, 0)] * 4, "3": [(0, 0, 0)] * 4})
+
+
+@pytest.mark.parametrize("tol", [0, -1, float("nan"), float("inf"), 0.009, 10.01, True])
+def test_tol_cm_is_guarded(tol):
+    with pytest.raises(ValueError):
+        ga.redraw_lock(None, 1, [(0, 0, 0), (0, 0.1, 0)], tol)
+
+
+def test_thin_stroke_keeps_ends_and_at_most_the_cap():
+    Q = np.stack([np.linspace(0, 1, 10001), np.zeros(10001), np.zeros(10001)], 1)
+    T = ga.thin_stroke(Q, config.STROKE_POINTS_MAX)
+    assert len(T) == config.STROKE_POINTS_MAX
+    assert np.array_equal(T[0], Q[0]) and np.array_equal(T[-1], Q[-1])
+    assert all(any(np.array_equal(t, q) for q in Q[max(0, int(t[0] * 10000) - 1):int(t[0] * 10000) + 2]) for t in T[::97])
+    short = Q[:50]
+    assert ga.thin_stroke(short, config.STROKE_POINTS_MAX) is not None and len(ga.thin_stroke(short, 2000)) == 50
+
+
+def test_thinned_stroke_fits_as_the_whole_one():
+    rng = np.random.default_rng(3)
+    t = np.linspace(0, 1, 12000)
+    Q = np.stack([0.3 * np.sin(t * 3), -0.35 * t, 0.12 * t ** 2], 1) + rng.normal(0, 0.0005, (12000, 3))
+    H_thin, gap_thin = logic.stroke_handles(ga.thin_stroke(Q, config.STROKE_POINTS_MAX), 100.0)
+    # the thinned fit lies on the whole stroke as well as on its own points
+    assert logic.curve_gap(Q, logic.curve_points(H_thin)) * 100.0 <= max(gap_thin, config.STROKE_TOL_CM) + 0.05
+
+
+def test_stroke_limits_live_in_config():
+    assert config.STROKE_POINTS_MAX == 2000 and config.STROKE_TOL_RANGE_CM == (0.01, 10.0)
+
+
+def test_rotate_axis_is_scaled_by_its_largest_component_first():
+    src = (ROOT / "apps/houdini/grooming_adapter.py").read_text(encoding="utf-8")
+    i = src.index("def rotate_points")
+    body = src[i:src.index("\ndef ", i + 10)]
+    assert "abs(ax).max()" in body and "ax / big" in body
+    for ax in ((1e200, 1e200, 0), (1e-160, 1e-160, 0)):
+        a = np.asarray(ax, float)
+        a = a / abs(a).max()
+        assert np.allclose(a / np.linalg.norm(a), np.array((1, 1, 0)) / math.sqrt(2))

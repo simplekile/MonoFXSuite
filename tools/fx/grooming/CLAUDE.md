@@ -1209,6 +1209,20 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     where the width copy is weak (no effect). The deform is run11's. The unedited lock under v0.1 stretches there too
     (p95 1.08). Left to the manager: the line holds on hair_bang_11 and on sh025, not where the hair mesh folds a
     piece back.
+- After t84's second round (2026-11-22; the plan's "After 037b's recheck"; accept_v02b v1 / v2, pytest
+  `test_grooming_adapter_spines.py`):
+  - `groom_data` is read RAW (`data_text(node)` = `parm.unexpandedString()`; also `grooming_masks`): `evalParm`
+    expands a backslash, a backtick and `$`, so a lock or layer name `c\` broke the JSON (the node could not cook
+    until Undo), `cost $5` read back `cost ` and ``a`b`c`` `abc`. `parm.set(text)` already stored the text as given.
+  - Lock ids go through `_lock_id` / `_lock_ids` before anything is read: whole numbers (text of one is left), a bool
+    or a fraction refused, a duplicate counted once (rotate [L, L] turned L twice); `set_points` refuses a lock
+    given twice. A rotate axis is divided by its largest component first ((1e200, 1e200, 0) overflowed the norm).
+  - `tol_cm` in `config.STROKE_TOL_RANGE_CM` (0.01-10); a stroke over `config.STROKE_POINTS_MAX` (2000, cost in
+    config) is thinned evenly by index before the fit (`thin_stroke`: 100,000 points drew in 0.1 s; 400,000 took
+    159 s); a zero-length stroke is refused by draw as by redraw. A drawn lock's name is text, not only spaces, and
+    no other lock's (or missing lock's); `set_drawn` refuses a taper outside 0-1 as `draw_lock` does.
+  - r1 / s5: 20 samples of the old build made from the COMMITTED ed7d0de (`t79/base7_suite` = git archive; t79's
+    base6_suite had a rebuilt HDA), graded against the largest difference between any two + 2 float32 steps.
 - v0.2b lock redraw, B3 viewer state (2026-11-22; sandbox `tests/t81_points_state/`, `report.md` there; GUI acceptance
   `tests/houdini/grooming/accept_v02b_gui.py`, pytest `tests/test_grooming_points_keys.py`):
   - `apps/houdini/grooming_points_state.py`: ONE Python state `config.POINTS_STATE` for Edit points and Draw lock,

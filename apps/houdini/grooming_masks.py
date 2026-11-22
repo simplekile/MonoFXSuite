@@ -346,7 +346,7 @@ def layers_for_view(masks: Sequence[model.MaskLayer], layer_id: int | None) -> l
 # ---------------------------------------------------------------------------
 
 def _read(node) -> model.GroomData:
-    return model.GroomData.from_json(node.evalParm(config.DATA_PARM))
+    return model.GroomData.from_json(node.parm(config.DATA_PARM).unexpandedString())
 
 
 def _scalp(node):
@@ -649,7 +649,7 @@ def cook_mask_read(sop) -> None:
     v0.1's."""
     top = sop.parent()
     geo = sop.geometry()
-    text = top.evalParm(config.DATA_PARM)
+    text = top.parm(config.DATA_PARM).unexpandedString()
     parm = top.parm(config.MASK_PARM)
     # a file of this schema without a density layer (the usual groom): nothing to read, not even the JSON. An
     # older file is always read: its layers become density layers on reading (model.migrate)
@@ -1339,7 +1339,7 @@ def mask_dropped(node) -> str:
     """What the artist is told about a scene of an older test build: the layers this version dropped on
     opening it and the ones it now reads as density layers, "" when none: for the panel's message line. The
     stored JSON keeps them until the next edit writes it."""
-    text = node.evalParm(config.DATA_PARM)
+    text = node.parm(config.DATA_PARM).unexpandedString()
     return model.dropped_text(model.dropped_masks(text), model.converted_masks(text))
 
 

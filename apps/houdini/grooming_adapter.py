@@ -706,8 +706,14 @@ def create_node(parent=None):
     return node
 
 
+def data_text(node) -> str:
+    """The stored `groom_data` text as written, never expanded (t84 recheck: `evalParm` expands a backslash, a
+    backtick and `$`, so a name `c\\` broke the JSON, `cost $5` read back as `cost ` and ``a`b`c`` as `abc`)."""
+    return node.parm(config.DATA_PARM).unexpandedString()
+
+
 def read_data(node) -> model.GroomData:
-    return model.GroomData.from_json(node.evalParm(config.DATA_PARM))
+    return model.GroomData.from_json(data_text(node))
 
 
 def write_data(node, data: model.GroomData, label: str) -> None:
@@ -1624,7 +1630,7 @@ def keep_old_lookup(node) -> bool:
     p = node.parm(LOOKUP_PARM)
     if p is None or node.userData(LOOKUP_NOTE) is not None:
         return False
-    if not scene_before_lookup(node.evalParm(config.DATA_PARM), hip_holds(hou.hipFile.path(), LOOKUP_PARM)):
+    if not scene_before_lookup(data_text(node), hip_holds(hou.hipFile.path(), LOOKUP_PARM)):
         return False
     with hou.undos.disabler():
         p.set(0)
@@ -2548,6 +2554,34 @@ def _finite(values, what: str):
     return a
 
 
+def _lock_id(value) -> int:
+    """A lock id: a whole number (31, 31.0, numpy ints; text of a whole number is left, as the plan leaves soft
+    coercions that corrupt nothing). A bool or a fraction is refused (t84 recheck: `True` turned lock 1, 31.5 lock
+    31)."""
+    import numbers
+    if isinstance(value, bool) or (hasattr(value, "dtype") and getattr(value.dtype, "kind", "") == "b"):
+        raise ValueError(f"lock id {value!r}: a whole number, not a bool")
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.lstrip("-").isdigit():
+            raise ValueError(f"lock id {value!r}: a whole number")
+        return int(text)
+    if isinstance(value, numbers.Real) and math.isfinite(float(value)) and float(value) == int(value):
+        return int(value)
+    raise ValueError(f"lock id {value!r}: a whole number")
+
+
+def _lock_ids(lock_ids) -> list[int]:
+    """Lock ids in their order, each once (t84 recheck: `rotate_points(node, [7, 7], ...)` turned lock 7 twice, scale
+    [7, 7] x 2 scaled it 4 x): one edit per lock a call."""
+    out: list[int] = []
+    for v in lock_ids:
+        i = _lock_id(v)
+        if i not in out:
+            out.append(i)
+    return out
+
+
 def _places(values, what: str, lo: int, hi: int):
     """`values` as (K, 3) finite places with lo <= K <= hi, else ValueError (t84 B-1, minor 2)."""
     a = _finite(values, what)
@@ -2582,12 +2616,26 @@ def _stroke_on_skin(node, stroke, unit: float, snap):
     the skin ran for minutes). Returns it as an array."""
     import numpy as np
     Q = _places(stroke, "stroke", 2, 10 ** 9)
+    if float(np.linalg.norm(np.diff(Q, axis=0), axis=1).sum()) <= 0.0:
+        raise ValueError("stroke: needs two points apart")         # as logic._stroke (t84 recheck: draw took one)
     off = float(np.linalg.norm(Q[0] - np.asarray(snap(Q[0]), dtype=float))) * unit
     if off > config.STROKE_SKIN_MAX_CM:
         raise ValueError(f"stroke: starts {off:.1f} cm off the skin, at most {config.STROKE_SKIN_MAX_CM:g} cm "
                          "(config.STROKE_SKIN_MAX_CM)")
     _reach(Q, Q[0], unit, "stroke")
-    return Q
+    return thin_stroke(Q, config.STROKE_POINTS_MAX)
+
+
+def thin_stroke(stroke, most: int):
+    """Pure: a stroke of more than `most` points as `most` of its own points, evenly by index, first and last kept
+    (config.STROKE_POINTS_MAX: the fit costs ~0.1 ms a point and jumps past ~10,000; t84 recheck: 400,000 points
+    took 159 s). A stroke of `most` or fewer is returned as it is."""
+    import numpy as np
+    Q = np.asarray(stroke, dtype=float)
+    if len(Q) <= most:
+        return Q
+    keep = np.unique(np.round(np.linspace(0, len(Q) - 1, int(most))).astype(int))
+    return Q[keep]
 
 
 def _handles_now(lk: model.Lock, row: dict | None, unit: float):
@@ -2740,14 +2788,20 @@ def set_points(node, points: dict, space: str = "points", step: str = "move") ->
     ids changed, "roots_moved": ids, "message"}."""
     if space not in ("points", "frame"):
         raise ValueError(f"space {space!r}")
+    given: dict[int, object] = {}
+    for key, pts in points.items():
+        lid = _lock_id(key)
+        if lid in given:
+            raise ValueError(f"lock {lid} given twice")       # one edit per lock a call (t84 recheck)
+        given[lid] = pts
     data = read_data(node)
     unit = _unit(node)
     rows = _measured_rows(node)
     snap = _skin_snap(node)[0]
     drawn_rows = _spine_rows(_cooked(node, NODE_SPINES)) if any(
-        (data.lock(int(i)) is not None and data.lock(int(i)).drawn) for i in points) else {}
+        (data.lock(i) is not None and data.lock(i).drawn) for i in given) else {}
     changed, roots = [], []
-    for lid, pts in points.items():
+    for lid, pts in given.items():
         lk = _lock_or_raise(data, lid)
         row = drawn_rows.get(lk.id) if lk.drawn else rows.get(lk.id)
         ch, rm = _store_points(lk, row, pts, space, unit, data, snap)
@@ -2765,12 +2819,13 @@ def reset_points(node, lock_ids: Iterable[int]) -> dict:
     """Back to the measured spine, or for a drawn lock back to its curve as drawn (`Lock.drawn_curve`), one undo
     step "Reset lock". The hair comes from the cache (no lock regrown). A root that had moved comes back: regions
     out of date."""
+    ids = _lock_ids(lock_ids)
     data = read_data(node)
-    want = set(int(i) for i in lock_ids)
+    want = set(ids)
     moved = [lk.id for lk in data.locks if lk.id in want and lk.edited and (
         (lk.drawn and tuple(lk.curve[0]) != tuple(lk.drawn_curve[0])) or
         (not lk.drawn and logic.root_moved(lk.spine)))]
-    done = logic.reset_locks(data.locks, [int(i) for i in lock_ids])
+    done = logic.reset_locks(data.locks, ids)
     for lid in moved:
         data.mark_stale(f"{data.lock(lid).name}: a root moved")
     if done:
@@ -2807,8 +2862,11 @@ def rotate_points(node, lock_ids: Iterable[int], axis, degrees: float) -> dict:
     ax = _finite(axis, "axis").reshape(-1)
     if ax.size != 3:
         raise ValueError("axis: 3 numbers")
+    big = float(abs(ax).max())
+    if big > 0:
+        ax = ax / big       # t84 recheck: (1e200, 1e200, 0) overflowed the norm, (1e-160, 1e-160, 0) underflowed it
     degrees = float(_finite(degrees, "degrees").reshape(-1)[0])
-    return _transform(node, [int(i) for i in lock_ids],
+    return _transform(node, _lock_ids(lock_ids),
                       lambda H, R: logic.rotate_about_root(H, ax if R is None else logic.direction_to_frame(ax, R),
                                                            degrees), "rotate")
 
@@ -2817,7 +2875,7 @@ def scale_points(node, lock_ids: Iterable[int], factor: float) -> dict:
     """Scale these locks about their roots (a longer or shorter lock), one undo step "Scale lock". The factor is
     within config.SCALE_RANGE and the result within config.LOCK_REACH_MAX_CM, else ValueError (t84 B-2)."""
     factor = _in_range(factor, config.SCALE_RANGE, "scale factor")
-    return _transform(node, [int(i) for i in lock_ids], lambda H, R: logic.scale_about_root(H, factor), "scale")
+    return _transform(node, _lock_ids(lock_ids), lambda H, R: logic.scale_about_root(H, factor), "scale")
 
 
 def set_handle_count(node, lock_ids: Iterable[int], count: int | None) -> dict:
@@ -2834,12 +2892,13 @@ def set_handle_count(node, lock_ids: Iterable[int], count: int | None) -> dict:
             raise ValueError(f"handle count {count!r}: a whole number from {config.HANDLES_MIN} to "
                              f"{config.HANDLES_MAX}")
         count = int(count)
+    ids = _lock_ids(lock_ids)
     data = read_data(node)
     unit = _unit(node)
     rows = _measured_rows(node)
     gaps: dict[int, float] = {}
     changed = []
-    for lid in lock_ids:
+    for lid in ids:
         lk = _lock_or_raise(data, lid)
         if lk.drawn:
             length_cm = float(logic.arc_lengths(logic.curve_points(lk.curve))[-1]) * unit
@@ -2880,9 +2939,10 @@ def redraw_lock(node, lock_id: int, stroke, tol_cm: float = config.STROKE_TOL_CM
     takes the fewest handles whose edit lies within `tol_cm` of the stroke (`logic.redraw_handles`), a drawn lock
     the fewest whose curve does (`logic.stroke_handles`). A stroke starting off the root moves the root (on the
     skin). Returns {"locks", "roots_moved", "gap_cm", "count", "message"}."""
+    tol_cm = _in_range(tol_cm, config.STROKE_TOL_RANGE_CM, "tolerance (cm)")
     data = read_data(node)
     unit = _unit(node)
-    lk = _lock_or_raise(data, lock_id)
+    lk = _lock_or_raise(data, _lock_id(lock_id))
     snap = _skin_snap(node)[0]
     stroke = _stroke_on_skin(node, stroke, unit, snap)
     if lk.drawn:
@@ -2953,6 +3013,13 @@ def draw_lock(node, stroke, width_cm: float = config.DRAWN_WIDTH_CM, thick_cm: f
     width_cm = _in_range(width_cm, config.DRAWN_WIDTH_RANGE_CM, "width (cm)")
     thick_cm = _in_range(thick_cm, config.DRAWN_THICK_RANGE_CM, "thickness (cm)")
     taper = _in_range(taper, (0.0, 1.0), "taper")
+    tol_cm = _in_range(tol_cm, config.STROKE_TOL_RANGE_CM, "tolerance (cm)")
+    if name is not None and not isinstance(name, str):
+        raise ValueError(f"name {name!r}: text")
+    if name and not name.strip():
+        raise ValueError("name: not only spaces")
+    if name and name in {x.name for x in data.locks} | {o.name for o in data.orphans}:
+        raise ValueError(f"name {name!r}: another lock has it")      # t84 recheck: two locks of one name
     if group is not None and group not in {g.id for g in data.groups} | ({DEFAULT_GROUP} if not data.groups else set()):
         raise ValueError(f"no group {group!r}")      # t84 minor 3
     snap = _skin_snap(node)[0]
@@ -3011,8 +3078,8 @@ def set_drawn(node, lock_ids: Iterable[int], width_cm: float | None = None, thic
         if v is not None:
             _in_range(v, rng, what)                   # every value checked before any lock changes
     if taper is not None:
-        _finite(taper, "taper")
-    for lid in lock_ids:
+        _in_range(taper, (0.0, 1.0), "taper")         # as draw_lock (t84 recheck: 7 was clamped to 1)
+    for lid in _lock_ids(lock_ids):
         lk = _lock_or_raise(data, lid)
         if not lk.drawn:
             continue
@@ -3022,7 +3089,7 @@ def set_drawn(node, lock_ids: Iterable[int], width_cm: float | None = None, thic
         if thick_cm is not None:
             lk.thick_cm = _in_range(thick_cm, config.DRAWN_THICK_RANGE_CM, "thickness (cm)")
         if taper is not None:
-            lk.taper = min(1.0, max(0.0, float(_finite(taper, "taper").reshape(-1)[0])))
+            lk.taper = _in_range(taper, (0.0, 1.0), "taper")
         if (lk.width_cm, lk.thick_cm, lk.taper) != before:
             changed.append(lk.id)
             if lk.width_cm != before[0]:
@@ -3053,8 +3120,8 @@ def delete_drawn_locks(node, lock_ids: Iterable[int]) -> dict:
     names = []
     done = []
     stale_before = (data.regions_stale, list(data.stale_why))
-    for lid in lock_ids:
-        lk = data.lock(int(lid))
+    for lid in _lock_ids(lock_ids):
+        lk = data.lock(lid)
         if lk is not None and lk.drawn:
             names.append(lk.name)
             if data.remove_drawn_lock(lk.id):
