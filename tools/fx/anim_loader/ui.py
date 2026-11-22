@@ -3372,9 +3372,48 @@ class _AssetGrid(QListWidget):
     2026-11-22)."""
 
     root = ""
+    _press = None  # (where the left button went down, the card under it)
 
     def mimeTypes(self):  # noqa: N802 (Qt)
         return ["text/uri-list"]
+
+    # Qt drags only a card that was picked before the press; pressing an unpicked card and moving drew a marquee
+    # (the user's report, 2026-11-22). A press on any card and a move past the drag distance drags it, with the
+    # picked ones; a press on the empty space still draws the marquee.
+    def mousePressEvent(self, event):  # noqa: N802 (Qt)
+        pos = event.position().toPoint()
+        item = self.itemAt(pos) if event.button() == Qt.MouseButton.LeftButton else None
+        self._press = (pos, item) if item is not None else None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):  # noqa: N802 (Qt)
+        press = self._press
+        if press is not None and event.buttons() & Qt.MouseButton.LeftButton and \
+                (event.position().toPoint() - press[0]).manhattanLength() >= QApplication.startDragDistance():
+            self._press = None
+            self.start_asset_drag(press[1])
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):  # noqa: N802 (Qt)
+        self._press = None
+        super().mouseReleaseEvent(event)
+
+    def start_asset_drag(self, item) -> None:
+        """Drags ``item`` with the picked cards (it is picked first)."""
+        from PySide6.QtGui import QDrag
+
+        if not item.isSelected():
+            item.setSelected(True)
+        data = self.mimeData(self.selectedItems())
+        if not data.hasUrls():
+            return
+        drag = QDrag(self)
+        drag.setMimeData(data)
+        size = max(24, self.iconSize().width() // 2)
+        drag.setPixmap(item.icon().pixmap(size, size * self.iconSize().height() // max(1, self.iconSize().width())))
+        drag.exec(Qt.DropAction.CopyAction)
+        self.setState(QAbstractItemView.State.NoState)  # the release went to the drop: no marquee left behind
 
     def mimeData(self, items):  # noqa: N802 (Qt)
         from PySide6.QtCore import QMimeData, QUrl

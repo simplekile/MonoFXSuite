@@ -78,3 +78,41 @@ def test_the_drawer_drags_its_cards_and_the_list_takes_them(tmp_path, monkeypatc
                      Qt.KeyboardModifier.NoModifier)
     assert w.eventFilter(w.list_view.viewport(), ev2) is False  # not ours: the list does what it did
     w.close()
+
+
+def test_pressing_an_unpicked_card_and_moving_drags_it(tmp_path, monkeypatch):
+    """The user's report: a press on a card that was not picked and a move drew a marquee instead of a drag."""
+    pytest.importorskip("PySide6.QtWidgets")
+    from PySide6.QtCore import QPoint, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWidgets import QApplication, QListView, QListWidgetItem
+
+    QApplication.instance() or QApplication([])
+    from tools.fx.anim_loader import ui
+
+    grid = ui._AssetGrid()
+    grid.setViewMode(QListView.ViewMode.IconMode)
+    grid.setSelectionMode(ui.QAbstractItemView.SelectionMode.MultiSelection)
+    grid.resize(400, 300)
+    grid.root = "P:/proj"
+    for name in ("char_Helen", "prop_Cliff05"):
+        it = QListWidgetItem(name)
+        it.setData(ui.ROLE_ROW, name)
+        grid.addItem(it)
+    grid.show()
+    QTest.qWaitForWindowExposed(grid)
+    started = []
+    grid.start_asset_drag = lambda item: started.append(item.data(ui.ROLE_ROW))
+    first = grid.visualItemRect(grid.item(0)).center()
+    QTest.mousePress(grid.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, first)
+    QTest.mouseMove(grid.viewport(), first + QPoint(QApplication.startDragDistance() + 5, 0))
+    QTest.mouseRelease(grid.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                       first + QPoint(QApplication.startDragDistance() + 5, 0))
+    assert started == ["char_Helen"]
+    empty = QPoint(390, 290)  # the empty space: still the marquee, no drag
+    QTest.mousePress(grid.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, empty)
+    QTest.mouseMove(grid.viewport(), empty - QPoint(30, 30))
+    QTest.mouseRelease(grid.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+                       empty - QPoint(30, 30))
+    assert started == ["char_Helen"]
+    grid.close()
