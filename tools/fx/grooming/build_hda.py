@@ -1632,7 +1632,6 @@ if (!i@deform_ok && npoints(0) > 0)
 # v0.2b lock redraw and control points (docs/plans/grooming_v0_2.md "v0.2b"; the spike t76's network)
 # ---------------------------------------------------------------------------
 
-SPINE_STILL = 1e-6   # scene units: every handle within this of the measured spine (1e-4 cm in Helen's metres) = no edit
 VEX_SPINE_EDIT = r"""// spine edit (v0.2b): the K control points (handles) cook_assign stored on the spine as f[]@edit_cp, in the
 // lock's ROOT FRAME (origin the measured spine's first point after Root to skin; axes its tangent, width axis,
 // thickness axis there; scene units), move the measured spine. The measured spine keeps its own detail: each
@@ -1712,7 +1711,7 @@ if (length(set(cp[0], cp[1], cp[2])) > %(eps)s) v@root = N[0];
 v@direction = normalize(N[n - 1] - N[0]);
 f@length *= len / L;                    // the measured length, scaled as the spine's own length changed
 i@edited = 1;
-""" % {"eps": config.ROOT_MOVED_EPS, "still": SPINE_STILL}
+""" % {"eps": config.ROOT_MOVED_EPS, "still": config.SPINE_STILL}
 
 VEX_MESH_CARRY = """// the carried mesh (v0.2b): each point of an EDITED lock's mesh piece put on the edited spine by the bend that
 // moved the spine there, the rule fit_to_lock places a strand by (its place along the lock and its offset in the

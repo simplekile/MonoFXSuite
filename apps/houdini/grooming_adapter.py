@@ -43,7 +43,7 @@ NODE_SPINES_MEASURED = "SPINES_MEASURED"   # v0.2b: spines after Root to skin, b
 NODE_MESH_CARRIED = "MESH_CARRIED"   # v0.2b: the hair mesh with each edited lock's piece on its edited spine
 NODE_ANIM_SCALP = "ANIM_SCALP"       # v0.2b: the animated scalp (input 4) with detail deform_ok / point counts
 ATTR_DRAWN = "drawn"                 # v0.2b: prim attribute on spines, 1 for a lock drawn on the skin
-ROOT_SAME_CM = 1e-4                  # a handle given within this of where the root is now: the root did not move
+ROOT_SAME_CM = config.ROOT_SAME_CM  # a handle given within this of where the root is now: the root did not move
 NODE_SCALP_FINE = "SCALP_FINE"       # scalp after the bilinear subdivision used for regions
 NODE_SCALP_REGIONS = "SCALP_REGIONS" # scalp prims with lock_owners (shared when stacked), share, density, area_cm2
 ATTR_OWNER_DIST = "owner_dist"
@@ -2420,7 +2420,7 @@ def drawn_spine_arrays(curve, n_points: int, unit_cm: float, width_cm: float, th
     S = logic.arc_lengths(P)
     U = S / S[-1] if S[-1] > 0 else np.zeros(len(P))
     if root_on_skin is not None:
-        P = P + (np.asarray(root_on_skin, dtype=float) - P[0]) * (1 - np.clip(U * 4, 0, 1))[:, None]
+        P = P + (np.asarray(root_on_skin, dtype=float) - P[0]) * (1 - np.clip(U / config.DRAWN_ROOT_FADE, 0, 1))[:, None]
         S = logic.arc_lengths(P)
         U = S / S[-1] if S[-1] > 0 else np.zeros(len(P))
     n = len(P)
@@ -2534,6 +2534,62 @@ def _lock_or_raise(data: model.GroomData, lock_id: int) -> model.Lock:
     return lk
 
 
+def _finite(values, what: str):
+    """t84 B-1: the one guard of every adapter write that takes numbers (handles, strokes, axes, factors, widths):
+    a float array, or ValueError naming `what` before anything is written (a NaN handle was stored and wrote
+    `NaN` into groom_data)."""
+    import numpy as np
+    try:
+        a = np.asarray(values, dtype=float)
+    except (TypeError, ValueError):
+        raise ValueError(f"{what}: not numbers") from None
+    if a.size == 0 or not np.all(np.isfinite(a)):
+        raise ValueError(f"{what}: a value that is not a finite number" if a.size else f"{what}: empty")
+    return a
+
+
+def _places(values, what: str, lo: int, hi: int):
+    """`values` as (K, 3) finite places with lo <= K <= hi, else ValueError (t84 B-1, minor 2)."""
+    a = _finite(values, what)
+    if a.ndim != 2 or a.shape[1] != 3:
+        raise ValueError(f"{what}: places of 3 numbers each")
+    if not lo <= len(a) <= hi:
+        raise ValueError(f"{what}: {len(a)} given, from {lo} to {hi}" if hi < 10 ** 9 else
+                         f"{what}: {len(a)} given, at least {lo}")
+    return a.copy()
+
+
+def _in_range(value, rng: tuple[float, float], what: str) -> float:
+    """A finite number within `rng` (a config limit), else ValueError naming the limit (t84 B-2)."""
+    v = float(_finite(value, what).reshape(-1)[0]) if not isinstance(value, bool) else float("nan")
+    if not rng[0] <= v <= rng[1]:
+        raise ValueError(f"{what} {value!r}: from {rng[0]:g} to {rng[1]:g} (config)")
+    return v
+
+
+def _reach(points, root, unit: float, what: str) -> None:
+    """Every place within config.LOCK_REACH_MAX_CM of `root` (t84 B-2: a lock scaled 1e9 x crashed the cook)."""
+    import numpy as np
+    far = float(np.linalg.norm(np.asarray(points, dtype=float) - np.asarray(root, dtype=float), axis=-1).max()) * unit
+    if far > config.LOCK_REACH_MAX_CM:
+        raise ValueError(f"{what}: {far:.0f} cm from the lock's root, at most {config.LOCK_REACH_MAX_CM:g} cm "
+                         "(config.LOCK_REACH_MAX_CM)")
+
+
+def _stroke_on_skin(node, stroke, unit: float, snap):
+    """A stroke (draw, redraw) checked: finite places, at least 2, starting within config.STROKE_SKIN_MAX_CM of
+    the skin and reaching no further than config.LOCK_REACH_MAX_CM from its start (t84 B-2: a stroke 1e6 cm off
+    the skin ran for minutes). Returns it as an array."""
+    import numpy as np
+    Q = _places(stroke, "stroke", 2, 10 ** 9)
+    off = float(np.linalg.norm(Q[0] - np.asarray(snap(Q[0]), dtype=float))) * unit
+    if off > config.STROKE_SKIN_MAX_CM:
+        raise ValueError(f"stroke: starts {off:.1f} cm off the skin, at most {config.STROKE_SKIN_MAX_CM:g} cm "
+                         "(config.STROKE_SKIN_MAX_CM)")
+    _reach(Q, Q[0], unit, "stroke")
+    return Q
+
+
 def _handles_now(lk: model.Lock, row: dict | None, unit: float):
     """(handles in the root frame, origin, R) of a lock of the mesh now: its edit, else the measured spine's at its
     count (`logic.handle_count`). `row` is its SPINES_MEASURED row."""
@@ -2593,6 +2649,25 @@ def lock_handles(node, lock_ids: Sequence[int] | None = None) -> dict[int, dict]
     return out
 
 
+def lock_spines(node, lock_ids: Sequence[int] | None = None) -> dict[int, dict]:
+    """The spines of these locks (None: every lock), for the viewer state (B3), read in bulk. Per lock id:
+    `spine` the spine after the edit (SPINES: edits and drawn locks) and `measured` the spine before it
+    (SPINES_MEASURED, after Root to skin; None for a drawn lock), each {"P", "tangent", "axis"} as (n, 3) numpy
+    arrays in the node's space (scene units), and `drawn`. Cooks both nodes."""
+    measured = _spine_rows(_cooked(node, NODE_SPINES_MEASURED))
+    after = _spine_rows(_cooked(node, NODE_SPINES))
+    want = sorted(after) if lock_ids is None else [int(i) for i in lock_ids]
+    keep = ("P", "tangent", "axis")
+    out: dict[int, dict] = {}
+    for lid in want:
+        if lid not in after:
+            continue
+        m = measured.get(lid)
+        out[lid] = {"spine": {k: after[lid][k] for k in keep},
+                    "measured": None if m is None else {k: m[k] for k in keep}, "drawn": m is None}
+    return out
+
+
 def _measured_rows(node) -> dict[int, dict]:
     return _spine_rows(_cooked(node, NODE_SPINES_MEASURED))
 
@@ -2601,16 +2676,20 @@ def _store_points(lk: model.Lock, row: dict | None, points, space: str, unit: fl
                   snap=None) -> tuple[bool, bool]:
     """Write new handles on `lk` (in `data`). `space` "points" (node space) or "frame". Returns (changed, root
     moved by this write). A root given where it already is keeps the stored root (a root never moved stays the
-    measured one); a moved root marks the regions out of date with its reason (v0.1's rule, U3)."""
+    measured one); a moved root marks the regions out of date with its reason (v0.1's rule, U3). Raises
+    ValueError, before anything is changed, for a handle that is not a finite number, a count outside
+    HANDLES_MIN..HANDLES_MAX or a handle past config.LOCK_REACH_MAX_CM (t84). A result within config.SPINE_STILL
+    of what is stored or measured changes nothing (t84 minor 1)."""
     import numpy as np
     same = ROOT_SAME_CM / unit
+    pts = _places(points, f"{lk.name}: handles", config.HANDLES_MIN, config.HANDLES_MAX)
     if lk.drawn:
         if space == "frame":
             raise ValueError("a drawn lock's points are given in the node's space")
-        new = logic._arr(points)
-        if len(new) < 2:
-            raise ValueError("a lock needs at least 2 handles")
+        new = pts
         old = logic._arr(lk.curve)
+        _reach(new, new[0], unit, f"{lk.name}: a handle")
+        _reach(new[:1], old[0], unit, f"{lk.name}: the root")
         # given where the root is stored, or where the network put it on the skin (`row`: its cooked spine): not moved
         root_moved = float(np.linalg.norm(new[0] - old[0])) > same and (
             row is None or float(np.linalg.norm(new[0] - row["P"][0])) > same)
@@ -2618,7 +2697,7 @@ def _store_points(lk: model.Lock, row: dict | None, points, space: str, unit: fl
             new[0] = snap(new[0])
         if not root_moved:
             new[0] = old[0]
-        if len(old) == len(new) and np.array_equal(old, new):
+        if len(old) == len(new) and float(np.abs(old - new).max()) <= config.SPINE_STILL:
             return False, False
         lk.curve = [tuple(map(float, p)) for p in new]
         lk.root = lk.curve[0]
@@ -2629,16 +2708,16 @@ def _store_points(lk: model.Lock, row: dict | None, points, space: str, unit: fl
             data.mark_stale(f"{lk.name}: a root moved")
         return True, root_moved
     H_now, origin, R = _handles_now(lk, row, unit)
-    H = logic._arr(points) if space == "frame" else logic.world_to_frame(points, origin, R)
-    if len(H) < 2:
-        raise ValueError("a lock needs at least 2 handles")
+    H = pts if space == "frame" else logic.world_to_frame(pts, origin, R)
     # where the root is now (frame): the stored root, or the origin (the measured root)
     root_was = H_now[0] if len(H_now) else np.zeros(3)
+    _reach(H, H[0], unit, f"{lk.name}: a handle")
+    _reach(H[:1], root_was, unit, f"{lk.name}: the root")
     root_moved = float(np.linalg.norm(H[0] - root_was)) > same
     if not root_moved:
         H[0] = root_was
     new = [tuple(map(float, p)) for p in H]
-    if lk.spine == new:
+    if lk.spine == new or (len(H_now) == len(H) and float(np.abs(H - H_now).max()) <= config.SPINE_STILL):
         return False, False
     lk.spine = new
     if root_moved:
@@ -2725,17 +2804,19 @@ def _transform(node, lock_ids, fn, step: str) -> dict:
 def rotate_points(node, lock_ids: Iterable[int], axis, degrees: float) -> dict:
     """Turn these locks about their roots by `degrees` round `axis` (a direction in the node's space), one undo
     step "Rotate lock". The root stays."""
-    import numpy as np
-    ax = np.asarray(axis, dtype=float)
+    ax = _finite(axis, "axis").reshape(-1)
+    if ax.size != 3:
+        raise ValueError("axis: 3 numbers")
+    degrees = float(_finite(degrees, "degrees").reshape(-1)[0])
     return _transform(node, [int(i) for i in lock_ids],
                       lambda H, R: logic.rotate_about_root(H, ax if R is None else logic.direction_to_frame(ax, R),
                                                            degrees), "rotate")
 
 
 def scale_points(node, lock_ids: Iterable[int], factor: float) -> dict:
-    """Scale these locks about their roots (a longer or shorter lock), one undo step "Scale lock"."""
-    if factor <= 0:
-        raise ValueError("a scale factor over 0")
+    """Scale these locks about their roots (a longer or shorter lock), one undo step "Scale lock". The factor is
+    within config.SCALE_RANGE and the result within config.LOCK_REACH_MAX_CM, else ValueError (t84 B-2)."""
+    factor = _in_range(factor, config.SCALE_RANGE, "scale factor")
     return _transform(node, [int(i) for i in lock_ids], lambda H, R: logic.scale_about_root(H, factor), "scale")
 
 
@@ -2744,9 +2825,15 @@ def set_handle_count(node, lock_ids: Iterable[int], count: int | None) -> dict:
     count". An edited lock keeps its shape: its moves are re-fitted onto the new handles (`logic.resample_spine`);
     a drawn lock's curve is sampled again. Returns {"locks", "gap_cm": {id: how far the spine moved}, "message"}:
     past config.RESAMPLE_TOL_CM the message says how far (the change is still made)."""
-    import numpy as np
-    if count is not None and not config.HANDLES_MIN <= int(count) <= config.HANDLES_MAX:
-        raise ValueError(f"a handle count from {config.HANDLES_MIN} to {config.HANDLES_MAX}")
+    import numbers
+    if count is not None:
+        # t84 minor 2: a whole number (7.5 and "7" were taken through int())
+        whole = isinstance(count, numbers.Real) and not isinstance(count, bool) and math.isfinite(float(count)) \
+            and float(count) == int(count)
+        if not whole or not config.HANDLES_MIN <= int(count) <= config.HANDLES_MAX:
+            raise ValueError(f"handle count {count!r}: a whole number from {config.HANDLES_MIN} to "
+                             f"{config.HANDLES_MAX}")
+        count = int(count)
     data = read_data(node)
     unit = _unit(node)
     rows = _measured_rows(node)
@@ -2797,6 +2884,7 @@ def redraw_lock(node, lock_id: int, stroke, tol_cm: float = config.STROKE_TOL_CM
     unit = _unit(node)
     lk = _lock_or_raise(data, lock_id)
     snap = _skin_snap(node)[0]
+    stroke = _stroke_on_skin(node, stroke, unit, snap)
     if lk.drawn:
         H, gap = logic.stroke_handles(stroke, unit, tol_cm)
         ch, rm = _store_points(lk, None, H, "points", unit, data, snap)
@@ -2862,10 +2950,13 @@ def draw_lock(node, stroke, width_cm: float = config.DRAWN_WIDTH_CM, thick_cm: f
     import numpy as np
     data = read_data(node)
     unit = _unit(node)
+    width_cm = _in_range(width_cm, config.DRAWN_WIDTH_RANGE_CM, "width (cm)")
+    thick_cm = _in_range(thick_cm, config.DRAWN_THICK_RANGE_CM, "thickness (cm)")
+    taper = _in_range(taper, (0.0, 1.0), "taper")
+    if group is not None and group not in {g.id for g in data.groups} | ({DEFAULT_GROUP} if not data.groups else set()):
+        raise ValueError(f"no group {group!r}")      # t84 minor 3
     snap = _skin_snap(node)[0]
-    Q = logic._arr(stroke).copy()
-    if len(Q) < 2:
-        raise ValueError("a stroke needs two points apart")
+    Q = _stroke_on_skin(node, stroke, unit, snap)
     Q[0] = snap(Q[0])
     H, gap = logic.stroke_handles(Q, unit, tol_cm)
     H = np.asarray(H, dtype=float)
@@ -2915,21 +3006,23 @@ def set_drawn(node, lock_ids: Iterable[int], width_cm: float | None = None, thic
     "drawn"). A new width changes the footprint the lock would get: regions out of date with that reason."""
     data = read_data(node)
     changed = []
+    for v, rng, what in ((width_cm, config.DRAWN_WIDTH_RANGE_CM, "width (cm)"),
+                         (thick_cm, config.DRAWN_THICK_RANGE_CM, "thickness (cm)")):
+        if v is not None:
+            _in_range(v, rng, what)                   # every value checked before any lock changes
+    if taper is not None:
+        _finite(taper, "taper")
     for lid in lock_ids:
         lk = _lock_or_raise(data, lid)
         if not lk.drawn:
             continue
         before = (lk.width_cm, lk.thick_cm, lk.taper)
         if width_cm is not None:
-            if width_cm <= 0:
-                raise ValueError("a width over 0")
-            lk.width_cm = float(width_cm)
+            lk.width_cm = _in_range(width_cm, config.DRAWN_WIDTH_RANGE_CM, "width (cm)")
         if thick_cm is not None:
-            if thick_cm <= 0:
-                raise ValueError("a thickness over 0")
-            lk.thick_cm = float(thick_cm)
+            lk.thick_cm = _in_range(thick_cm, config.DRAWN_THICK_RANGE_CM, "thickness (cm)")
         if taper is not None:
-            lk.taper = min(1.0, max(0.0, float(taper)))
+            lk.taper = min(1.0, max(0.0, float(_finite(taper, "taper").reshape(-1)[0])))
         if (lk.width_cm, lk.thick_cm, lk.taper) != before:
             changed.append(lk.id)
             if lk.width_cm != before[0]:
@@ -3179,7 +3272,7 @@ __all__ = [
     "mask_stroke", "mask_problem", "mask_rebake", "set_brush", "brush", "paint_enter", "paint_exit", "paint_layer",
     "import_masks", "masks_from_publish",
     # v0.2b control points and drawn locks (the viewer state B3 and the panel B4)
-    "lock_handles", "set_points", "reset_points", "rotate_points", "scale_points", "set_handle_count", "redraw_lock",
+    "lock_handles", "lock_spines", "set_points", "reset_points", "rotate_points", "scale_points", "set_handle_count", "redraw_lock",
     "draw_lock", "set_drawn", "delete_drawn_locks", "edited_ids", "drawn_ids", "scalp_wired", "animated_scalp",
     "import_spines", "spines_from_publish", "spine_record", "NODE_SPINES_MEASURED", "NODE_MESH_CARRIED",
 ]

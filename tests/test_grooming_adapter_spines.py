@@ -185,7 +185,7 @@ def test_edit_attribute_names_match_the_network():
 
 
 def test_v02b_functions_are_exported():
-    for name in ("lock_handles", "set_points", "reset_points", "rotate_points", "scale_points", "set_handle_count",
+    for name in ("lock_handles", "lock_spines", "set_points", "reset_points", "rotate_points", "scale_points", "set_handle_count",
                  "redraw_lock", "draw_lock", "set_drawn", "delete_drawn_locks", "edited_ids", "drawn_ids",
                  "scalp_wired", "animated_scalp", "import_spines"):
         assert name in ga.__all__ and callable(getattr(ga, name)), name
@@ -231,3 +231,119 @@ def test_gap_text_only_past_the_tolerance():
 def test_drawn_locks_are_named_drawn_nn():
     assert ga.DRAWN_PREFIX == "drawn"
     assert logic.lock_name("drawn", ["drawn_01", "hair_bang_02"]) == "drawn_02"
+
+
+# ---- t84: bad input never reaches groom_data (B-1, B-2, minors 1-3) ----
+
+def _row(n=9, length=0.3):
+    """A measured spine row (scene units) straight down -y from the origin, width axis +x."""
+    P = np.array([(0.0, -length * i / (n - 1), 0.0) for i in range(n)])
+    return {"P": P, "tangent": np.tile((0.0, -1.0, 0.0), (n, 1)), "axis": np.tile((1.0, 0.0, 0.0), (n, 1)), "prim": 0}
+
+
+def _mesh_lock():
+    data = GroomData(groups=[Group(id="g", name="G")],
+                     locks=[Lock(id=1, name="g_01", group="g", root=(0, 0, 0), length=0.3)])
+    return data, data.locks[0]
+
+
+def _handles(lk, row, unit=100.0):
+    return np.array(ga._handles_now(lk, row, unit)[0], dtype=float)
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -float("inf")])
+def test_store_points_refuses_a_non_finite_handle_before_any_change(bad):
+    data, lk = _mesh_lock()
+    row = _row()
+    H = _handles(lk, row)
+    H[2, 1] = bad
+    before = data.to_json()
+    for space in ("frame", "points"):
+        with pytest.raises(ValueError, match="finite"):
+            ga._store_points(lk, row, H.tolist(), space, 100.0, data)
+    assert data.to_json() == before and "NaN" not in before and not lk.edited
+
+
+@pytest.mark.parametrize("k", [0, 1, 2, 3, 13, 100])
+def test_store_points_refuses_a_handle_count_outside_4_to_12(k):
+    data, lk = _mesh_lock()
+    H = [(0.0, -0.01 * i, 0.0) for i in range(k)]
+    with pytest.raises(ValueError):
+        ga._store_points(lk, _row(), H, "frame", 100.0, data)
+    assert not lk.edited
+
+
+def test_store_points_refuses_a_handle_past_the_reach():
+    data, lk = _mesh_lock()
+    row = _row()
+    H = _handles(lk, row)
+    H[-1] = (0.0, -config.LOCK_REACH_MAX_CM / 100.0 * 1.01, 0.0)
+    with pytest.raises(ValueError, match="LOCK_REACH_MAX_CM"):
+        ga._store_points(lk, row, H.tolist(), "frame", 100.0, data)
+    H[-1] = (0.0, -config.LOCK_REACH_MAX_CM / 100.0 * 0.99, 0.0)
+    assert ga._store_points(lk, row, H.tolist(), "frame", 100.0, data) == (True, False)
+
+
+def test_store_points_with_the_measured_handles_changes_nothing():
+    # t84 minor 1: no write, so no undo step and "nothing changed"
+    data, lk = _mesh_lock()
+    row = _row()
+    H = _handles(lk, row)
+    assert ga._store_points(lk, row, (H + config.SPINE_STILL * 0.5).tolist(), "frame", 100.0, data) == (False, False)
+    assert not lk.edited
+    H[-1, 0] += config.SPINE_STILL * 10
+    assert ga._store_points(lk, row, H.tolist(), "frame", 100.0, data) == (True, False) and lk.edited
+
+
+def test_store_points_drawn_lock_unchanged_and_bad_values():
+    data = _data_with_drawn()
+    lk = next(x for x in data.locks if x.drawn)
+    curve = np.array(lk.curve, dtype=float)
+    # the drawn lock of _data_with_drawn has 3 places: give it 4 first
+    four = np.vstack([curve, curve[-1] + (0, -0.1, 0)])
+    assert ga._store_points(lk, None, four.tolist(), "points", 100.0, data)[0]
+    assert ga._store_points(lk, None, four.tolist(), "points", 100.0, data) == (False, False)
+    bad = four.copy()
+    bad[1, 0] = float("nan")
+    with pytest.raises(ValueError):
+        ga._store_points(lk, None, bad.tolist(), "points", 100.0, data)
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), "x", None, []])
+def test_finite_guard(value):
+    with pytest.raises(ValueError):
+        ga._finite(value, "v")
+
+
+def test_in_range_names_the_limit():
+    assert ga._in_range(2, config.SCALE_RANGE, "scale factor") == 2.0
+    for bad in (1e9, 0.0, -1.0, float("nan"), float("inf"), True):
+        with pytest.raises(ValueError):
+            ga._in_range(bad, config.SCALE_RANGE, "scale factor")
+    with pytest.raises(ValueError, match="10"):
+        ga._in_range(1e6, config.DRAWN_WIDTH_RANGE_CM, "width (cm)")
+
+
+@pytest.mark.parametrize("factor", [1e9, 0, -1, float("nan"), float("inf"), 0.01, 11])
+def test_scale_points_refuses_a_factor_outside_the_range_before_reading_the_node(factor):
+    with pytest.raises(ValueError):
+        ga.scale_points(None, [1], factor)
+
+
+@pytest.mark.parametrize("axis, deg", [((float("nan"), 0, 0), 10), ((0, 1, 0), float("inf")), ((0, 1), 10)])
+def test_rotate_points_refuses_non_finite_axis_or_degrees(axis, deg):
+    with pytest.raises(ValueError):
+        ga.rotate_points(None, [1], axis, deg)
+
+
+@pytest.mark.parametrize("count", [7.5, "7", True, float("nan"), 3, 13])
+def test_set_handle_count_refuses_a_non_whole_or_out_of_range_count(count):
+    with pytest.raises(ValueError):
+        ga.set_handle_count(None, [1], count)
+
+
+def test_limits_live_in_config():
+    assert config.SPINE_STILL == 1e-6 and ga.ROOT_SAME_CM == config.ROOT_SAME_CM
+    assert config.DRAWN_ROOT_FADE == 0.25
+    src = (ROOT / "tools/fx/grooming/build_hda.py").read_text(encoding="utf-8")
+    assert "config.SPINE_STILL" in src and "\nSPINE_STILL =" not in src

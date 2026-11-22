@@ -29,8 +29,11 @@ Definitions this script makes on its own (for the checker to judge):
      unedited strand of the same id (median over strands), at rest and at the frame.
   8. "The lock's moving frame": accept_v02b_moving.MovingFrame (its unedited spine and offset copies deformed by v0.1's
      capture, outside the node); offset_change and own_noise as defined there.
-  6. "Cooks as before" for a shot scene as saved: the build before v0.2b is not byte-identical with itself there
-     (0.05 cm between its own runs, measured in t79), so this build is held to that spread (s5).
+  6. "Cooks as before" (r1 Helen at rest, s5 the shot scenes as saved): NO BUILD IS BYTE-STABLE FROM RUN TO RUN.
+     The build before v0.2b differs from itself by up to 0.0022 cm on Helen at rest, 0.05 cm on sh020 and 0.084 cm
+     on sh025 at frame 30 (t79, t84), so this build is held to that build's own spread: 7 of its runs, kept on disk
+     beside it (<base>_samples/) and reused, every pair; each new run within that spread + 2 float32 steps of every
+     one of them (`against_base`). Byte-equal pairs are reported.
 """
 from __future__ import annotations
 
@@ -248,24 +251,63 @@ C.write()
 # ---------------------------------------------------------------------------
 # e: the edit itself on Helen
 # ---------------------------------------------------------------------------
+NEAR_STILL = 5.0      # e1's near case: every handle but the root off by this many config.SPINE_STILL
+
+
 def e1_identity():
+    """Handles equal to the measured spine's: since t84 (minor 1) the adapter writes nothing for them, so this part
+    passes by construction (no write, no undo step, the hair byte-equal). The case that can fail is the near one:
+    every handle but the root moved NEAR_STILL x config.SPINE_STILL along the width axis (just past the network's
+    "no edit" guard, which would otherwise leave the spine untouched): the network's spine must be
+    logic.edited_spine of those handles within IDENTITY_CM (the manager's line, t84), the other locks byte-equal.
+    The lock's own strand points are reported, not graded."""
     rows = {}
     ok = True
+    snap = snap_fn()
     for name in (MOVE_LOCK, BACK_LOCK):
         lid = ID[name]
+        row = ROW0[lid]
         h = ga.lock_handles(node, [lid])[lid]
         res, steps, _ = labels_after(lambda: set_frame(lid, h["frame"]))
         _s, d, _r = cook_all()
         now = hair()
+        same = same_strands(HAIR0, now)
+        ident = {"handles": h["count"], "written": res["locks"], "undo_steps": steps, "message": res["message"],
+                 "hair_max_move_cm": same}
+        ok = ok and res["locks"] == [] and steps == 0 and same == 0.0 and "nothing changed" in res["message"]
+        H = np.array(h["frame"], dtype=float)
+        off = NEAR_STILL * config.SPINE_STILL
+        H[1:, 1] += off                                 # frame axis 1: the width axis
+        res2 = set_frame(lid, H)
+        cook_all()
+        got = edited_row(lid)
+        want = logic.edited_spine(row["P"], row["tangent"], row["axis"], H, snap)
+        dp = float(np.linalg.norm(got["P"] - want.P, axis=1).max() * U)
+        moved_from_measured = float(np.linalg.norm(got["P"] - row["P"], axis=1).max() * U)
+        now = hair()
         moved = same_strands({lid: HAIR0[lid]}, now)
         others = same_strands({k: v for k, v in HAIR0.items() if k != lid}, now)
-        rows[name] = {"handles": h["count"], "stored": res["locks"] == [lid], "max_point_move_cm": float("%.3g" % moved),
-                      "other_locks_max_move_cm": others, "recooked": d}
-        ok = ok and moved <= IDENTITY_CM and others == 0.0 and res["locks"] == [lid]
+        mine = {sid: P for sid, P in now.get(lid, [])}
+        dist = np.concatenate([np.linalg.norm(mine[sid] - P, axis=1) for sid, P in HAIR0[lid]
+                               if sid in mine and mine[sid].shape == P.shape] or [np.zeros(1)])
+        # reported, not graded: the lock's hair is grown again from the moved spine and the per-lock loop is chaotic
+        # in the last bit (a spine moved 0.0005 cm moved some of hair_back_20's strand points 0.5 cm in t79 run10q)
+        near = {"offset_cm": off * U, "stored": res2["locks"] == [lid], "spine_vs_logic_max_cm": float("%.3g" % dp),
+                "spine_moved_from_measured_max_cm": float("%.3g" % moved_from_measured),
+                "strand_points_move_cm": {"max": float("%.3g" % moved), "p99": float("%.3g" % np.percentile(dist, 99)),
+                                          "p50": float("%.3g" % np.percentile(dist, 50)),
+                                          "share_over_0.01cm": round(float((dist > 0.01).mean()), 4)},
+                "other_locks_max_move_cm": others}
+        ok = ok and res2["locks"] == [lid] and dp <= IDENTITY_CM and others == 0.0
+        rows[name] = {"identity": ident, "near": near, "recooked_identity": d}
         restore()
     add("e1_handles_equal_to_measured_move_nothing", ok, rows, IDENTITY_CM,
-          "handles stored equal to the measured spine's (lock_handles' frame, default count): no strand point of the "
-          "lock moves more than the limit; the other locks are byte-equal")
+          "handles equal to the measured spine's (lock_handles' frame, default count): nothing written, no undo step, "
+          "the hair byte-equal (by construction since t84: the adapter writes nothing for a result within "
+          "config.SPINE_STILL); and the near case that can fail: every handle but the root %g x SPINE_STILL off along "
+          "the width axis, the network's spine = logic.edited_spine within the limit, the other locks byte-equal; how "
+          "far the lock's own strand points move is reported (the lock grows again from the moved spine, and the "
+          "per-lock loop is chaotic in the last bit)" % NEAR_STILL)
 
 
 def e0_network_rule():
@@ -1033,42 +1075,141 @@ def _npz_strands(path):
     return out
 
 
+# ---------------------------------------------------------------------------
+# The build before v0.2b's own spread (t84: r1 and s5 graded against it). NO BUILD IS BYTE-STABLE FROM RUN TO RUN:
+# the per-lock loop is chaotic in the last bit, so two processes of the same build cooking the same scene differ.
+# Measured in t79 / t84: Helen at rest (r1's scene) up to 0.0022 cm between runs of the old build (0.0024 cm in t68,
+# v0.1); sh025 at frame 30 up to 0.084 cm in 10 locks (hair_back_03 / 06 / 11 / 18, hair_bang_09 / 10 / 19,
+# hair_base_02 / 04 / 13), sh020 0.05 cm. So "cooks as before" means: as far from the old build as its own runs lie
+# from each other. BASE_SAMPLES processes of the old build are kept on disk beside it (<base>_samples/<base key>/
+# <scene key>/), keyed by the base build (--base-commit, else its HDA's sha1) and the scene file's sha1, and reused
+# by later runs; only the missing ones are made. The limits themselves never move.
+# ---------------------------------------------------------------------------
+BASE_SAMPLES = 7
+
+
+def _sha1_file(path, n=12):
+    import hashlib
+    h = hashlib.sha1()
+    with open(path, "rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()[:n]
+
+
+def base_key() -> str:
+    given = _arg("--base-commit")
+    return given or "hda-" + _sha1_file(BASE + "/otls/mono_grooming.hdalc")
+
+
+def base_cache(scene: str) -> str:
+    """The folder of the old build's samples of this scene (made on first use)."""
+    d = "%s_samples/%s/%s_%s" % (BASE.rstrip("/"), base_key(), os.path.splitext(os.path.basename(scene))[0],
+                                 _sha1_file(scene))
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def dump_to(folder, tag, suite, hip, *extra) -> dict:
+    """accept_v02b_sub.py dump into `folder`/<tag>.json (+ .npz, _P.npy): its JSON, kept when it is there."""
+    outf = folder + "/" + tag + ".json"
+    if os.path.isfile(outf) and os.path.isfile(folder + "/" + tag + "_P.npy"):
+        with open(outf, encoding="utf-8") as fh:
+            got = json.load(fh)
+        if "error" not in got:
+            return got
+    with open(folder + "/" + tag + ".log", "w", encoding="utf-8", errors="replace") as fh:
+        subprocess.run([HYTHON, HERE + "/accept_v02b_sub.py", "dump", suite, hip, outf, HERE] + [str(e) for e in extra],
+                       stdout=fh, stderr=subprocess.STDOUT, timeout=5400)
+    if not os.path.isfile(outf):
+        return {"error": "no file: see " + folder + "/" + tag + ".log"}
+    with open(outf, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def against_base(scene_tag, hip, cache, new_tags, *extra) -> dict:
+    """BASE_SAMPLES dumps of the old build (from `cache`, made when missing) and one of this build per tag in
+    `new_tags` (into OUT, each a new process, interleaved with the missing base ones). Returns the numbers both r1
+    and s5 grade: per lock counts, the old build's own spread (every pair), each new run's distance to every
+    sample, byte-equal pairs, and errors / warnings of the new runs."""
+    base_tags = ["base_%d" % i for i in range(BASE_SAMPLES)]
+    missing = [t for t in base_tags if not (os.path.isfile(cache + "/" + t + ".json")
+                                            and os.path.isfile(cache + "/" + t + "_P.npy"))]
+    got, made = {}, []
+    queue = list(new_tags)
+    while missing or queue:                     # interleaved: a base sample, a new run, ...
+        if missing:
+            t = missing.pop(0)
+            got[t] = dump_to(cache, t, BASE, hip, *extra)
+            made.append(t)
+        if queue:
+            t = queue.pop(0)
+            got[t] = dump_to(OUT, "%s_%s" % (scene_tag, t), SUITE, hip, *extra)
+    for t in base_tags:
+        if t not in got:
+            got[t] = dump_to(cache, t, BASE, hip, *extra)
+    errs = {t: g["error"] for t, g in got.items() if "error" in g}
+    if errs:
+        return {"error": errs}
+    where = {t: (cache + "/" + t) for t in base_tags} | {t: (OUT + "/%s_%s" % (scene_tag, t)) for t in new_tags}
+    P = {t: np.load(p + "_P.npy", mmap_mode="r") for t, p in where.items()}
+    lay = {t: np.load(p + ".npz") for t, p in where.items()}
+
+    def same_layout(a, b):
+        return all(np.array_equal(lay[a][k], lay[b][k]) for k in ("nv", "lock", "sid"))
+
+    def gap(a, b):
+        if same_layout(a, b):
+            return float(np.abs(np.asarray(P[a]) - np.asarray(P[b])).max())
+        return same_strands(_npz_strands(where[a] + ".npz"), _npz_strands(where[b] + ".npz"))
+    b0 = got[base_tags[0]]
+    base_pairs = {f"{a}_vs_{b}": gap(a, b) for i, a in enumerate(base_tags) for b in base_tags[i + 1:]}
+    new_vs = {n: {b: gap(n, b) for b in base_tags} for n in new_tags}
+    spread = max(base_pairs.values())
+    ulp = float(np.spacing(np.float32(np.abs(np.asarray(P[base_tags[0]])).max())))
+    return {"samples_of_the_old_build": BASE_SAMPLES, "made_this_run": made, "cache": cache, "base_key": base_key(),
+            "counts_per_lock_equal": all(got[n]["strands"] == b0["strands"] for n in new_tags),
+            "base_counts_per_lock_equal": all(got[b]["strands"] == b0["strands"] for b in base_tags),
+            "same_points_a_strand": all(same_layout(n, base_tags[0]) for n in new_tags),
+            "old_build_spread_cm": spread, "old_build_pairs_cm": base_pairs,
+            "old_build_byte_equal_pairs": sorted(k for k, v in base_pairs.items() if v == 0.0),
+            "new_vs_old_cm": new_vs, "new_worst_cm": {n: max(v.values()) for n, v in new_vs.items()},
+            "new_byte_equal_to": {n: sorted(b for b, d in v.items() if d == 0.0) for n, v in new_vs.items()},
+            "float32_step_cm": ulp, "limit_cm": spread + 2 * ulp,
+            "cook_s": {t: g.get("cook_s") for t, g in got.items()},
+            "errors": [e for n in new_tags for e in got[n]["errors"]],
+            "new_warnings": sorted(set(w for n in new_tags for w in got[n]["warnings"]) - set(b0["warnings"])),
+            "data_sha1_base": b0.get("data_sha1"), "strands": sum(b0["strands"].values())}
+
+
+def _graded(r) -> bool:
+    return "error" not in r and r["counts_per_lock_equal"] and r["base_counts_per_lock_equal"] \
+        and max(r["new_worst_cm"].values()) <= r["limit_cm"] and not r["errors"] and not r["new_warnings"]
+
+
 def r1_m1_base():
     if not BASE:
         add("r1_no_edit_is_the_groom_before_v02b", False, None, "--base <suite>", note="not run: no --base")
         return
-    made = OUT + "/saved_by_base.json"
-    hython([HERE + "/accept_v02a_sub.py", "makeold", BASE, SCENE, made, HERE], "saved_by_base.log")
-    hip = OUT + "/saved_by_base.hiplc"
-    tags = [("base_%d" % i, BASE) for i in range(3)] + [("new_%d" % i, SUITE) for i in range(3)]
-    order = [tags[0], tags[3], tags[1], tags[4], tags[2], tags[5]]          # interleaved, each a new process
-    runs = {tag: sub("dump", suite, hip, "r1_" + tag) for tag, suite in order}
-    if any("error" in v for v in runs.values()):
-        add("r1_no_edit_is_the_groom_before_v02b", False, {k: v.get("error") for k, v in runs.items()})
-    else:
-        hair_of = {t: _npz_strands(OUT + "/r1_%s.npz" % t) for t, _s in tags}
-        bases = [t for t, _s in tags[:3]]
-        news = [t for t, _s in tags[3:]]
-        pairs = {f"{n}_vs_{b}": same_strands(hair_of[b], hair_of[n]) for n in news for b in bases}
-        base_pairs = {f"{a}_vs_{b}": same_strands(hair_of[a], hair_of[b]) for i, a in enumerate(bases) for b in bases[i + 1:]}
-        hair_of.clear()
-        counts = all(runs[n]["strands"] == runs[bases[0]]["strands"] for n in news)
-        new_warn = sorted(set(w for n in news for w in runs[n]["warnings"]) - set(runs[bases[0]]["warnings"]))
-        errors = [e for n in news for e in runs[n]["errors"]]
-        equal_runs = sorted({p.split("_vs_")[0] for p, d in pairs.items() if d == 0.0})
-        ok = counts and bool(equal_runs) and max(pairs.values()) <= OLD_SCENE_CM and not errors and not new_warn
-        add("r1_no_edit_is_the_groom_before_v02b", ok,
-            {"strands": sum(runs[news[0]]["strands"].values()), "counts_per_lock_equal": counts,
-             "new_runs_byte_equal_to_a_base_run": equal_runs, "points_max_cm_new_vs_base": pairs,
-             "points_max_cm_base_vs_base": base_pairs, "errors": errors, "new_warnings": new_warn},
-            {"equal": "counts, and a new run byte for byte", "every_pair_cm": OLD_SCENE_CM},
-            "a fresh groom made and saved by the build before v0.2b (ed7d0de, main + the plan), opened and cooked "
-            "(output 1 at rest) by it and by this build, 3 processes each, interleaved: every lock's strand count "
-            "equal; points byte-equal in at least one pair, and every pair within v0.1's own run-to-run difference "
-            "(the per-lock loop is not byte-identical from process to process: t68, 0.0024 cm; here a 2-strand "
-            "difference in one lock in 1 of 4 runs of this build)", evidence="r1_*.json / .npz")
+    # the scene saved by the old build is made once and kept with its samples (a new save would be a new key)
+    keep = "%s_samples/%s/saved_by_base_of_%s_%s" % (BASE.rstrip("/"), base_key(),
+                                                     os.path.splitext(os.path.basename(SCENE))[0], _sha1_file(SCENE))
+    os.makedirs(keep, exist_ok=True)
+    hip = keep + "/saved_by_base.hiplc"
+    if not os.path.isfile(hip):
+        hython([HERE + "/accept_v02a_sub.py", "makeold", BASE, SCENE, keep + "/saved_by_base.json", HERE],
+               "saved_by_base.log")
+    r = against_base("r1", hip, base_cache(hip), ["new_0", "new_1", "new_2"])
+    add("r1_no_edit_is_the_groom_before_v02b", _graded(r), r,
+        {"counts": "equal per lock", "every_new_run_cm": "within the old build's own spread (7 runs) + 2 float32 steps"},
+        "a fresh groom made and saved by the build before v0.2b (--base), opened and cooked (output 1 at rest) by it "
+        "(%d processes, kept on disk and reused) and by this build (3 processes): every lock's strand count equal, and "
+        "each new run's points within the old build's own spread (every pair of its runs) + 2 float32 steps of every "
+        "one of its runs; byte-equal pairs are reported, not required: NO BUILD IS BYTE-STABLE FROM RUN TO RUN (the old "
+        "build's own runs differ by up to 0.0022 cm on Helen, t84 item 3)" % BASE_SAMPLES,
+        evidence="r1_*.json, %s" % r.get("cache", ""))
     got = sub("edit6", SUITE, hip, "m1_schema6")
-    base_sha = runs["base_0"].get("data_sha1")
+    base_sha = r.get("data_sha1_base")
     import hashlib  # noqa: F401
     ok = got.get("schema_as_opened") == 6 and got.get("text_sha1_as_opened") == base_sha \
         and got.get("schema_after_cook") == 6 and got.get("schema_after_edit") == model.SCHEMA and not got.get("errors")
@@ -1199,8 +1340,9 @@ def x1_fullcook():
 
 
 def s_shots():
-    shots = [(tag, hip, frames) for tag, hip, frames in (("sh020", SH020, "30,60,90,120"), ("sh025", SH025, "15,30,45"))
-             if hip]
+    # sh020: t84's frames (10, 25, 75, 105, 135: hair_bang_05's piece bends there) and the earlier ones
+    shots = [(tag, hip, frames) for tag, hip, frames in (("sh020", SH020, "10,25,30,60,75,90,105,120,135"),
+                                                         ("sh025", SH025, "15,30,45")) if hip]
     if not shots:
         for item in ("s1_shot_edited_lock_follows", "s3_shot_drawn_lock_follows_the_scalp",
                      "s4_shot_drawn_lock_at_rest_without_the_scalp", "s5_three_inputs_cook_as_before"):
@@ -1217,19 +1359,26 @@ def s_shots():
             ok1 = ok3 = ok4 = False
             continue
         rows1[tag] = g["edited"]
-        for f, row in g["edited"]["frames"].items():
-            ok1 = ok1 and row["unedited"]["left_behind"] == 0
-            for case in EDIT_CASES:
-                c = row[case]
-                c["tip_turn_change_deg"] = r3(abs(c["tip_turn_frame_deg"] - c["tip_turn_rest_deg"]))
-                ok1 = ok1 and c["left_behind"] == 0 and abs(c["length_p50"] - 1) <= SHOT_LENGTH \
-                    and c["roots_p95_cm"] <= row["unedited"]["roots_p95_cm"] + SHOT_ROOT_CM \
-                    and c["tip_turn_change_deg"] <= TIP_TURN_DEG
-                noise = row["unedited"]["own_noise"]["p95_cm"]
-                rows1b.setdefault(tag, {}).setdefault(f, {})[case] = {
-                    "change_p95_cm": c["moving_frame"]["change_p95_cm"], "change_max_cm": c["moving_frame"]["change_max_cm"],
-                    "unedited_own_noise_p95_cm": noise,
-                    "ratio_to_noise": r3(c["moving_frame"]["change_p95_cm"] / max(noise, 1e-9))}
+        # t84 B-3: hair_bang_05 moved 2 cm too (accept_v02b_shot.MORE_LOCKS), graded the same way
+        locks = [(g["edited"], "")] + [(e, name + ":") for name, e in g.get("edited_more", {}).items()]
+        for name, e in g.get("edited_more", {}).items():
+            rows1[tag + "_" + name] = e
+        for e, key in locks:
+            for f, row in e["frames"].items():
+                ok1 = ok1 and row["unedited"]["left_behind"] == 0
+                for case in [c for c in row if c != "unedited"]:
+                    c = row[case]
+                    c["tip_turn_change_deg"] = r3(abs(c["tip_turn_frame_deg"] - c["tip_turn_rest_deg"]))
+                    # the plan's line before U4 changed, for the record (t84 B-3 failed it at 3.66 points)
+                    c["length_points_from_unedited"] = r3(abs(c["length_p50"] - row["unedited"]["length_p50"]))
+                    ok1 = ok1 and c["left_behind"] == 0 and abs(c["length_p50"] - 1) <= SHOT_LENGTH \
+                        and c["roots_p95_cm"] <= row["unedited"]["roots_p95_cm"] + SHOT_ROOT_CM \
+                        and c["tip_turn_change_deg"] <= TIP_TURN_DEG
+                    noise = row["unedited"]["own_noise"]["p95_cm"]
+                    rows1b.setdefault(tag, {}).setdefault(f, {})[key + case] = {
+                        "change_p95_cm": c["moving_frame"]["change_p95_cm"],
+                        "change_max_cm": c["moving_frame"]["change_max_cm"], "unedited_own_noise_p95_cm": noise,
+                        "ratio_to_noise": r3(c["moving_frame"]["change_p95_cm"] / max(noise, 1e-9))}
         rows3[tag] = g["drawn_wired"]
         ok3 = ok3 and g["drawn_wired"]["scalp_ok"] and all(
             abs(r["length_p50"] - 1) <= DRAWN_SHOT_LEN and r["roots_p95_cm"] <= DRAWN_SHOT_ROOT_CM
@@ -1240,8 +1389,8 @@ def s_shots():
                           for v in g["drawn_unwired"].values())
     add("s1_shot_edited_lock_keeps_its_shape", ok1, rows1,
         {"length": SHOT_LENGTH, "roots_cm": SHOT_ROOT_CM, "tip_turn_deg": TIP_TURN_DEG},
-        "U4 as changed by the user (2026-11-22): %s moved 2 cm, 5 cm and turned 25 deg in sh020 / sh025, output 1 per "
-        "frame: no point left behind; strand length (median, at the frame over at rest) within 2 %%; roots on the "
+        "U4 as changed by the user (2026-11-22): %s moved 2 cm, 5 cm and turned 25 deg, and hair_bang_05 moved 2 cm "
+        "(t84 B-3), in sh020 / sh025, output 1 per frame: no point left behind; strand length (median, at the frame over at rest) within 2 %%; roots on the "
         "animated scalp within %s cm (p95) of the unedited lock's; the tip's turn against the unedited lock "
         "(DEFINITION 7) within %s deg of its rest value: no hook" % (MOVE_LOCK, SHOT_ROOT_CM, TIP_TURN_DEG),
         evidence="shot_*.json")
@@ -1270,40 +1419,22 @@ def s_shots():
     rows5 = {}
     ok5 = bool(BASE)
     for tag, hip, frames in shots:
-        f = frames.split(",")[1]
         if not BASE:
             break
-        runs = [("base_0", BASE), ("new_0", SUITE), ("base_1", BASE), ("new_1", SUITE), ("base_2", BASE)]
-        got = {t: sub("dump", su, hip, "s5_%s_%s" % (tag, t), f) for t, su in runs}
-        if any("error" in g for g in got.values()):
-            rows5[tag] = {"error": [g.get("error") for g in got.values() if "error" in g][0]}
-            ok5 = False
-            continue
-        P = {t: np.load(OUT + "/s5_%s_%s_P.npy" % (tag, t), mmap_mode="r") for t, _su in runs}
-        same_layout = all(np.array_equal(np.load(OUT + "/s5_%s_%s.npz" % (tag, t))["nv"],
-                                         np.load(OUT + "/s5_%s_base_0.npz" % tag)["nv"]) for t, _su in runs)
-
-        def gap(x, y):
-            return float(np.abs(np.asarray(P[x]) - np.asarray(P[y])).max())
-        bases, news = ["base_0", "base_1", "base_2"], ["new_0", "new_1"]
-        base_spread = max(gap(x, y) for i, x in enumerate(bases) for y in bases[i + 1:])
-        new_vs = {f"{n}_vs_{x}": gap(n, x) for n in news for x in bases}
-        ulp = float(np.spacing(np.float32(np.abs(np.asarray(P["base_0"])).max())))
-        limit = base_spread + 2 * ulp
-        b0 = got["base_0"]
-        rows5[tag] = {"frame": f, "cook_s_of_a_shot_frame": {t: g.get("cook_s") for t, g in got.items()},
-                      "strands_equal": all(g["strands"] == b0["strands"] for g in got.values()),
-                      "same_points_a_strand": same_layout, "base_vs_base_max_cm": base_spread,
-                      "new_vs_base_cm": new_vs, "float32_step_cm": ulp, "limit_cm": limit,
-                      "errors": [e for n in news for e in got[n]["errors"]],
-                      "new_warnings": sorted(set(w for n in news for w in got[n]["warnings"]) - set(b0["warnings"]))}
-        ok5 = ok5 and rows5[tag]["strands_equal"] and same_layout and max(new_vs.values()) <= limit             and not rows5[tag]["errors"] and not rows5[tag]["new_warnings"]
-    add("s5_three_inputs_cook_as_before", ok5, rows5, "the build before v0.2b's own spread + 2 float32 steps",
+        f = {"sh020": "60", "sh025": "30"}.get(tag, frames.split(",")[1])      # the frames s5 always used
+        cache = base_cache(hip) + "/f" + f
+        os.makedirs(cache, exist_ok=True)
+        rows5[tag] = against_base("s5_" + tag, hip, cache, ["new_0", "new_1"], f)
+        rows5[tag]["frame"] = f
+        ok5 = ok5 and _graded(rows5[tag]) and rows5[tag].get("same_points_a_strand", False)
+    add("s5_three_inputs_cook_as_before", ok5, rows5, "the build before v0.2b's own spread (7 runs) + 2 float32 steps",
         "the shot scenes as saved (three inputs, the anim wired, Shot deform on, \"Fit lookup per lock\" off as an "
-        "old scene opens), output 1 at a frame, 3 processes of the build before v0.2b and 2 of this one, "
-        "interleaved: the same strands and points a strand, and this build's points as far from the old build's as "
-        "the old build's runs lie from each other (DEFINITION 6: that spread + 2 float32 steps at the largest "
-        "coordinate; the scenes sit ~330 m from the origin, a float32 step is 0.004 cm there)", evidence="s5_*.json")
+        "old scene opens), output 1 at a frame, %d processes of the build before v0.2b (kept on disk, reused) and 2 "
+        "of this one: the same strands and points a strand, and each new run's points within the old build's own "
+        "spread (every pair of its runs) + 2 float32 steps of every one of its runs (DEFINITION 6; the scenes sit "
+        "~330 m from the origin, a float32 step is 0.004 cm there). NO BUILD IS BYTE-STABLE FROM RUN TO RUN: the old "
+        "build's own runs differ by up to 0.084 cm on sh025 frame 30 (10 locks) and 0.05 cm on sh020" % BASE_SAMPLES,
+        evidence="s5_*.json and the samples' folder")
     look_files = sorted(f for f in os.listdir(look) if f.endswith(".png")) if os.path.isdir(look) else []
     want = [f for f in look_files if f.startswith("shot_")]
     add("s2_shot_flipbooks_for_the_user", None if not want else True,
@@ -1311,6 +1442,95 @@ def s_shots():
           "pictures exist", "flipbooks of the deformed frames of the lock moved 2 cm and 5 cm beside the unedited one "
           "(U4: the user judges them): the scenes are saved here, the pictures are made by the look step in the GUI "
           "(qc_capture.py); KNOWN until they exist")
+
+
+def v1_bad_input():
+    """t84 B-1 / B-2 / minors 1-3: every bad input the independent check found, against the node. Each must raise
+    ValueError (or, for a result equal to what is there, change nothing) with groom_data's text and the undo list
+    as they were, no `NaN` / `Infinity` in the text, and the node cooking without an error after."""
+    lid, back = ID[MOVE_LOCK], ID[BACK_LOCK]
+    h = ga.lock_handles(node, [lid])[lid]
+    H = np.array(h["frame"], dtype=float)
+    W = np.array(h["points"], dtype=float)
+    axes = h["axes"]
+    spot, stroke = _drawn_setup()
+    drawn = ga.draw_lock(node, stroke)
+    cook_all()
+    d_id = drawn["id"]
+
+    def bad(rows, i, j, v):
+        X = rows.copy()
+        X[i, j] = v
+        return X.tolist()
+    far = (np.asarray(stroke[0]) + np.asarray(ga.lock_handles(node, [d_id])[d_id]["axes"][0]) * 1e4).tolist()
+    raises = {
+        "set_points_nan_frame": lambda: set_frame(lid, bad(H, 2, 1, float("nan"))),
+        "set_points_inf_points": lambda: ga.set_points(node, {lid: bad(W, 1, 0, float("inf"))}),
+        "set_points_minus_inf_drawn": lambda: ga.set_points(node, {d_id: bad(np.array(
+            ga.lock_handles(node, [d_id])[d_id]["points"]), 1, 2, -float("inf"))}),
+        "set_points_100_handles": lambda: set_frame(lid, np.linspace(H[0], H[-1], 100).tolist()),
+        "set_points_3_handles": lambda: set_frame(lid, H[:3].tolist()),
+        "set_points_2_columns": lambda: set_frame(lid, H[:, :2].tolist()),
+        "set_points_tip_10m_away": lambda: set_frame(lid, bad(H, len(H) - 1, 0, 1000.0 / U)),
+        "set_points_good_then_nan": lambda: ga.set_points(node, {back: ga.lock_handles(node, [back])[back]["points"],
+                                                                 lid: bad(W, 1, 0, float("nan"))}),
+        "scale_1e9": lambda: ga.scale_points(node, [lid], 1e9),
+        "scale_nan": lambda: ga.scale_points(node, [lid], float("nan")),
+        "scale_8_on_the_back_lock": lambda: ga.scale_points(node, [back], 8.0),
+        "rotate_nan_axis": lambda: ga.rotate_points(node, [lid], (float("nan"), 0, 0), 20.0),
+        "rotate_inf_degrees": lambda: ga.rotate_points(node, [lid], axes[2], float("inf")),
+        "handle_count_7_5": lambda: ga.set_handle_count(node, [lid], 7.5),
+        "handle_count_text_7": lambda: ga.set_handle_count(node, [lid], "7"),
+        "handle_count_13": lambda: ga.set_handle_count(node, [lid], 13),
+        "draw_width_1e6": lambda: ga.draw_lock(node, stroke, width_cm=1e6),
+        "draw_thickness_nan": lambda: ga.draw_lock(node, stroke, thick_cm=float("nan")),
+        "draw_stroke_1e4_units_off_the_skin": lambda: ga.draw_lock(node, [far, (np.asarray(far) + 0.1).tolist()]),
+        "draw_stroke_nan": lambda: ga.draw_lock(node, bad(np.array(stroke), 3, 1, float("nan"))),
+        "draw_unknown_group": lambda: ga.draw_lock(node, stroke, group="nogroup"),
+        "redraw_stroke_80cm_off": lambda: ga.redraw_lock(node, lid, (np.array(ROW0[lid]["P"]) + np.asarray(
+            axes[2]) * 80.0 / U).tolist()),
+        "set_drawn_width_1e6": lambda: ga.set_drawn(node, [d_id], width_cm=1e6),
+        "set_drawn_taper_nan": lambda: ga.set_drawn(node, [d_id], taper=float("nan")),
+    }
+    nothing = {
+        "set_points_measured_handles": lambda: set_frame(lid, H.tolist()),
+        "rotate_zero_axis": lambda: ga.rotate_points(node, [lid], (0, 0, 0), 20.0),
+        "rotate_0_degrees": lambda: ga.rotate_points(node, [lid], axes[2], 0.0),
+        "scale_1": lambda: ga.scale_points(node, [lid], 1.0),
+    }
+    rows = {}
+    ok = True
+    for tag, fn in list(raises.items()) + list(nothing.items()):
+        text0, n0 = node.evalParm(config.DATA_PARM), len(hou.undos.undoLabels())
+        try:
+            res = fn()
+            got = {"raised": None, "message": res.get("message") if isinstance(res, dict) else res}
+        except ValueError as e:
+            got = {"raised": str(e)}
+        except Exception as e:      # any other exception is a failure too
+            got = {"raised_other": "%s: %s" % (type(e).__name__, e)}
+        text1 = node.evalParm(config.DATA_PARM)
+        got.update(text_same=text1 == text0, undo_steps=len(hou.undos.undoLabels()) - n0,
+                   nan_in_text="NaN" in text1 or "Infinity" in text1)
+        if tag in raises:
+            good = got.get("raised") is not None
+        else:
+            good = got.get("raised") is None and "nothing changed" in (got.get("message") or "")
+        good = good and got["text_same"] and got["undo_steps"] == 0 and not got["nan_in_text"]
+        got["pass"] = good
+        rows[tag] = got
+        ok = ok and good
+    errs = lib.node_errors(node)
+    cook_all()
+    ok = ok and not lib.node_errors(node)
+    add("v1_bad_input_refused", ok, {"cases": rows, "node_errors_after": errs}, "ValueError or nothing changed",
+        "t84 B-1, B-2, minors 1-3, against the node: %d inputs that must raise ValueError naming what is wrong "
+        "(non-finite handles, strokes, axes, factors; a handle count outside 4..12 or not whole; past the limits in "
+        "config: LOCK_REACH_MAX_CM %g, STROKE_SKIN_MAX_CM %g, SCALE_RANGE %s, DRAWN_WIDTH_RANGE_CM %s, "
+        "DRAWN_THICK_RANGE_CM %s; an unknown group) and %d whose result equals what is there (\"nothing changed\"): "
+        "groom_data's text the same, no undo step, no NaN in the text, the node cooking without an error after"
+        % (len(raises), config.LOCK_REACH_MAX_CM, config.STROKE_SKIN_MAX_CM, config.SCALE_RANGE,
+           config.DRAWN_WIDTH_RANGE_CM, config.DRAWN_THICK_RANGE_CM, len(nothing)))
 
 
 # ---------------------------------------------------------------------------
@@ -1324,7 +1544,8 @@ def n_drawn():
 # states never cooked before (u2 draws at the same place)
 order = [("e1", e1_identity), ("e0", e0_network_rule), ("e2", e2_speed), ("e3", e3_e4_follow), ("e5", e5_mesh_display),
          ("g1", g1_root), ("g2", g2_root_regions), ("u1", u1_undo), ("n", n_drawn), ("u2", u2_steps),
-         ("u3", u3_several), ("d1", d1_redraw), ("d2", d2_reset), ("h1", h1_counts), ("h2", h2_resample)]
+         ("u3", u3_several), ("d1", d1_redraw), ("d2", d2_reset), ("h1", h1_counts), ("h2", h2_resample),
+         ("v1", v1_bad_input)]
 for tag, fn in order:
     if wanted(tag):
         C.run(tag + "_raised", fn)
