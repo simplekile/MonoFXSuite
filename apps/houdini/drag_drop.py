@@ -205,6 +205,10 @@ def handle_drop(file_list: list[str]) -> bool:
     """Entry point for externaldragdrop.dropAccept. True when the drop was handled here."""
     if hou is None or not file_list:
         return False
+    if all(str(f).lower().endswith(".monofx_asset") for f in file_list):  # dragged out of MonoFX Add assets
+        from apps.houdini.anim_loader_adapter import drop_assets
+
+        return drop_assets(list(file_list))
     opts = drop_prefs.load_prefs()
     if not opts["enabled"] or all(is_houdini_file(f) for f in file_list):
         return False

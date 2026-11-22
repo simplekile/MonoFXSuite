@@ -438,6 +438,27 @@
 - Inspector tree folds (the user's ask, 2026-11-22): Shift+click a group's arrow folds or opens it and every group
   under it, Ctrl+click every group of the tree, to the state the clicked row goes to (`_MeshTree.on_chevron`: the
   last indentation step before the name). A plain click is Qt's own.
+- Manager versions (the user's picks, 2026-11-22): the first column is "Anim / Model" (narrow / cards: the row's
+  word, `part_word`). A click on a version cell opens that part's versions on disk (`logic.version_picks`: newest
+  first, `VERSION_PICK_LIMIT` 15, date of the folder, Monos work-file author, greyed when it does not hold this
+  instance's file); a pick runs `adapter.set_part_version` (the parm, then the node's own `cb_parm_changed`, one
+  undo step). A click on a row that is part of a selection keeps the selection and sets them all. Shift / Ctrl
+  clicks still select. ~50 ms on sh025, read on the click.
+- The list never switches to its two-line narrow row (`NARROW_ROW_PX` 0): it scrolls sideways (the user's ask).
+  Right-click its header: which columns show (`list_hidden_columns` in the prefs). Column menus (`_ToggleMenu`)
+  stay open while toggled; a click outside or Esc closes them.
+- Inspector tree columns: PRIM fills by default; dragged, it keeps that width (narrower too) and the last column
+  shown takes what is left (`_fill_last`, live while dragging); the content columns are Interactive, sized by
+  `_fit_name`.
+- Camera section: Aperture is the node's `mx_cam_aperture` menu (`adapter.cam_mode` / `set_cam_mode`); the line
+  under it is the camera's aperture as the loader puts it out (`Controller.camera`), Width shows only in the width
+  modes, Ratio only in "Set width and ratio", Focal length read-only.
+- Add assets drag (the user's ask, 2026-11-22): a card drag carries `<asset>.monofx_asset` files (JSON root + asset,
+  in `%TEMP%/MonoFX/asset_drag`, `logic.write_asset_drags`): Houdini gives a drop only a file list. `drag_drop
+  .handle_drop` sends them to `adapter.drop_assets` before anything else (even with drops off: never opened as a
+  scene): over a Network Editor of a LOP network, loaders at the cursor (`add_assets(at=...)`); over a Scene Viewer
+  showing one, placed as Add places them; the loaders list takes them too. Checked with the hook called in Houdini
+  (loader at the cursor, one undo step); a real mouse drag from the drawer into Houdini's panes is not yet checked.
 - Hide Prims is off the parm pane (the user's ask, 2026-11-19): `mx_hide_enable` / `mx_hide_pattern` stay as hidden
   parms, so the hair driver is still hidden by default and scenes keep what they had; the inspector's eye shows it.
   Configure Primitive authors that visibility as a time sample at the current frame (its toggle is an expression):

@@ -1713,3 +1713,44 @@ def version_picks(state: LoaderState, part: str, limit: int = VERSION_PICK_LIMIT
         out.append(VersionPick(v, _folder_date(pub / v) if v in versions else "", author[0] if author else "",
                                holds_all or v in found or not found, v == current))
     return out
+
+
+# --- dragging assets out of Add assets (the user's ask, 2026-11-22) -----------------------------------------------
+# A drag carries one small file per asset: Houdini hands a drop on a Network Editor or a Scene Viewer to
+# scripts/externaldragdrop.py as a list of files, nothing else, so the file names what to load.
+ASSET_DRAG_EXT = ".monofx_asset"
+
+
+def is_asset_drag(path: str) -> bool:
+    return str(path).lower().endswith(ASSET_DRAG_EXT)
+
+
+def write_asset_drags(folder: Path, root: str, names: list[str]) -> list[str]:
+    """One ``<asset>.monofx_asset`` per asset in ``folder`` (JSON: project root, asset); their paths."""
+    import json
+
+    folder.mkdir(parents=True, exist_ok=True)
+    out = []
+    for name in names:
+        f = folder / f"{name}{ASSET_DRAG_EXT}"
+        f.write_text(json.dumps({"root": str(root), "asset": name}), encoding="utf-8")
+        out.append(f.as_posix())
+    return out
+
+
+def read_asset_drags(paths: list[str]) -> dict[str, list[str]]:
+    """{project root: asset names} of the drag files among ``paths``, in their order; unreadable ones are left out."""
+    import json
+
+    out: dict[str, list[str]] = {}
+    for path in paths:
+        if not is_asset_drag(path):
+            continue
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        root, asset = str(data.get("root", "")), str(data.get("asset", ""))
+        if root and asset and asset not in out.setdefault(root, []):
+            out[root].append(asset)
+    return out

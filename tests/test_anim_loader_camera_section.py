@@ -16,7 +16,7 @@ CAM = {"prim": "/sh011/cam", "focal": 35.0, "focal_animated": False, "h_aperture
        "clip": (0.01, 1000.0), "fstop": 0.0, "focus": None}
 
 
-def _window(make, mode):
+def _window(make, mode):  # noqa: F811 (the fixture)
     from tests.test_anim_loader_controller import FakeBackend
 
     mk, ui = make

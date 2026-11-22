@@ -830,7 +830,7 @@ def _set_status_bar(text: str) -> None:
 ASSETS_MERGE = "assets"  # MERGE_USER_DATA of the Merge LOP the Add drawer wires its loaders into
 
 
-def add_assets(parent, root: str, names: list[str]) -> LoadResult:
+def add_assets(parent, root: str, names: list[str], at: tuple[float, float] | None = None) -> LoadResult:
     """A MonoFX Loader on Source Asset per asset (newest versions, once), wired into the shot layout's merges, else
     this network's ``assets_merge`` (made on first use, never wired further). An asset already in this network gets
     another instance, prim ``<asset>_inst02``... (set dressing places one asset several times). One undo step."""
@@ -838,7 +838,8 @@ def add_assets(parent, root: str, names: list[str]) -> LoadResult:
 
     result = LoadResult()
     taken = {_s(n, config.P_INSTANCE) for n in parent.children() if n.type().name() == config.HDA_TYPE}
-    start, where = _add_anchor(parent)  # read before anything is made: the artist's selection and view
+    # read before anything is made: the artist's selection and view; a drop puts them where it was let go
+    start, where = (at, "where they were dropped") if at is not None else _add_anchor(parent)
     had = {n.path() for n in parent.children()}
     made = []
     with undo_group(f"Add {len(names)} asset{'s' if len(names) != 1 else ''}"), manual_update():
@@ -886,6 +887,56 @@ def _network_editor(parent):
         return None
     current = [t for t in tabs if t.isCurrentTab()]
     return (current or tabs or [None])[0]
+
+
+def drop_assets(files: list[str]) -> bool:
+    """Assets dragged out of Add assets and let go over Houdini (``externaldragdrop`` -> ``drag_drop``): over a
+    Network Editor showing a LOP network, a MonoFX Loader per asset at the cursor; over a Scene Viewer showing one,
+    the same in that network, placed as Add places them. Anywhere else a status-bar line says where to drop. True:
+    the drop is handled (never handed to Houdini, which would open the file as a scene). One undo step."""
+    by_root = logic.read_asset_drags(files)
+    if not by_root:
+        return _drop_note("nothing to load in that drag", warn=True)
+    try:
+        pane = hou.ui.paneTabUnderCursor()
+    except Exception:
+        pane = None
+    if pane is not None and pane.type() == getattr(hou.paneTabType, "ContextViewer", None):
+        try:
+            pane = pane.sceneViewer() or pane
+        except (AttributeError, hou.OperationFailed):
+            pass
+    kind = pane.type() if pane is not None else None
+    parent = pane.pwd() if kind in (hou.paneTabType.NetworkEditor, hou.paneTabType.SceneViewer) else None
+    if parent is None or parent.childTypeCategory() != hou.lopNodeTypeCategory():
+        return _drop_note("drop assets on a Network Editor or a Scene Viewer showing a LOP network (/stage)",
+                          warn=True)
+    at = None
+    if kind == hou.paneTabType.NetworkEditor:
+        p = pane.cursorPosition()
+        at = (p[0], p[1])
+    made, kept = [], []
+    for root, names in by_root.items():
+        r = add_assets(parent, root, names, at)
+        made += r.created
+        kept += r.kept
+    try:
+        from tools.fx.anim_loader.ui import refresh_manager
+
+        refresh_manager()
+    except Exception:
+        pass
+    words = f"added {', '.join(made)} to {parent.path()}" if made else "nothing added"
+    return _drop_note(words + (f"; {', '.join(kept)} already there" if kept else ""))
+
+
+def _drop_note(message: str, warn: bool = False) -> bool:
+    try:
+        hou.ui.setStatusMessage(f"MonoFX: {message}",
+                                severity=hou.severityType.Warning if warn else hou.severityType.Message)
+    except Exception:
+        print(f"MonoFX: {message}")
+    return True
 
 
 def _add_anchor(parent) -> tuple[tuple[float, float] | None, str]:

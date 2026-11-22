@@ -3,6 +3,10 @@
 ## [Unreleased]
 
 ### Houdini
+- **MonoFX Loader manager**: click a version cell (Anim / Model, Lookdev, Groom, Cloth) to pick another version from what is on disk, newest first, with its date and who saved its work file; the pick is one undo step, and with several loaders selected it sets them all. The first column is now called **Anim / Model** (it said Geo).
+- **MonoFX Loader manager**: drag assets from **Add assets** onto a Network Editor (a loader lands under the cursor), a Scene Viewer showing /stage, or the loaders list.
+- **MonoFX Loader manager**: the list stays a table at any width and scrolls sideways; right-click its header to show or hide columns. The column menus stay open while you tick columns. In the inspector, a narrower PRIM column gives its room to the last column.
+- **MonoFX Loader manager**: a camera's **Aperture** is a menu (the publish's, a set width, a set width and ratio); on the publish's aperture it shows the camera's real aperture and focal length instead of empty fields.
 - **MonoFX Loader manager**: the viewport selection is read from Houdini's idle loop, never in the middle of a cook (a read there can fail the cook with "Infinite recursion in evaluation"), and selecting prims from the tree adds no undo step.
 - **MonoFX Loader manager**: what is selected in the viewport and in the inspector's prim tree now follow each other. A prim picked in the viewport selects its row in the tree, and its loader in the list when another one was selected. Rows picked in the tree select their prims in the viewport. It follows what the viewport draws (the node with the display flag, not the selected node) and finds loaders the shot layout moved, e.g. /World/anim/actors/char_Helen.
 - **MonoFX Loader manager**: Shift+click a group's arrow in the inspector tree folds or opens it and everything under it; Ctrl+click folds or opens the whole tree.

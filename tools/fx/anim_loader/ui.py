@@ -1036,6 +1036,7 @@ class AnimLoaderManager(QWidget):
             self.column_header.on_menu = lambda pos: self.list_columns_menu().exec(pos)
             v.horizontalScrollBar().valueChanged.connect(lambda _v: self.column_header.update())
         v.viewport().installEventFilter(self)  # rows / cards follow the view's own width (the splitter moves it)
+        v.setAcceptDrops(True)  # assets dragged out of Add assets (eventFilter)
         v.itemSelectionChanged.connect(lambda view=v: self._selection_changed(view))
         v.itemDoubleClicked.connect(self._select_node)
         v.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -1434,7 +1435,33 @@ class AnimLoaderManager(QWidget):
     def _open_version_menu(self, view, row, part: str, paths: list[str], pos) -> None:
         self.version_menu(row, part, paths).exec(view.viewport().mapToGlobal(pos))
 
+    @staticmethod
+    def _asset_drag_files(event) -> list[str]:
+        """The asset files a drag carries (Add assets' cards), [] for anything else."""
+        mime = event.mimeData()
+        if mime is None or not mime.hasUrls():
+            return []
+        files = [u.toLocalFile() for u in mime.urls()]
+        return files if files and all(logic.is_asset_drag(f) for f in files) else []
+
+    def drop_assets(self, files: list[str]) -> None:
+        """Assets dropped on the list: added as Add adds them (the user's ask, 2026-11-22)."""
+        by_root = logic.read_asset_drags(files)
+        names = by_root.get(self.ctl.target_root) or [n for v in by_root.values() for n in v]
+        if names:
+            self._run(lambda: self.ctl.add_assets(names))()
+
     def eventFilter(self, obj, event) -> bool:
+        views = [v for v in (getattr(self, "list_view", None), getattr(self, "grid_view", None)) if v is not None]
+        if any(obj is v.viewport() for v in views) and event.type() in (
+                QEvent.Type.DragEnter, QEvent.Type.DragMove, QEvent.Type.Drop):
+            files = self._asset_drag_files(event)
+            if files:
+                event.setDropAction(Qt.DropAction.CopyAction)
+                event.accept()
+                if event.type() == QEvent.Type.Drop:
+                    QTimer.singleShot(0, lambda f=files: self.drop_assets(f))  # after the drag has ended
+                return True
         # a click on a version cell opens that part's version menu (the user's pick, 2026-11-22); Shift / Ctrl keep
         # selecting rows. On a row that is part of a selection, the selection stays and the pick sets them all
         view = getattr(self, "list_view", None)
@@ -3336,6 +3363,29 @@ class InspectorPanel(QWidget):
 
 # --- Add drawer (layout A, the user's pick, 2026-11-17) ------------------------------------------------------
 
+DRAG_FOLDER = Path(os.environ.get("TEMP", Path.home())) / "MonoFX" / "asset_drag"
+
+
+class _AssetGrid(QListWidget):
+    """Add assets' cards: a drag carries the picked assets (the card under the mouse with them) as one
+    ``<asset>.monofx_asset`` file each, which a Network Editor, a Scene Viewer or the list take in (the user's ask,
+    2026-11-22)."""
+
+    root = ""
+
+    def mimeTypes(self):  # noqa: N802 (Qt)
+        return ["text/uri-list"]
+
+    def mimeData(self, items):  # noqa: N802 (Qt)
+        from PySide6.QtCore import QMimeData, QUrl
+
+        names = [i.data(ROLE_ROW) for i in items if i.data(ROLE_ROW)]
+        data = QMimeData()
+        if names and self.root:
+            data.setUrls([QUrl.fromLocalFile(f) for f in logic.write_asset_drags(DRAG_FOLDER, self.root, names)])
+        return data
+
+
 class AddDrawer(QWidget):
     """Assets of the project beside the list: type chips with counts, search, "with a model only", thumbnails;
     pick several (click toggles), Add N makes a MonoFX Loader on Source Asset for each, wired into assets_merge in
@@ -3384,8 +3434,11 @@ class AddDrawer(QWidget):
         self.model_only.toggled.connect(lambda _on: (self.fill_groups(), self.fill()))
         self.model_only.setMinimumHeight(owner.px(24))
         lay.addWidget(self.model_only)
-        self.list = QListWidget()
+        self.list = _AssetGrid()
         self.list.setObjectName("assetGrid")
+        self.list.setDragEnabled(True)  # drag cards to a Network Editor, a Scene Viewer or the loaders list
+        self.list.setDragDropMode(QAbstractItemView.DragDropMode.DragOnly)
+        self.list.setDefaultDropAction(Qt.DropAction.CopyAction)
         self.list.setViewMode(QListView.ViewMode.IconMode)
         self.list.setResizeMode(QListView.ResizeMode.Adjust)
         self.list.setMovement(QListView.Movement.Static)
@@ -3461,6 +3514,7 @@ class AddDrawer(QWidget):
 
         keep = set(self.picked())
         self.list.clear()
+        self.list.root = self.root
         in_scene = {r.asset for r in self.owner.ctl.rows() if r.asset_source}
         w, h = self.owner.px(self.THUMB[0]), self.owner.px(self.THUMB[1])
         for it in logic.asset_catalog(self.root, self.group, self.search.text(), self.model_only.isChecked()):
