@@ -1037,6 +1037,13 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   mockup's review wins over "left as mocked"); the strip's handle count is the adapter's (`lock_handles`); in
   the radial menu Scalp X-ray moved into Display to free a slot for Draw lock; "Skin from" shows only for a
   lock drawn in this session (not stored).
+- **U4 changed by the user (2026-11-22, on t83's flipbooks)**: v0.1's deform is NOT accepted for an edited
+  lock. `hair_bang_11` with its tip moved 5 cm hooks back at the tip on sh020 frame 60, and moved 2 cm it
+  hangs inside its piece's curve. An edited lock in a shot must keep the shape the artist gave it, carried
+  by the animation: at every frame the edited lock differs from the unedited lock as it does at rest (the
+  move seen in the lock's own moving frame), with no hook, no stretch (strand length within 2 % of rest, as
+  a drawn lock) and roots as the unedited lock's. An unedited lock's deform stays byte-equal to v0.1's.
+  First step: compare the lock at rest with the lock in the shot, to tell what the deform adds.
 - **Limits are not moved to pass** (s3 drawn lock stretch 2 %, s5 unedited groom in shots): a failing
   number is traced to its cause first, with the v0.1 locks beside it on the same shot as the baseline.
 
