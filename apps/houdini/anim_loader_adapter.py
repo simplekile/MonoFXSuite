@@ -1743,6 +1743,32 @@ class HoudiniBackend:
         return frame(path)
 
     @staticmethod
+    def viewport_prims():
+        return viewport_prims()
+
+    @staticmethod
+    def instance_roots(paths):
+        out = {}
+        for p in paths:
+            node = hou.node(p)
+            root = instance_root(node) if node is not None and node.parm(config.P_INSTANCE) is not None else None
+            if root is not None:
+                out[p] = root
+        return out
+
+    @staticmethod
+    def select_prims(network, prims):
+        return select_prims(network, prims)
+
+    @staticmethod
+    def displayed_loaders(network):
+        return displayed_loaders(network)
+
+    @staticmethod
+    def display_roots(network, loaders):
+        return display_roots(network, loaders)
+
+    @staticmethod
     def open_folder(path):
         return open_external(publish_folder(path))
 
@@ -2129,6 +2155,109 @@ def scene_viewers() -> list:
             if viewer is not None:
                 out.append(viewer)
     return out
+
+
+def viewport_prims() -> dict[str, tuple[str, ...]]:
+    """{LOP network path: the prims selected in the first Scene Viewer showing it}. The manager reads it on a timer
+    (Houdini has no callback for a viewer's scene graph selection); {} without a UI."""
+    if not hou.isUIAvailable():
+        return {}
+    out: dict[str, tuple[str, ...]] = {}
+    for pane in _stage_viewers():
+        try:
+            net = pane.pwd().path()
+            if net not in out:
+                out[net] = tuple(pane.currentSceneGraphSelection() or ())
+        except (AttributeError, hou.OperationFailed, hou.ObjectWasDeleted):
+            continue
+    return out
+
+
+def _viewer_node(network: str):
+    """The LOP whose stage the viewer draws: the network's viewer node (the display flag, or a node shown in its
+    place), not the selected node (the user's case: display on one node, another selected)."""
+    net = hou.node(network)
+    for name in ("viewerNode", "displayNode"):
+        fn = getattr(net, name, None) if net is not None else None
+        try:
+            node = fn() if fn else None
+        except hou.OperationFailed:
+            node = None
+        if node is not None:
+            return node
+    return None
+
+
+def displayed_loaders(network: str) -> list[str] | None:
+    """The nodes the viewer's stage is cooked from (its viewer node and every input above it): a loader outside them
+    is not in what the viewport draws. None: no viewer node (nothing to filter by)."""
+    node = _viewer_node(network)
+    if node is None:
+        return None
+    return [node.path(), *(n.path() for n in node.inputAncestors())]
+
+
+_DRAWN: dict = {}  # (viewer node, its cook count) -> {prim path: child names}: one walk of the stage per cook
+
+
+def _drawn_prims(node) -> dict[str, set[str]]:
+    """{path: its children's names} of the node's stage down to ``logic.DRAWN_ROOT_DEPTH`` ("" the stage root);
+    gprims are not walked into."""
+    from pxr import UsdGeom
+
+    key = (node.path(), node.cookCount())
+    if key in _DRAWN:
+        return _DRAWN[key]
+    out: dict[str, set[str]] = {}
+    try:
+        stage = node.stage()
+    except hou.OperationFailed:
+        stage = None
+    if stage is not None:
+        todo = [(stage.GetPseudoRoot(), "", 0)]
+        while todo:
+            prim, path, depth = todo.pop()
+            kids = prim.GetChildren()
+            out[path] = {k.GetName() for k in kids}
+            if depth < logic.DRAWN_ROOT_DEPTH:
+                todo += [(k, k.GetPath().pathString, depth + 1) for k in kids if not k.IsA(UsdGeom.Gprim)]
+    _DRAWN.clear()
+    _DRAWN[key] = out
+    return out
+
+
+def display_roots(network: str, loaders: dict) -> dict[str, str]:
+    """{loader: where its instance root sits on the stage the network's viewer draws} (``logic.drawn_roots``)."""
+    node = _viewer_node(network)
+    if node is None:
+        return {p: r for p, (r, _t) in loaders.items()}
+    return logic.drawn_roots(_drawn_prims(node), loaders)
+
+
+def select_prims(network: str, prims: list[str]) -> bool:
+    """Selects these prims in every Scene Viewer showing ``network`` (an empty list clears its selection); a viewer
+    showing another network is left alone, and prims the viewer's stage does not hold are dropped (a node after the
+    loader moved or pruned them). View state: no undo step."""
+    if not hou.isUIAvailable():
+        return False
+    node = _viewer_node(network)
+    try:
+        stage = node.stage() if node is not None else None
+    except hou.OperationFailed:
+        stage = None
+    if stage is not None:
+        prims = [p for p in prims if stage.GetPrimAtPath(p)]
+    done = False
+    for pane in _stage_viewers():
+        try:
+            if pane.pwd().path() != network:
+                continue
+            if tuple(pane.currentSceneGraphSelection() or ()) != tuple(prims):
+                pane.setCurrentSceneGraphSelection(list(prims))
+            done = True
+        except (AttributeError, hou.OperationFailed, hou.ObjectWasDeleted):
+            continue
+    return done
 
 
 def _stage_viewers() -> list:

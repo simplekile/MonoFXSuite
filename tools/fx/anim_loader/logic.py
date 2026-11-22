@@ -1573,3 +1573,75 @@ def free_spots(start: tuple[float, float], count: int, taken: list[tuple[float, 
             return spots
         x += clear[0]
     return spots
+
+
+# --- selection between the viewport and the inspector tree (the user's ask, 2026-11-22) ---------------------------
+def row_prim(root: str, pattern: str) -> str:
+    """The stage prim of an inspector row: ``root`` is the loader's instance root ("/char_Helen", or "" with Prim
+    Name off), ``pattern`` the row's (a mesh "Geo/Body", a group "Geo/**", the loader's own row "**"). The loader's
+    own row with Prim Name off names no one prim: ""."""
+    rel = show_target(pattern)
+    if rel == ROOT:
+        return root
+    return f"{root}/{rel}"
+
+
+def prims_by_loader(prims: list[str], roots: dict[str, str], tops: dict[str, set[str]]) -> dict[str, list[str]]:
+    """Viewport prims to {loader: paths under its instance root} ("" = the root itself). A prim belongs to the
+    loader whose root holds it, the longest root first; a loader with Prim Name off (root "") holds the prims under
+    its own top prims (``tops``: the first names of its prims, "Geo", "Groom"). A prim of no loader is left out;
+    an instance proxy's index ("/x/y[3]") is dropped."""
+    order = sorted(roots, key=lambda p: -len(roots[p] or ""))
+    out: dict[str, list[str]] = {}
+    for prim in prims:
+        prim = prim.split("[", 1)[0].rstrip("/")
+        for loader in order:
+            root = roots[loader] or ""
+            if root:
+                if prim != root and not prim.startswith(root + "/"):
+                    continue
+                rel = prim[len(root):].strip("/")
+            else:
+                rel = prim.strip("/")
+                if not rel or rel.split("/", 1)[0] not in tops.get(loader, set()):
+                    continue
+            if rel not in out.setdefault(loader, []):
+                out[loader].append(rel)
+            break
+    return out
+
+
+def nearest_row(rel: str, rows: set[str]) -> str | None:
+    """The deepest row at or above ``rel`` (a viewport pick can name a prim the tree does not list, a subset under a
+    mesh); ``rows`` are the rows' own prims (``show_target`` of their patterns). None: nothing above it."""
+    parts = rel.strip("/").split("/") if rel.strip("/") else []
+    while parts:
+        if "/".join(parts) in rows:
+            return "/".join(parts)
+        parts.pop()
+    return ROOT if ROOT in rows else None
+
+
+DRAWN_ROOT_DEPTH = 6  # how deep the drawn stage is searched for a loader's root (/World/anim/actors/char_Helen: 4)
+
+
+def drawn_roots(prims: dict[str, set[str]], loaders: dict[str, tuple[str, list[str]]]) -> dict[str, str]:
+    """Where each loader's instance root sits on the stage the viewer draws. ``prims``: {path: names of its
+    children} of the drawn stage down to ``DRAWN_ROOT_DEPTH``; ``loaders``: {loader: (root, top names)}. A root
+    stays where it is when the stage has it, else it is the one prim of its name holding its top prims (a shot
+    layout grafts /char_Helen to /World/anim/actors/char_Helen). With Prim Name off (root "") it is the one prim
+    holding all its top prims ("" for the stage's own root). Not found, or more than one place: left out."""
+    out: dict[str, str] = {}
+    for loader, (root, tops) in loaders.items():
+        need = set(tops)
+        if root:
+            if root in prims:
+                out[loader] = root
+                continue
+            name = root.rsplit("/", 1)[-1]
+            found = [p for p, kids in prims.items() if p.rsplit("/", 1)[-1] == name and need <= kids]
+        else:
+            found = [p for p, kids in prims.items() if need and need <= kids]  # "" (the stage root) among them
+        if len(found) == 1:
+            out[loader] = found[0]
+    return out

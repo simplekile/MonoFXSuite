@@ -420,6 +420,23 @@
   `hou.phm().<name>` in `build_hda.py` must be in it (v0.1.36's Reload button raised AttributeError, cb_reload was
   missing; `tests/test_anim_loader_hda_callbacks.py` checks it). A button is tested by `parm.pressButton()` in hython,
   not by calling the adapter's function.
+- Selection follows between the Scene Viewer and the inspector tree (the user's ask, 2026-11-22): the manager reads
+  each LOP viewer's `currentSceneGraphSelection()` on a timer (`SELECTION_POLL_MS`, no Houdini callback for it;
+  `adapter.viewport_prims`). The viewer draws its network's viewer / display node's stage, not the selected node's
+  (the user's case: display on one node, another selected), so only loaders feeding that node take part
+  (`adapter.displayed_loaders`), and each loader's root is looked up on that stage (`logic.drawn_roots`, a walk to
+  depth 6 cached per cook): the shot layout moves it (sh025: /char_Helen drawn at /World/anim/actors/char_Helen);
+  not found, or in more than one place, the loader is left out. env_Envi's sample has the display flag on the
+  original set (`mer_lights`), not on `monofx_envi` where the loaders go. A picked prim goes to the loader whose
+  drawn root holds it (`logic.prims_by_loader`; Prim Name off: by its top prims) and selects the deepest row at or
+  above it (`logic.nearest_row`); prims of other loaders than the selected ones select those loaders in the list
+  first. Rows picked in the tree set the viewer's selection in their loader's network (`adapter.select_prims`,
+  `logic.row_prim`; prims not on the drawn stage are dropped, a picked loader not drawn is said on the result line);
+  a viewer showing another network is left alone. A rebuild of the tree or a sync from the viewport sends nothing
+  back (`InspectorPanel._quiet`). View state: no undo step.
+- Inspector tree folds (the user's ask, 2026-11-22): Shift+click a group's arrow folds or opens it and every group
+  under it, Ctrl+click every group of the tree, to the state the clicked row goes to (`_MeshTree.on_chevron`: the
+  last indentation step before the name). A plain click is Qt's own.
 - Hide Prims is off the parm pane (the user's ask, 2026-11-19): `mx_hide_enable` / `mx_hide_pattern` stay as hidden
   parms, so the hair driver is still hidden by default and scenes keep what they had; the inspector's eye shows it.
   Configure Primitive authors that visibility as a time sample at the current frame (its toggle is an expression):
