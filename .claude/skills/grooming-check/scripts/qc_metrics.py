@@ -1,15 +1,26 @@
 """MONO Grooming hair quality check: per-strand shape and fit numbers, per lock and overall, against the
 approved reference groom. Headless, never saves the scene.
 
-    hython qc_metrics.py <suite> <hip> <out_dir> [--ref <groom.usd>] [--fresh]
+    hython qc_metrics.py <suite> <hip> <out_dir> [--ref <groom.usd>] [--fresh] [--mesh carried|modelled]
 
 <suite>  the MonoFXSuite checkout whose otls/ and code to use
 <hip>    a scene with one MONO Grooming node (its input 0 scalp, 1 hair mesh)
 --ref    an approved groom USD (curves) to compare with; without it only the absolute limits apply
 --fresh  empty the groom data, Detect and Split regions before measuring (after a root/region change)
+--mesh   what a lock is measured against: `carried` (default) the node's MESH_CARRIED, each EDITED lock's mesh piece
+         carried onto its edited spine (v0.2b), the mesh as it is for every other lock; `modelled` the hair mesh as
+         modelled (`pieces`), for comparison only: an edited lock is bent away from it on purpose
 
 Writes <out_dir>/qc_report.json and qc_report.md; exit code 1 when a check fails.
 Everything is measured at rest (input 2, the shot deform, is ignored): the hair mesh is the target.
+
+v0.2b: a lock drawn on the skin (`drawn` on SPINES, piece -1) has no mesh, so the mesh checks (distance to the mesh,
+on another lock, coverage, width / start share / shape against the mesh) leave it out; its strands still count in the
+shape checks (kink, zigzag, sharp, segments), in density (density x max(its skin, its cross-section), `lock_infos`)
+and in the skin checks, and the "Drawn locks" section measures what can be: roots on the skin, strand count against
+what is asked, hair width / thickness at four stations against the set width / thickness. The reference is always
+measured against the modelled mesh (the approved groom was made on it). With no edit and no drawn lock every number
+is the one this script gave before v0.2b.
 """
 
 import json
@@ -23,6 +34,7 @@ import hou
 
 SUITE = HIP = OUT = REF = None
 FRESH = False
+MESH_MODE = "carried"
 
 # Per strand, over its polyline (prim wrangle). Input 1 = the hair mesh with `piece`, input 2 = the
 # spines (lock_id -> piece). Angles in degrees, lengths in scene units (metres).
@@ -30,11 +42,15 @@ VEX_STRAND = r"""
 int pts[] = primpoints(0, @primnum);
 int n = len(pts);
 if (n < 3) { i@qc_short = 1; return; }
-int own = -1;
+int own = -1, drawn = 0;
 if (haspointattrib(0, "P") && hasprimattrib(0, "lock_id") && npoints(2) > 0) {
     int sp = findattribval(2, "prim", "lock_id", i@lock_id);
-    if (sp >= 0) own = prim(2, "piece", sp);
+    if (sp >= 0) {
+        own = prim(2, "piece", sp);
+        if (hasprimattrib(2, "drawn")) drawn = prim(2, "drawn", sp);   // v0.2b: a lock drawn on the skin, no mesh
+    }
 }
+i@qc_drawn = drawn;
 vector P[];
 foreach (int p; pts) { vector q = point(0, "P", p); append(P, q); }
 float total = 0, maxseg = 0, maxang = 0;
@@ -59,7 +75,7 @@ for (int i = 1; i < n; i++) {
 }
 float dmax = 0, dsum = 0, dtip = 0;
 int other = 0;
-for (int i = 0; i < n; i++) {
+for (int i = 0; i < n && !drawn; i++) {
     int hp; vector uv;
     float d = xyzdist(1, P[i], hp, uv);
     if (own >= 0 && prim(1, "piece", hp) != own) {
@@ -77,10 +93,10 @@ f@qc_seg_ratio = maxseg / max(total / (n - 1), 1e-6);   // 1 = even segments
 f@qc_maxang = maxang;
 f@qc_sharp = float(sharp) / (n - 2);
 f@qc_rev = float(rev) / max(n - 2, 1);                    // zigzag: turn reversals per segment
-f@qc_dmax = dmax;
-f@qc_dmean = dsum / n;
-f@qc_dtip = dtip;
-f@qc_other = float(other) / n;
+f@qc_dmax = drawn ? -1 : dmax;          // a drawn lock has no mesh: its mesh numbers do not apply
+f@qc_dmean = drawn ? -1 : dsum / n;
+f@qc_dtip = drawn ? -1 : dtip;
+f@qc_other = drawn ? -1 : float(other) / n;
 i@qc_npts = n;
 """
 
@@ -93,10 +109,16 @@ f@qc_u = n > 1 ? float(i) / (n - 1) : 0.0;
 int own = -1;
 int lid = prim(0, "lock_id", pr);        // typed: an untyped prim() picks the wrong overload
 int sp = findattribval(2, "prim", "lock_id", lid);
-if (sp >= 0) own = prim(2, "piece", sp);
+int drawn = 0;
+if (sp >= 0) {
+    own = prim(2, "piece", sp);
+    if (hasprimattrib(2, "drawn")) drawn = prim(2, "drawn", sp);
+}
+i@qc_drawn = drawn;
 int hp; vector uv;
-float d = xyzdist(1, @P, hp, uv);
-if (own >= 0 && prim(1, "piece", hp) != own) d = xyzdist(1, "@piece=" + itoa(own), @P, hp, uv);
+float d = -1;
+if (!drawn) d = xyzdist(1, @P, hp, uv);
+if (!drawn && own >= 0 && prim(1, "piece", hp) != own) d = xyzdist(1, "@piece=" + itoa(own), @P, hp, uv);
 f@qc_d = d;
 f@qc_ang = 0;
 if (i > 0 && i < n - 1) {
@@ -207,6 +229,7 @@ def measure(geo_node, mesh_node, spines_node, label):
                       else np.full(len(out["qc_len"]), -1))
     names = g.findPrimAttrib("name")
     out["name"] = list(g.primStringAttribValues("name")) if names else [""] * len(out["qc_len"])
+    out["drawn"] = np.array(g.primIntAttribValues("qc_drawn")) > 0      # v0.2b: no mesh, mesh numbers do not apply
     log(f"{label}: {len(out['qc_len'])} strands measured in {time.time() - t:.1f}s")
     w.destroy()
     return out
@@ -222,9 +245,10 @@ def profile(hair, mesh, spines, bins=10):
     g = w.geometry()
     if g is None:
         raise RuntimeError(f"qc_points: {w.errors()}")
-    u = np.array(g.pointFloatAttribValues("qc_u"))
-    d = np.array(g.pointFloatAttribValues("qc_d")) * 100
-    a = np.array(g.pointFloatAttribValues("qc_ang"))
+    keep = np.array(g.pointIntAttribValues("qc_drawn")) == 0      # a drawn lock's points: no mesh to be near
+    u = np.array(g.pointFloatAttribValues("qc_u"))[keep]
+    d = np.array(g.pointFloatAttribValues("qc_d"))[keep] * 100
+    a = np.array(g.pointFloatAttribValues("qc_ang"))[keep]
     rows = []
     for b in range(bins):
         sel = (u >= b / bins) & ((u < (b + 1) / bins) if b < bins - 1 else (u <= 1))
@@ -689,6 +713,9 @@ def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10, unit_cm=100
 def summary(m):
     ok = m["qc_len"] > 0
     pc = lambda a, q: float(np.percentile(a[ok], q)) if ok.any() else 0.0  # noqa: E731
+    # the distances to the mesh leave a drawn lock's strands out (it has none); with no drawn lock `okm` is `ok`
+    okm = ok & ~m.get("drawn", np.zeros(len(ok), dtype=bool))
+    pm = lambda a, q: float(np.percentile(a[okm], q)) if okm.any() else 0.0  # noqa: E731
     return {
         "strands": int(ok.sum()),
         "kink_p95_deg": pc(m["qc_maxang"], 95),
@@ -696,10 +723,10 @@ def summary(m):
         "zigzag_p95": pc(m["qc_rev"], 95),
         "sharp_mean": float(m["qc_sharp"][ok].mean()) if ok.any() else 0.0,
         "maxseg_p95_cm": pc(m["qc_maxseg"], 95) * 100,
-        "dmax_p95_cm": pc(m["qc_dmax"], 95) * 100,
-        "dmean_p50_cm": pc(m["qc_dmean"], 50) * 100,
-        "dtip_p95_cm": pc(m["qc_dtip"], 95) * 100,
-        "other_mean": float(m["qc_other"][ok].mean()) if ok.any() else 0.0,
+        "dmax_p95_cm": pm(m["qc_dmax"], 95) * 100,
+        "dmean_p50_cm": pm(m["qc_dmean"], 50) * 100,
+        "dtip_p95_cm": pm(m["qc_dtip"], 95) * 100,
+        "other_mean": float(m["qc_other"][okm].mean()) if okm.any() else 0.0,
     }
 
 
@@ -709,25 +736,124 @@ def per_lock(m, lock_names):
         sel = (m["lock_id"] == lid) & (m["qc_len"] > 0)
         if not sel.any():
             continue
+        drawn = bool(m["drawn"][sel].any()) if "drawn" in m else False
+        mesh = (lambda v: None) if drawn else (lambda v: v)     # noqa: E731  a drawn lock: no mesh
         rows.append({
             "lock_id": int(lid), "name": lock_names.get(int(lid), str(lid)), "strands": int(sel.sum()),
             "kink_p95_deg": float(np.percentile(m["qc_maxang"][sel], 95)),
             "zigzag_p95": float(np.percentile(m["qc_rev"][sel], 95)),
             "maxseg_p95_cm": float(np.percentile(m["qc_maxseg"][sel], 95)) * 100,
-            "dmax_p95_cm": float(np.percentile(m["qc_dmax"][sel], 95)) * 100,
-            "dtip_p95_cm": float(np.percentile(m["qc_dtip"][sel], 95)) * 100,
-            "other_mean": float(m["qc_other"][sel].mean()),
+            "dmax_p95_cm": mesh(float(np.percentile(m["qc_dmax"][sel], 95)) * 100),
+            "dtip_p95_cm": mesh(float(np.percentile(m["qc_dtip"][sel], 95)) * 100),
+            "other_mean": mesh(float(m["qc_other"][sel].mean())),
+            **({"drawn": True} if drawn else {}),
         })
     return rows
 
 
 def badness(r):
-    """One number to rank locks for close-ups: each measure over its limit, summed."""
+    """One number to rank locks for close-ups: each measure over its limit, summed (a drawn lock: its shape only)."""
+    v = lambda k, d=0.0: d if r.get(k) is None else r[k]  # noqa: E731
     return (r["kink_p95_deg"] / LIMITS["kink_p95_deg"]["abs"] + r["zigzag_p95"] / LIMITS["zigzag_p95"]["abs"]
-            + r["dmax_p95_cm"] / LIMITS["dmax_p95_cm"]["abs"] + r["dtip_p95_cm"] / LIMITS["dtip_p95_cm"]["abs"]
-            + r["maxseg_p95_cm"] / LIMITS["maxseg_p95_cm"]["abs"] + r["other_mean"] / LIMITS["other_mean"]["abs"]
-            + 4 * max(0.0, 0.9 - r.get("coverage", 1.0)) / 0.1
-            + 4 * max(0.0, 0.8 - r.get("width_ratio", 1.0)) / 0.1)
+            + v("dmax_p95_cm") / LIMITS["dmax_p95_cm"]["abs"] + v("dtip_p95_cm") / LIMITS["dtip_p95_cm"]["abs"]
+            + r["maxseg_p95_cm"] / LIMITS["maxseg_p95_cm"]["abs"] + v("other_mean") / LIMITS["other_mean"]["abs"]
+            + 4 * max(0.0, 0.9 - v("coverage", 1.0)) / 0.1
+            + 4 * max(0.0, 0.8 - v("width_ratio", 1.0)) / 0.1)
+
+
+DRAWN_STATIONS = (0.3, 0.5, 0.7, 0.9)
+DRAWN_ROOT_SKIN_CM = 0.0025   # a drawn lock's roots on the rest scalp (accept_v02b GAP_CM: the scalp quads are not planar)
+DRAWN_WIDTH_SHARE = 0.20      # hair width within 20 % of the set width at four stations (the plan's "Done when")
+
+
+def _unit_rows(v):
+    return v / np.maximum(np.linalg.norm(v, axis=-1, keepdims=True), 1e-12)
+
+
+def spine_frames(P, T, A, u):
+    """(centre, tangent, width axis, thickness axis) of a spine polyline at parameters u (by point index, as VEX
+    primuv on an open polyline), the width axis made square to the tangent."""
+    n = len(P)
+    x = np.clip(np.asarray(u, dtype=float), 0, 1) * (n - 1)
+    j = np.minimum(np.floor(x).astype(int), n - 2)
+    f = (x - j)[:, None]
+    c = P[j] * (1 - f) + P[j + 1] * f
+    t = _unit_rows(T[j] * (1 - f) + T[j + 1] * f)
+    a = A[j] * (1 - f) + A[j + 1] * f
+    a = _unit_rows(a - t * np.sum(a * t, axis=1, keepdims=True))
+    return c, t, a, np.cross(t, a)
+
+
+def nearest_u(X, P):
+    """Each point's parameter (by point index) at its nearest place on polyline P."""
+    a, b = P[:-1], P[1:]
+    ab = b - a
+    l2 = np.maximum((ab ** 2).sum(1), 1e-18)
+    out = np.empty(len(X))
+    for i in range(0, len(X), 4000):
+        x = X[i:i + 4000]
+        t = np.clip(((x[:, None, :] - a[None]) * ab[None]).sum(-1) / l2[None], 0, 1)
+        d = np.linalg.norm(x[:, None, :] - (a[None] + t[..., None] * ab[None]), axis=-1)
+        k = d.argmin(1)
+        out[i:i + 4000] = (k + t[np.arange(len(k)), k]) / (len(P) - 1)
+    return out
+
+
+def drawn_report(node, ga, hgeo, pos, starts, counts, lock_of_strand, drawn_ids, dens, locks, unit_cm):
+    """What can be measured on a lock drawn on the skin (it has no mesh): its roots against the rest scalp, its
+    strand count against what is asked (density x max(its skin, its cross-section), `lock_infos`), its hair width
+    and thickness (2nd to 98th percentile of the offsets across, at DRAWN_STATIONS of its spine) against the set
+    width / thickness there (`logic.drawn_profile`), and its corners."""
+    from tools.fx.grooming import logic
+    data = ga.read_data(node)
+    spines = ga._spine_rows(node.node("SPINES").geometry())
+    scalp = node.node("IN_SCALP").geometry()
+    by_id = {r["lock_id"]: r for r in locks}
+    out = []
+    for lid in sorted(drawn_ids):
+        lk = data.lock(lid)
+        sel = np.nonzero(lock_of_strand == lid)[0]
+        row = {"lock_id": int(lid), "name": by_id.get(lid, {}).get("name", lk.name if lk else str(lid)),
+               "strands": int(len(sel)), "mesh_checks": "do not apply: a drawn lock has no mesh"}
+        d = dens.get(lid)
+        if d:
+            row.update({"expected": d["expected"], "density_ratio": round(d["density_ratio"], 4)})
+        if lid in by_id:
+            row["kink_p95_deg"] = round(by_id[lid]["kink_p95_deg"], 2)
+        if len(sel):
+            roots = pos[starts[sel]]
+            off = []
+            for x in roots:
+                pr, u, v, _ = scalp.nearestPrim(hou.Vector3(*[float(c) for c in x]))
+                off.append((hou.Vector3(*[float(c) for c in x]) - pr.positionAtInterior(u, v)).length() * unit_cm)
+            off = np.array(off)
+            row["roots_off_skin_max_cm"] = float("%.3g" % off.max())
+            row["roots_off_skin_p95_cm"] = float("%.3g" % np.percentile(off, 95))
+        sp = spines.get(lid)
+        if sp is not None and len(sel) and lk is not None and hasattr(logic, "drawn_profile"):
+            X = np.concatenate([pos[starts[k]:starts[k] + counts[k]] for k in sel])
+            u = nearest_u(X, sp["P"])
+            st = {}
+            for station in DRAWN_STATIONS:
+                band = np.abs(u - station) <= 0.025
+                wset, tset = logic.drawn_profile([station], lk.width_cm, lk.thick_cm, lk.taper)
+                if band.sum() < 10:
+                    st[str(station)] = None
+                    continue
+                c, _t, a, m = spine_frames(sp["P"], sp["tangent"], sp["axis"], u[band])
+                dd = X[band] - c
+                w, th = np.sum(dd * a, 1), np.sum(dd * m, 1)
+                hw = float((np.percentile(w, 98) - np.percentile(w, 2)) * unit_cm)
+                ht = float((np.percentile(th, 98) - np.percentile(th, 2)) * unit_cm)
+                st[str(station)] = {"hair_width_cm": round(hw, 3), "set_width_cm": round(float(wset[0]), 3),
+                                    "width_ratio": round(hw / max(float(wset[0]), 1e-9), 3),
+                                    "hair_thick_cm": round(ht, 3), "set_thick_cm": round(float(tset[0]), 3),
+                                    "thick_ratio": round(ht / max(float(tset[0]), 1e-9), 3)}
+            row["stations"] = st
+            ratios = [v["width_ratio"] for v in st.values() if v]
+            row["width_off_worst"] = round(max(abs(r - 1) for r in ratios), 4) if len(ratios) == len(st) else 1.0
+        out.append(row)
+    return out
 
 
 def ref_txt(c):
@@ -739,6 +865,10 @@ def main():
     SUITE, HIP, OUT = sys.argv[1], sys.argv[2], sys.argv[3]
     REF = sys.argv[sys.argv.index("--ref") + 1] if "--ref" in sys.argv else None
     FRESH = "--fresh" in sys.argv
+    global MESH_MODE
+    MESH_MODE = sys.argv[sys.argv.index("--mesh") + 1] if "--mesh" in sys.argv else "carried"
+    if MESH_MODE not in ("carried", "modelled"):
+        raise SystemExit("--mesh carried|modelled")
     sys.path.insert(0, SUITE)
     os.makedirs(OUT, exist_ok=True)
     hou.hda.installFile(SUITE + "/otls/mono_grooming.hdalc")
@@ -771,13 +901,22 @@ def main():
         return om
 
     hair = merge(groom_path, "qc_hair")          # the full groom, rest pose, hidden locks too
-    mesh = geo.createNode("attribpromote", "qc_mesh")      # the hair mesh, `piece` on its prims
-    mesh.setInput(0, merge(node.path() + "/pieces", "qc_pieces"))
-    mesh.parm("inname").set("piece")
-    mesh.parm("inclass").set(2)       # point
-    mesh.parm("outclass").set(1)      # primitive
-    mesh.parm("method").set(1)        # minimum: a prim's points are all one piece
-    mesh.parm("deletein").set(0)       # coverage reads `piece` per point
+    # v0.2b: a lock's mesh is MESH_CARRIED, each edited lock's piece carried onto its edited spine (with no edit it
+    # is the mesh itself: the same points, so the same numbers); the reference is graded on the mesh as modelled
+    carried = MESH_MODE == "carried" and node.node("MESH_CARRIED") is not None
+    mesh_inner = node.node("MESH_CARRIED" if carried else "pieces")
+
+    def promoted(path, name):
+        m = geo.createNode("attribpromote", name)      # the hair mesh, `piece` on its prims
+        m.setInput(0, merge(path, name + "_in"))
+        m.parm("inname").set("piece")
+        m.parm("inclass").set(2)       # point
+        m.parm("outclass").set(1)      # primitive
+        m.parm("method").set(1)        # minimum: a prim's points are all one piece
+        m.parm("deletein").set(0)       # coverage reads `piece` per point
+        return m
+    mesh = promoted(mesh_inner.path(), "qc_mesh")
+    ref_mesh = promoted(node.path() + "/pieces", "qc_mesh_modelled") if carried else mesh
     spines = merge(node.path() + "/SPINES", "qc_spines")    # lock_id -> piece
     t = time.time()
     hair.cook(force=True)
@@ -787,7 +926,12 @@ def main():
                   if sg.findPrimAttrib("name")}
 
     ours = measure(hair, mesh, spines, "ours")
-    report = {"hip": HIP, "suite": SUITE, "cook_full_s": round(cook_s, 2), "ours": summary(ours)}
+    report = {"hip": HIP, "suite": SUITE, "cook_full_s": round(cook_s, 2), "ours": summary(ours),
+              "mesh": "carried (MESH_CARRIED)" if carried else "modelled (pieces)"}
+    drawn_ids = {int(p.attribValue("lock_id")) for p in sg.prims()
+                 if sg.findPrimAttrib("drawn") is not None and p.attribValue("drawn")}
+    edited_ids = {int(p.attribValue("lock_id")) for p in sg.prims()
+                  if sg.findPrimAttrib("edited") is not None and p.attribValue("edited")}
     ref = None
     if REF:
         imp = geo.createNode("usdimport", "qc_ref")
@@ -795,9 +939,9 @@ def main():
         for k, v in (("input_unpack", 1), ("unpack_geomtype", 1)):
             if imp.parm(k):
                 imp.parm(k).set(v)
-        ref = measure(imp, mesh, None, "ref")
+        ref = measure(imp, ref_mesh, None, "ref")
         report["ref"] = summary(ref)
-        report["ref"]["coverage"] = coverage(mesh, imp)[0]
+        report["ref"]["coverage"] = coverage(ref_mesh, imp)[0]
         report["ref_file"] = REF
 
     report["profile"] = profile(hair, mesh, spines)
@@ -807,25 +951,32 @@ def main():
     locks = per_lock(ours, lock_names)
     unit0 = float(node.evalParm("unit_cm")) if node.parm("unit_cm") else 100.0
     strand_w, layered_locks = layer_strand_weights(node, hair.geometry(), unit0)
-    wr = width_ratios(hair.geometry(), node.node("pieces").geometry(), sg, strand_w)
+    wr = width_ratios(hair.geometry(), mesh_inner.geometry(), sg, strand_w)
     report["start_share_under_layers"] = {
         "locks_under_layers": len(layered_locks),
         "no_automatic_strand_left": sorted(lock_names.get(i, str(i)) for i in layered_locks
                                            if i not in width_ratios.start_share)}
     for r in locks:
-        r["width_ratio"] = wr.get(r["lock_id"], 1.0)
-        r["width_ratio_matched"] = width_ratios.matched.get(r["lock_id"], 1.0)
-        r["start_share"] = width_ratios.start_share.get(r["lock_id"], 1.0)
-        r["coverage"] = cov_piece.get(piece_of.get(r["lock_id"], -1), 0.0)
+        if r["lock_id"] in drawn_ids:        # no mesh: width, start share and coverage against it do not apply
+            r.update({"drawn": True, "width_ratio": None, "width_ratio_matched": None, "start_share": None,
+                      "coverage": None})
+        else:
+            r["width_ratio"] = wr.get(r["lock_id"], 1.0)
+            r["width_ratio_matched"] = width_ratios.matched.get(r["lock_id"], 1.0)
+            r["start_share"] = width_ratios.start_share.get(r["lock_id"], 1.0)
+            r["coverage"] = cov_piece.get(piece_of.get(r["lock_id"], -1), 0.0)
+        if r["lock_id"] in edited_ids:
+            r["edited"] = True
         r["badness"] = round(badness(r), 2)
     locks.sort(key=lambda r: -r["badness"])
+    mlocks = [r for r in locks if not r.get("drawn")]      # the locks with a mesh (every lock with no drawn one)
     s = dict(report["ours"])
-    s["lock_dmax_p95_worst_cm"] = max((r["dmax_p95_cm"] for r in locks), default=0.0)
+    s["lock_dmax_p95_worst_cm"] = max((r["dmax_p95_cm"] for r in mlocks), default=0.0)
     s["uncovered"] = 1 - report["ours"]["coverage"]
-    s["lock_width_ratio_worst"] = min((r["width_ratio"] for r in locks), default=1.0)
-    report["lock_width_ratio_matched_worst"] = min((r["width_ratio_matched"] for r in locks), default=1.0)
-    s["lock_start_share_worst"] = min((r["start_share"] for r in locks), default=1.0)
-    s["lock_uncovered_worst"] = max((1 - r["coverage"] for r in locks), default=0.0)
+    s["lock_width_ratio_worst"] = min((r["width_ratio"] for r in mlocks), default=1.0)
+    report["lock_width_ratio_matched_worst"] = min((r["width_ratio_matched"] for r in mlocks), default=1.0)
+    s["lock_start_share_worst"] = min((r["start_share"] for r in mlocks), default=1.0)
+    s["lock_uncovered_worst"] = max((1 - r["coverage"] for r in mlocks), default=0.0)
     if ref is not None:
         report["ref"]["uncovered"] = 1 - report["ref"]["coverage"]
     s["lock_kink_p95_worst_deg"] = max((r["kink_p95_deg"] for r in locks), default=0.0)
@@ -855,7 +1006,7 @@ def main():
         _c, n_ref, d_ref = densest_spot(rroots)
         report["whorl"].update({"ref_densest_1cm": n_ref, "ref_densest_1cm_share": n_ref / max(len(rroots), 1),
                                 "ref_densest_per_cm2": d_ref})
-    pg = node.node("pieces").geometry()
+    pg = mesh_inner.geometry()
     mesh_pos = np.array(pg.pointFloatAttribValues("P")).reshape(-1, 3)
     mesh_piece = np.array(pg.pointIntAttribValues("piece"))
     shape = shape_along(pos, lock, u, mesh_pos, mesh_piece, spine_arrays(sg), unit_cm=unit_cm)
@@ -947,8 +1098,28 @@ def main():
                                      for b in range(10)] if shp else [],
     }
 
+    if drawn_ids:
+        report["drawn_locks"] = drawn_report(node, ga, hgeo, pos, starts, counts, lock_of_strand, drawn_ids, dens,
+                                             locks, unit_cm)
+        s["drawn_root_skin_worst_cm"] = max((r.get("roots_off_skin_max_cm", 0.0) for r in report["drawn_locks"]),
+                                            default=0.0)
+        s["drawn_width_off_worst"] = max((r.get("width_off_worst", 1.0) for r in report["drawn_locks"]), default=0.0)
+    report["edited_locks"] = [{k: r.get(k) for k in ("name", "strands", "dmax_p95_cm", "dtip_p95_cm", "other_mean",
+                                                       "coverage", "width_ratio", "start_share", "width_mid",
+                                                       "width_tip", "tip_center_off", "turned_worst", "outside_worst",
+                                                       "kink_p95_deg", "drawn")}
+                              for r in sorted(locks, key=lambda r: r["name"]) if r.get("edited")]
+
     checks = []
-    for key, lim in LIMITS.items():
+    limits = dict(LIMITS)
+    if drawn_ids:                # only on a groom with drawn locks: a groom without one has the checks it always had
+        limits["drawn_root_skin_worst_cm"] = {
+            "abs": DRAWN_ROOT_SKIN_CM, "ref_x": None,
+            "why": "a drawn lock's roots off the rest scalp (it has no mesh: its mesh checks do not apply)"}
+        limits["drawn_width_off_worst"] = {
+            "abs": DRAWN_WIDTH_SHARE, "ref_x": None,
+            "why": "a drawn lock's hair width against its set width at 0.3 / 0.5 / 0.7 / 0.9 of it, |ratio - 1|, worst"}
+    for key, lim in limits.items():
         why = lim["why"] + (f". Stricter than v006: {lim['stricter']}" if lim.get("stricter") else "")
         v006 = lim.get("v006")                   # the approved groom, measured on Helen (t52) where it can be
         if lim.get("max") is not None:           # a plain ceiling with no reference
@@ -977,7 +1148,7 @@ def main():
     with open(os.path.join(OUT, "qc_report.json"), "w", encoding="utf-8") as fh:
         json.dump(report, fh, indent=1, ensure_ascii=False)
     lines = [f"# Hair QC: {'PASS' if report['passed'] else 'FAIL'}", "",
-             f"Scene `{HIP}`, {s['strands']} strands, full cook {cook_s:.2f}s"
+             f"Scene `{HIP}`, {s['strands']} strands, full cook {cook_s:.2f}s, measured against the {report['mesh']} mesh"
              + (f", reference `{os.path.basename(REF)}` ({report['ref']['strands']} strands)" if REF else ""),
              "", "| check | ours | reference | limit | | what it catches |", "|---|---|---|---|---|---|"]
     for c in checks:
@@ -1005,12 +1176,33 @@ def main():
                   + f"; thin under floating mesh (left out, roots moved to the lock start on purpose): {report['skin_arch_cm2']:.0f} cm2, "
                   + f"{report['skin_arch_thin_cm2']:.0f} cm2 of it thin; thinnest regions: " + ", ".join(f"{r['name']} {r['skin_thin']:.0%}" for r in
                                                        sorted(locks, key=lambda r: -r.get("skin_thin", 0))[:6] if "skin_thin" in r)]
+    na = lambda v, f: "n/a" if v is None else format(v, f)  # noqa: E731  a drawn lock's mesh numbers
     lines += ["", "## Worst locks", "", "| lock | strands | kink p95 | zigzag p95 | seg p95 cm | far p95 cm "
               "| tip p95 cm | on other lock | covered | width / mesh |", "|---|---|---|---|---|---|---|---|---|---|"]
     for r in locks[:8]:
-        lines.append(f"| {r['name']} | {r['strands']} | {r['kink_p95_deg']:.1f} | {r['zigzag_p95']:.3f} "
-                     f"| {r['maxseg_p95_cm']:.2f} | {r['dmax_p95_cm']:.2f} | {r['dtip_p95_cm']:.2f} "
-                     f"| {r['other_mean']:.1%} | {r['coverage']:.0%} | {r['width_ratio']:.2f} |")
+        lines.append(f"| {r['name']}{' (drawn)' if r.get('drawn') else ''} | {r['strands']} | {r['kink_p95_deg']:.1f} "
+                     f"| {r['zigzag_p95']:.3f} | {r['maxseg_p95_cm']:.2f} | {na(r['dmax_p95_cm'], '.2f')} "
+                     f"| {na(r['dtip_p95_cm'], '.2f')} | {na(r['other_mean'], '.1%')} | {na(r['coverage'], '.0%')} "
+                     f"| {na(r['width_ratio'], '.2f')} |")
+    if report["edited_locks"]:
+        lines += ["", f"## Edited locks (shape edited, v0.2b), measured against the {report['mesh']} mesh", "",
+                  "| lock | far p95 cm | tip p95 cm | on other lock | covered | width / mesh | start share | outside |",
+                  "|---|---|---|---|---|---|---|---|"]
+        for r in report["edited_locks"]:
+            lines.append(f"| {r['name']}{' (drawn)' if r.get('drawn') else ''} | {na(r['dmax_p95_cm'], '.2f')} "
+                         f"| {na(r['dtip_p95_cm'], '.2f')} | {na(r['other_mean'], '.1%')} | {na(r['coverage'], '.0%')} "
+                         f"| {na(r['width_ratio'], '.2f')} | {na(r['start_share'], '.2f')} "
+                         f"| {na(r.get('outside_worst'), '.2f')} |")
+    if report.get("drawn_locks"):
+        lines += ["", "## Drawn locks (no mesh: the mesh checks do not apply to them)", "",
+                  "| lock | strands / expected | roots off the skin max cm | kink p95 | hair width / set width at "
+                  + " / ".join(str(x) for x in DRAWN_STATIONS) + " | thickness / set |", "|---|---|---|---|---|---|"]
+        for r in report["drawn_locks"]:
+            st = r.get("stations", {})
+            lines.append(f"| {r['name']} | {r['strands']} / {r.get('expected', '?')} ({na(r.get('density_ratio'), '.2f')}) "
+                         f"| {na(r.get('roots_off_skin_max_cm'), '.3g')} | {na(r.get('kink_p95_deg'), '.1f')} "
+                         f"| {' '.join(na((st.get(str(x)) or {}).get('width_ratio'), '.2f') for x in DRAWN_STATIONS)} "
+                         f"| {' '.join(na((st.get(str(x)) or {}).get('thick_ratio'), '.2f') for x in DRAWN_STATIONS)} |")
     lines += ["", "## Roots and shape per lock (sorted by the biggest miss)", "",
               "| lock | strands / expected | root spacing | roots bunched | width mid | width tip | tip off centre"
               " | folded | width along the lock (root -> tip) |", "|---|---|---|---|---|---|---|---|---|"]
