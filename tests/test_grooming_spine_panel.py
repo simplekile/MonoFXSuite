@@ -314,6 +314,19 @@ def test_drag_mode_and_next_lock_go_to_the_state(env) -> None:
         c.set_drag_mode("bend")
 
 
+def test_the_handle_count_is_the_adapters_when_it_has_one(env) -> None:
+    """t82 GUI: lock_infos' length gave hair_bang_03 5 handles, the measured spine (lock_handles, the viewer state's
+    source) 4: the panel shows the adapter's number."""
+    adapter, view, c = env
+    adapter.lock_handles = lambda node, ids: {i: {"count": 9} for i in ids}
+    c.refresh()
+    c.select_locks([2])
+    c.set_tool(S.TOOL_POINTS)
+    assert view.tools[1]["handles"]["text"] == "auto (9)"
+    adapter.calls.clear()
+    assert c.step_handles(1) and adapter.calls == [("handles", (2,), 10)]
+
+
 # ---------------------------------------------------------------------------
 # Strip: handles and reset
 # ---------------------------------------------------------------------------

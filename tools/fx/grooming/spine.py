@@ -278,7 +278,32 @@ class SpineMixin:
             return float(info.length) * self.unit_cm
         return float(lk.length) * self.unit_cm
 
+    def _adapter_counts(self, ids: list[int]) -> dict[int, int]:
+        """The handle counts the adapter (and so the viewer state) uses: `lock_handles`' count, from the measured
+        spine's own length. `lock_infos`' length is not the same number (t82 GUI: hair_bang_03 read 5 in the panel
+        and 4 in the adapter, its length at the 8 cm step). Kept per data shown."""
+        read = getattr(self.adapter, "lock_handles", None)
+        if read is None or self.node is None or not ids:
+            return {}
+        key = getattr(self, "_last_json", None)
+        cache = self.__dict__.setdefault("_count_cache", {})
+        if cache.get("_key") != key:
+            cache.clear()
+            cache["_key"] = key
+        want = [i for i in ids if i not in cache]
+        if want:
+            try:
+                got = read(self.node, want) or {}
+            except Exception:
+                got = {}
+            for i in want:
+                cache[i] = int(got[i]["count"]) if i in got and "count" in got[i] else None
+        return {i: cache[i] for i in ids if cache.get(i) is not None}
+
     def handle_count(self, lk: model.Lock) -> int:
+        got = self._adapter_counts([lk.id]).get(lk.id)
+        if got is not None:
+            return got
         try:
             return int(logic.lock_handle_count(lk, self._length_cm(lk)))
         except Exception:
@@ -333,6 +358,7 @@ class SpineMixin:
         data = data or self._data or self.data()
         ids, _why = self.edit_targets(data)
         locks = [data.lock(i) for i in ids]
+        self._adapter_counts(ids)                     # one adapter read for all of them
         counts = [self.handle_count(lk) for lk in locks]
         handles = handles_summary(counts, [lk.handles for lk in locks])
         edited = [lk.id for lk in locks if lk.edited]
@@ -674,6 +700,7 @@ class SpineMixin:
         if not locks:
             self.view.set_message("Handles: select a lock", error=True)
             return False
+        self._adapter_counts([lk.id for lk in locks])
         plan = stepped_counts({lk.id: self.handle_count(lk) for lk in locks}, delta)
         if not plan:
             end = config.HANDLES_MAX if delta > 0 else config.HANDLES_MIN
