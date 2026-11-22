@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Blender
+- **Publish Anim**: the camera USD holds the camera again. Blender 5.2.2 wrote the camera as an empty transform (sh012a v007 had no camera in Houdini); the camera keeps its usual prim path, and a camera export without a camera now fails the publish instead of passing silently.
+
 ### Houdini
 - **Mono Solaris desktop**: Houdini's Solaris layout with the MonoFX Loaders manager docked on the left (Desktop menu > Mono_Solaris); the floating manager window still opens as before.
 - **MonoFX Loader manager**: the inspector's Details section moved to the bottom, under the prim tree, so the prims start right under the loader's name.
