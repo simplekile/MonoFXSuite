@@ -659,6 +659,7 @@ def enter(node) -> bool:
     viewer = _viewer()
     if viewer is None:
         return False
+    _points_tool("yield_to_paint")      # one tool at a time (v0.2b): Edit points / Draw lock end first
     register()
     # no undo step for changing tool: Houdini records "Change selection" for these, and such a step between
     # two strokes made Ctrl+Z undo a tool change (dropping the brush) and, recorded after an undo, emptied redo
@@ -682,12 +683,22 @@ def enter(node) -> bool:
     return running() is not None and running().session is not None
 
 
+def _points_tool(fn: str) -> None:
+    """Tell the Edit points / Draw lock state (grooming_points_state) that Paint takes or gives back the viewport."""
+    try:
+        from apps.houdini import grooming_points_state as gps
+        getattr(gps, fn)()
+    except Exception:
+        _note(traceback.format_exc())
+
+
 def leave() -> None:
     """Back to the tool the viewport had before Paint (grooming_masks.paint_exit cleared PAINT)."""
     viewer = _viewer()
     if viewer is None or viewer.currentState() != STATE:
         if gm.PAINT["node"] is None:
             _watch_esc(False)
+            _points_tool("paint_ended")
         return
     LIVE["leaving"] = True
     try:
@@ -705,6 +716,7 @@ def leave() -> None:
                 viewer.setCurrentState("select")
     finally:
         LIVE["leaving"] = False
+    _points_tool("paint_ended")
     hook = gm.HOOKS.get("exit")
     if hook is not None:
         hook()
@@ -758,6 +770,7 @@ def _paint_over(why: str = "") -> None:
     """Paint is off although nobody called paint_exit (the brush cannot or must not come back)."""
     gm.PAINT["node"], gm.PAINT["layer"] = None, None
     _watch_esc(False)
+    _points_tool("paint_ended")
     if why:
         _say_ended(why)
     hook = gm.HOOKS.get("exit")

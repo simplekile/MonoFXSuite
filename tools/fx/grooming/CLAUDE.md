@@ -1162,3 +1162,39 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - Deleting a drawn lock: 3.8 s -> 0.49 s (`_prim_centres`: the fine scalp's prim centres and groups read in bulk,
     summed in vertex order, bit-identical to the per-prim loop; mesh distances by `primFloatListAttribValues`).
     Update regions gains the same (2.2 s on Helen).
+- v0.2b lock redraw, B3 viewer state (2026-11-22; sandbox `tests/t81_points_state/`, `report.md` there; GUI acceptance
+  `tests/houdini/grooming/accept_v02b_gui.py`, pytest `tests/test_grooming_points_keys.py`):
+  - `apps/houdini/grooming_points_state.py`: ONE Python state `config.POINTS_STATE` for Edit points and Draw lock,
+    entered by name on the node as Paint is (selects the node, `_came_back` when Houdini drops it, ends on another
+    node selected, the node deleted (BeingDeleted), File > New / Open (`hipFile` BeforeClear / BeforeLoad), Esc from
+    anywhere (application filter)). It never writes the data: one adapter call a gesture on release (`set_points`,
+    `rotate_points`, `scale_points`, `redraw_lock`, `set_handle_count`, `draw_lock`), then the node cooks, or
+    `points_keys.HOOKS["write"](node, result)` does it for the panel. A move of handles of mesh locks goes as
+    `space="frame"` with the handles that did not move kept exactly (a moved root's cooked place on the skin is not its
+    stored place: given back in node space it read as moved again); drawn locks in node space; both in one
+    `hou.undos.group` when mixed.
+  - The panel's interface: `enter_points(node, ids)`, `enter_draw(node)`, `exit_tool()`, `set_mode(mode)`,
+    `set_locks(ids)`, `set_new_lock(width_cm, thick_cm, taper)`, `current_tool()`; `points_keys.STATE` (`tool`, `mode`,
+    `lock_ids`, `width_cm`, `thick_cm`, `taper`, plus `held`, `message`, `node`), `points_keys.HOOKS["tool"]` (a list
+    of callables, or one) on every change. Paint: `grooming_paint_state.enter` calls `yield_to_paint` (the record says
+    `paint`), its leave / end calls `paint_ended`; entering this tool calls `paint_exit` first.
+  - Gestures: drag a handle on the view plane through it; the root handle on the ray's hit on the frozen IN_SCALP
+    (`intersect`; a miss keeps it), other locks' roots `nearestPrim` onto it: 6e-6 cm off the skin at every event.
+    R / E PRESSED arm the next drag (rotate / scale about each lock's root; held through the drag or tapped before
+    it, the release is ignored, a second press disarms): Houdini's own R / E would take the viewport to its Edit /
+    scale tool, so they are hotkeys of the state's menu (`HOTKEY_CONTEXT`), and the press is seen by the application
+    filter. Rotate: the angle on the view plane through the root about the view direction; scale: x2 per 200 px
+    right. Shift + drag redraws the lock nearest the press (from the root handle the root stays; from the skin the
+    root moves there). minus / plus: one handle less / more on EACH lock (grouped by target count, one undo step).
+    Several locks: the same handle of each (`points_keys.map_handle`: root to root, tip to tip, the rest by share).
+  - Houdini sends a press and release without motion as ONE mouse event (`ui_event.reason()` Picked, the button
+    down, no release after it): handled as a whole click; read as a press it left a gesture open and the next move
+    closed it as a click elsewhere (t81 r11). A click on a handle keeps the selection; on hair (the spine nearest on
+    screen within 30 px, points behind the camera or outside the view left out) it selects that lock, Shift adds,
+    Ctrl toggles; on empty space it keeps the selection. A gesture whose button is no longer down when a key comes is
+    closed (`_drop_stale`).
+  - GUI tests of a state: map viewport pixels to the GL widget directly (x = widget x, y = height - widget y, read
+    live), not by moves read back from the state: after a flipbook the state's events lag and the read-back
+    calibration was garbage (r5); redraw the viewport after a flipbook before reading where a handle is (r4 / r7:
+    presses 30 px off); find the GL widget once before any state (the HUD's widget sits at the viewport's centre);
+    each step frames its own lock (run alone, a step used the default view: handles off screen, r15).
