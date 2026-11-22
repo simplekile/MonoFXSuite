@@ -1154,8 +1154,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     offset copies took the hair mesh's local shear. Where the piece moves rigidly (sh025) every method is near exact.
   - Measured (t79 run7): length 0.998-1.004, roots as the unedited lock's, nothing left behind, tip turn within 3.7
     deg of rest (sh020) and 0.2 deg (sh025), for 2 cm, 5 cm and 25 deg. A shot frame with one edited lock ~1.4-1.6 s
-    against ~1.0 s (the split of the 4 M points). The offset-in-the-moving-frame limit is the manager's to set
-    (`s1b` KNOWN): on sh020 it changes by p95 0.66-2.07 cm against the unedited lock's own 0.36-0.56.
+    against ~1.0 s (the split of the 4 M points). Decided (the manager, 2026-11-22): no stretch wins over the same
+    offset; `s1b` grades the offset change in the moving frame on sh025 only (p95 <= 0.25 cm; measured 0.02-0.10), and
+    reports it on sh020 where the piece bends (p95 0.66-2.07 cm against the unedited lock's own 0.36-0.56).
   - An EMPTY Blast group deletes everything: `drawn_group([])` is `@lock_id==-1` (with an edited lock and no drawn
     one every strand had gone to the drawn branch and stayed at rest).
   - Deleting a drawn lock: 3.8 s -> 0.49 s (`_prim_centres`: the fine scalp's prim centres and groups read in bulk,

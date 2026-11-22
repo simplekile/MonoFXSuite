@@ -85,6 +85,8 @@ SHOT_POINTS = 0.03            # (v0.1's deform, before U4 changed) 2 cm move: le
 SHOT_LENGTH = 0.02            # U4 changed: an edited lock's strand length within 2 % of rest at every frame
 TIP_TURN_DEG = 5.0            # U4 changed: the tip's turn against the unedited lock within this of its rest value
 EDIT_CASES = ("move_2cm", "move_5cm", "turn_25deg")
+OFFSET_CHANGE_CM = 0.25       # the manager, 2026-11-22: offset change in the moving frame, p95, graded on sh025
+OFFSET_GRADED_SHOTS = ("sh025",)
 SHOT_ROOT_CM = 0.01           # roots: within this of the unedited lock's roots off the animated scalp (p95)
 DRAWN_SHOT_LEN, DRAWN_SHOT_ROOT_CM = 0.02, 0.1
 OLD_SCENE_CM = 0.003          # a groom v0.1 made and saved, v0.1 against itself (t68, 10 runs: 0.0024 cm)
@@ -1243,10 +1245,18 @@ def s_shots():
         "animated scalp within %s cm (p95) of the unedited lock's; the tip's turn against the unedited lock "
         "(DEFINITION 7) within %s deg of its rest value: no hook" % (MOVE_LOCK, SHOT_ROOT_CM, TIP_TURN_DEG),
         evidence="shot_*.json")
-    add("s1b_shot_edited_offset_in_the_moving_frame", None, rows1b, "the manager's to set",
+    # the manager's decision (2026-11-22, plan ade1093): no stretch wins over the same offset; the offset change is
+    # graded on sh025 (the piece moves rigidly), on sh020 (the piece bends) reported per frame, not graded
+    graded = {sh: rows for sh, rows in rows1b.items() if sh in OFFSET_GRADED_SHOTS}
+    ok1b = bool(graded) and all(v["change_p95_cm"] is not None and v["change_p95_cm"] <= OFFSET_CHANGE_CM
+                                for rows in graded.values() for cases in rows.values() for v in cases.values())
+    add("s1b_shot_edited_offset_in_the_moving_frame", ok1b,
+        {"graded": graded, "reported_not_graded": {sh: r for sh, r in rows1b.items() if sh not in OFFSET_GRADED_SHOTS}},
+        {"change_p95_cm": OFFSET_CHANGE_CM, "graded_on": list(OFFSET_GRADED_SHOTS)},
         "the edited lock's offset from the unedited lock in the lock's moving frame (DEFINITION 8), its change from rest "
-        "per frame, beside the unedited lock's own noise in that frame; KNOWN until the manager sets the limit (where "
-        "the piece bends, the same offset and no stretch cannot both hold)", evidence="shot_*.json")
+        "per frame, p95, for 2 cm, 5 cm and 25 deg: graded on sh025 (the fringe moves rigidly with the head), reported on "
+        "sh020 where the piece bends (no stretch wins over the same offset there: the manager, 2026-11-22)",
+        evidence="shot_*.json")
     add("s3_shot_drawn_lock_follows_the_scalp", ok3, rows3, {"length": DRAWN_SHOT_LEN, "roots_cm": DRAWN_SHOT_ROOT_CM},
           "two drawn locks (on the bare skin farthest from every root, Helen's fringe; on the hair_back skin farthest "
           "from the roots, where the spike drew) with the animated scalp wired (the rest scalp's cut of the shot's "
