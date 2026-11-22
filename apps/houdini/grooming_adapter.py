@@ -3020,6 +3020,8 @@ def draw_lock(node, stroke, width_cm: float = config.DRAWN_WIDTH_CM, thick_cm: f
         raise ValueError("name: not only spaces")
     if name and name in {x.name for x in data.locks} | {o.name for o in data.orphans}:
         raise ValueError(f"name {name!r}: another lock has it")      # t84 recheck: two locks of one name
+    if group is not None and not isinstance(group, str):
+        raise ValueError(f"group {group!r}: a group's id")       # t84 round 2: a list raised TypeError
     if group is not None and group not in {g.id for g in data.groups} | ({DEFAULT_GROUP} if not data.groups else set()):
         raise ValueError(f"no group {group!r}")      # t84 minor 3
     snap = _skin_snap(node)[0]

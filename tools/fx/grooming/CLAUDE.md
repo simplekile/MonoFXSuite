@@ -1221,6 +1221,18 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     config) is thinned evenly by index before the fit (`thin_stroke`: 100,000 points drew in 0.1 s; 400,000 took
     159 s); a zero-length stroke is refused by draw as by redraw. A drawn lock's name is text, not only spaces, and
     no other lock's (or missing lock's); `set_drawn` refuses a taper outside 0-1 as `draw_lock` does.
+  - Roots under an edit (the manager's decision on part 2): an edit that leaves the root handle in place moves no
+    strand root; per strand id the root is the unedited lock's (accept e6, within 2e-7 cm). The edited lock is
+    regrown, and `region_join` / `root_place` (and their `groom_` copies) read the mesh as modelled (`mesh_pu`), not
+    `MESH_CARRIED`: reading the carried mesh, a turned or bent lock's mesh lay elsewhere over the skin, other skin read
+    as under floating mesh (`far_w`: roots sent to the start disc), the joins moved and `root_spread` dealt the ids out
+    again (hair_base_07 turned 25 deg: 78 % of roots moved by id, p95 9.3 cm, 16 % off its own root set). Where roots
+    sit is the regions' call; a moved root handle marks them out of date (U3 / U5). MESH_CARRIED is still read by
+    the mesh display and `region_mesh`.
+  - Known, left: the regrowth itself is chaotic in the last bit on a wide cap: hair_base_07's handles moved 1e-4 cm
+    move its strands up to 0.272 cm (43 % of points over 0.01 cm) with every root exact (hair_back_05 0.021 cm,
+    fringe 0.0002 cm). Carrying the unedited lock's cached strands onto the edited spine instead (the carry rule
+    `mesh_carry` uses, per strand point) would make a tiny edit a tiny move; see t79 report 9.3 for the cost.
   - r1 / s5: 20 samples of the old build made from the COMMITTED ed7d0de (`t79/base7_suite` = git archive; t79's
     base6_suite had a rebuilt HDA), graded against the largest difference between any two + 2 float32 steps.
 - v0.2b lock redraw, B3 viewer state (2026-11-22; sandbox `tests/t81_points_state/`, `report.md` there; GUI acceptance

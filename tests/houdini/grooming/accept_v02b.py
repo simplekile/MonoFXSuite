@@ -1632,10 +1632,37 @@ def n_drawn():
 
 # the drawn locks right after the edits of one lock: Draw's "only the locks that gave skin recook" is measured on
 # states never cooked before (u2 draws at the same place)
+def e6_roots_stay():
+    """The plan (After 037b's recheck): an edit that leaves the root handle in place moves no strand root: per strand
+    id the root equals the unedited lock's at rest. hair_base_07 (a wide cap: t84 found 78 % of its roots moved by id
+    on a 25 deg turn, 16 % off its own root set), hair_back_05 and the fringe lock hair_bang_05, each turned 25 deg
+    and its tip moved 2 cm. The root steps read the mesh as modelled, not the carried mesh."""
+    rows, ok = {}, True
+    for name in ("hair_base_07", "hair_back_05", "hair_bang_05"):
+        lid = ID[name]
+        row = ROW0[lid]
+        K = ga.lock_handles(node, [lid])[lid]["count"]
+        ga.reset_points(node, [lid])
+        r0 = {sid: P[0] for sid, P in hair()[lid]}
+        for tag, H in (("turn_25deg", alib.turn(row, K, 25.0)), ("tip_2cm", alib.bend(row, K, 2.0, U))):
+            set_frame(lid, H.tolist())
+            r1 = {sid: P[0] for sid, P in hair()[lid]}
+            ids = sorted(set(r0) & set(r1))
+            d = np.array([np.linalg.norm(r0[i] - r1[i]) for i in ids]) if ids else np.array([np.inf])
+            got = {"strands": [len(r0), len(r1)], "same_ids": len(ids), "root_max_cm": float(d.max())}
+            got["pass"] = len(r0) == len(r1) == len(ids) and got["root_max_cm"] <= config.ROOT_SAME_CM
+            ok = ok and got["pass"]
+            rows["%s_%s" % (name, tag)] = got
+            ga.reset_points(node, [lid])
+    add("e6_roots_stay_under_an_edit", ok, rows, "every strand's root within %g cm of its own (by id)" % config.ROOT_SAME_CM,
+        "an edit that leaves the root handle in place (a 25 deg turn about the root, the tip moved 2 cm) on a wide cap, a "
+        "back lock and a fringe lock: the same strands, and per strand id the root where the unedited lock had it")
+
+
 order = [("e1", e1_identity), ("e0", e0_network_rule), ("e2", e2_speed), ("e3", e3_e4_follow), ("e5", e5_mesh_display),
          ("g1", g1_root), ("g2", g2_root_regions), ("u1", u1_undo), ("n", n_drawn), ("u2", u2_steps),
          ("u3", u3_several), ("d1", d1_redraw), ("d2", d2_reset), ("h1", h1_counts), ("h2", h2_resample),
-         ("v1", v1_bad_input), ("v2", v2_names_ids_strokes)]
+         ("v1", v1_bad_input), ("v2", v2_names_ids_strokes), ("e6", e6_roots_stay)]
 for tag, fn in order:
     if wanted(tag):
         C.run(tag + "_raised", fn)

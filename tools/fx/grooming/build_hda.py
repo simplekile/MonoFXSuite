@@ -1718,8 +1718,11 @@ VEX_MESH_CARRY = """// the carried mesh (v0.2b): each point of an EDITED lock's 
 // lock's frame, carried): u = the point's pu (on the spine as Root to skin left it, input 1; flipped locks read
 // it at 1 - u), its offset from the spine there in that spine's frame (tangent, width axis, thickness axis made
 // square), the same offset in the edited spine's frame at the same u (input 2). Points of a lock not edited keep
-// their place exactly. Every reader of a lock's mesh reads this: the mesh display, region_join, root_place,
-// region_mesh (Update regions).
+// their place exactly. Read by the mesh display and region_mesh (Update regions). NOT by the root steps
+// (region_join, root_place read the mesh as modelled, mesh_pu): an edit that leaves the root handle in place moves
+// no strand root (t84 recheck: reading the carried mesh, hair_base_07 turned 25 deg moved 78 % of its roots by id
+// and 16 % off its own root set; where roots sit is the regions' call, and a moved root handle marks them out of
+// date).
 i@carried = 0;
 if (f@pu < 0) return;
 int s0 = findattribval(1, "prim", "piece", i@piece);
@@ -2045,7 +2048,9 @@ def build_network(sub) -> None:
     scalp_in = _node(sub, "block_begin", "foreach_scalp", [regions], method=3, blockpath="../foreach_end")
     cut = _wrangle(sub, "region_cut", VEX_REGION_CUT, PRIM, [scalp_in, begin])
     frame0 = _wrangle(sub, "region_frame", VEX_REGION_FRAME, DETAIL, [cut, begin])
-    join = _wrangle(sub, "region_join", VEX_REGION_JOIN, PRIM, [frame0, begin, mesh_carried])
+    # the root steps read the mesh as modelled (mesh_pu), not MESH_CARRIED: an edit with the root handle in place
+    # moves no root (the plan, After 037b's recheck)
+    join = _wrangle(sub, "region_join", VEX_REGION_JOIN, PRIM, [frame0, begin, mesh_pu])
     frame = _wrangle(sub, "region_start", VEX_REGION_START, DETAIL, [join, begin, mesh_su])
     rdens = _wrangle(sub, "region_density", VEX_REGION_DENSITY, POINT, [frame])
     # hairgen scatters the roots and grows straight unguided strands; fit_to_lock gives them the
@@ -2121,7 +2126,7 @@ def build_network(sub) -> None:
     roots_ab = _node(sub, "merge", "roots_with_layers", [auto_thin, layer_roots])     # the automatic roots first
     roots_in = _node(sub, "switch", "roots_in", [auto, roots_ab])
     roots_in.parm("input").setExpression('if(prim("../foreach_begin", 0, "mask_set", 0) >= 0, 1, 0)')
-    place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [roots_in, frame, begin, mesh_carried])
+    place = _wrangle(sub, "root_place", VEX_ROOT_PLACE, PRIM, [roots_in, frame, begin, mesh_pu])
     mask_thin = _wrangle(sub, "mask_thin", VEX_MASK_THIN, PRIM, [place, mask_skin, begin, frame])
     apart_cloud = _wrangle(sub, "apart_cloud", VEX_APART_CLOUD, DETAIL, [mask_thin, frame, begin])
     mask_apart = _wrangle(sub, "mask_apart", VEX_MASK_APART, PRIM, [mask_thin, mask_skin, apart_cloud])
