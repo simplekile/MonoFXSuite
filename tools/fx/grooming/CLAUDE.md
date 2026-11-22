@@ -1089,3 +1089,36 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - Detect: `match_locks` and `apply_detect` leave drawn locks alone (never missing, never new) and build orphans
     with `Orphan.from_lock` (a missing lock keeps its edit). Publish: grooming_data.json holds the edits (schema
     7), publish.json `spines` names the edited and drawn locks (`spine_record`).
+- v0.2b lock redraw, B4 panel (2026-11-22; mockup B of t78 + `review_b.md`, the pick and the review's fixes in
+  `ui_spine.py`'s docstring; sandbox `tests/t82_spine_panel/`, `report.md` there; pytest `tests/test_grooming_spine_panel.py`):
+  - Files: `spine.py` (Qt-free: texts, the handle count over several locks, the `SpineMixin` of the controller, mixed in
+    BEFORE `LayersMixin` so its `paint_on` / `paint_off` / `select_layer` / `_on_paint_exit` wrap v0.2a's) and
+    `ui_spine.py` (the Tool bar, the tinted strip, the drawn lock's section, row icon and words, the trash / Del /
+    right-click delete). Hooks only in `controller.py` / `ui.py` (CRLF, patched by script keeping CRLF); `ui_layers.py`
+    lost the paint layer's Paint button (the Tool bar's Paint cell replaced it, the user 2026-11-20) and shows a
+    density layer whose drawn lock was deleted under All locks with "no lock" (`spine.no_lock_layers`;
+    `layers.owner_name` says "no lock").
+  - The tool in hand: `controller.tool` (Edit points / Draw lock) or `paint_layer_id` (Paint): `tool_now()`. One tool at
+    a time: entering one ends the other (`set_tool`); Esc ends the shape tool first (`escape` -> `tool_off`); another
+    node / node gone / panel hidden end it (`tool_reset`, which also unhooks). Enter toggles Edit points, `-` / `+`
+    step handles while it is on (panel shortcuts, a text field keeps its keys); the radial menu got Edit points
+    (top_left) and Draw lock (right), Scalp X-ray moved into the Display submenu (`workspace.ENTRIES`).
+  - B3's modules are imported lazily: `adapter.points_state` (tests), else `apps.houdini.grooming_points_state` only
+    when the adapter is Houdini's own module; `tools.fx.grooming.points_keys.HOOKS["tool"]` is a LIST of callables
+    (B3's interface; the panel appends `_on_tool_record`, shown on the next poll) and `HOOKS["write"](node, result)`
+    cooks the state's write in the loading line and keeps a draw's `gave` for Properties' "Skin from". Without the
+    state the tool is the panel's own view state and the strip's Reset / Handles / drawn values still work (the
+    message says the state is not installed).
+  - Edit points never refuses: no lock -> the strip says "Select a lock"; a group = its locks; locks not drawn
+    (hidden, isolated out) get no handles and the line says why (`edit_targets`). Minus / plus act on each lock
+    (`stepped_counts`: one `set_handle_count` per target count, all in one undo step through `adapter.undo_group`
+    or `adapter.hou.undos.group`); "auto" puts the number by length back. Reset shape is in the strip while Edit
+    points is on, beside Hidden / Flip root / Exclude otherwise, never both (review 2).
+  - Rows: `shape_edited`, `drawn`, `at_rest`, `editing` (attached by `attach_spine`); `edited` / `drawn` are neutral
+    TEXT_LABEL words (review 13), an amber triangle (`ui_spine.WARN_ICON` part, drawn by the delegate) while a drawn
+    lock stays at rest in a shot (`adapter.animated_scalp`, cached per data shown); the own-settings dot is unchanged
+    (badge "edited") and its filter word is `own`; filter words `edited` (shape) and `drawn`.
+  - Strip layout (`ui_spine._Flow`): groups on one line, on two when they do not fit (a larger font size), never
+    clipped; narrow (< NARROW_PX) the cells are icons, Reset a 28 px flat icon, spacing 6: one line at 400 px (39 px
+    strip at scale 1, 50 px at 1.5); at 760 px Reset shape goes to a second line, as in the mockup. Minus / plus are
+    `step_size` (28 px, 24 at least): at the default Medium font size 24 x 28 gave 22 px, under the floor.
