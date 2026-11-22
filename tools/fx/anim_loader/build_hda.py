@@ -102,9 +102,14 @@ if path and pairs:
 # groom lost its points). So: every time sample on the groom's prims, and the default of each attribute the cache
 # animates, erased; an attribute the cache does not have at all keeps its value as a default (a lookdev-only primvar),
 # counts, type, basis, bindings stay.
+# The extent goes too, with clips or a $F sublayer (2026-11-22): the lookdev's is its rest pose (Helen's V009 authors
+# one on /Groom/<name>, near the origin) and the cache authors none, so the groom's bounds stayed at the origin while
+# its points moved with the body at (82, 31, 327): a camera framed on the bounds saw nothing. Without an extent USD
+# and Hydra compute the bounds from the points. A cache with its own extent keeps it (from the clip / frame file).
 GROOM_UNANIMATE_CODE = '''from pxr import Sdf
 hda = hou.pwd().parent()
-if hda.evalParm("@MODE@") == "clip":
+mode = hda.evalParm("@MODE@")
+if mode in ("clip", "sublayer"):
     layer = hou.pwd().editableLayer()
     inst = hda.evalParm("mx_instance_name")
     _use = hda.parm("mx_use_prim")
@@ -119,8 +124,19 @@ if hda.evalParm("@MODE@") == "clip":
         attrs = list(spec.attributes) if spec else []
         return {x.name for x in attrs}, {x.name for x in attrs if cache.GetNumTimeSamplesForPath(x.path)}
 
+    def drop_extent(spec, has):
+        attr = spec.attributes["extent"] if "extent" in spec.attributes else None
+        if attr is not None and (mode == "clip" or "extent" not in has):
+            for t in list(layer.ListTimeSamplesForPath(attr.path)):
+                layer.EraseTimeSample(attr.path, t)
+            attr.ClearDefaultValue()
+        for child in spec.nameChildren:
+            drop_extent(child, has)
+
     def unanimate(spec, has, animated):
         for attr in spec.attributes:
+            if attr.name == "extent":
+                continue  # drop_extent's
             samples = list(layer.ListTimeSamplesForPath(attr.path))
             keep = layer.QueryTimeSample(attr.path, samples[0]) if samples and attr.name not in has else None
             for t in samples:
@@ -135,7 +151,10 @@ if hda.evalParm("@MODE@") == "clip":
     for a, c in pairs:
         spec = layer.GetPrimAtPath(root + c) if root is not None else None
         if spec is not None:
-            unanimate(spec, *cache_attrs(a))
+            has, animated = cache_attrs(a)
+            drop_extent(spec, has)
+            if mode == "clip":
+                unanimate(spec, has, animated)
 '''.replace("@MODE@", config.P_FX["groom"]["mode"]).replace("@TOPO@", config.P_GROOM_TOPO)
 
 # Heavy parts render only (the user's call, 2026-11-17: Helen's lookdev pulls 956 EXR UDIM tiles, 2.1 GB, and the

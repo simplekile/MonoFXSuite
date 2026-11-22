@@ -781,3 +781,15 @@ def test_curve_overrides_and_karma_values():
     assert CURVE_BASIS_KARMA["bspline"] == 3 and CURVE_BASIS_KARMA["catmullRom"] == 4
     assert CURVE_STYLE_KARMA == {"flat": 0, "rounded": 1, "oriented": 2}
     assert width_word(1.5) == "\u00d71.5" and width_word(1.0) == "\u00d71"
+
+
+def test_a_shot_groom_cache_keeps_its_own_shape_over_the_lookdev():
+    """sh025 (Karma, 2026-11-22): the cache's topology copy sits above the lookdev, so Helen's lookdev B-spline does
+    not render; the inspector must say linear. Its Karma primvars still count."""
+    from tools.fx.anim_loader.logic import curve_plan
+
+    look = {"/Groom/Hair_Back": {"type": "cubic", "basis": "bspline", "width_scale": 2.0}}
+    shot = curve_plan(HELEN_CURVES, look, [], lookdev_shape=False)["/Groom/Hair_Back"]
+    assert (shot.basis, shot.basis_source, shot.width, shot.width_source) == ("linear", "publish", 2.0, "lookdev")
+    asset = curve_plan(HELEN_CURVES, look, [], lookdev_shape=True)["/Groom/Hair_Back"]
+    assert (asset.basis, asset.basis_source) == ("bspline", "lookdev")

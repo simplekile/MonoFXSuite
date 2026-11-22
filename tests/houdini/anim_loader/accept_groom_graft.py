@@ -68,6 +68,9 @@ def time_sampled_copy() -> Path:
             Vt.Vec3fArray([Gf.Vec3f(0, 999, 0)] * 4), Usd.TimeCode(1))
         prim.CreateAttribute("primvars:lookOnly", Sdf.ValueTypeNames.FloatArray).Set(Vt.FloatArray([0.5]),
                                                                                     Usd.TimeCode(1))
+        # a rest-pose extent, as Helen's lookdev V009 authors: the groom's bounds stayed there while it moved
+        prim.CreateAttribute("extent", Sdf.ValueTypeNames.Float3Array).Set(
+            Vt.Vec3fArray([Gf.Vec3f(500, 500, 500), Gf.Vec3f(501, 501, 501)]))
         stage.GetRootLayer().Export(look + ".tmp.usd")
         del stage
         os.replace(look + ".tmp.usd", look)
@@ -121,6 +124,15 @@ def main():
     check("the topology copy holds no animated value", topo is not None and not sampled, sampled[:3])
     graft_prim = next(p for p in graft.stage().Traverse() if p.IsA(UsdGeom.BasisCurves)
                       and "/char_Robot/" in p.GetPath().pathString)
+    extent = graft_prim.GetAttribute("extent")
+    check("the lookdev's rest extent is gone", not (extent and extent.HasAuthoredValue()),
+          extent.Get(Usd.TimeCode(first)) if extent else None)
+    bounds = []
+    for f in frames:
+        box = UsdGeom.BBoxCache(Usd.TimeCode(f), ["default", "render"]).ComputeWorldBound(graft_prim)
+        pts = UsdGeom.BasisCurves(graft_prim).GetPointsAttr().Get(Usd.TimeCode(f))
+        bounds.append(box.ComputeAlignedRange().Contains(Gf.Vec3d(pts[0])) if pts else False)
+    check("the bounds follow the points", all(bounds), bounds)
     look_only = graft_prim.GetAttribute("primvars:lookOnly")
     check("a primvar only the lookdev has keeps its value", look_only and list(look_only.Get(Usd.TimeCode(first)) or [])
           == [0.5], look_only.Get(Usd.TimeCode(first)) if look_only else None)

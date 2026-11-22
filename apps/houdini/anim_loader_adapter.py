@@ -1664,7 +1664,8 @@ class HoudiniBackend:
             groom = _groom_file(st)
             curves = groom_curve_counts(groom)
             out[i.path] = {"plan": plan, "faces": faces, "curves": curves,
-                           "curve_plan": curve_plan_for(groom, look, getattr(i, "curve_rules", "")),
+                           "curve_plan": curve_plan_for(groom, look, getattr(i, "curve_rules", ""),
+                                                         logic.is_asset(st)),
                            "shown": shown_for(list(plan), list(curves), geo, look, getattr(i, "show", None))}
         return out
 
@@ -2184,10 +2185,12 @@ def lookdev_curve_opinions(path: str) -> dict[str, dict]:
     return _LOOK_CURVES_CACHE[key]
 
 
-def curve_plan_for(groom: str, lookdev: str, rules_text: str) -> dict:
-    """The groom curves' plan (logic.curve_plan) from the publish files (no hou: the manager's worker thread)."""
+def curve_plan_for(groom: str, lookdev: str, rules_text: str, asset_source: bool = False) -> dict:
+    """The groom curves' plan (logic.curve_plan) from the publish files (no hou: the manager's worker thread).
+    A shot's groom cache is copied onto the branch above the lookdev (groom_topology): its type / basis win; the
+    asset's groom publish sits under the lookdev, whose type / basis win."""
     return logic.curve_plan(groom_curve_facts(groom), lookdev_curve_opinions(lookdev),
-                            logic.parse_curve_rules(rules_text))
+                            logic.parse_curve_rules(rules_text), lookdev_shape=asset_source)
 
 
 def _groom_file(state) -> str:
@@ -2201,7 +2204,8 @@ def _groom_file(state) -> str:
 def node_curve_plan(node) -> dict:
     """A loader's groom curves plan, as the manager shows it."""
     look = _s(node, config.P_PATH["lookdev"]) if node.evalParm(config.P_ENABLE["lookdev"]) else ""
-    return curve_plan_for(_groom_file(read_state(node)), look, _s(node, config.P_CURVE_RULES))
+    state = read_state(node)
+    return curve_plan_for(_groom_file(state), look, _s(node, config.P_CURVE_RULES), logic.is_asset(state))
 
 
 def karma_curve_values(overrides: dict) -> dict[str, tuple[str, object]]:

@@ -1114,13 +1114,19 @@ def _published_basis(facts: dict) -> str:
     return CURVE_LINEAR
 
 
-def curve_plan(curves: dict[str, dict], lookdev: dict[str, dict], rules: list[dict]) -> dict[str, CurveChoice]:
+def curve_plan(curves: dict[str, dict], lookdev: dict[str, dict], rules: list[dict],
+               lookdev_shape: bool = True) -> dict[str, CurveChoice]:
     """Basis, width and style of each groom curves prim: the shot's rule > lookdev > the groom file. ``curves`` holds
     the groom's facts per prim ({"type", "basis", "min_cvs", and Karma's "curve_basis" / "width_scale" /
-    "curve_style" when authored}), ``lookdev`` what the lookdev authors on the same paths."""
+    "curve_style" when authored}), ``lookdev`` what the lookdev authors on the same paths.
+    ``lookdev_shape`` False: the lookdev's type / basis do not count. A shot's groom cache is copied onto the branch
+    (groom_topology), stronger than the lookdev: Helen's V009 says cubic B-spline, sh025 renders the cache's linear
+    (checked in Karma, 2026-11-22). Its Karma primvars still count (the cache has none)."""
     plan = {}
     for path, facts in curves.items():
         look = lookdev.get(path, {})
+        if not lookdev_shape:
+            look = {k: v for k, v in look.items() if k not in ("type", "basis")}
         merged = {**facts, **{k: v for k, v in look.items() if v is not None}}
         src = "lookdev" if any(k in look for k in ("type", "basis", "curve_basis")) else "publish"
         published = _published_basis(merged)

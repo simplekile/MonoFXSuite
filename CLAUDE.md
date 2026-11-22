@@ -575,6 +575,11 @@
   from a stronger layer does not do it, in one layer it beats the clip too and the groom lost its points; a default in a
   stronger layer beats a clip as well. Check: hython `tests/houdini/anim_loader/accept_groom_graft.py` (a time-sampled
   copy of the fake project, its lookdev given samples on the groom, through Merge and Graft; fails with v0.1.36's HDA).
+  `groom_unanimate` also erases the groom's `extent` with clips or a `$F` sublayer (2026-11-22): Helen's lookdev V009
+  authors its rest-pose extent on /Groom/<name> (near the origin) and the cache authors none, so the bounds stayed
+  there while the points moved with the body at (82, 31, 327); a camera framed on the bounds saw sky. Without an
+  extent USD and Hydra compute bounds from the points. A `$F` cache that authors its own extent keeps it. The same
+  check covers it (a rest extent in the fake lookdev; fails with the HDA before this).
 - Subdivision per mesh (the user's decision, 2026-11-17; `logic.subd_plan`, `adapter.author_subd` from the
   `render_only` Python LOP): a shot rule on the loader (hidden `mx_subd_rules`, JSON `pattern` from `/<instance>`,
   `scheme` publish / none / catmullClark, `dicing`; a later rule wins) > lookdev publish > anim publish > `none`.
@@ -592,8 +597,12 @@
   none of these, so a default beats nothing (sh025: values reach `beauty_pass`, points keep 46 samples). Rules: hidden
   `mx_curve_rules`, JSON `pattern` (as subdivision) + `basis` / `width` / `style`, a later rule wins field by field
   (`set_curve_rules`: KEEP keeps a field, None takes it off, an empty rule goes). What the publish says: the groom
-  file's type / basis (`groom_curve_facts`, first frame) under what the lookdev authors (`lookdev_curve_opinions`:
-  Helen's V009 sets type cubic, basis bspline on /Groom/*, so her linear cache renders B-spline already). Inspector:
+  file's type / basis (`groom_curve_facts`, first frame); a shot's cache is copied onto the branch by
+  `groom_topology`, above the lookdev, so its type / basis win and the lookdev's do not count
+  (`curve_plan(lookdev_shape=False)`): Helen's V009 says cubic B-spline pinned, sh025 renders the cache's linear
+  (Karma close-ups, 2026-11-22: linear and "as published" identical; a B-spline override visibly smooths). On Source
+  Asset the groom publish sits under the lookdev, whose type / basis win. The lookdev's Karma primvars count in both
+  (`lookdev_curve_opinions`). Inspector:
   a curves row's SCHEME is its basis, FROM its source, WIDTH (col 8, `COL_WIDTH`, shown only when the tree has curves)
   its scale; the curves rows' menu has Render curves smooth / Width / Render as (Karma CPU). Clear overrides, Same
   overrides on the other loaders and Bake (`BAKED_SUBD_CODE`'s `CURVES`) include them. No viewport thinning: Houdini GL
