@@ -1977,7 +1977,7 @@ def _mesh_tree_class():
     the main list does, a delegate paints every cell (row colour, hover, lines, elided text), the branch area gets the
     row's colour and a chevron, and no ``::item`` rule is left for Houdini's style to act on."""
     from PySide6.QtCore import QSize
-    from PySide6.QtWidgets import QStyle, QTreeWidget
+    from PySide6.QtWidgets import QTreeWidget
 
     class _MeshDelegate(QStyledItemDelegate):
         def __init__(self, tree, px):
@@ -1986,9 +1986,7 @@ def _mesh_tree_class():
 
         def paint(self, painter, option, index):  # noqa: D102
             painter.save()
-            color = QColor(self.tree._row_color(index))
-            if option.state & QStyle.StateFlag.State_MouseOver:
-                color = color.lighter(125) if color.name() != BG_APP else QColor(BG_HOVER)
+            color = self.tree.row_fill(index, self.tree.is_hovered(index))  # the whole row, as its branch area
             r = option.rect
             painter.fillRect(r, color)
             painter.setPen(QPen(QColor(LINE), 1))
@@ -2123,8 +2121,39 @@ def _mesh_tree_class():
             painter.fillRect(option.rect, QColor(self._row_color(index)))
             super().drawRow(painter, option, index)
 
+        def row_fill(self, index, hovered: bool) -> QColor:
+            """The row's colour, hover included: the cells and the branch area (indentation, arrow) share it, or the
+            hover stopped short of the name (the user's report, 2026-11-22)."""
+            color = QColor(self._row_color(index))
+            if hovered:
+                color = color.lighter(125) if color.name() != BG_APP else QColor(BG_HOVER)
+            return color
+
+        _hover = None  # the hovered row's column-0 index (a QPersistentModelIndex), None: none
+
+        def is_hovered(self, index) -> bool:
+            h = self._hover
+            return (h is not None and h.isValid() and index.isValid() and h.row() == index.row()
+                    and h.parent() == index.parent())
+
+        def _set_hover(self, index) -> None:
+            from PySide6.QtCore import QPersistentModelIndex
+
+            new = QPersistentModelIndex(index.siblingAtColumn(0)) if index.isValid() else None
+            if (new is None) != (self._hover is None) or (new is not None and new != self._hover):
+                self._hover = new
+                self.viewport().update()
+
+        def mouseMoveEvent(self, event):  # noqa: N802 (Qt)
+            self._set_hover(self.indexAt(event.position().toPoint()))
+            super().mouseMoveEvent(event)
+
+        def leaveEvent(self, event):  # noqa: N802 (Qt)
+            self._set_hover(self.model().index(-1, -1))
+            super().leaveEvent(event)
+
         def drawBranches(self, painter, rect, index):  # noqa: N802 (Qt)
-            painter.fillRect(rect, QColor(self._row_color(index)))
+            painter.fillRect(rect, self.row_fill(index, self.is_hovered(index)))
             if not self.model().hasChildren(index):
                 return
             painter.save()

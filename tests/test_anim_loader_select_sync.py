@@ -167,3 +167,29 @@ def test_shift_or_ctrl_click_on_an_arrow_folds_a_whole_branch_or_the_tree(make):
     click(space, Qt.KeyboardModifier.ControlModifier)
     assert all(g.isExpanded() for g in groups)
     w.hide()
+
+
+def test_hover_fills_the_whole_row_arrow_area_too(make):  # noqa: F811 (the fixture)
+    """The user's report: the hover stopped short of the name, the indentation / arrow area stayed dark."""
+    from PySide6.QtCore import QPoint
+    from PySide6.QtTest import QTest
+
+    w, ui, b = _two_loader_window(make)
+    w.show()
+    t = w.subd_panel.tree
+    QTest.qWaitForWindowExposed(w)
+    mesh = next(i for i in w.subd_panel._all_items() if i.text(0) == "Geo_Hull")
+    rect = t.visualRect(t.indexFromItem(mesh, 0))
+    QTest.mouseMove(t.viewport(), QPoint(rect.left() + 30, rect.center().y()))
+    assert t.is_hovered(t.indexFromItem(mesh, 3))
+    img = t.viewport().grab().toImage()
+    ratio = img.devicePixelRatio()
+
+    def at(x):
+        return img.pixelColor(int(x * ratio), int(rect.center().y() * ratio)).name()
+
+    assert at(rect.left() - 4) == at(rect.left() + 3) == ui.BG_HOVER.lower()  # arrow area = name cell = hover
+    QTest.mouseMove(t.viewport(), QPoint(rect.left() + 30, rect.center().y() + rect.height() * 3))
+    img = t.viewport().grab().toImage()
+    assert at(rect.left() - 4) == ui.BG_APP.lower()  # the row left behind goes back
+    w.hide()
