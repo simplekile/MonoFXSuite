@@ -1055,6 +1055,21 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   frame, not graded (0.66-2.07 cm against noise 0.36-0.56).
 - **Limits are not moved to pass** (s3 drawn lock stretch 2 %, s5 unedited groom in shots): a failing
   number is traced to its cause first, with the v0.1 locks beside it on the same shot as the baseline.
+- **After B2's fix round (t84, 2026-11-22)**: every adapter write that takes numbers refuses a value that is
+  not finite or past a limit, before anything is written (ValueError naming the limit, no undo step). The
+  limits live in `config.py`: a handle or stroke point within 300 cm of the lock's root, a stroke starting
+  within 5 cm of the skin, scale 0.1-10, a drawn lock 0.05-10 cm wide and 0.02-5 cm thick. A result within
+  `SPINE_STILL` of what is stored or measured writes nothing. `lock_spines(node, lock_ids)` is the public
+  read for the viewer state (B3 still reads the private rows; switch it when B3 is next touched). r1 / s5 are
+  graded against 7 runs of the old build: each new run within the old build's own spread + 2 float32 steps.
+- **OPEN, the user's call (t84 B-3)**: `hair_bang_05` with its tip moved 2 cm stretches 2-5 % at the median
+  (p95 up to 17 %) on sh020 frames 25-135, against the 2 % line; sh025 and `hair_bang_11` pass. Cause as
+  037 measured it: v0.1's capture folds this lock's unedited spine back on itself in those frames (466-493
+  deg of turn against 228 at rest), and the unedited lock stretches there too (p95 1.08). Smoothing the
+  rotations along the spine lowered the stretch only to 4 % and broke the tip turn rule (8.7-14 deg). To
+  decide: the 2 % line holds only where the unedited lock itself does not fold or stretch (graded against
+  the unedited lock's own stretch at that frame), or the edited lock must stop following the mesh there.
+  Until decided s1 fails on that lock and the limit stays.
 
 **Build, split by files** (U1-U4 are answered above; the panel waits for its mockup pick).
 - **B1 Model and logic**: `tools/fx/grooming/model.py`, `logic.py`, `config.py`, their pytest files. Schema 7
