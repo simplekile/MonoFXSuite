@@ -1062,14 +1062,44 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   `SPINE_STILL` of what is stored or measured writes nothing. `lock_spines(node, lock_ids)` is the public
   read for the viewer state (B3 still reads the private rows; switch it when B3 is next touched). r1 / s5 are
   graded against 7 runs of the old build: each new run within the old build's own spread + 2 float32 steps.
-- **OPEN, the user's call (t84 B-3)**: `hair_bang_05` with its tip moved 2 cm stretches 2-5 % at the median
-  (p95 up to 17 %) on sh020 frames 25-135, against the 2 % line; sh025 and `hair_bang_11` pass. Cause as
-  037 measured it: v0.1's capture folds this lock's unedited spine back on itself in those frames (466-493
-  deg of turn against 228 at rest), and the unedited lock stretches there too (p95 1.08). Smoothing the
-  rotations along the spine lowered the stretch only to 4 % and broke the tip turn rule (8.7-14 deg). To
-  decide: the 2 % line holds only where the unedited lock itself does not fold or stretch (graded against
-  the unedited lock's own stretch at that frame), or the edited lock must stop following the mesh there.
-  Until decided s1 fails on that lock and the limit stays.
+- **B-3 decided by the user (2026-11-22, on t79's look3 sheets): v0.1's shot deform is fixed too.** On sh020
+  frame 75 the animated mesh piece of `hair_bang_05` bends smoothly while the unedited lock kinks into a Z and
+  the edited lock twists into a knot at the same place. 037b's recheck (t84): the fold is v0.1's capture, not
+  the animation (the piece keeps its length, arc ratio 0.996-1.010, and its turning within 32 deg, while the
+  unedited groom turns 50-146 deg more than at rest and stretches p95 1.02-1.09). On sh020 9 fringe locks
+  fold this way (32 lock-frames of 427), on sh025 6 locks at every frame (30 of 305). An edited lock fails
+  on 7 of sh020's 20 fringe locks (3 by length, 5 by tip turn), not on one.
+  This replaces "an unedited lock's deform stays byte-equal to v0.1's" (U4 above) for shots. The rest pose
+  stays equal to the old build (r1). New lines, all on sh020 and sh025:
+  - Where the animated mesh piece does not fold (turning along its centreline within 90 deg of rest, no new
+    kink over 90 deg), the unedited lock does not fold either: 0 capture-only folds (now 32 and 30).
+  - Unedited lock, same lock-frames: strand length p95 within 5 % of rest (now up to 9 %).
+  - Edited lock (tip 2 cm, turn 25 deg), every fringe lock of sh020 and the 9 locks of t84 on sh025, not two
+    locks: median length within 2 %, tip turn within 5 deg of its rest value. Where the animation itself
+    folds the piece (16 lock-frames on sh020), the numbers are reported, not graded.
+  - A lock that did not fold in the old build stays where it was: its points within 0.1 cm p95 of the old
+    build's at the same frame, beyond the old build's own run-to-run difference. If the fix cannot hold
+    that, the executor stops and reports before building further.
+  - v0.1's own shot checks (roots on the animated scalp, no point left behind, deform_ok) keep their limits.
+  - First step is the cause: why the capture folds a lock whose mesh piece does not, measured, before any fix.
+- **After 037b's recheck (t84 second round), the manager's decisions**:
+  - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
+    sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
+    with those names.
+  - One edit per lock: duplicate ids in one call count once. Ids are whole numbers (a bool is refused).
+  - A rotate axis is normalised by its largest component first. `tol_cm` is guarded like every number.
+  - A stroke of more than `config.STROKE_POINTS_MAX` points is thinned before the fit (400,000 points took
+    159 s). A zero-length stroke is refused by `draw_lock` as by `redraw_lock`.
+  - A drawn lock's name is a non-empty string no other lock has. `set_drawn` refuses a taper outside 0-1 as
+    `draw_lock` does.
+  - An edit that leaves the root handle where it is does not move a strand's root: per strand id the root
+    equals the unedited lock's at rest (t84: `hair_base_07` turned 25 deg moved 78 % of its roots, 16 % of
+    them off the lock's own root set; a spine moved 0.0001 cm moved hair 0.27 cm). Trace first; if the cause
+    is the hair being regrown instead of carried, report it with numbers before changing it.
+  - r1 / s5 are graded against the largest difference between any two runs of the old build over at least
+    20 samples, not the spread of 7 (1 run in 8 failed by chance). After the deform fix s5 is the "stays
+    where it was" line above.
+  - Soft coercions that corrupt nothing (a number given as text, a list read by its first number) are left.
 
 **Build, split by files** (U1-U4 are answered above; the panel waits for its mockup pick).
 - **B1 Model and logic**: `tools/fx/grooming/model.py`, `logic.py`, `config.py`, their pytest files. Schema 7
