@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<pythonPanelDocument>
+  <!-- MonoFX Loaders manager docked in a Houdini pane. Loaded by Houdini from the suite root (HOUDINI_PATH), used by
+       the desktop Mono_Solaris (desktop/Mono_Solaris.desk). The floating window stays tools.fx.anim_loader.ui.open_manager. -->
+  <interface name="monofx_loader" label="MonoFX Loaders" icon="LOP_valueclip" showNetworkNavigationBar="false" help_url="">
+    <script><![CDATA[
+def onCreateInterface():
+    from tools.fx.anim_loader import ui
+    return ui.create_panel("/stage")
+]]></script>
+    <includeInToolbarMenu menu_position="0" create_separator="false"/>
+    <help><![CDATA[]]></help>
+  </interface>
+</pythonPanelDocument>

@@ -1594,6 +1594,24 @@ def open_manager(parent_path: str = "/stage") -> AnimLoaderManager:
     return _WINDOW
 
 
+PYPANEL_NAME = "monofx_loader"  # python_panels/monofx_loader.pypanel, the pane of desktop/Mono_Solaris.desk
+DESK_NAME = "Mono_Solaris"
+
+
+def create_panel(parent_path: str = "/stage") -> AnimLoaderManager:
+    """The manager as a Python Panel (``onCreateInterface``): Houdini docks it, so no window flag and no size; each
+    pane gets its own manager, apart from ``open_manager``'s floating one. Its scan thread ends with the pane."""
+    import hou
+
+    from apps.houdini.anim_loader_adapter import HoudiniBackend
+
+    panel = AnimLoaderManager(HoudiniBackend(parent_path), None,
+                              scale=max(0.5, min(3.0, hou.ui.scaledSize(1000) / 1000.0)))
+    pool = panel._pool
+    panel.destroyed.connect(lambda *_: pool.shutdown(wait=False))
+    return panel
+
+
 # --- scene prompts: heavy shot (the user's decision, 2026-11-17), loaders behind (2026-11-19) ------------------
 # Non-modal: a modal box would hold Houdini and the MCP bridge (and a farm job) until someone clicks. Both sit at the
 # bottom right of Houdini's main window, stacked (heavy shot at the bottom, loaders behind above it), and move down
