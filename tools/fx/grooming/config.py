@@ -239,6 +239,20 @@ DRAWN_THICK_RANGE_CM = (0.02, 5.0)
 ATTR_EDIT_CP = "edit_cp"
 ATTR_EDITED = "edited"
 POINTS_STATE = "mono_grooming_control_points"   # the Python viewer state of the handles (B3)
+# The shot deform (v0.2b, B-3 decided 2026-11-22: v0.1's Point Deform gave a strand point the motion of every rest
+# mesh point within 2 cm, whatever lock it belongs to, and folded fringe locks whose piece does not fold). Each lock
+# follows ITS OWN piece by place along it (`pu`): PIECE_SAMPLES places along the piece, each the centre and best
+# rotation of the piece's points in a Gaussian window of PIECE_SIGMA_BINS samples by `pu` (t79 report 9.5: 48 / 1.5
+# gave 0 folds on sh020 and sh025 at every graded frame). Near the skin a strand takes the translation of the rest
+# mesh points within ROOT_ANCHOR_CM of its root (every piece: roots stay on the skin as v0.1's; own piece only left
+# fringe roots up to 0.3 cm further off) with the piece's rotation there, blending into the place-along-the-piece
+# deform over its first ROOT_BLEND of length (0.2 stretched strands rooted under a far part of their lock: 1.19 p95
+# on hair_bang_20, 0.35 1.17, 0.5 1.15).
+PIECE_SAMPLES = 48
+PIECE_SIGMA_BINS = 1.5
+ROOT_ANCHOR_CM = 1.5
+ROOT_ANCHOR_POINTS = 48
+ROOT_BLEND = 0.35
 # Undo step names (one undo step each, docs/plans/grooming_v0_2.md "Done when")
 UNDO_SPINE: dict[str, str] = {
     "move": "MONO Grooming: Move control points",

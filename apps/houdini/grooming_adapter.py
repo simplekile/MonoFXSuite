@@ -2168,6 +2168,7 @@ def _display_copy(g):
 
 GROOM_CAPTURE_MODE = "groom:capture"     # LockCache slot of a lock's captured strands (full hair) for a deform
 DEFORMED_MODE = "deformed:"              # LockCache slot (MERGED_LOCK) of the display's deformed hair, a state
+DEFORM_KIND = "piece-u-1"                # which shot deform made a deformed state (in its key)
 
 
 def capture_slot(hair_mode: str) -> str:
@@ -2185,7 +2186,8 @@ def _deform_key(sop, keyed, anim) -> str:
              for p in keyed.iterPrims() if not grows or p.intAttribValue("grows")]
     top = sop.parent()
     radius = top.evalParm("deform_radius") if top.parm("deform_radius") is not None else 0.0
-    return lock_key([anim.pointFloatAttribValuesAsString("P"), radius, locks])
+    # DEFORM_KIND: the state is what the piece deform made (v0.2b B-3), never a v0.1 Point Deform state of the session
+    return lock_key([anim.pointFloatAttribValuesAsString("P"), radius, locks, DEFORM_KIND])
 
 
 def cook_deform_keys(sop) -> None:

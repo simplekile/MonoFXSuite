@@ -467,3 +467,47 @@ def test_rotate_axis_is_scaled_by_its_largest_component_first():
         a = np.asarray(ax, float)
         a = a / abs(a).max()
         assert np.allclose(a / np.linalg.norm(a), np.array((1, 1, 0)) / math.sqrt(2))
+
+
+# --- the shot deform (B-3 decided by the user, 2026-11-22): each lock follows its own piece by place along it ----------
+
+def test_shot_deform_constants_live_in_config():
+    assert config.PIECE_SAMPLES == 48 and config.PIECE_SIGMA_BINS == 1.5
+    assert config.ROOT_ANCHOR_CM == 1.5 and config.ROOT_ANCHOR_POINTS == 48 and config.ROOT_BLEND == 0.35
+
+
+def test_shot_deform_is_the_piece_deform_for_both_outputs_and_v01_capture_is_gone():
+    src = (ROOT / "tools/fx/grooming/build_hda.py").read_text(encoding="utf-8")
+    for name in ("piece_samples", "piece_fit", "piece_fk", "piece_rest"):
+        assert '"%s"' % name in src
+    # one deform for edited and unedited locks: U4's second path (v0.1's capture of the unedited spine) is gone
+    for gone in ("edit_ride", "VEX_EDIT_RIDE", "VEX_EDIT_FK", "VEX_SPINE_PACK"):
+        assert gone not in src
+    # the hair is captured by its place along its own piece, never by Point Deform
+    i = src.index("def _capture_loop")
+    body = src[i:src.index("\ndef ", i + 10)]
+    assert "VEX_PIECE_U" in body and "pointdeform" not in body
+    i = src.index("def _piece_deform")
+    assert "VEX_PIECE_ROOT" in src[i:i + 900] and "VEX_PIECE_DEFORM" in src[i:i + 900]
+    # what the capture puts on strands never reaches an output
+    assert 'CAPTURE_POINT_ATTRIBS = "dfu pCaptPts pCaptWeights"' in src and "rnb rnw rc0 rc1 rok" in src
+    assert src.count("primdel=CAPTURE_PRIM_ATTRIBS") == 2
+
+
+def test_piece_vex_reads_a_place_on_its_own_piece_and_whole_windows():
+    src = (ROOT / "tools/fx/grooming/build_hda.py").read_text(encoding="utf-8")
+    i = src.index("VEX_PIECE_U = ")
+    u = src[i:src.index("VEX_PIECE_SAMPLES = ")]
+    assert 'xyzdist(1, grp' in u and '"@piece=" + itoa(pc)' in u          # its own piece only
+    i = src.index("VEX_PIECE_SAMPLES = ")
+    smp = src[i:src.index("VEX_PIECE_FIT = ")]
+    assert "float uk = 2 * sig + (1 - 4 * sig)" in smp                     # whole windows, 2 sigma in from each end
+    i = src.index("VEX_PIECE_DEFORM = ")
+    dfm = src[i:src.index('""" % {"rb"', i)]
+    assert "(f@dfu - 2 * sg) / max(1 - 4 * sg, 1e-6)" in dfm               # the same mapping of a strand point's place
+
+
+def test_deformed_state_key_names_the_deform():
+    src = (ROOT / "apps/houdini/grooming_adapter.py").read_text(encoding="utf-8")
+    i = src.index("def _deform_key")
+    assert "DEFORM_KIND" in src[i:src.index("\ndef ", i + 10)] and ga.DEFORM_KIND

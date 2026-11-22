@@ -1150,7 +1150,7 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - What v0.1's deform did (t79 u4 diag, sh020): hair_bang_11 moved 5 cm turns its tip 22 deg from the unedited lock at
     rest but 59-92 deg in the frames (the hook the user saw), its offset in the lock's moving frame changes by p95
     2.8-3.9 cm: the deform captures the moved points on the hair mesh far from where they now lie.
-  - Built: `edit_ride_spines` (`VEX_SPINE_PACK`: per edited lock its unedited spine, two copies 1 cm out along the
+  - (REPLACED 2026-11-23 by the piece deform below: the `edit_ride_*` path is gone.) Built: `edit_ride_spines` (`VEX_SPINE_PACK`: per edited lock its unedited spine, two copies 1 cm out along the
     width / thickness axes, and its edited spine, prim `skey` = lock_id x 4 + kind) -> `edit_ride_capture` /
     `edit_ride_deform` (v0.1's Point Deform) -> `edit_ride_fk` (`VEX_EDIT_FK`: per spine point the unedited spine's
     rotation rest -> frame, `rot`; the edited spine rebuilt from its root, each rest segment turned by the rotation
@@ -1235,6 +1235,54 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     `mesh_carry` uses, per strand point) would make a tiny edit a tiny move; see t79 report 9.3 for the cost.
   - r1 / s5: 20 samples of the old build made from the COMMITTED ed7d0de (`t79/base7_suite` = git archive; t79's
     base6_suite had a rebuilt HDA), graded against the largest difference between any two + 2 float32 steps.
+- The shot deform replaces v0.1's (B-3 decided by the user, 2026-11-22; plan "The cause, and the deform that replaces
+  v0.1's in shots"; t79 report 9.4-9.6, acceptance s6 = `tests/houdini/grooming/accept_v02b_deform.py`):
+  - Why: v0.1's Point Deform (radius `deform_radius` 2 cm, maxpt 100) gave a strand point the motion of every rest mesh
+    point within 2 cm, whatever lock it belonged to (47 % of the weight on average from other locks' pieces), and inside
+    a hooked fringe piece also the hook's other arm: 19 lock-frames folded on sh020, 10 on sh025, where the piece does
+    not fold. Capturing on the own piece alone left the hooks; any deform that follows each lock's own piece moves
+    every lock 0.15-1.5 cm p95 against v0.1, so "within 0.1 cm of v0.1" was dropped for shots (the manager).
+  - What: each strand point stores `dfu`, its place along its OWN piece (`pu` of the nearest face of that piece, on
+    MESH_CARRIED so an edited lock's strands find their place on its carried piece), and each strand its root's
+    neighbours on the rest hair mesh (`rnb` / `rnw`, any piece, within `config.ROOT_ANCHOR_CM`), in the capture loop
+    (`VEX_PIECE_U`; 4 bytes a point + 48 neighbours a strand where v0.1's capture was 800 B a point). `piece_samples`
+    (rest only) puts `config.PIECE_SAMPLES` places along every piece, from 2 sigma to 1 - 2 sigma of `pu` (whole windows:
+    a one-sided window at a piece's end sat inward by an amount that follows the point spacing, which a stretching piece
+    changes, and kinked strands 80 deg), each listing its Gaussian window's points; `piece_fit` (per frame, parallel
+    over the ~2,900 places) gives the window's mean in the frame and its best rotation (Kabsch by `svddecomp`; a local
+    linear fit of the centre was tried and dropped: it extrapolated the animated mesh's local jitter at the ends);
+    `piece_fk` rebuilds an EDITED lock's centreline from its root with those rotations (U4's rule, no stretch). A
+    strand point: e1(u) + (P - e0(u)) * rot(u), past the first / last place carried rigidly by it; its root zone takes
+    the translation of its root's neighbours with the piece's rotation and blends into that over `config.ROOT_BLEND`
+    of the strand. One deform for edited and unedited locks; drawn locks pass it and keep the follicle (VEX_FOLLICLE);
+    an animated mesh of another point count keeps v0.1's answer (rest pose, `deform_ok`). Mesh / guide display parts are
+    still Point Deformed (their own mesh), so `deform_radius` now only drives those.
+  - VEX traps met: `vector(prim(...))` / `vector(point(...))` picks the float overload and copies one number into all
+    three (roots landed at (x, x, x)): read into typed variables. A rotation fitted to a root's neighbours alone is
+    ill-posed where they lie near one line (a ribbon's edge: 0.9 cm with no animation); fitted per root where they
+    spread enough it fixed sh025's roots but stretched the root zone (p95 1.10 against v0.1's 1.07): not kept. A
+    detail wrangle over every piece's points per frame cost 0.7-0.8 s; the rest-only sample lists + a parallel fit
+    0.1 s. Prototype nodes outside the HDA must be force-cooked per frame (an Object Merge of an inner node did not
+    pass time dependency on).
+  - An edited lock's rebuilt centreline takes its piece's own length change segment by segment (`piece_fk`; the plan
+    2026-11-23: the edit adds no stretch of its own): kept at rest length it was 2-4 % off the unedited lock where the
+    pieces stretch. A strand's place never goes back along it (`VEX_PIECE_U`).
+  - Lines (the plan, 2026-11-23, after the cause was traced: the animation stretches the pieces): unedited strand
+    length within 5 % (p95) of its piece's length ratio over the strand's span; edited median within 2 % of the
+    unedited lock's at that frame; roots within 0.1 cm (p95) of the animated scalp. s6 run19s6 (all 61 locks, sh020
+    frames 10 / 25 / 45 / 60 / 75 / 105 / 135, sh025 5 / 20 / 25 / 40 / 50): 0 folds (v0.1 19 / 10); nothing left behind;
+    every edited case (sh020's 20 fringe locks, sh025's 9) within 2 % of the unedited lock and 5 deg; output 1 0.29-0.43 s
+    a frame (v0.1 0.94-1.13). Not met, causes in t79 report 9.7: length against the piece on 36 / 5 lock-frames (v0.1 64 /
+    25; fringe bang_02/03/04/07/12/14/19/20, back_15); roots over 0.1 cm on 76 / 58 lock-frames (v0.1 78 / 30): the
+    animated hair mesh by the roots lifts off the head in the shot (hair_back_03 on sh025: p95 0.45 cm at rest, 1.40 at
+    frame 40), and roots that follow the mesh leave the scalp with it; with the animated scalp wired they could follow
+    the skin as drawn locks do (not built). Frame to frame (no jump asked): a strand's tip past its piece's last sample
+    rides that sample's rotation, which jitters with the end of the animated piece: hair_back_07 sh025 20 -> 21, tip
+    0.99 cm against the piece's 0.56.
+  - accept_v02b after the change: s1 grades the edited lock against the unedited one at that frame (the plan's line);
+    s5 (three-input scenes) grades the same strands and points a strand and no error, and reports the move from v0.1
+    (3.1 / 7.6 cm at most on sh020 / sh025), since the deform that replaced v0.1's moves every lock; r1 (rest) still
+    holds this build to the old build's own spread.
 - v0.2b lock redraw, B3 viewer state (2026-11-22; sandbox `tests/t81_points_state/`, `report.md` there; GUI acceptance
   `tests/houdini/grooming/accept_v02b_gui.py`, pytest `tests/test_grooming_points_keys.py`):
   - `apps/houdini/grooming_points_state.py`: ONE Python state `config.POINTS_STATE` for Edit points and Draw lock,
