@@ -332,6 +332,28 @@ def subd_cell(row: Row) -> tuple[str, str]:
                                                  else TEXT_LABEL)
 
 
+def _when_idle(poll):
+    """The timer's call, run from Houdini's idle loop (hdefereval), never inside a cook: Houdini handles Qt events
+    mid-cook, and a viewer / stage read on a node being cooked fails it with "Infinite recursion in evaluation"
+    (MONO Grooming's poll, `tools/fx/grooming/controller._when_idle`). One call queued at a time; outside Houdini the
+    call itself."""
+    try:
+        import hdefereval
+    except ImportError:
+        return poll
+    pending = [False]
+
+    def run_it() -> None:
+        pending[0] = False
+        poll()
+
+    def tick() -> None:
+        if not pending[0]:
+            pending[0] = True
+            hdefereval.executeDeferred(run_it)
+    return tick
+
+
 def _num(v: float) -> str:
     """A camera value for people: 35, 20.25, 0.0001, 1,000,000 (not 1e+06 or 34.99999)."""
     return f"{v:,.0f}" if abs(v) >= 1e4 else f"{v:.4g}"
@@ -650,7 +672,7 @@ class AnimLoaderManager(QWidget):
         self._vp_seen: dict | None = None  # the viewport selection last read or set
         self._vp_poll = QTimer(self)  # Houdini has no callback for a Scene Viewer's prim selection: read it
         self._vp_poll.setInterval(self.SELECTION_POLL_MS)
-        self._vp_poll.timeout.connect(self.sync_from_viewport)
+        self._vp_poll.timeout.connect(_when_idle(self.sync_from_viewport))
         self._vp_poll.start()
         self._thumbs = _Thumbnails(self._repaint_views)
         self._paint = _Painter(self._thumbs, scale)

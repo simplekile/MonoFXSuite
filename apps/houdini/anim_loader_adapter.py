@@ -2253,7 +2253,8 @@ def select_prims(network: str, prims: list[str]) -> bool:
             if pane.pwd().path() != network:
                 continue
             if tuple(pane.currentSceneGraphSelection() or ()) != tuple(prims):
-                pane.setCurrentSceneGraphSelection(list(prims))
+                with hou.undos.disabler():  # view state: Ctrl+Z undoes the artist's edit, not this selection
+                    pane.setCurrentSceneGraphSelection(list(prims))
             done = True
         except (AttributeError, hou.OperationFailed, hou.ObjectWasDeleted):
             continue

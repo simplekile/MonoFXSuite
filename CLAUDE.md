@@ -422,7 +422,8 @@
   not by calling the adapter's function.
 - Selection follows between the Scene Viewer and the inspector tree (the user's ask, 2026-11-22): the manager reads
   each LOP viewer's `currentSceneGraphSelection()` on a timer (`SELECTION_POLL_MS`, no Houdini callback for it;
-  `adapter.viewport_prims`). The viewer draws its network's viewer / display node's stage, not the selected node's
+  `adapter.viewport_prims`) run from Houdini's idle loop (`ui._when_idle`, hdefereval: a read mid-cook fails the
+  cook, as Grooming's poll did); the tree's pick sets the viewer's selection with undo off. The viewer draws its network's viewer / display node's stage, not the selected node's
   (the user's case: display on one node, another selected), so only loaders feeding that node take part
   (`adapter.displayed_loaders`), and each loader's root is looked up on that stage (`logic.drawn_roots`, a walk to
   depth 6 cached per cook): the shot layout moves it (sh025: /char_Helen drawn at /World/anim/actors/char_Helen);
