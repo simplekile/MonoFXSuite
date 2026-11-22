@@ -182,3 +182,17 @@ def test_plus_opens_add_assets_at_once(make):  # noqa: F811 (the fixture)
     assert w._drawer_open and not w.drawer.isHidden()
     w.load_button.click()
     assert not w._drawer_open
+
+
+def test_panel_size_follows_houdini_text_by_default(make):  # noqa: F811 (the fixture)
+    """The user's report: the window read big next to Houdini. Houdini's text is 12 px at scale 1, the panel's body
+    14: "Like Houdini" (the default) draws at 12 / 14 of Houdini's scale; Medium is the size before."""
+    mk, ui = make
+    assert ui.panel_size() == "houdini"
+    assert abs(ui.panel_scale(1.5) - 1.5 * 12 / 14) < 1e-9
+    w = mk(_backend())
+    menu = w.list_columns_menu()
+    texts = [a.text() for a in menu.actions() if not a.isSeparator()]
+    assert texts[-3:] == ["Like Houdini", "Medium", "Large"]
+    next(a for a in menu.actions() if a.text() == "Medium").trigger()
+    assert ui.panel_size() == "medium" and ui.panel_scale(1.5) == 1.5

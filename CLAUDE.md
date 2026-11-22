@@ -454,6 +454,10 @@
 - Camera section: Aperture is the node's `mx_cam_aperture` menu (`adapter.cam_mode` / `set_cam_mode`); the line
   under it is the camera's aperture as the loader puts it out (`Controller.camera`), Width shows only in the width
   modes, Ratio only in "Set width and ratio", Focal length read-only.
+- Panel size (the user's report, 2026-11-22: big next to Houdini): `open_manager` scales by Houdini's UI scale
+  times `PANEL_SIZES` (prefs `panel_size`): "Like Houdini" (default) 12 / 14, since Houdini's text is 12 px at
+  scale 1 (18 px measured at 1.5) and the panel's body text was made at 14; Medium is the size before. Picked from
+  the list header's right-click menu; the window opens again at the new size.
 - Add assets drawer (the user's review, 2026-11-22): the picks live in the drawer (`AddDrawer._picks`), not in
   the grid's selection, so a chip or the search never drops one ("N picked, M hidden by the filter"); Add and a
   drop that lands clear them. Shift+click picks a range from the last clicked card, Clear unpicks all, a

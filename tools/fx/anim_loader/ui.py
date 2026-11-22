@@ -1429,7 +1429,34 @@ class AnimLoaderManager(QWidget):
             if i == len(ALL_PARTS):
                 menu.addSeparator()  # the versions, then subdivision and textures
             menu.add_toggle(label, lambda k=key: k not in delegate.hidden, lambda k=key: self._toggle_list_column(k))
+        menu.addSection("Panel size")
+        current = panel_size()
+        for key, label, _f in PANEL_SIZES:
+            act = menu.addAction(_crisp_icon("check", self.px(16), ACCENT) if key == current else QIcon(), label)
+            act.triggered.connect(lambda _=False, k=key: self.set_panel_size(k))
         return menu
+
+    def set_panel_size(self, key: str) -> None:
+        """Remembers the size and opens the window again at it (every size is set when the window is built)."""
+        prefs = _load_prefs()
+        if prefs.get("panel_size") == key:
+            return
+        prefs["panel_size"] = key
+        _save_prefs(prefs)
+        self.prefs["panel_size"] = key
+        if self is not _WINDOW:  # a window not opened by open_manager (tests): nothing to open again
+            return
+
+        def reopen():
+            global _WINDOW
+            geo = self.geometry()
+            path = self.ctl.backend.parent_path
+            _WINDOW = None
+            self.close()
+            self.deleteLater()
+            w = open_manager(path)
+            w.move(geo.topLeft())
+        QTimer.singleShot(0, reopen)
 
     def _toggle_list_column(self, key: str) -> None:
         delegate = self.list_view.itemDelegate()
@@ -1920,6 +1947,23 @@ class AnimLoaderManager(QWidget):
 _WINDOW: AnimLoaderManager | None = None
 
 
+# The panel's own size on top of Houdini's UI scale (the user's report, 2026-11-22: "quite big next to Houdini").
+# The sizes were made for a 14 px body text at scale 1; Houdini's own text is 12 px at scale 1 (18 px measured at
+# its 1.5 scale), so "Like Houdini" draws everything at 12 / 14. Remembered per viewer (prefs "panel_size").
+PANEL_SIZES = (("houdini", "Like Houdini", 12 / 14), ("medium", "Medium", 1.0), ("large", "Large", 1.15))
+
+
+def panel_size() -> str:
+    key = _load_prefs().get("panel_size", "houdini")
+    return key if key in {k for k, _l, _f in PANEL_SIZES} else "houdini"
+
+
+def panel_scale(host_scale: float) -> float:
+    """Houdini's UI scale times the panel size the viewer picked."""
+    factor = next(f for k, _l, f in PANEL_SIZES if k == panel_size())
+    return max(0.5, min(3.0, host_scale * factor))
+
+
 def open_manager(parent_path: str = "/stage") -> AnimLoaderManager:
     """Opens (or brings back) the one manager window in Houdini. ``parent_path``: the LOP network Load shot
     builds in (the node's own network when opened from a node)."""
@@ -1939,7 +1983,7 @@ def open_manager(parent_path: str = "/stage") -> AnimLoaderManager:
         except RuntimeError:  # deleted with Houdini's main window
             _WINDOW = None
     parent = hou.qt.mainWindow()
-    _WINDOW = AnimLoaderManager(HoudiniBackend(parent_path), parent, scale=max(0.5, min(3.0, hou.ui.scaledSize(1000) / 1000.0)))
+    _WINDOW = AnimLoaderManager(HoudiniBackend(parent_path), parent, scale=panel_scale(hou.ui.scaledSize(1000) / 1000.0))
     _WINDOW.setWindowFlag(Qt.WindowType.Window, True)
     _WINDOW.resize(int(1000 * _WINDOW.s), int(640 * _WINDOW.s))
     _WINDOW.show()
