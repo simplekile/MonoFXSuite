@@ -357,6 +357,8 @@ class PointsTool(object):
                 names = [(data.lock(i).name if data.lock(i) else str(i)) for i in hidden]
                 why = "no handles for " + ", ".join(names) + " (hidden or not isolated)"
         STATS["load_s"] = time.perf_counter() - t0
+        STATS["load"] = {"tool": pk.STATE.tool, "lock_ids": list(pk.STATE.lock_ids), "shown": len(shown),
+                         "order": list(self.order), "spines": len(self.spines), "why": why}
         if why:
             _say("MONO Grooming: " + why)
         self.redraw()
@@ -611,6 +613,10 @@ class PointsTool(object):
             for k, w in enumerate(self.locks[lid]["world"]):
                 sx, sy = self._screen(w)
                 best[(lid, k)] = ((sx - mx) ** 2 + (sy - my) ** 2) ** 0.5
+        STATS["pick"] = {"at": (mx, my), "nearest_px": round(min(best.values()), 1) if best else None,
+                         "viewport": tuple(self.scene_viewer.curViewport().size()),
+                         "handles_px": [tuple(round(c, 1) for c in self._screen(w)) for lid in self.order
+                                        for w in self.locks[lid]["world"]]}
         return pk.nearest(best, pk.PICK_PX)
 
     def pick_hair(self, mx, my):

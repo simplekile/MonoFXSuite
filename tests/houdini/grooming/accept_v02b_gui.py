@@ -188,7 +188,10 @@ def path(a, dx, dy, n=20):
 
 def calibrate(done):
     """Global pixels -> the viewport's own pixel coordinates (what a state's device reports): three moves."""
-    S["gl"] = gl_widget()
+    # the viewport widget is found once, before any state: with the state's HUD up, the widget under the
+    # viewport's centre is the HUD's, and events sent there reached the state in another frame (t81 r5)
+    if S.get("gl") is None:
+        S["gl"] = gl_widget()
     c = viewer().qtScreenGeometry().center()
     g = [(c.x(), c.y()), (c.x() + 120, c.y()), (c.x(), c.y() + 120)]
     got = []
@@ -209,10 +212,15 @@ def calibrate(done):
 
 
 def to_global(world):
+    """Where a point (the node's space) is on screen, global px: the viewport's pixels have y up from the GL
+    widget's bottom (t81 r1: a state's mouse x = the widget's x, y = its height - y). Read live, so a state bar
+    or HUD that changes the viewport is followed; moves read back from the state lagged after a flipbook (r5)."""
     vp = viewer().curViewport()
     s = vp.mapToScreen(hou.Vector3(*map(float, world)) * S["node"].parent().worldTransform())
-    c = S["cal"]
-    return (c["g0"][0] + (s[0] - c["m0"][0]) / c["sx"], c["g0"][1] + (s[1] - c["m0"][1]) / c["sy"])
+    w = S["gl"]
+    dpr = w.devicePixelRatioF()
+    g = w.mapToGlobal(QtCore.QPoint(int(round(s[0] / dpr)), int(round(w.height() - s[1] / dpr))))
+    return (float(g.x()), float(g.y()))
 
 
 def first_click(done):
@@ -285,10 +293,21 @@ def gesture(tag, lid_names, start_of, offsets, then, mods=QtCore.Qt.NoModifier, 
         rec["shot_before"] = shot(tag + "_before")
         S["labels0"] = len(hou.undos.undoLabels())
         S["drags0"] = len(gps.STATS["drags"]) + len(gps.STATS["draws"])
+        # a flipbook leaves the viewport drawn at its resolution until the next redraw (t81 r4 / r7: presses
+        # 30 px off the handle): redraw, then read where things are
+        viewer().curViewport().draw()
+        pump()
+        later(600, press)
+
+    def press():
         for k, t in keys:
             post_key(k, t)
         pump()
+        viewer().curViewport().draw()
+        pump()
         a = start_of()
+        S["press_global"] = a
+        S["press_viewport"] = tuple(viewer().curViewport().size())
         pts = [(a[0] + dx, a[1] + dy) for dx, dy in offsets]
         later(150, lambda: drag(pts, step_ms, done, mods))
 
@@ -309,6 +328,10 @@ def gesture(tag, lid_names, start_of, offsets, then, mods=QtCore.Qt.NoModifier, 
                                                  "handler_ms_max", "write_s", "cook_s", "recooked", "held", "angle",
                                                  "factor", "length_cm")}
         rec["result"] = d.get("result")
+        rec["state_load"] = gps.STATS.get("load")
+        rec["state_pick"] = gps.STATS.get("pick")
+        rec["press_global"] = S.get("press_global")
+        rec["press_viewport"] = S.get("press_viewport")
         rec["shot_after"] = shot(tag + "_after")
         after = data_now()
         if d.get("write_s") is not None:
@@ -368,6 +391,9 @@ def s0_open():
     for o in hou.node("/obj").children():
         o.setDisplayFlag(o == node.parent())
     viewer().setPwd(node.parent())
+    pump()
+    S["gl"] = gl_widget()
+    C.meta["gl_widget"] = type(S["gl"]).__name__
     t = time.perf_counter()
     node.cook(force=True)
     C.meta["cold_cook_s"] = round(time.perf_counter() - t, 2)
