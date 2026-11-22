@@ -29,7 +29,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEasingCurve, QEvent, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
+from PySide6.QtCore import QEasingCurve, QEvent, QPointF, QRect, QRectF, QSize, Qt, QTimer, QVariantAnimation
 from PySide6.QtGui import QColor, QFont, QIcon, QKeySequence, QPainter, QPainterPath, QPen, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -1989,10 +1989,14 @@ def _mesh_tree_class():
             color = self.tree.row_fill(index, self.tree.is_hovered(index))  # the whole row, as its branch area
             r = option.rect
             painter.fillRect(r, color)
+            # a hovered or selected row is one band over its lines, and the row above keeps no line along it: the
+            # band ran under the separators, 2 px shorter in the cells than in the branch area (the user's report)
+            lit = self.tree.is_lit(index)
             painter.setPen(QPen(QColor(LINE), 1))
-            if index.column() not in TOGGLE_COLS:  # the toggles sit together, no lines between them
+            if index.column() not in TOGGLE_COLS and not lit:  # the toggles sit together, no lines between them
                 painter.drawLine(r.right(), r.top(), r.right(), r.bottom())
-            painter.drawLine(r.left(), r.bottom(), r.right(), r.bottom())
+            if not lit and not self.tree.is_lit(self.tree.indexBelow(index)):
+                painter.drawLine(r.left(), r.bottom(), r.right(), r.bottom())
             fg = index.data(Qt.ItemDataRole.ForegroundRole)
             painter.setPen(fg.color() if fg is not None else QColor(TEXT_PRIMARY))
             painter.setFont(option.font)
@@ -2002,19 +2006,22 @@ def _mesh_tree_class():
             if toggle:  # the eye, viewport and render toggles (Blender's outliner)
                 name, col, own, dim = toggle
                 size = self.px(13)  # smaller than the prim icon (the user's ask)
-                cx, cy = r.center().x(), r.center().y() - self.px(2)
+                # centred in the cell (the user's report: it sat 2 px high to leave room for the dot, which fits
+                # under a centred icon)
+                x0 = r.left() + (r.width() - size) / 2
+                y0 = r.top() + (r.height() - size) / 2
                 if dim:  # under a hidden parent: it keeps its own setting for when the parent shows again
                     painter.setOpacity(0.4)
                 ratio = painter.device().devicePixelRatioF() if painter.device() else 1.0
                 pm = (_filled_pixmap(name, size, col, max(2.0, ratio)) if name in _FILLED
                       else _crisp_icon(name, size, col).pixmap(size))
-                painter.drawPixmap(cx - size // 2 + 1, cy - size // 2 + 1, pm)
+                painter.drawPixmap(QPointF(x0, y0), pm)
                 if own:  # this shot overrides it: a dot under the icon (what Remove the shot's overrides takes off)
                     painter.setRenderHint(QPainter.RenderHint.Antialiasing)
                     painter.setPen(Qt.PenStyle.NoPen)
                     painter.setBrush(QColor(col))
                     d = self.px(4)
-                    painter.drawEllipse(cx - d // 2 + 1, cy + size // 2 + self.px(2), d, d)
+                    painter.drawEllipse(QRectF(x0 + (size - d) / 2, y0 + size + self.px(1), d, d))
                 painter.restore()
                 return
             text_rect = r.adjusted(self.px(6), 0, -self.px(6), 0)
@@ -2130,6 +2137,14 @@ def _mesh_tree_class():
             return color
 
         _hover = None  # the hovered row's column-0 index (a QPersistentModelIndex), None: none
+
+        def is_lit(self, index) -> bool:
+            """Hovered or selected: drawn as one band, over its own lines."""
+            return index.isValid() and (self.is_hovered(index) or self.selectionModel().isSelected(index))
+
+        def selectionChanged(self, selected, deselected):  # noqa: N802 (Qt)
+            super().selectionChanged(selected, deselected)
+            self.viewport().update()  # the row above a band drops its line: Qt repaints only the rows that changed
 
         def is_hovered(self, index) -> bool:
             h = self._hover

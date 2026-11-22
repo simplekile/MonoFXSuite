@@ -5,7 +5,7 @@
 ### Houdini
 - **MonoFX Loader manager**: what is selected in the viewport and in the inspector's prim tree now follow each other. A prim picked in the viewport selects its row in the tree, and its loader in the list when another one was selected. Rows picked in the tree select their prims in the viewport. It follows what the viewport draws (the node with the display flag, not the selected node) and finds loaders the shot layout moved, e.g. /World/anim/actors/char_Helen.
 - **MonoFX Loader manager**: Shift+click a group's arrow in the inspector tree folds or opens it and everything under it; Ctrl+click folds or opens the whole tree.
-- **MonoFX Loader manager**: the hover in the inspector tree covers the whole row; it stopped short of the name, leaving the indentation and arrow dark.
+- **MonoFX Loader manager**: the hover in the inspector tree covers the whole row; it stopped short of the name, leaving the indentation and arrow dark. A hovered or selected row is one even band over its separators, and the show / viewport / render icons are centred in their row.
 
 ## [0.1.45] - 2026-11-22
 

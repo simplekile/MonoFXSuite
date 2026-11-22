@@ -193,3 +193,45 @@ def test_hover_fills_the_whole_row_arrow_area_too(make):  # noqa: F811 (the fixt
     img = t.viewport().grab().toImage()
     assert at(rect.left() - 4) == ui.BG_APP.lower()  # the row left behind goes back
     w.hide()
+
+
+def _runs(img, x, y0, y1, color):
+    """The y ranges (inclusive) where the column x has this colour."""
+    out, start = [], None
+    for y in range(y0, y1):
+        hit = img.pixelColor(x, y).name() == color
+        if hit and start is None:
+            start = y
+        if not hit and start is not None:
+            out.append((start, y - 1))
+            start = None
+    if start is not None:
+        out.append((start, y1 - 1))
+    return out
+
+
+def test_a_selected_row_is_one_even_band_and_the_toggles_are_centred(make):  # noqa: F811 (the fixture)
+    """The user's report: hover / selection ran under the separators, shorter in the cells than in the arrow
+    area, and the display icons sat high in their row."""
+    from PySide6.QtWidgets import QApplication
+
+    w, ui, b = _two_loader_window(make)
+    w.show()
+    t = w.subd_panel.tree
+    mesh = next(i for i in w.subd_panel._all_items() if i.text(0) == "Geo_Hull")
+    t.clearSelection()
+    mesh.setSelected(True)
+    QApplication.processEvents()
+    img = t.viewport().grab().toImage()
+    rect = t.visualRect(t.indexFromItem(mesh, 0))
+    y0, y1 = rect.top() - 6, rect.bottom() + 6
+    selected = ui.SELECTED.lower()
+    in_arrow = _runs(img, rect.left() - 4, y0, y1, selected)
+    in_cell = _runs(img, rect.right() - 3, y0, y1, selected)  # past the name text
+    assert in_arrow == in_cell == [(rect.top(), rect.bottom())]  # the whole row, over its own line
+    eye = t.visualRect(t.indexFromItem(mesh, 5))
+    ink = [y for y in range(eye.top(), eye.bottom() + 1)
+           if any(img.pixelColor(x, y).name() != selected for x in range(eye.left() + 2, eye.right() - 1))]
+    top_gap, bottom_gap = ink[0] - eye.top(), eye.bottom() - ink[-1]
+    assert abs(top_gap - bottom_gap) <= 1, (top_gap, bottom_gap)
+    w.hide()
