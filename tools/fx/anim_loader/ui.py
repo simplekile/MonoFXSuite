@@ -2711,10 +2711,7 @@ class InspectorPanel(QWidget):
         top.addWidget(self.title)
         top.addSpacing(owner.px(6))
         self.details = _Props(owner)  # node, kind, shot / asset, versions, textures, subdivision
-        self.details_head = _Section(owner, "Details", "details", self.details)
-        top.addWidget(self.details_head)
-        top.addWidget(self.details)
-        top.addSpacing(owner.px(6))
+        self.details_head = _Section(owner, "Details", "details", self.details)  # at the bottom (see below)
         self.news = _Props(owner)  # which part, version, published, by, what changed
         self.news_head = _Section(owner, "Newer version", "news", self.news)
         top.addWidget(self.news_head)
@@ -2815,6 +2812,15 @@ class InspectorPanel(QWidget):
         self.hint.setContentsMargins(side, 0, side, 0)
         lay.addWidget(self.hint)
         lay.addStretch(0)
+        # Details last, at the bottom of the inspector (the user's ask, 2026-11-22): the prims come right under the
+        # name; without a tree (a camera) the stretch above keeps Details at the bottom too
+        foot = QWidget()
+        bottom = QVBoxLayout(foot)
+        bottom.setContentsMargins(side, owner.px(6), side, owner.px(8))
+        bottom.setSpacing(owner.px(4))
+        bottom.addWidget(self.details_head)
+        bottom.addWidget(self.details)
+        lay.addWidget(foot)
 
     def sizeHint(self) -> QSize:
         return QSize(self.owner.px(360), self.owner.px(400))

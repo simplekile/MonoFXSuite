@@ -196,3 +196,20 @@ def test_panel_size_follows_houdini_text_by_default(make):  # noqa: F811 (the fi
     assert texts[-3:] == ["Like Houdini", "Medium", "Large"]
     next(a for a in menu.actions() if a.text() == "Medium").trigger()
     assert ui.panel_size() == "medium" and ui.panel_scale(1.5) == 1.5
+
+
+def test_details_sit_at_the_bottom_of_the_inspector(make):  # noqa: F811 (the fixture)
+    """The user's ask: Details under the prim tree, at the bottom; the prims right under the name."""
+    from PySide6.QtWidgets import QApplication
+
+    from tests.test_anim_loader_select_sync import _two_loader_window
+
+    w, ui, b = _two_loader_window(make)
+    w.show()
+    QApplication.processEvents()
+    p = w.subd_panel
+    tree_bottom = p.tree.mapTo(p, p.tree.rect().bottomLeft()).y()
+    head_top = p.details_head.mapTo(p, p.details_head.rect().topLeft()).y()
+    title_bottom = p.title.mapTo(p, p.title.rect().bottomLeft()).y()
+    assert title_bottom < p.tree.mapTo(p, p.tree.rect().topLeft()).y() < tree_bottom < head_top
+    w.hide()
