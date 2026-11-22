@@ -1077,11 +1077,25 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   - Edited lock (tip 2 cm, turn 25 deg), every fringe lock of sh020 and the 9 locks of t84 on sh025, not two
     locks: median length within 2 %, tip turn within 5 deg of its rest value. Where the animation itself
     folds the piece (16 lock-frames on sh020), the numbers are reported, not graded.
-  - A lock that did not fold in the old build stays where it was: its points within 0.1 cm p95 of the old
-    build's at the same frame, beyond the old build's own run-to-run difference. If the fix cannot hold
-    that, the executor stops and reports before building further.
   - v0.1's own shot checks (roots on the animated scalp, no point left behind, deform_ok) keep their limits.
-  - First step is the cause: why the capture folds a lock whose mesh piece does not, measured, before any fix.
+- **The cause, and the deform that replaces v0.1's in shots (037's t79 section 9.4; the manager, 2026-11-22)**:
+  v0.1's Point Deform gives a strand point the motion of every rest-mesh point within 2 cm, whatever lock it
+  belongs to: 47 % of the capture weight comes from other locks' pieces on average (45-64 % on the fringe
+  locks that fold, up to 73 % on the base caps), and inside a hooked piece a point also takes the piece's
+  other arm. Capturing on the lock's own piece cuts sh020's capture-only folds from 29 to 11 but leaves the
+  hooks and makes two more locks fold. So the deform follows each lock's own piece by place along it (u),
+  not by 3D distance.
+  - "Stays within 0.1 cm of the old build" is dropped for shots: any deform that follows a lock's own piece
+    moves the locks that never folded by 0.15-1.5 cm p95 against v0.1, because v0.1 mixes neighbours' motion
+    into every lock. It cannot hold together with "no capture-only fold". Shots made with v0.1 will look
+    different; the user judges on old | new sheets. The rest pose stays equal to the old build (r1).
+  - The fold rule compares the hair with its own animated piece: the hair's turning over rest minus the
+    piece's turning over rest. sh025's back locks (piece +48 to +80 deg, v0.1's hair +90 to +113) are
+    graded by that.
+  - Reported beside the graded lines, per lock-frame: how far the hair lies from its own animated piece
+    against the same at rest, the move against v0.1, the frame-to-frame motion against the piece's (no
+    jump), and the frame cost (v0.1 about 1.0 s; over 1.5 s is reported as a problem, not hidden).
+  - Switching a lock between two deforms by frame is not done (it jumps).
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
