@@ -120,6 +120,10 @@ LUCIDE.update({
     "external-link": '<path d="M15 3h6v6"/><path d="M10 14 21 3"/>'
                      '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
     "move-right": '<path d="M18 8 22 12 18 16"/><path d="M2 12H22"/>',
+    # groom curves (2026-11-22): render smooth, width, render as a tube / ribbon
+    "spline": '<circle cx="19" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><path d="M5 17A12 12 0 0 1 17 5"/>',
+    "move-horizontal": '<path d="m18 8 4 4-4 4"/><path d="M2 12h20"/><path d="m6 8-4 4 4 4"/>',
+    "cylinder": '<ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/>',
 })
 
 # The shared look helpers (tools/fx/look.py), under the names this module always had. The defaults are this
@@ -2231,6 +2235,9 @@ SCHEME_WORD = {"publish": "Publish", "none": "Off", "catmullClark": "Catmull-Cla
 WORD_SCHEME = {v: k for k, v in SCHEME_WORD.items()}
 ROLE_PATTERN = Qt.ItemDataRole.UserRole + 20
 ROLE_PRIM = Qt.ItemDataRole.UserRole + 21  # the prim type of a meshes-table row: "xform" (a group) or "mesh"
+ROLE_CURVE = Qt.ItemDataRole.UserRole + 25  # a groom curves row's logic.CurveChoice
+CURVE_WORD = {"linear": "Linear", "bspline": "B-spline", "catmullRom": "Catmull-Rom", "bezier": "Bezier"}
+STYLE_WORD = {"": "Rounded", "rounded": "Rounded", "flat": "Flat ribbons", "oriented": "Oriented ribbons"}
 
 
 def subd_chip(row: Row) -> str:
@@ -2503,7 +2510,8 @@ def _mesh_tree_class():
     return _MeshTree
 
 
-COLS = 8  # the inspector's prim table: PRIM, FACES, FROM, SCHEME, DICE, then the eye, viewport, render toggles
+COLS = 9  # the inspector's prim table: PRIM, FACES, FROM, SCHEME, DICE, the eye, viewport, render toggles, WIDTH
+COL_WIDTH = 8  # groom curves: Karma's width scale (shown only when the tree holds curves)
 TOGGLE_COLS = {5: "eye", 6: "viewport", 7: "render"}
 
 
@@ -2729,7 +2737,7 @@ class InspectorPanel(QWidget):
         self.tree = _mesh_tree_class()()
         self.tree.setObjectName("subdTree")
         self.tree.setColumnCount(COLS)
-        self.tree.setHeaderLabels(["PRIM", "FACES", "FROM", "SCHEME", "DICE", "", "", ""])
+        self.tree.setHeaderLabels(["PRIM", "FACES", "FROM", "SCHEME", "DICE", "", "", "", "WIDTH"])
         self.tree.headerItem().setTextAlignment(0, Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         for col in range(1, COLS):
             self.tree.headerItem().setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
@@ -2737,6 +2745,9 @@ class InspectorPanel(QWidget):
                                  6: ("monitor", "Drawn in the viewport (purpose)"),
                                  7: ("camera", "Rendered by Karma (purpose)")}.items():
             self.tree.headerItem().setToolTip(col, tip)  # no icon in the header (the user's ask): the rows show them
+        self.tree.headerItem().setToolTip(3, "Meshes: the subdivision scheme. Groom curves: how Karma renders the"
+                                             " strands (linear, or smooth as B-spline / Catmull-Rom)")
+        self.tree.headerItem().setToolTip(COL_WIDTH, "Groom curves: Karma's width scale on the published widths")
         self.tree.on_toggle = self._toggle
         self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._quiet = 0  # > 0 while the tree is rebuilt or follows the viewport: no selection goes back to it
@@ -2913,6 +2924,7 @@ class InspectorPanel(QWidget):
 
         plan, faces = detail["plan"], detail["faces"]
         curves = detail.get("curves", {})
+        curve_plan = detail.get("curve_plan", {})
         shown = detail.get("shown", {})
         any_dicing = any(c.dicing for c in plan.values())
         # every level of the hierarchy, as the scene graph shows it (the user's ask: Geo > Base_grp > Body_grp >
@@ -2934,13 +2946,31 @@ class InspectorPanel(QWidget):
             return ""
 
         def add(parent, name: str, prefix: str, kids: dict, parent_from: str, parent_word: str = "") -> None:
-            if not kids and "/" + prefix in curves:  # groom curves: no subdivision
-                item = QTreeWidgetItem([name, f"{_faces_word(curves['/' + prefix])} cv", "", "\u2013", "", "", "", ""])
+            if not kids and "/" + prefix in curves:  # groom curves: Karma's basis and width, no subdivision
+                c = curve_plan.get("/" + prefix)
+                item = QTreeWidgetItem([name, f"{_faces_word(curves['/' + prefix])} cv",
+                                        "" if c is None or c.basis_source == parent_from else c.basis_source,
+                                        CURVE_WORD.get(c.basis, c.basis) if c else "\u2013", "", "", "", "",
+                                        logic.width_word(c.width) if c else ""])
                 item.setData(0, ROLE_PATTERN, prefix)
                 item.setData(0, ROLE_PRIM, "basiscurves")
+                item.setData(0, ROLE_CURVE, c)
                 item.setToolTip(0, "/" + prefix)
+                if c is not None:
+                    item.setToolTip(3, f"Karma renders it {CURVE_WORD.get(c.basis, c.basis)}"
+                                       + (" (this shot)" if c.basis_source == "shot" else
+                                          f" (as published: {CURVE_WORD.get(c.published_basis, c.published_basis)})")
+                                       + f", {STYLE_WORD.get(c.style, c.style).lower()}"
+                                       + (" (this shot)" if c.style_source == "shot" else ""))
+                    item.setToolTip(COL_WIDTH, f"Width scale {c.width:g}"
+                                               + (" (this shot)" if c.width_source == "shot" else ""))
                 for col in range(1, COLS):
                     item.setTextAlignment(col, Qt.AlignmentFlag.AlignCenter)
+                if c is not None and c.basis_source == "shot":
+                    for col in (2, 3):
+                        item.setForeground(col, QColor(ACCENT))
+                if c is not None and c.width_source == "shot":
+                    item.setForeground(COL_WIDTH, QColor(ACCENT))
                 shown_cell(item, prefix, parent_word)
             elif not kids and ("/" + prefix in plan or prefix in plan):  # a mesh
                 m = "/" + prefix if "/" + prefix in plan else prefix
@@ -2965,10 +2995,16 @@ class InspectorPanel(QWidget):
                              self._common([SCHEME_WORD.get(plan[m].scheme, plan[m].scheme) for m in meshes]),
                              self._common([f"{plan[m].dicing:g}" if plan[m].dicing else "" for m in meshes])]
                 else:  # curves only (Groom)
-                    g_from = ""
-                    cvs = sum(n for c, n in curves.items() if c.strip("/").startswith(prefix + "/"))
-                    cells = [f"{_faces_word(cvs)} cv", "", "\u2013", ""]
-                item = QTreeWidgetItem([name, *cells, "", "", ""])
+                    kids_c = [c for c in curves if c.strip("/").startswith(prefix + "/")]
+                    plans = [curve_plan[c] for c in kids_c if c in curve_plan]
+                    g_from = self._common([p.basis_source for p in plans]) if plans else ""
+                    cvs = sum(curves[c] for c in kids_c)
+                    cells = [f"{_faces_word(cvs)} cv", g_from,
+                             self._common([CURVE_WORD.get(p.basis, p.basis) for p in plans]) if plans else "\u2013",
+                             ""]
+                widths = [logic.width_word(curve_plan[c].width) for c in curves
+                          if c in curve_plan and c.strip("/").startswith(prefix + "/")]
+                item = QTreeWidgetItem([name, *cells, "", "", "", self._common(widths) if widths else ""])
                 item.setData(0, ROLE_PATTERN, prefix + "/**")
                 item.setData(0, ROLE_PRIM, "xform")
                 item.setToolTip(0, "/" + prefix)
@@ -2991,13 +3027,16 @@ class InspectorPanel(QWidget):
             add(None, k, k, sub, "")
         return any_dicing
 
-    COLUMN_NAMES = {5: "Show (eye)", 6: "Viewport", 7: "Render", 1: "Faces", 2: "From", 3: "Scheme", 4: "Dice"}
+    COLUMN_NAMES = {5: "Show (eye)", 6: "Viewport", 7: "Render", 1: "Faces", 2: "From", 3: "Scheme", 4: "Dice",
+                    COL_WIDTH: "Width (curves)"}
 
     def _apply_columns(self) -> None:
-        """The columns the artist keeps (the header's right-click menu); DICE only when some prim has dicing."""
+        """The columns the artist keeps (the header's right-click menu); DICE only when some prim has dicing, WIDTH
+        only when the tree holds groom curves."""
         for col in range(1, COLS):
             self.tree.setColumnHidden(col, col in self._hidden_cols
-                                      or (col == 4 and not getattr(self, "_any_dicing", False)))
+                                      or (col == 4 and not getattr(self, "_any_dicing", False))
+                                      or (col == COL_WIDTH and not getattr(self, "_any_curves", False)))
 
     def _columns_menu(self, pos) -> None:
         self.columns_menu().exec(self.tree.header().mapToGlobal(pos))
@@ -3045,6 +3084,7 @@ class InspectorPanel(QWidget):
 
     def _finish_tree(self, keep: dict | None, any_dicing: bool) -> None:
         self._any_dicing = any_dicing
+        self._any_curves = any(it.data(0, ROLE_PRIM) == "basiscurves" for it in self._all_items())
         self._apply_columns()
         if keep is None:
             self.tree.expandAll()
@@ -3090,7 +3130,7 @@ class InspectorPanel(QWidget):
             if not detail or not detail["plan"] or r.kind in ("layer", "cam"):
                 continue
             faces = sum(detail["faces"].get(m, 0) for m in detail["plan"])
-            top = QTreeWidgetItem([r.instance, _faces_word(faces), "", "", "", "", "", ""])
+            top = QTreeWidgetItem([r.instance, _faces_word(faces), "", "", "", "", "", "", ""])
             top.setData(0, ROLE_LOADER, r.node_path)
             top.setData(0, ROLE_PATTERN, "**")  # the loader's every prim
             top.setData(0, ROLE_PRIM, "xform")
@@ -3328,7 +3368,11 @@ class InspectorPanel(QWidget):
             n = sum(1 for _ in self._leaves(item))
             kind = item.data(0, ROLE_PRIM) or "mesh"
             pix, name = _prim_icon(kind, size), item.text(0)
-            note = f"{n} mesh{'es' if n != 1 else ''}" if kind != "mesh" else ""
+            n_curves = sum(1 for leaf in self._leaves(item) if leaf.data(0, ROLE_PRIM) == "basiscurves")
+            n -= n_curves
+            words = ([f"{n} mesh{'es' if n != 1 else ''}"] if n else []) + (
+                [f"{n_curves} curves prim{'s' if n_curves != 1 else ''}"] if n_curves else [])
+            note = ", ".join(words) if kind not in ("mesh", "basiscurves") else ""
         menu.addAction(self._menu_head(menu, pix, name, note))
         has_mesh = item.data(0, ROLE_PRIM) == "mesh" or any(
             leaf.data(0, ROLE_PRIM) == "mesh" for leaf in self._leaves(item))
@@ -3356,6 +3400,7 @@ class InspectorPanel(QWidget):
                                    value or self.MENU_DICING_PUBLISH)
             act.setToolTip("How finely Karma dices the subdivided surface at render time (1 is Karma's default)")
             act.triggered.connect(lambda _=False, v=value: self.set_dicing(pats, v))
+        self._curve_menus(menu, item, pats, icon)
         # Display (the user's ask): the row's three toggles as verbs that say what a click does
         ps = item.data(0, ROLE_SHOW)
         if ps is not None:
@@ -3382,6 +3427,88 @@ class InspectorPanel(QWidget):
             act.triggered.connect(lambda _=False: self.to_asset())
         menu.setToolTipsVisible(True)
         return menu
+
+    # groom curves (the user's pick, layout A, 2026-11-22): Karma's render-time curve settings, render only
+    MENU_CURVE_BASIS = "Curve shape"
+    MENU_CURVE_WIDTH = "Width (Karma)"
+    MENU_CURVE_STYLE = "Render as (Karma CPU)"
+    MENU_CURVE_PUBLISH = "Use the publish's"
+    WIDTH_STEPS = (0.5, 0.75, 1.25, 1.5, 2.0, 3.0)
+
+    def _curve_choices(self, item) -> list:
+        """The CurveChoice of the row, or of every curves row under it."""
+        leaves = [item] if item.data(0, ROLE_PRIM) == "basiscurves" else list(self._leaves(item))
+        return [c for c in (leaf.data(0, ROLE_CURVE) for leaf in leaves
+                            if leaf.data(0, ROLE_PRIM) == "basiscurves") if c is not None]
+
+    def _curve_menus(self, menu, item, pats: dict, icon) -> None:
+        """Basis, width and style submenus for groom curves rows; the current value of the clicked row (its curves
+        when they agree) has the check."""
+        from PySide6.QtGui import QIcon
+
+        choices = self._curve_choices(item)
+        if not choices:
+            return
+        menu.addSeparator()
+        keep = menu._keep_curves = []  # noqa: SLF001
+
+        def common(values):
+            return values[0] if values and all(v == values[0] for v in values) else None
+
+        def submenu(title, icon_name, tip):
+            sub = QMenu(title, menu)  # parented: addMenu's own submenu was deleted with its wrapper
+            sub.setIcon(icon(icon_name))
+            sub.setStyleSheet(self.owner.css(STYLE_MENU_SQ))
+            sub.setToolTipsVisible(True)
+            sub.setToolTip(tip)
+            menu.addMenu(sub)
+            keep.append(sub)  # the Python wrapper lives as long as the menu
+            return sub
+
+        def add(sub, label, on, fn, enabled=True, tip=""):
+            act = sub.addAction(icon("check", ACCENT) if on else QIcon(), label)
+            act.setEnabled(enabled)
+            if tip:
+                act.setToolTip(tip)
+            act.triggered.connect(lambda _=False: fn())
+            return act
+
+        shot_basis = all(c.basis_source == "shot" for c in choices)
+        basis = common([c.basis for c in choices]) if shot_basis else None
+        published = common([c.published_basis for c in choices])
+        sub = submenu(self.MENU_CURVE_BASIS, "spline", "How the strands run between their points, in the viewport and"
+                                                       " the render; smooth curves keep their roots pinned")
+        add(sub, self.MENU_CURVE_PUBLISH + (f" ({CURVE_WORD.get(published, published)})" if published else ""),
+            not any(c.basis_source == "shot" for c in choices), lambda: self.set_curves(pats, basis=None))
+        few = min(c.min_cvs for c in choices)
+        for value in logic.CURVE_BASES:
+            cubic = value != logic.CURVE_LINEAR
+            ok = not cubic or not few or few >= logic.CURVE_MIN_CUBIC_CVS
+            add(sub, CURVE_WORD[value], basis == value, lambda v=value: self.set_curves(pats, basis=v), ok,
+                "" if ok else f"Some curves have {few} CVs: cubic curves need {logic.CURVE_MIN_CUBIC_CVS}")
+        shot_width = all(c.width_source == "shot" for c in choices)
+        width = common([c.width for c in choices]) if shot_width else None
+        sub = submenu(self.MENU_CURVE_WIDTH, "move-horizontal", "Karma's width scale on the published widths")
+        add(sub, self.MENU_CURVE_PUBLISH, not any(c.width_source == "shot" for c in choices),
+            lambda: self.set_curves(pats, width=None))
+        for value in self.WIDTH_STEPS:
+            add(sub, logic.width_word(value), width == value, lambda v=value: self.set_curves(pats, width=v))
+        shot_style = all(c.style_source == "shot" for c in choices)
+        style = common([c.style for c in choices]) if shot_style else None
+        linear = any(c.basis == logic.CURVE_LINEAR for c in choices)
+        sub = submenu(self.MENU_CURVE_STYLE, "cylinder", "Karma XPU renders rounded curves only")
+        add(sub, self.MENU_CURVE_PUBLISH + " (rounded)", not any(c.style_source == "shot" for c in choices),
+            lambda: self.set_curves(pats, style=None))
+        for value in logic.CURVE_STYLES:
+            ok = not (value == "oriented" and linear)
+            add(sub, STYLE_WORD[value], style == value, lambda v=value: self.set_curves(pats, style=v), ok,
+                "" if ok else "Karma CPU cannot render linear curves as oriented ribbons: render them smooth first")
+
+    def set_curves(self, pats, **fields) -> None:
+        """Basis / width / style on the groom curves rows, each loader its own rules; one undo step."""
+        targets = {p: v for p, v in self._by_loader(pats).items() if p}
+        if targets:
+            self.owner._run(lambda: self.owner.ctl.set_curves_many(targets, **fields))()
 
     def other_instances(self) -> list[str]:
         """The other MonoFX Loaders of this loader's asset in the scene (what the subdivision can be copied to)."""

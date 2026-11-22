@@ -1034,6 +1034,146 @@ def clear_subd_rules(rules: list[dict], patterns: list[str] | None) -> list[dict
     return [] if patterns is None else [r for r in rules if r["pattern"] not in patterns]
 
 
+# --- groom curves per shot (the user's pick, layout A, 2026-11-22) ------------------------------------------------
+# BasisCurves have no subdivisionScheme and no dicing. What a lighter sets per shot, on each curves prim (the cache's
+# points and widths, value clips, are left alone):
+#   basis  the curves' own type / basis / wrap: B-spline or Catmull-Rom = cubic, pinned (the root stays on the scalp),
+#          linear = linear, non-periodic; viewport and render alike. Not Karma's curve_basis override: it smooths
+#          but never pins (one-strand test, Karma CPU and XPU), and Helen's B-spline roots sat ~2 cm off her scalp.
+#          Cubic needs 4+ CVs a curve. Bezier (4 + 3N CVs) is left out: Helen's 9 / 33-CV strands break it.
+#   width  primvars:karma:object:width_scale   a multiplier on the published widths
+#   style  primvars:karma:object:curve_style   Render Curves As: rounded (Karma's default), flat or oriented ribbons;
+#                                              Karma XPU renders rounded only, Karma CPU no oriented linear curves.
+# Rules are JSON on the loader (mx_curve_rules), patterns as for subdivision (from /<instance>, no leading "/");
+# a later rule wins field by field. The same wording as subdivision: "publish" = what the files say.
+CURVE_LINEAR, CURVE_BSPLINE, CURVE_CATMULL, CURVE_BEZIER = "linear", "bspline", "catmullRom", "bezier"
+CURVE_BASES = (CURVE_LINEAR, CURVE_BSPLINE, CURVE_CATMULL)  # what a rule may set
+CURVE_BASIS_KARMA = {CURVE_LINEAR: 1, CURVE_BEZIER: 2, CURVE_BSPLINE: 3, CURVE_CATMULL: 4}  # Karma's menu order
+KARMA_CURVE_BASIS = {v: k for k, v in CURVE_BASIS_KARMA.items()}
+CURVE_STYLES = ("flat", "rounded", "oriented")  # Karma's menu order 0, 1, 2 (3 = USD's default behaviour)
+CURVE_STYLE_KARMA = {s: i for i, s in enumerate(CURVE_STYLES)}
+CURVE_PRIMVARS = {"basis": "karma:object:curve_basis", "width": "karma:object:width_scale",
+                  "style": "karma:object:curve_style"}
+CURVE_MIN_CUBIC_CVS = 4
+
+
+@dataclass(frozen=True)
+class CurveChoice:
+    """How Karma renders one groom curves prim: its basis, width scale and style, and where each comes from."""
+
+    basis: str             # linear | bspline | catmullRom | bezier
+    basis_source: str      # "shot" | "lookdev" | "publish"
+    width: float = 1.0
+    width_source: str = "publish"
+    style: str = ""        # "" = Karma's default (rounded)
+    style_source: str = ""
+    min_cvs: int = 0       # the fewest CVs a curve of the prim has (cubic needs 4)
+    published_basis: str = CURVE_LINEAR
+
+
+def parse_curve_rules(text: str) -> list[dict]:
+    """The loader's JSON curve rules, keeping only well-formed fields: {"pattern", "basis", "width", "style"}."""
+    import json
+
+    try:
+        raw = json.loads(text) if text else []
+    except ValueError:
+        return []
+    rules = []
+    for r in raw if isinstance(raw, list) else []:
+        if not isinstance(r, dict) or not isinstance(r.get("pattern"), str) or not r["pattern"].strip():
+            continue
+        rule: dict = {"pattern": r["pattern"].strip().strip("/")}
+        if r.get("basis") in CURVE_BASES:
+            rule["basis"] = r["basis"]
+        if isinstance(r.get("width"), (int, float)) and not isinstance(r.get("width"), bool) and r["width"] > 0:
+            rule["width"] = float(r["width"])
+        if r.get("style") in CURVE_STYLES:
+            rule["style"] = r["style"]
+        if len(rule) > 1:
+            rules.append(rule)
+    return rules
+
+
+def curve_overrides(path: str, rules: list[dict]) -> dict:
+    """What the shot's rules set on one curves prim (path under the instance, ``/Groom/<name>``): a later rule wins
+    field by field."""
+    rel = path.strip("/")
+    out: dict = {}
+    for r in rules:
+        if _pattern_re(r["pattern"]).match(rel):
+            out.update({k: v for k, v in r.items() if k != "pattern"})
+    return out
+
+
+def _published_basis(facts: dict) -> str:
+    karma = facts.get("curve_basis")
+    if karma in KARMA_CURVE_BASIS:
+        return KARMA_CURVE_BASIS[karma]
+    if facts.get("type") == "cubic":
+        return facts.get("basis") or CURVE_BEZIER  # USD's fallback basis
+    return CURVE_LINEAR
+
+
+def curve_plan(curves: dict[str, dict], lookdev: dict[str, dict], rules: list[dict]) -> dict[str, CurveChoice]:
+    """Basis, width and style of each groom curves prim: the shot's rule > lookdev > the groom file. ``curves`` holds
+    the groom's facts per prim ({"type", "basis", "min_cvs", and Karma's "curve_basis" / "width_scale" /
+    "curve_style" when authored}), ``lookdev`` what the lookdev authors on the same paths.
+    The lookdev's type / basis win over the cache's (the user's call, 2026-11-22; groom_topology takes the cache's
+    off), except a cubic lookdev over a cache with a curve under 4 CVs: the cache's stay, or Karma drops them."""
+    plan = {}
+    for path, facts in curves.items():
+        look = lookdev.get(path, {})
+        if look.get("type") == "cubic" and 0 < int(facts.get("min_cvs") or 0) < CURVE_MIN_CUBIC_CVS:
+            look = {k: v for k, v in look.items() if k not in ("type", "basis")}
+        merged = {**facts, **{k: v for k, v in look.items() if v is not None}}
+        src = "lookdev" if any(k in look for k in ("type", "basis", "curve_basis")) else "publish"
+        published = _published_basis(merged)
+        width = merged.get("width_scale")
+        style = merged.get("curve_style")
+        choice = {"basis": published, "basis_source": src,
+                  "width": float(width) if isinstance(width, (int, float)) and width > 0 else 1.0,
+                  "width_source": "lookdev" if "width_scale" in look else "publish",
+                  "style": CURVE_STYLES[style] if isinstance(style, int) and 0 <= style < 3 else "",
+                  "style_source": ("lookdev" if "curve_style" in look else "publish") if style is not None else "",
+                  "min_cvs": int(facts.get("min_cvs") or 0), "published_basis": published}
+        shot = curve_overrides(path, rules)
+        if "basis" in shot:
+            choice.update(basis=shot["basis"], basis_source="shot")
+        if "width" in shot:
+            choice.update(width=shot["width"], width_source="shot")
+        if "style" in shot:
+            choice.update(style=shot["style"], style_source="shot")
+        plan[path] = CurveChoice(**choice)
+    return plan
+
+
+def set_curve_rules(rules: list[dict], patterns: list[str], basis=KEEP, width=KEEP, style=KEEP) -> list[dict]:
+    """Rules with one rule per pattern, put last so it wins. A field left KEEP keeps the pattern's value, None takes
+    it off (the publish decides again); a rule left with no field is dropped."""
+    old = {r["pattern"]: r for r in rules}
+    keep = [r for r in rules if r["pattern"] not in patterns]
+    for p in patterns:
+        rule = dict(old.get(p, {"pattern": p}))
+        for name, value in (("basis", basis), ("width", width), ("style", style)):
+            if value is KEEP:
+                continue
+            if value is None:
+                rule.pop(name, None)
+            else:
+                rule[name] = float(value) if name == "width" else value
+        if len(rule) > 1:
+            keep.append(rule)
+    return keep
+
+
+clear_curve_rules = clear_subd_rules  # the same shape: rules without those patterns (None: none at all)
+
+
+def width_word(width: float) -> str:
+    return f"×{width:g}"
+
+
 # --- what each prim shows: visibility and purpose, apart (the user's ask, 2026-11-17: three toggles as Blender's
 # outliner, inheritance as Houdini / USD) ------------------------------------------------------------------------
 # A rule names one prim under the instance and sets either or both:
