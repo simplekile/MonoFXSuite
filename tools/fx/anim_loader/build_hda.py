@@ -73,6 +73,25 @@ if path and pairs:
                     spec.typeName = "Xform"
                 spec = layer.GetPrimAtPath(spec.path.GetParentPath())
             Sdf.CopySpec(src, a, layer, c)
+        # The lookdev's curve shape wins (the user's call, 2026-11-22): this copy sits above the lookdev, and the
+        # cache's own type / basis / wrap (Helen's: linear) hid the lookdev's (cubic B-spline pinned). Each one the
+        # lookdev authors is taken off the copy. Not when the lookdev makes it cubic and a curve has under 4 CVs:
+        # Karma would drop those curves.
+        below = hou.pwd().inputs()[0].stage() if hou.pwd().inputs() else None
+        for a, c in pairs:
+            spec = layer.GetPrimAtPath(c)
+            prim = below.GetPrimAtPath(c) if below is not None and spec is not None else None
+            if not prim:
+                continue
+            counts = spec.attributes["curveVertexCounts"].default if "curveVertexCounts" in spec.attributes else None
+            few = bool(counts) and min(counts) < 4
+            look_type = prim.GetAttribute("type")
+            if few and look_type and look_type.HasAuthoredValue() and look_type.Get() == "cubic":
+                continue
+            for name in ("type", "basis", "wrap"):
+                attr = prim.GetAttribute(name)
+                if attr and attr.HasAuthoredValue() and name in spec.attributes:
+                    spec.RemoveProperty(spec.attributes[name])
         if hda.evalParm("@MODE@") == "clip":
             # The clips give every animated value: take the copied frame's own values off (time samples and the
             # default) so nothing in this layer can beat a clip. A Graft Stages after the loader (the shot layout's
@@ -102,9 +121,14 @@ if path and pairs:
 # groom lost its points). So: every time sample on the groom's prims, and the default of each attribute the cache
 # animates, erased; an attribute the cache does not have at all keeps its value as a default (a lookdev-only primvar),
 # counts, type, basis, bindings stay.
+# The extent goes too, with clips or a $F sublayer (2026-11-22): the lookdev's is its rest pose (Helen's V009 authors
+# one on /Groom/<name>, near the origin) and the cache authors none, so the groom's bounds stayed at the origin while
+# its points moved with the body at (82, 31, 327): a camera framed on the bounds saw nothing. Without an extent USD
+# and Hydra compute the bounds from the points. A cache with its own extent keeps it (from the clip / frame file).
 GROOM_UNANIMATE_CODE = '''from pxr import Sdf
 hda = hou.pwd().parent()
-if hda.evalParm("@MODE@") == "clip":
+mode = hda.evalParm("@MODE@")
+if mode in ("clip", "sublayer"):
     layer = hou.pwd().editableLayer()
     inst = hda.evalParm("mx_instance_name")
     _use = hda.parm("mx_use_prim")
@@ -119,8 +143,19 @@ if hda.evalParm("@MODE@") == "clip":
         attrs = list(spec.attributes) if spec else []
         return {x.name for x in attrs}, {x.name for x in attrs if cache.GetNumTimeSamplesForPath(x.path)}
 
+    def drop_extent(spec, has):
+        attr = spec.attributes["extent"] if "extent" in spec.attributes else None
+        if attr is not None and (mode == "clip" or "extent" not in has):
+            for t in list(layer.ListTimeSamplesForPath(attr.path)):
+                layer.EraseTimeSample(attr.path, t)
+            attr.ClearDefaultValue()
+        for child in spec.nameChildren:
+            drop_extent(child, has)
+
     def unanimate(spec, has, animated):
         for attr in spec.attributes:
+            if attr.name == "extent":
+                continue  # drop_extent's
             samples = list(layer.ListTimeSamplesForPath(attr.path))
             keep = layer.QueryTimeSample(attr.path, samples[0]) if samples and attr.name not in has else None
             for t in samples:
@@ -135,7 +170,10 @@ if hda.evalParm("@MODE@") == "clip":
     for a, c in pairs:
         spec = layer.GetPrimAtPath(root + c) if root is not None else None
         if spec is not None:
-            unanimate(spec, *cache_attrs(a))
+            has, animated = cache_attrs(a)
+            drop_extent(spec, has)
+            if mode == "clip":
+                unanimate(spec, has, animated)
 '''.replace("@MODE@", config.P_FX["groom"]["mode"]).replace("@TOPO@", config.P_GROOM_TOPO)
 
 # Heavy parts render only (the user's call, 2026-11-17: Helen's lookdev pulls 956 EXR UDIM tiles, 2.1 GB, and the
@@ -155,6 +193,8 @@ if root is not None:
     # Subdivision per mesh: shot rule > lookdev > anim > none (adapter.author_subd, logic.subd_plan)
     from apps.houdini import anim_loader_adapter
     anim_loader_adapter.author_subd(hda, stage)
+    # Groom curves: Karma's curve basis / width scale / style from the shot's rules (adapter.author_curves)
+    anim_loader_adapter.author_curves(hda, stage)
 for top in instance_prims(stage):
     for prim in Usd.PrimRange(top):
         if not look_vp:
@@ -513,6 +553,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
         T.StringParmTemplate("mx_groom_asset", "Groom Asset (2.1)", 1),
         T.StringParmTemplate("mx_cloth_asset", "Cloth Asset (2.1)", 1),
         T.StringParmTemplate(config.P_SUBD_RULES, "Subdivision Rules", 1),
+        T.StringParmTemplate(config.P_CURVE_RULES, "Curve Rules", 1),
         T.StringParmTemplate(config.P_SHOW_RULES, "Show Rules", 1),
         T.StringParmTemplate(config.P_GROOM_TOPO, "Groom Topology File", 1),
         *[T.StringParmTemplate(n, n, 1) for n in config.P_LAYERS],

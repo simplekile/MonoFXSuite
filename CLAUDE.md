@@ -575,6 +575,11 @@
   from a stronger layer does not do it, in one layer it beats the clip too and the groom lost its points; a default in a
   stronger layer beats a clip as well. Check: hython `tests/houdini/anim_loader/accept_groom_graft.py` (a time-sampled
   copy of the fake project, its lookdev given samples on the groom, through Merge and Graft; fails with v0.1.36's HDA).
+  `groom_unanimate` also erases the groom's `extent` with clips or a `$F` sublayer (2026-11-22): Helen's lookdev V009
+  authors its rest-pose extent on /Groom/<name> (near the origin) and the cache authors none, so the bounds stayed
+  there while the points moved with the body at (82, 31, 327); a camera framed on the bounds saw sky. Without an
+  extent USD and Hydra compute bounds from the points. A `$F` cache that authors its own extent keeps it. The same
+  check covers it (a rest extent in the fake lookdev; fails with the HDA before this).
 - Subdivision per mesh (the user's decision, 2026-11-17; `logic.subd_plan`, `adapter.author_subd` from the
   `render_only` Python LOP): a shot rule on the loader (hidden `mx_subd_rules`, JSON `pattern` from `/<instance>`,
   `scheme` publish / none / catmullClark, `dicing`; a later rule wins) > lookdev publish > anim publish > `none`.
@@ -582,6 +587,41 @@
   `GR_OSDSubdSurfaceVK`; Helen alone 12.5 GB with a plain Sublayer, 2.5 GB with `none`). Opinions are read from
   the publish files themselves with `TraverseAll` (lookdev holds overs): Graft Stages flattens and writes the
   fallback as a value. Dicing is `primvars:karma:object:dicingquality` (render only).
+- Groom curves per shot (the user's pick of three mockups, layout A, 2026-11-22; `logic.curve_plan`,
+  `adapter.author_curves` from the same `render_only` Python LOP): BasisCurves have no subdivisionScheme or dicing, so
+  a shot sets on each curves prim its Curve shape (the prim's own type / basis / wrap, see below; Bezier left out: it
+  needs 4 + 3N CVs and Helen's 9 / 33-CV strands break it; cubic needs 4 CVs, the menu greys it below that) and two
+  Karma primvars, constant: `width_scale` (float, x the published widths) and `curve_style` (0 flat, 1 rounded =
+  Karma's default, 2 oriented; Karma XPU renders rounded only, Karma CPU no oriented linear curves). The cache's
+  points / widths (value clips) are left alone; the clips carry none of these, so a default beats nothing (sh025:
+  values reach `beauty_pass`, points keep 46 samples). Rules: hidden
+  `mx_curve_rules`, JSON `pattern` (as subdivision) + `basis` / `width` / `style`, a later rule wins field by field
+  (`set_curve_rules`: KEEP keeps a field, None takes it off, an empty rule goes). What the publish says: the groom
+  file's type / basis (`groom_curve_facts`, first frame) under the lookdev's (`lookdev_curve_opinions`, Karma
+  primvars too). The lookdev's curve shape wins (the user's call, 2026-11-22): `groom_topology` copies the cache
+  above the lookdev and used to hide it (sh025 rendered Helen linear although V009 says cubic B-spline pinned; Karma
+  close-ups showed "as published" = linear), so it now takes type / basis / wrap off its copy wherever the lookdev
+  authors them, except a cubic lookdev over a cache with a curve under 4 CVs (Karma drops those). `pinned` matters:
+  a non-periodic B-spline starts at (P0 + 4 P1 + P2) / 6, which leaves Helen's Hair_Back roots ~2 cm (max 2.8) off
+  the scalp; pinned starts at P0. A shot's Curve shape is the curves' own type / basis / wrap (cubic + pinned for
+  B-spline / Catmull-Rom, linear + non-periodic for Linear; `adapter.karma_curve_values`, "token" values), with
+  Karma's curve_basis set back to 0: the Karma override smooths but never pins, wrap pinned or not (one-strand husk
+  test, Karma CPU and XPU, 2026-11-22). So the viewport shows the shot's shape too.
+  Inspector:
+  a curves row's SCHEME is its basis, FROM its source, WIDTH (col 8, `COL_WIDTH`, shown only when the tree has curves)
+  its scale; the curves rows' menu has Curve shape / Width (Karma) / Render as (Karma CPU). Clear overrides, Same
+  overrides on the other loaders and Bake (`BAKED_SUBD_CODE`'s `CURVES`) include them. No viewport thinning: Houdini GL
+  has no "draw a fraction of the curves" setting, and a per-frame proxy copy was turned down (the user's call); the
+  viewport toggle and the lookdev's proxy meshes keep the viewport light. Check: hython
+  `tests/houdini/anim_loader/accept_curve_rules.py <fake_project> <out>` (10 checks); sh025's char_Helen was checked
+  the same way and in the GUI (sandbox copy `sh025_curves_041.hiplc`, groom set to v004: it pointed at a v900 not on
+  disk). Seeing curves in the viewport (2026-11-22): Houdini 22's VK viewport in **MatCap** shading draws no
+  BasisCurves at all, and the stock SolarisLookDev desk opens its viewer in MatCap; the sh025 copies were saved with
+  that desk, so Helen looked bald and framing a groom prim missed. Smooth shading (the Solaris desk) draws them, and
+  framing /<instance>/Groom lands on the hair. Helen's lookdev also gives every groom curve `purpose = render`: in the
+  viewport they show only with each curve row's viewport toggle on (the Groom row's alone does not reach them).
+  Viewport check: published shape = smooth arcs, Linear = straight segments, as in Karma. A viewer inside a
+  ContextViewer is found by `adapter.scene_viewers`, not `hou.ui.paneTabOfType`; script it with flipbooks.
 - Manager › Subdivision column (the user's pick of three mockups, 2026-11-17: beside List / Grid, under them when
   narrower than 760 px): the selected loader's anim meshes by group (`logic.mesh_groups`, first two path levels),
   faces, where the scheme comes from (shot / lookdev / publish / default; on a mesh only when it differs from its

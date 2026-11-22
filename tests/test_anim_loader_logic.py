@@ -710,3 +710,87 @@ def test_version_picks_list_the_disk_newest_first(tmp_path):
     gone = replace(st, versions={**st.versions, "lookdev": "v007"})  # the node's version is gone from disk
     assert [(p.version, p.date == "") for p in version_picks(gone, "lookdev")][0] == ("v007", True)
     assert version_picks(replace(st, asset=None), "lookdev") == []
+
+
+# --- groom curves per shot (layout A, 2026-11-22) -------------------------------------------------------------
+
+HELEN_CURVES = {"/Groom/Hair_Back": {"type": "linear", "basis": "", "min_cvs": 37},
+                "/Groom/Eyelash": {"type": "linear", "basis": "", "min_cvs": 9},
+                "/Groom/Fuzz": {"type": "cubic", "basis": "catmullRom", "min_cvs": 4, "width_scale": 0.5}}
+
+
+def test_curve_plan_published_then_lookdev_then_shot():
+    from tools.fx.anim_loader.logic import curve_plan
+
+    plan = curve_plan(HELEN_CURVES, {}, [])
+    assert (plan["/Groom/Hair_Back"].basis, plan["/Groom/Hair_Back"].basis_source) == ("linear", "publish")
+    assert plan["/Groom/Fuzz"].basis == "catmullRom" and plan["/Groom/Fuzz"].width == 0.5
+    assert plan["/Groom/Eyelash"].width == 1.0 and plan["/Groom/Eyelash"].style == ""
+    look = {"/Groom/Eyelash": {"type": "cubic", "basis": "bspline"}, "/Groom/Fuzz": {"curve_basis": 1}}
+    plan = curve_plan(HELEN_CURVES, look, [])
+    assert (plan["/Groom/Eyelash"].basis, plan["/Groom/Eyelash"].basis_source) == ("bspline", "lookdev")
+    assert plan["/Groom/Fuzz"].basis == "linear"      # Karma's Force Linear authored by the lookdev
+    rules = [{"pattern": "Groom/**", "basis": "bspline", "width": 1.5},
+             {"pattern": "Groom/Eyelash", "width": 0.75, "style": "flat"}]
+    plan = curve_plan(HELEN_CURVES, look, rules)
+    hb, el = plan["/Groom/Hair_Back"], plan["/Groom/Eyelash"]
+    assert (hb.basis, hb.basis_source, hb.width, hb.width_source) == ("bspline", "shot", 1.5, "shot")
+    assert hb.published_basis == "linear"
+    assert (el.basis, el.width, el.style, el.style_source) == ("bspline", 0.75, "flat", "shot")  # later wins by field
+    assert el.min_cvs == 9
+
+
+def test_cubic_without_a_basis_is_usd_bezier():
+    from tools.fx.anim_loader.logic import curve_plan
+
+    assert curve_plan({"/Groom/x": {"type": "cubic"}}, {}, [])["/Groom/x"].basis == "bezier"
+
+
+def test_parse_curve_rules_drops_bad_fields():
+    from tools.fx.anim_loader.logic import parse_curve_rules
+
+    text = ('[{"pattern": "/Groom/a/", "basis": "bspline", "width": 2}, {"pattern": "Groom/b", "basis": "bezier"},'
+            ' {"pattern": "Groom/c", "width": -1, "style": "rounded"}, {"basis": "linear"}, 3, {"pattern": "Groom/d",'
+            ' "width": true}]')
+    assert parse_curve_rules(text) == [{"pattern": "Groom/a", "basis": "bspline", "width": 2.0},
+                                       {"pattern": "Groom/c", "style": "rounded"}]
+    assert parse_curve_rules("not json") == [] and parse_curve_rules("") == []
+
+
+def test_set_curve_rules_keeps_other_fields_and_drops_empty():
+    from tools.fx.anim_loader.logic import clear_curve_rules, set_curve_rules
+
+    r = set_curve_rules([], ["Groom/**"], basis="bspline")
+    r = set_curve_rules(r, ["Groom/Eyelash"], width=0.5)
+    r = set_curve_rules(r, ["Groom/**"], width=1.5)                    # basis kept, put last
+    assert r == [{"pattern": "Groom/Eyelash", "width": 0.5},
+                 {"pattern": "Groom/**", "basis": "bspline", "width": 1.5}]
+    r = set_curve_rules(r, ["Groom/Eyelash"], width=None)             # nothing left: dropped
+    assert r == [{"pattern": "Groom/**", "basis": "bspline", "width": 1.5}]
+    r = set_curve_rules(r, ["Groom/**"], basis=None, style="flat")
+    assert r == [{"pattern": "Groom/**", "width": 1.5, "style": "flat"}]
+    assert clear_curve_rules(r, ["Groom/**"]) == [] and clear_curve_rules(r, None) == []
+
+
+def test_curve_overrides_and_karma_values():
+    from tools.fx.anim_loader.logic import CURVE_BASIS_KARMA, CURVE_STYLE_KARMA, curve_overrides, width_word
+
+    rules = [{"pattern": "Groom/*", "basis": "bspline"}, {"pattern": "Groom/Eyelash", "basis": "linear"}]
+    assert curve_overrides("/Groom/Eyelash", rules) == {"basis": "linear"}
+    assert curve_overrides("/Groom/Hair/inner", rules) == {}           # one star stays in one level
+    assert CURVE_BASIS_KARMA["bspline"] == 3 and CURVE_BASIS_KARMA["catmullRom"] == 4
+    assert CURVE_STYLE_KARMA == {"flat": 0, "rounded": 1, "oriented": 2}
+    assert width_word(1.5) == "\u00d71.5" and width_word(1.0) == "\u00d71"
+
+
+def test_the_lookdevs_curve_shape_wins_unless_cubic_meets_short_curves():
+    """The user's call (2026-11-22): Helen's lookdev cubic B-spline renders, not her cache's linear; a cubic lookdev
+    over a cache with a 2-CV curve keeps the cache's linear (Karma drops cubic curves under 4 CVs)."""
+    from tools.fx.anim_loader.logic import curve_plan
+
+    look = {"/Groom/Hair_Back": {"type": "cubic", "basis": "bspline", "width_scale": 2.0}}
+    hb = curve_plan(HELEN_CURVES, look, [])["/Groom/Hair_Back"]
+    assert (hb.basis, hb.basis_source, hb.width, hb.width_source) == ("bspline", "lookdev", 2.0, "lookdev")
+    short = {"/Groom/Hair_Back": {**HELEN_CURVES["/Groom/Hair_Back"], "min_cvs": 2}}
+    st = curve_plan(short, look, [])["/Groom/Hair_Back"]
+    assert (st.basis, st.basis_source, st.width) == ("linear", "publish", 2.0)

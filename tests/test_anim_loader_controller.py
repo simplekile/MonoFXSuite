@@ -281,3 +281,19 @@ def test_add_says_where_the_nodes_went():
     b.add_assets = lambda root, names: (list(names), [])
     c.add_assets(["char_A", "prop_B"])
     assert c.message == "Added 2 assets."
+
+
+def test_curve_commands_say_what_karma_does():
+    from tools.fx.anim_loader.logic import KEEP
+
+    b = _subd_backend()
+    b.set_curves_many = lambda by, **f: b.calls.append(("curves", by, {k: v for k, v in f.items() if v is not KEEP}))
+    c = Controller(b)
+    c.set_curves("/stage/b", ["Groom/Hair_Back", "Groom/Eyelash"], basis="bspline")
+    assert b.calls[-1] == ("curves", {"/stage/b": ["Groom/Hair_Back", "Groom/Eyelash"]}, {"basis": "bspline"})
+    assert c.message == "Hair_Back, Eyelash: rendered B-spline (shot override, Karma)."
+    c.set_curves_many({"/stage/b": ["Groom/**"], "/stage/a": ["Groom/**"]}, width=None, style="flat")
+    assert c.message == "Groom, Groom: the publish's width, as flat ribbons (shot override, Karma)."
+    b.set_curves_many = lambda by, **f: False  # an older node without the parm
+    c.set_curves("/stage/b", ["Groom/**"], width=2.0)
+    assert "Upgrade" in c.message
