@@ -55,8 +55,8 @@ def test_version_menu_lists_the_disk_and_sets_the_pick(make):  # noqa: F811 (the
     assert w.result.text().endswith("lookdev V010.")
 
 
-def test_a_click_on_a_cell_of_a_selected_row_keeps_the_selection(make):  # noqa: F811 (the fixture)
-    from PySide6.QtCore import QPoint, Qt
+def test_only_the_cells_dropdown_arrow_opens_the_versions(make):  # noqa: F811 (the fixture)
+    from PySide6.QtCore import QPoint, QRect, Qt
     from PySide6.QtTest import QTest
 
     mk, ui = make
@@ -69,10 +69,17 @@ def test_a_click_on_a_cell_of_a_selected_row_keeps_the_selection(make):  # noqa:
     view = w.list_view
     rect = view.visualItemRect(_item(w, ui, "/stage/b"))
     cols, _ = view.itemDelegate().columns(rect)
+    cell = cols["lookdev"]
     QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
-                     QPoint(cols["lookdev"].center().x(), rect.top() + 20))
+                     QPoint(cell.center().x() - 10, rect.top() + 20))  # the cell's text: a plain select
     QTest.qWait(10)
-    assert opened == [("/stage/b", "lookdev", ("/stage/a", "/stage/b"))]
+    assert opened == [] and w.ctl.selection == ["/stage/b"]
+    for p in ("/stage/a", "/stage/b"):
+        _item(w, ui, p).setSelected(True)
+    arrow = view.itemDelegate().arrow_rect(QRect(cell.left(), rect.top(), cell.width(), w.px(40)))
+    QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, arrow.center())
+    QTest.qWait(10)
+    assert [(r, part, set(ps)) for r, part, ps in opened] == [("/stage/b", "lookdev", {"/stage/a", "/stage/b"})]
     assert set(w.ctl.selection) == {"/stage/a", "/stage/b"}
     QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
                      QPoint(rect.left() + 120, rect.top() + 20))  # the name: a plain select, no menu

@@ -439,7 +439,8 @@
   under it, Ctrl+click every group of the tree, to the state the clicked row goes to (`_MeshTree.on_chevron`: the
   last indentation step before the name). A plain click is Qt's own.
 - Manager versions (the user's picks, 2026-11-22): the first column is "Anim / Model" (narrow / cards: the row's
-  word, `part_word`). A click on a version cell opens that part's versions on disk (`logic.version_picks`: newest
+  word, `part_word`). A click on a version cell's dropdown arrow (`arrow_rect`, drawn only where the cell shows a
+  version or "missing", `has_versions`; the rest of the cell selects as before) opens that part's versions on disk (`logic.version_picks`: newest
   first, `VERSION_PICK_LIMIT` 15, date of the folder, Monos work-file author, greyed when it does not hold this
   instance's file); a pick runs `adapter.set_part_version` (the parm, then the node's own `cb_parm_changed`, one
   undo step). A click on a row that is part of a selection keeps the selection and sets them all. Shift / Ctrl

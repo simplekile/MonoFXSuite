@@ -419,6 +419,17 @@ def tex_cell(row: Row) -> tuple[str, str]:
     return logic.size_word(row.weight), TEXT_LABEL
 
 
+def has_versions(row: Row, part: str) -> bool:
+    """Whether a version cell gets the dropdown arrow: a loader (not an old one, not a sublayer) with that part
+    published or on the node; a camera only its anim."""
+    if row is None or row.legacy or row.kind == "layer" or (row.kind == "cam" and part != "anim"):
+        return False
+    if part != "anim" and part not in row.versions and part not in row.parts:
+        return False
+    text, _color = part_cell(row, part)
+    return text not in ("", "–")  # a version or "missing"; nothing on the node ("–"): no arrow
+
+
 def part_cell(row: Row, part: str) -> tuple[str, str]:
     """(text, colour) of a part's cell: the version plain, colour only when something is to be done."""
     st, newer = row.parts.get(part, (logic.STATUS_OFF, None))
@@ -456,6 +467,22 @@ class _ListDelegate(QStyledItemDelegate):
             out[key] = QRect(x - w, rect.top(), w, rect.height())
             x -= w + pt.px(8)
         return out, x
+
+    def arrow_rect(self, cell: QRect) -> QRect:
+        """The dropdown arrow at a version cell's right edge."""
+        size = self.pt.px(14)
+        return QRect(cell.right() - size - self.pt.px(4), cell.center().y() - size // 2 + 1, size, size)
+
+    def arrow_at(self, rect: QRect, pos) -> str:
+        """The part whose dropdown arrow is under ``pos`` in a row's ``rect`` (a little room around it), else ""."""
+        cols, _ = self.columns(QRect(rect.left(), rect.top(), rect.width(), rect.height()))
+        pad = self.pt.px(4)
+        for part in ALL_PARTS:
+            if part in cols:
+                cell = QRect(cols[part].left(), rect.top(), cols[part].width(), self.pt.px(40))
+                if self.arrow_rect(cell).adjusted(-pad, -pad, pad, pad).contains(pos):
+                    return part
+        return ""
 
     def part_at(self, rect: QRect, pos) -> str:
         """The part column ("anim", "lookdev", "groom", "cloth") under ``pos`` in a row's ``rect``, else ""."""
@@ -548,7 +575,14 @@ class _ListDelegate(QStyledItemDelegate):
                 text, color = part_cell(row, part)
                 if selected and color == ACCENT:  # 4.5:1 on the selected fill, and on selected + hover
                     color = "#86abff" if hover else ACCENT_ON_SELECTED
-                self._text(p, r, text, color, FS_SMALL, align=Qt.AlignmentFlag.AlignHCenter)
+                arrow = self.arrow_rect(r)
+                # the text centred in what the arrow leaves, every cell alike (with or without an arrow)
+                self._text(p, r.adjusted(0, 0, -(r.right() - arrow.left()), 0), text, color, FS_SMALL,
+                           align=Qt.AlignmentFlag.AlignHCenter)
+                if has_versions(row, part):  # a click on it opens the versions (the user's ask, 2026-11-22)
+                    p.drawPixmap(arrow, _crisp_icon("chevron-down", arrow.width(),
+                                                    TEXT_LABEL if hover or selected else TEXT_META).pixmap(
+                        arrow.width()))
         p.restore()
 
     def sizeHint(self, option, index) -> QSize:
@@ -1407,18 +1441,14 @@ class AnimLoaderManager(QWidget):
         self.column_header.update()
 
     def _version_cell(self, view, pos) -> tuple:
-        """(row, part) when ``pos`` is on a version cell a menu can change, else (None, "")."""
+        """(row, part) when ``pos`` is on a version cell's dropdown arrow, else (None, "")."""
         item = view.itemAt(pos)
         row = item.data(ROLE_ROW) if item is not None else None
         delegate = view.itemDelegate()
-        if row is None or row.legacy or row.kind == "layer" or not hasattr(delegate, "part_at"):
+        if row is None or not hasattr(delegate, "arrow_at"):
             return None, ""
-        part = delegate.part_at(view.visualItemRect(item), pos)
-        if not part or (part != "anim" and part not in row.versions and part not in row.parts):
-            return None, ""
-        if row.kind == "cam" and part != "anim":
-            return None, ""
-        return row, part
+        part = delegate.arrow_at(view.visualItemRect(item), pos)  # only the cell's dropdown arrow opens it
+        return (row, part) if part and has_versions(row, part) else (None, "")
 
     # compact (the user's ask, 2026-11-22: "gon menu version"): tighter rows at the small size, no header band
     STYLE_MENU_COMPACT = STYLE_MENU_SQ.replace("padding: 7px 16px", "padding: 4px 14px 4px 8px").replace(
