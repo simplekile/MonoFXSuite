@@ -114,8 +114,21 @@ def _state_module():
                                                  "set_new_lock")})
     mod.current_tool = lambda: now["tool"]
     mod.calls, mod.now = calls, now
-    mod.HOOKS = {"tool": [], "write": None}
     return mod
+
+
+@pytest.fixture(autouse=True)
+def _keys_hooks():
+    """The panel registers on B3's real `points_keys.HOOKS` (a module global): each test starts and ends clean."""
+    keys = S.points_keys()
+    if keys is None:
+        yield
+        return
+    saved = (list(keys.HOOKS["tool"]) if isinstance(keys.HOOKS["tool"], list) else keys.HOOKS["tool"],
+             keys.HOOKS["write"])
+    keys.HOOKS["tool"], keys.HOOKS["write"] = [], None
+    yield
+    keys.HOOKS["tool"], keys.HOOKS["write"] = saved
 
 
 @pytest.fixture
@@ -224,6 +237,25 @@ def test_paint_cell_paints_the_selected_paint_layer_and_ends_edit_points(env) ->
     assert adapter.painting is None and _on(view) == S.TOOL_POINTS
 
 
+def test_a_lock_row_picked_while_painting_ends_paint_and_keeps_the_lock(env) -> None:
+    """select() inside the tree's selection signal: Paint ends without a tree rebuild there (it re-selected the
+    paint layer over the clicked lock, t82 gui4); the next poll rebuilds it with the lock selected."""
+    adapter, view, c = env
+    data = adapter.read_data(None)
+    dens = data.add_mask("Crown thin", kind="density", density=75.0).id
+    crown = data.add_mask("Crown", kind="paint", parent=dens).id
+    adapter.text = data.to_json()
+    c.select(SEL_LAYER, (crown,))
+    assert c.set_tool(S.TOOL_PAINT) and adapter.painting == crown
+    built = []
+    shown = view.show_tree
+    view.show_tree = lambda rows: (built.append(rows), shown(rows))
+    c.select("locks", (2,))
+    assert adapter.painting is None and c.selection == ("locks", (2,)) and built == []
+    c.poll()
+    assert built and view.selection == ("locks", (2,))   # on the poll, outside the signal
+
+
 def test_edit_points_with_nothing_selected_is_on_and_asks_for_a_lock(env) -> None:
     adapter, view, c = env
     assert c.set_tool(S.TOOL_POINTS)
@@ -283,7 +315,10 @@ def test_the_state_ending_in_the_viewport_reaches_the_panel(env) -> None:
     adapter, view, c = env
     c.select_locks([1])
     c.set_tool(S.TOOL_POINTS)
-    hooks = adapter.points_state.HOOKS
+    keys = S.points_keys()
+    if keys is None:
+        pytest.skip("points_keys (B3) not on this branch")
+    hooks = keys.HOOKS
     assert c._on_tool_record in hooks["tool"] and hooks["write"] == c._on_state_write
     adapter.points_state.now["tool"] = "select"        # Esc in the viewport
     c.poll()
@@ -297,6 +332,58 @@ def test_the_state_ending_in_the_viewport_reaches_the_panel(env) -> None:
     assert view.messages[-1][0] == "Turned: fringe_01"
     c.set_node(adapter.node)                         # another node: the hook goes
     assert c._on_tool_record not in hooks["tool"]
+
+
+def test_the_real_record_reaches_the_panel_and_paint_ends_the_shape_tool(env) -> None:
+    """B3's own `points_keys.update` (what the state calls on R / E, a drag's message, Paint's `yield_to_paint`)."""
+    keys = S.points_keys()
+    if keys is None:
+        pytest.skip("points_keys (B3) not on this branch")
+    adapter, view, c = env
+    keys.reset()
+    c.select_locks([1])
+    c.set_tool(S.TOOL_POINTS)
+    keys.update(tool="points", mode="scale", held="rotate", message="Moved 2 handles of fringe_01")
+    c.poll()
+    assert c.drag_mode == "scale" and view.tools[1]["held"] == "rotate"
+    assert view.messages[-1][0] == "Moved 2 handles of fringe_01"
+    keys.update(held="")
+    c.poll()
+    assert view.tools[1]["held"] == ""
+    keys.update(lock_ids=[2])                           # a click on another lock's hair in the viewport
+    c.poll()
+    assert c.selection == ("locks", (2,))
+    keys.update(lock_ids=[])                            # a click on empty space keeps the selection
+    c.poll()
+    assert c.selection == ("locks", (2,))
+    keys.update(tool="paint", held="")                  # yield_to_paint: Paint took the viewport
+    adapter.points_state.now["tool"] = "paint"
+    c.poll()
+    assert c.tool == S.TOOL_SELECT
+    keys.reset()
+
+
+def test_a_row_picked_in_edit_points_rebuilds_the_tree_only_on_the_next_poll(env) -> None:
+    """select() runs inside Qt's selection signal of the tree: a rebuild there deleted the item Qt was selecting
+    and Houdini crashed (t82 gui3)."""
+    adapter, view, c = env
+    c.select_locks([1])
+    c.set_tool(S.TOOL_POINTS)
+    built = []
+    shown = view.show_tree
+    view.show_tree = lambda rows: (built.append(rows), shown(rows))
+    c.select("locks", (2,))
+    assert built == [] and adapter.points_state.calls[-1] == ("set_locks", ([2],))
+    c.poll()
+    assert len(built) == 1 and any(r.get("editing") for r in _flat(built[0]))
+    c.poll()
+    assert len(built) == 1
+
+
+def _flat(rows):
+    for r in rows:
+        yield r
+        yield from _flat(r.get("children", []))
 
 
 def test_drag_mode_and_next_lock_go_to_the_state(env) -> None:

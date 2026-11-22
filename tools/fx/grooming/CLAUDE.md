@@ -1122,6 +1122,14 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     clipped; narrow (< NARROW_PX) the cells are icons, Reset a 28 px flat icon, spacing 6: one line at 400 px (39 px
     strip at scale 1, 50 px at 1.5); at 760 px Reset shape goes to a second line, as in the mockup. Minus / plus are
     `step_size` (28 px, 24 at least): at the default Medium font size 24 x 28 gave 22 px, under the floor.
+  - Joined with B3's state (2026-11-22, t82 `gui4`): the panel registers on `points_keys.HOOKS` itself (the state
+    module has no HOOKS of its own; a fake with one passed while the real joint did nothing). The record's `tool`
+    "paint" (`yield_to_paint`) ends the panel's shape tool; its `lock_ids` (a click on hair) become the panel's
+    selection (an empty list, a click on empty space, changes nothing); `held` lights the strip's cell; `message`
+    goes to the message line. `spine_follow` never rebuilds the tree: it runs inside Qt's selection signal of a
+    row click, and `show_tree` there deleted the item being selected, Houdini crashed in
+    `QTreeWidgetItem::setSelected`; the rows' "editing" marks come on the next poll (`_rows_dirty`). Offscreen
+    tests never caught it: only a tree rebuilt while Qt was still inside its own call does.
   - grooming-check on an edited groom (B5, t83, 2026-11-22): `qc_metrics.py` measures every lock against
     `MESH_CARRIED` (`--mesh modelled` for comparison only), the reference against `pieces`. A drawn lock (`drawn` on
     SPINES) is left out of every mesh number (VEX writes -1, `summary` masks it, its row's mesh fields are None) and

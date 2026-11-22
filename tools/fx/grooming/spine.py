@@ -172,6 +172,7 @@ class SpineMixin:
     tool: str = TOOL_SELECT       # Edit points / Draw lock as the panel knows it (Paint: `paint_layer_id`)
     drag_mode: str = "move"
     _tool_dirty = False
+    _rows_dirty = False          # the tree's "editing" marks wait for the next poll (spine_follow)
     _spine_known: tuple | None = None   # drawn lock ids last shown (a new one while drawing becomes the selection)
     _scalp_cache: tuple | None = None
 
@@ -218,10 +219,9 @@ class SpineMixin:
         return True if result is None else result
 
     def _key_hooks(self) -> dict | None:
+        """`points_keys.HOOKS`, the one the viewer state calls (`pk.update`, the state's writes); None without B3."""
         keys = points_keys()
         hooks = getattr(keys, "HOOKS", None) if keys is not None else None
-        if hooks is None:
-            hooks = getattr(self.points_state(), "HOOKS", None)
         return hooks if isinstance(hooks, dict) else None
 
     def _hook_keys(self) -> None:
@@ -585,9 +585,30 @@ class SpineMixin:
             self.show_tools()
         return done
 
+    @contextlib.contextmanager
+    def inside_selection(self):
+        """Inside Qt's selection signal of the tree (a row click): Paint going on / off there must not rebuild the
+        tree (`_show_paint`), it waits for the next poll. A rebuild deleted the item Qt was selecting (t82 gui3
+        crash) and re-selected the paint layer over the lock just clicked (gui4)."""
+        before = self.__dict__.get("_inside_selection", False)
+        self.__dict__["_inside_selection"] = True
+        try:
+            yield
+        finally:
+            self.__dict__["_inside_selection"] = before
+
+    def _show_paint(self) -> None:
+        if not self.__dict__.get("_inside_selection"):
+            super()._show_paint()   # type: ignore[misc]
+            return
+        if hasattr(self.view, "set_paint_state"):
+            self.view.set_paint_state(self.paint_layer_id is not None, self.brush_state())   # type: ignore[attr-defined]
+        self._rows_dirty = True
+
     def select_layer(self, layer_id: int) -> None:
         """A layer row: the Paint cell is usable only on one paint layer, so the Tool bar follows."""
-        super().select_layer(layer_id)   # type: ignore[misc]
+        with self.inside_selection():
+            super().select_layer(layer_id)   # type: ignore[misc]
         if self.tool == TOOL_POINTS:
             self.spine_follow()
         else:
@@ -608,8 +629,10 @@ class SpineMixin:
         self._state_call("set_locks", ids)
         if why:
             self.view.set_message(why)
-        self.view.show_tree(self.tree_rows(data))
-        self.view.set_selection(self.selection)
+        # the rows' "editing" marks: on the next poll, never here. This runs inside Qt's selection signal of the
+        # tree (a click on a row), and rebuilding the tree there deleted the item Qt was selecting: Houdini
+        # crashed in QTreeWidgetItem::setSelected (t82 gui3, a row picked while Edit points was on)
+        self._rows_dirty = True
         self.show_tools(data)
 
     def tool_reset(self) -> None:
@@ -799,6 +822,11 @@ class SpineMixin:
     # ------------------------------------------------------------------
     def poll_spine(self) -> None:
         """The viewer state ended or changed its tool / mode / next lock in the viewport: the panel follows."""
+        if self._rows_dirty and self.node is not None:
+            self._rows_dirty = False
+            data = self.data()
+            self.view.show_tree(self.tree_rows(data))
+            self.view.set_selection(self.selection)
         mod = self.points_state()
         now = getattr(mod, "current_tool", None) if mod is not None else None
         changed = False
@@ -807,7 +835,7 @@ class SpineMixin:
                 got = now()
             except Exception:
                 got = self.tool
-            if got in (None, "", TOOL_SELECT):
+            if got in (None, "", TOOL_SELECT, TOOL_PAINT):   # ended, or Paint took the viewport (yield_to_paint)
                 self.tool = TOOL_SELECT
                 changed = True
         if self._tool_dirty:
@@ -822,18 +850,42 @@ class SpineMixin:
                     if v is not None:
                         self.new_lock[key] = v
                 t = getattr(rec, "tool", None)
+                if t == TOOL_PAINT:
+                    t = TOOL_SELECT        # the record says Paint: the panel's Paint is `paint_layer_id`
                 if t in (TOOL_SELECT, TOOL_POINTS, TOOL_DRAW) and t != self.tool:
                     self.tool = t
                     changed = True
                 text = getattr(rec, "message", "")
                 if text:
                     self.view.set_message(str(text))
+                self._follow_state_locks(rec)
             changed = True
         if changed:
             if self.node is not None and self.node_alive():
                 self._show_tool_change()
             else:
                 self.show_tools()
+
+    def _follow_state_locks(self, rec: Any) -> None:
+        """A click on hair in Edit points (the state's `lock_ids`): the panel selects those locks too. An empty
+        list (a click on empty space keeps the selection in the state) changes nothing here."""
+        if self.tool != TOOL_POINTS or getattr(rec, "tool", None) != TOOL_POINTS or self.node is None:
+            return
+        try:
+            ids = [int(i) for i in (getattr(rec, "lock_ids", None) or ())]
+        except (TypeError, ValueError):
+            return
+        if not ids:
+            return
+        data = self.data()
+        known = {lk.id for lk in data.locks}
+        ids = [i for i in ids if i in known]
+        shown, _why = self.edit_targets(data)
+        if not ids or sorted(ids) == sorted(shown):
+            return
+        self.selection = ("locks", tuple(ids))
+        self.view.set_selection(self.selection)
+        self.view.show_properties(self.properties(data))
 
     def spine_after_refresh(self, data: model.GroomData) -> None:
         """A drawn lock appeared while Draw lock is on: it becomes the selection (review 4) and the line says what

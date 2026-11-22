@@ -1474,7 +1474,8 @@ class GroomController(SpineMixin, LayersMixin):
             self.select_layer(ids[0])
             return
         if self.paint_layer_id is not None:   # a lock row paints nothing: Paint ends
-            self.paint_off()
+            with self.inside_selection():   # the tree is rebuilt on the next poll, not inside its signal
+                self.paint_off()
         data = self.data()
         if kind == SEL_LOCKS:
             ids = [i for i in ids if data.lock(i) is not None]
