@@ -1264,13 +1264,25 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     detail wrangle over every piece's points per frame cost 0.7-0.8 s; the rest-only sample lists + a parallel fit
     0.1 s. Prototype nodes outside the HDA must be force-cooked per frame (an Object Merge of an inner node did not
     pass time dependency on).
-  - Measured (s6, run17s6, all 61 locks, sh020 frames 10 / 25 / 45 / 60 / 75 / 105 / 135, sh025 5 / 20 / 25 / 40 / 50):
-    0 folds (v0.1 19 / 10); nothing left behind; output 1 0.36-0.41 s a frame (v0.1 0.92-0.98); edited locks (tip 2 cm,
-    turn 25 deg) on sh025's 9 locks all pass. Not met, with their causes (t79 report 9.6): unedited length p95 over 5 %
-    on 13 / 76 lock-frames (v0.1 34 / 105) where the animated pieces themselves stretch (sh025's back pieces 5-8 %
-    longer at every frame, sh020's fringe tips' surface 1.2-1.4); roots off the animated scalp more than v0.1's +
-    0.01 cm on 17 / 79 lock-frames (by 0.02-0.08 cm; medians as v0.1's); 5 of sh020's 280 edited cases at 2.2-2.4 %,
-    where the unedited lock itself changes 1-1.7 % with its piece.
+  - An edited lock's rebuilt centreline takes its piece's own length change segment by segment (`piece_fk`; the plan
+    2026-11-23: the edit adds no stretch of its own): kept at rest length it was 2-4 % off the unedited lock where the
+    pieces stretch. A strand's place never goes back along it (`VEX_PIECE_U`).
+  - Lines (the plan, 2026-11-23, after the cause was traced: the animation stretches the pieces): unedited strand
+    length within 5 % (p95) of its piece's length ratio over the strand's span; edited median within 2 % of the
+    unedited lock's at that frame; roots within 0.1 cm (p95) of the animated scalp. s6 run19s6 (all 61 locks, sh020
+    frames 10 / 25 / 45 / 60 / 75 / 105 / 135, sh025 5 / 20 / 25 / 40 / 50): 0 folds (v0.1 19 / 10); nothing left behind;
+    every edited case (sh020's 20 fringe locks, sh025's 9) within 2 % of the unedited lock and 5 deg; output 1 0.29-0.43 s
+    a frame (v0.1 0.94-1.13). Not met, causes in t79 report 9.7: length against the piece on 36 / 5 lock-frames (v0.1 64 /
+    25; fringe bang_02/03/04/07/12/14/19/20, back_15); roots over 0.1 cm on 76 / 58 lock-frames (v0.1 78 / 30): the
+    animated hair mesh by the roots lifts off the head in the shot (hair_back_03 on sh025: p95 0.45 cm at rest, 1.40 at
+    frame 40), and roots that follow the mesh leave the scalp with it; with the animated scalp wired they could follow
+    the skin as drawn locks do (not built). Frame to frame (no jump asked): a strand's tip past its piece's last sample
+    rides that sample's rotation, which jitters with the end of the animated piece: hair_back_07 sh025 20 -> 21, tip
+    0.99 cm against the piece's 0.56.
+  - accept_v02b after the change: s1 grades the edited lock against the unedited one at that frame (the plan's line);
+    s5 (three-input scenes) grades the same strands and points a strand and no error, and reports the move from v0.1
+    (3.1 / 7.6 cm at most on sh020 / sh025), since the deform that replaced v0.1's moves every lock; r1 (rest) still
+    holds this build to the old build's own spread.
 - v0.2b lock redraw, B3 viewer state (2026-11-22; sandbox `tests/t81_points_state/`, `report.md` there; GUI acceptance
   `tests/houdini/grooming/accept_v02b_gui.py`, pytest `tests/test_grooming_points_keys.py`):
   - `apps/houdini/grooming_points_state.py`: ONE Python state `config.POINTS_STATE` for Edit points and Draw lock,

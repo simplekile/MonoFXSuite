@@ -8,7 +8,9 @@ A fresh groom (as accept_v02b_shot makes it), output 1 (GROOM) read at each fram
                   or a new kink over 90 deg the piece does not have (the plan's rule; centreline = the strands resampled
                   by length and averaged, 32 points; the piece's = its points binned by `pu`, 24 bins)
   piece_folds     the piece itself: turning +90 over rest or a new kink over 90
-  len_p50/p95     strand length at the frame / at rest
+  len_p50/p95     strand length at the frame / at rest (reported)
+  len_vs_piece    each strand's length ratio / its piece's over the strand's span (48 bins of `pu`); graded:
+                  p95 of |x - 1| (the plan, 2026-11-23: the animation stretches the pieces)
   roots_skin_p95  the roots off the animated scalp (the scene's head through its own scalp nodes, as accept_v02b_shot)
   left_behind     strand points still where they were at rest
   to_piece        the hair centreline's median distance to its piece's centreline, frame and rest
@@ -90,6 +92,18 @@ def piece_line(P, pc, n=24):
     return np.array([X[b == k].mean(0) for k in range(n) if (b == k).any()])
 
 
+def span_ratio(rest_strand, L0, L1):
+    """The piece's length ratio (frame / rest) over the strand's span along it: the piece's centreline (48 bins of `pu`)
+    between the bins nearest the strand's rest points, widened to 3 bins when shorter."""
+    k = np.argmin(((rest_strand[:, None, :] - L0[None, :, :]) ** 2).sum(-1), axis=1)
+    lo, hi = int(k.min()), int(k.max())
+    if hi - lo < 2:
+        lo, hi = max(0, lo - 1), min(len(L0) - 1, hi + 1)
+    a = np.linalg.norm(np.diff(L0[lo:hi + 1], axis=0), axis=1).sum()
+    b = np.linalg.norm(np.diff(L1[lo:hi + 1], axis=0), axis=1).sum()
+    return b / max(a, 1e-9)
+
+
 def lens(d):
     return {s: float(np.linalg.norm(np.diff(P, axis=0), axis=1).sum()) for s, P in d.items()}
 
@@ -104,6 +118,7 @@ R_LINE = {lid: centreline(list(d.values())) for lid, d in REST.items()}
 R_TURN = {lid: turning(c) for lid, c in R_LINE.items()}
 P_LINE = {lid: piece_line(P_mesh, pc) for lid, pc in PIECE.items() if pc >= 0}
 P_TURN = {lid: turning(c) for lid, c in P_LINE.items()}
+P_LINE48 = {lid: piece_line(P_mesh, pc, 48) for lid, pc in PIECE.items() if pc >= 0}
 out = {"suite": SUITE, "hip": HIP, "frames": FRAMES, "rest_frame": rest_frame, "unedited": {}, "cost_s": {},
        "edited": {}, "consecutive": {}, "deform_problem": ga.deform_problem(node)}
 samples = {}
@@ -120,7 +135,12 @@ for i, f in enumerate(FRAMES):
         if pc < 0 or lid not in REST:
             continue
         L1 = lens(d)
-        r = np.array([L1[s] / max(R_LEN[lid][s], 1e-9) for s in d if s in R_LEN[lid]])
+        sids = [s for s in d if s in R_LEN[lid]]
+        r = np.array([L1[s] / max(R_LEN[lid][s], 1e-9) for s in sids])
+        # the plan (2026-11-23): each strand's length ratio against its piece's over the strand's span
+        pl48 = piece_line(PA, pc, 48)
+        pr = np.array([span_ratio(REST[lid][s], P_LINE48[lid], pl48) for s in sids])
+        rel = r / np.maximum(pr, 1e-9)
         t1, k1 = turning(centreline(list(d.values())))
         pl1 = piece_line(PA, pc)
         pt1, pk1 = turning(pl1)
@@ -135,6 +155,8 @@ for i, f in enumerate(FRAMES):
             "piece_folds": bool((pt1 - pt0 > 90) or (pk1 > 90 and pk0 <= 90)),
             "hair_turn_change": t1 - t0_, "piece_turn_change": pt1 - pt0, "hair_kink": k1, "piece_kink": pk1,
             "len_p50": float(np.median(r)), "len_p95": float(np.percentile(r, 95)),
+            "len_vs_piece_p95_off": float(np.percentile(np.abs(rel - 1), 95)), "len_vs_piece_p50": float(np.median(rel)),
+            "piece_span_ratio_p50": float(np.median(pr)),
             "roots_skin_p95_cm": float(np.percentile(skin, 95)) if len(skin) else None, "left_behind": left,
             "to_piece_rest_cm": gap(R_LINE[lid], P_LINE[lid]), "to_piece_now_cm": gap(centreline(list(d.values())), pl1),
             "piece_len_ratio": float(np.linalg.norm(np.diff(pl1, axis=0), axis=1).sum()

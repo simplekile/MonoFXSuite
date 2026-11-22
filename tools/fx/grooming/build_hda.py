@@ -1778,11 +1778,20 @@ int pc = prim(2, "piece", sp);
 if (pc < 0) return;
 string grp = "@piece=" + itoa(pc);
 int pts[] = primpoints(0, @primnum);
-foreach (int pt; pts) {
+int np = len(pts);
+float us[]; resize(us, np);
+for (int i = 0; i < np; i++) {
     int hp; vector uv;
-    xyzdist(1, grp, point(0, "P", pt), hp, uv);
-    setpointattrib(0, "dfu", pt, hp >= 0 ? primuv(1, "pu", hp, uv) : 0.0);
+    xyzdist(1, grp, point(0, "P", pts[i]), hp, uv);
+    us[i] = hp >= 0 ? primuv(1, "pu", hp, uv) : 0.0;
 }
+// the place never goes back along the strand, in the way the strand runs (a flipped lock's runs down): a point past
+// its piece's end, or over a hook, can find its nearest face on another part of the piece
+if (np > 3) {
+    float run = us[int(np * 0.75)] - us[int(np * 0.25)];
+    for (int i = 1; i < np; i++) us[i] = run >= 0 ? max(us[i], us[i - 1]) : min(us[i], us[i - 1]);
+}
+for (int i = 0; i < np; i++) setpointattrib(0, "dfu", pts[i], us[i]);
 float rad = %(rr)s / max(chf("../unit_cm"), 1e-6);
 vector r = point(0, "P", pts[0]);
 int nb[] = nearpoints(3, "", r, rad, %(rn)d);
@@ -1897,7 +1906,13 @@ for (int k = 1; k < n; k++) {
     if (dot(qa, qb) < 0) qb = -qb;
     matrix3 Rm = qconvert(normalize(qa + qb));
     vector ea = point(0, "e0", pp[k - 1]), eb = point(0, "e0", pp[k]);
-    e1 += (eb - ea) * Rm;
+    // the piece's own length change over this segment (the plan, 2026-11-23: the edit adds no stretch of its own, the
+    // animation's it takes like the unedited lock; kept at rest length, an edited lock was 3-4 % shorter than the
+    // unedited one where sh025's pieces stretch)
+    vector ca0 = point(0, "c0", pp[k - 1]), cb0 = point(0, "c0", pp[k]), ca1 = point(0, "c1", pp[k - 1]), cb1 = point(0, "c1", pp[k]);
+    float l0 = distance(ca0, cb0);
+    float st = l0 > 1e-9 ? distance(ca1, cb1) / l0 : 1.0;
+    e1 += (eb - ea) * Rm * st;
     setpointattrib(0, "e1", pp[k], e1);
 }
 """
