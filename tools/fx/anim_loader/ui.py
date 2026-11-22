@@ -1994,6 +1994,25 @@ def open_manager(parent_path: str = "/stage") -> AnimLoaderManager:
     return _WINDOW
 
 
+PYPANEL_NAME = "monofx_loader"  # python_panels/monofx_loader.pypanel, the pane of desktop/Mono_Solaris.desk
+DESK_NAME = "Mono_Solaris"
+
+
+def create_panel(parent_path: str = "/stage") -> AnimLoaderManager:
+    """The manager as a Python Panel (``onCreateInterface``): Houdini docks it, so no window flag and no size; each
+    pane gets its own manager, apart from ``open_manager``'s floating one, at the same panel size. Its scan thread
+    ends with the pane. A new panel size reaches a pane when it is made again."""
+    import hou
+
+    from apps.houdini.anim_loader_adapter import HoudiniBackend
+
+    panel = AnimLoaderManager(HoudiniBackend(parent_path), None,
+                              scale=panel_scale(hou.ui.scaledSize(1000) / 1000.0))
+    pool = panel._pool
+    panel.destroyed.connect(lambda *_: pool.shutdown(wait=False))
+    return panel
+
+
 # --- scene prompts: heavy shot (the user's decision, 2026-11-17), loaders behind (2026-11-19) ------------------
 # Non-modal: a modal box would hold Houdini and the MCP bridge (and a farm job) until someone clicks. Both sit at the
 # bottom right of Houdini's main window, stacked (heavy shot at the bottom, loaders behind above it), and move down
@@ -2700,10 +2719,7 @@ class InspectorPanel(QWidget):
         top.addWidget(self.title)
         top.addSpacing(owner.px(6))
         self.details = _Props(owner)  # node, kind, shot / asset, versions, textures, subdivision
-        self.details_head = _Section(owner, "Details", "details", self.details)
-        top.addWidget(self.details_head)
-        top.addWidget(self.details)
-        top.addSpacing(owner.px(6))
+        self.details_head = _Section(owner, "Details", "details", self.details)  # at the bottom (see below)
         self.news = _Props(owner)  # which part, version, published, by, what changed
         self.news_head = _Section(owner, "Newer version", "news", self.news)
         top.addWidget(self.news_head)
@@ -2807,6 +2823,15 @@ class InspectorPanel(QWidget):
         self.hint.setContentsMargins(side, 0, side, 0)
         lay.addWidget(self.hint)
         lay.addStretch(0)
+        # Details last, at the bottom of the inspector (the user's ask, 2026-11-22): the prims come right under the
+        # name; without a tree (a camera) the stretch above keeps Details at the bottom too
+        foot = QWidget()
+        bottom = QVBoxLayout(foot)
+        bottom.setContentsMargins(side, owner.px(6), side, owner.px(8))
+        bottom.setSpacing(owner.px(4))
+        bottom.addWidget(self.details_head)
+        bottom.addWidget(self.details)
+        lay.addWidget(foot)
 
     def sizeHint(self) -> QSize:
         return QSize(self.owner.px(360), self.owner.px(400))
