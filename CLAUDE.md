@@ -422,7 +422,8 @@
   not by calling the adapter's function.
 - Selection follows between the Scene Viewer and the inspector tree (the user's ask, 2026-11-22): the manager reads
   each LOP viewer's `currentSceneGraphSelection()` on a timer (`SELECTION_POLL_MS`, no Houdini callback for it;
-  `adapter.viewport_prims`). The viewer draws its network's viewer / display node's stage, not the selected node's
+  `adapter.viewport_prims`) run from Houdini's idle loop (`ui._when_idle`, hdefereval: a read mid-cook fails the
+  cook, as Grooming's poll did); the tree's pick sets the viewer's selection with undo off. The viewer draws its network's viewer / display node's stage, not the selected node's
   (the user's case: display on one node, another selected), so only loaders feeding that node take part
   (`adapter.displayed_loaders`), and each loader's root is looked up on that stage (`logic.drawn_roots`, a walk to
   depth 6 cached per cook): the shot layout moves it (sh025: /char_Helen drawn at /World/anim/actors/char_Helen);
@@ -437,6 +438,44 @@
 - Inspector tree folds (the user's ask, 2026-11-22): Shift+click a group's arrow folds or opens it and every group
   under it, Ctrl+click every group of the tree, to the state the clicked row goes to (`_MeshTree.on_chevron`: the
   last indentation step before the name). A plain click is Qt's own.
+- Manager versions (the user's picks, 2026-11-22): the first column is "Anim / Model" (narrow / cards: the row's
+  word, `part_word`). A click on a version cell's dropdown arrow (`arrow_rect`, drawn only where the cell shows a
+  version or "missing", `has_versions`; the rest of the cell selects as before) opens that part's versions on disk (`logic.version_picks`: newest
+  first, `VERSION_PICK_LIMIT` 15, date of the folder, Monos work-file author, greyed when it does not hold this
+  instance's file); a pick runs `adapter.set_part_version` (the parm, then the node's own `cb_parm_changed`, one
+  undo step). A click on a row that is part of a selection keeps the selection and sets them all. Shift / Ctrl
+  clicks still select. ~50 ms on sh025, read on the click.
+- The list never switches to its two-line narrow row (`NARROW_ROW_PX` 0): it scrolls sideways (the user's ask).
+  Right-click its header: which columns show (`list_hidden_columns` in the prefs). Column menus (`_ToggleMenu`)
+  stay open while toggled; a click outside or Esc closes them.
+- Inspector tree columns: PRIM fills by default; dragged, it keeps that width (narrower too) and the last column
+  shown takes what is left (`_fill_last`, live while dragging); the content columns are Interactive, sized by
+  `_fit_name`.
+- Camera section: Aperture is the node's `mx_cam_aperture` menu (`adapter.cam_mode` / `set_cam_mode`); the line
+  under it is the camera's aperture as the loader puts it out (`Controller.camera`), Width shows only in the width
+  modes, Ratio only in "Set width and ratio", Focal length read-only.
+- Panel size (the user's report, 2026-11-22: big next to Houdini): `open_manager` scales by Houdini's UI scale
+  times `PANEL_SIZES` (prefs `panel_size`): "Like Houdini" (default) 12 / 14, since Houdini's text is 12 px at
+  scale 1 (18 px measured at 1.5) and the panel's body text was made at 14; Medium is the size before. Picked from
+  the list header's right-click menu; the window opens again at the new size.
+- Add assets drawer (the user's review, 2026-11-22): the picks live in the drawer (`AddDrawer._picks`), not in
+  the grid's selection, so a chip or the search never drops one ("N picked, M hidden by the filter"); Add and a
+  drop that lands clear them. Shift+click picks a range from the last clicked card, Clear unpicks all, a
+  double-click adds that asset and keeps the drawer open. A drag from an unpicked card carries it alone (Qt picked
+  it on the press: unpicked again), from a picked card every pick. `refresh_badges` rewrites the cards' second line
+  after each scan, without filling the grid again (scroll and picks stay).
+- Manager menus (2026-11-22): + opens Add assets (no menu); the shot crumb's menu starts with Load <shot> and its
+  versions, then the shots. The row menu: Update / Switch source / Reload / Retarget, then Select node / Frame /
+  Open folder (the clicked column's part first) / Open in Monos, then Asset (only when the loader needs one) and
+  Bake; an icon on every item. The version menu has no header band (one only for several loaders), dates without
+  this year (`_short_date`), rows at the small size (`STYLE_MENU_COMPACT`). The top bar has a stretch after the
+  Filter field: with the crumbs on their own row Qt otherwise spread the icon buttons over the bar.
+- Add assets drag (the user's ask, 2026-11-22): a card drag carries `<asset>.monofx_asset` files (JSON root + asset,
+  in `%TEMP%/MonoFX/asset_drag`, `logic.write_asset_drags`): Houdini gives a drop only a file list. `drag_drop
+  .handle_drop` sends them to `adapter.drop_assets` before anything else (even with drops off: never opened as a
+  scene): over a Network Editor of a LOP network, loaders at the cursor (`add_assets(at=...)`); over a Scene Viewer
+  showing one, placed as Add places them; the loaders list takes them too. Checked with the hook called in Houdini
+  (loader at the cursor, one undo step); a real mouse drag from the drawer into Houdini's panes is not yet checked.
 - Hide Prims is off the parm pane (the user's ask, 2026-11-19): `mx_hide_enable` / `mx_hide_pattern` stay as hidden
   parms, so the hair driver is still hidden by default and scenes keep what they had; the inspector's eye shows it.
   Configure Primitive authors that visibility as a time sample at the current frame (its toggle is an expression):

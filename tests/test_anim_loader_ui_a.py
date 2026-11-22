@@ -119,7 +119,8 @@ def test_inspector_is_information_and_actions_are_on_the_row_menu(win):
     assert news["Meshes added"] == "Fin_L, Fin_R"
     assert p.details.rows()["Kind"] == "Shot loader" and p.details.rows()["Shot"] == "sh025"
     # Monos: the inspector shows, it does not act; its only buttons fold its sections (view state)
-    assert all(isinstance(b, ui._Section) for b in p.findChildren(ui.QPushButton))
+    # (the camera's Aperture menu is a setting of the loader, like the camera fields beside it)
+    assert all(isinstance(b, ui._Section) or b.objectName() == "camMode" for b in p.findChildren(ui.QPushButton))
     menu = w.row_menu(_item(w, ui, "/stage/a"))
     texts = [a.text() for a in menu.actions() if not a.isSeparator()]
     assert "Update to lookdev v003" in texts and "Switch to Source Asset" in texts
@@ -355,8 +356,8 @@ def test_timeline_reads_the_anim_publish_and_not_an_asset(tmp_path):
 
 
 def test_column_right_click_opens_that_part_folder(win):
-    """The user's ask (2026-11-20): right-click a column's cell -> that part's publish folder first; Open folder is a
-    submenu of every part's folder."""
+    """The user's asks: right-click a column's cell -> that part's publish folder first (2026-11-20), now first in
+    the Open folder submenu of every part's folder, the menu shorter with an icon on every item (2026-11-22)."""
     w, ui = win
     b = w.backend
     b.part_folders = lambda path: {"anim": ("Anim", "P:/a/v006"), "lookdev": ("Lookdev", "P:/l/v003"),
@@ -364,15 +365,15 @@ def test_column_right_click_opens_that_part_folder(win):
     b.open_part_folder = lambda path, part: b.calls.append(("part", path, part)) or True
     item = _item(w, ui, "/stage/a")
     menu = w.row_menu(item, "lookdev")
-    first = menu.actions()[0]
-    assert first.text() == "Open lookdev publish folder" and first.toolTip() == "P:/l/v003"
-    first.trigger()
-    assert b.calls[-1] == ("part", "/stage/a", "lookdev")
     sub = _act(menu, "Open folder").menu()
-    assert [a.text() for a in sub.actions()] == ["Anim publish", "Lookdev publish", "Groom publish"]
+    assert [a.text() for a in sub.actions()] == ["Lookdev publish", "Anim publish", "Groom publish"]
+    assert sub.actions()[0].toolTip() == "P:/l/v003"
     _act(sub, "Groom publish").trigger()
     assert b.calls[-1] == ("part", "/stage/a", "groom")
-    assert w.row_menu(item, "cloth").actions()[0].text() == "Select node"  # nothing for cloth: no first item
+    shown = [a for a in menu.actions() if not a.isSeparator()]
+    assert all(not a.icon().isNull() for a in shown)
+    assert not menu.actions()[0].isSeparator() and not menu.actions()[-1].isSeparator()
+    assert "Asset" not in [a.text() for a in shown]  # the loader knows its asset: no Asset submenu
     # the delegate finds the column under the cursor
     view = w.list_view
     rect = view.visualItemRect(item)

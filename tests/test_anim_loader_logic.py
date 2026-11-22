@@ -685,3 +685,28 @@ def test_add_places_a_column_clear_of_other_nodes():
     spots = free_spots((0.0, 0.0), 2, [(-0.5, -1.0)])                 # the second spot would sit on a node
     assert spots == [(NODE_CLEAR[0], 0.0), (NODE_CLEAR[0], -NODE_STEP_Y)]
     assert free_spots((0.0, 0.0), 1, [(5.0, 0.0)]) == [(0.0, 0.0)]    # far enough: stays
+
+
+def test_version_picks_list_the_disk_newest_first(tmp_path):
+    """The manager's version menu (the user's pick, 2026-11-22): newest first, the current one marked, a groom
+    version without this instance's cache marked as not holding it, the work file's author from Monos."""
+    import json
+
+    from tools.fx.anim_loader.logic import version_picks
+
+    root = _shot(tmp_path)
+    make(root, [f"{ANIM}/v002/geo_char_Robot.usd", f"{ANIM}/v003/geo_sh011.usd",  # v003: not the robot
+                *frames(f"{GROOM}/v002/char_Other", "sh900_groom", (1,))])
+    (root / SH / ".monos").mkdir(parents=True, exist_ok=True)
+    (root / SH / ".monos" / "authors.json").write_text(json.dumps({"files": {
+        "01_anim/work/sh900_anim_v002.blend": {"name": "Mai", "at": "2026-11-20T10:00"}}}), encoding="utf-8")
+    st = initial_state(root, "sh900", "v001", Output("geo_char_Robot.usd", "geo"))
+    anim = version_picks(st, "anim")
+    assert [(p.version, p.holds, p.current) for p in anim] == [("v003", False, False), ("v002", True, False),
+                                                              ("v001", True, True)]
+    assert anim[1].author == "Mai" and anim[1].date
+    assert [(p.version, p.current) for p in version_picks(st, "lookdev")] == [("v002", True), ("v001", False)]
+    assert [(p.version, p.holds) for p in version_picks(st, "groom")] == [("v002", False), ("v001", True)]
+    gone = replace(st, versions={**st.versions, "lookdev": "v007"})  # the node's version is gone from disk
+    assert [(p.version, p.date == "") for p in version_picks(gone, "lookdev")][0] == ("v007", True)
+    assert version_picks(replace(st, asset=None), "lookdev") == []

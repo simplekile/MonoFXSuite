@@ -657,6 +657,36 @@ def update(nodes: list, parts: tuple[str, ...] = ("anim", "lookdev", "groom", "c
     return lines
 
 
+def set_part_version(nodes: list, part: str, version: str) -> tuple[list[str], list[str]]:
+    """Sets ``part`` ("anim": the anim, or the model on Source Asset; "lookdev", "groom", "cloth") to ``version`` on
+    each MonoFX Loader, as the node's own version menu does (its parm callback runs: a model version keeps the
+    picked file when it has it); one undo step. A loader without that version on disk is left as it is.
+    Returns (what moved, what was left and why)."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    moved, left = [], []
+    with undo_group(f"Set {part} {version}"):
+        for node in nodes:
+            if node.type().name() != config.HDA_TYPE:
+                left.append(f"{node.name()}: Upgrade first")
+                continue
+            state = read_state(node)
+            asset = logic.is_asset(state)
+            name = (config.P_MODEL_VERSION if asset else config.P_ANIM_VERSION) if part == "anim" \
+                else config.P_VERSION[part]
+            if _s(node, name) == version:
+                continue
+            if version not in {p.version for p in logic.version_picks(state, part, limit=10_000)}:
+                left.append(f"{node.name()}: no {part} {version}")
+                continue
+            old = _s(node, name)
+            _set(node, name, version)
+            cb_parm_changed({"node": node, "parm_name": name})
+            word = ("model" if asset else "anim") if part == "anim" else part
+            moved.append(f"{node.name()}: {word} {old or '-'} -> {version}")
+    return moved, left
+
+
 def retarget(nodes: list, shot: str) -> tuple[list[str], list[str]]:
     """Loaders copied from another shot, moved to ``shot`` (``logic.retarget_state``); one undo step.
     (what moved, what was left and why). Never a second loader for an instance the shot already has. A shot merge
@@ -800,7 +830,7 @@ def _set_status_bar(text: str) -> None:
 ASSETS_MERGE = "assets"  # MERGE_USER_DATA of the Merge LOP the Add drawer wires its loaders into
 
 
-def add_assets(parent, root: str, names: list[str]) -> LoadResult:
+def add_assets(parent, root: str, names: list[str], at: tuple[float, float] | None = None) -> LoadResult:
     """A MonoFX Loader on Source Asset per asset (newest versions, once), wired into the shot layout's merges, else
     this network's ``assets_merge`` (made on first use, never wired further). An asset already in this network gets
     another instance, prim ``<asset>_inst02``... (set dressing places one asset several times). One undo step."""
@@ -808,7 +838,8 @@ def add_assets(parent, root: str, names: list[str]) -> LoadResult:
 
     result = LoadResult()
     taken = {_s(n, config.P_INSTANCE) for n in parent.children() if n.type().name() == config.HDA_TYPE}
-    start, where = _add_anchor(parent)  # read before anything is made: the artist's selection and view
+    # read before anything is made: the artist's selection and view; a drop puts them where it was let go
+    start, where = (at, "where they were dropped") if at is not None else _add_anchor(parent)
     had = {n.path() for n in parent.children()}
     made = []
     with undo_group(f"Add {len(names)} asset{'s' if len(names) != 1 else ''}"), manual_update():
@@ -856,6 +887,56 @@ def _network_editor(parent):
         return None
     current = [t for t in tabs if t.isCurrentTab()]
     return (current or tabs or [None])[0]
+
+
+def drop_assets(files: list[str]) -> bool:
+    """Assets dragged out of Add assets and let go over Houdini (``externaldragdrop`` -> ``drag_drop``): over a
+    Network Editor showing a LOP network, a MonoFX Loader per asset at the cursor; over a Scene Viewer showing one,
+    the same in that network, placed as Add places them. Anywhere else a status-bar line says where to drop. True:
+    the drop is handled (never handed to Houdini, which would open the file as a scene). One undo step."""
+    by_root = logic.read_asset_drags(files)
+    if not by_root:
+        return _drop_note("nothing to load in that drag", warn=True)
+    try:
+        pane = hou.ui.paneTabUnderCursor()
+    except Exception:
+        pane = None
+    if pane is not None and pane.type() == getattr(hou.paneTabType, "ContextViewer", None):
+        try:
+            pane = pane.sceneViewer() or pane
+        except (AttributeError, hou.OperationFailed):
+            pass
+    kind = pane.type() if pane is not None else None
+    parent = pane.pwd() if kind in (hou.paneTabType.NetworkEditor, hou.paneTabType.SceneViewer) else None
+    if parent is None or parent.childTypeCategory() != hou.lopNodeTypeCategory():
+        return _drop_note("drop assets on a Network Editor or a Scene Viewer showing a LOP network (/stage)",
+                          warn=True)
+    at = None
+    if kind == hou.paneTabType.NetworkEditor:
+        p = pane.cursorPosition()
+        at = (p[0], p[1])
+    made, kept = [], []
+    for root, names in by_root.items():
+        r = add_assets(parent, root, names, at)
+        made += r.created
+        kept += r.kept
+    try:
+        from tools.fx.anim_loader.ui import refresh_manager
+
+        refresh_manager()
+    except Exception:
+        pass
+    words = f"added {', '.join(made)} to {parent.path()}" if made else "nothing added"
+    return _drop_note(words + (f"; {', '.join(kept)} already there" if kept else ""))
+
+
+def _drop_note(message: str, warn: bool = False) -> bool:
+    try:
+        hou.ui.setStatusMessage(f"MonoFX: {message}",
+                                severity=hou.severityType.Warning if warn else hou.severityType.Message)
+    except Exception:
+        print(f"MonoFX: {message}")
+    return True
 
 
 def _add_anchor(parent) -> tuple[tuple[float, float] | None, str]:
@@ -1656,6 +1737,14 @@ class HoudiniBackend:
         return set_cam_parm(path, name, value)
 
     @staticmethod
+    def cam_mode(path):
+        return cam_mode(path)
+
+    @staticmethod
+    def set_cam_mode(path, token):
+        return set_cam_mode(path, token)
+
+    @staticmethod
     def thumbnail(state) -> str:
         if not state.asset or not state.project_root:
             return ""
@@ -1666,6 +1755,17 @@ class HoudiniBackend:
     @staticmethod
     def update(paths, parts):
         return update([hou.node(p) for p in paths if hou.node(p)], tuple(parts))
+
+    @staticmethod
+    def version_picks(path, part):
+        node = hou.node(path)
+        if node is None or node.type().name() not in (config.HDA_TYPE, config.OLD_TYPE):
+            return []
+        return logic.version_picks(read_state(node), part)
+
+    @staticmethod
+    def set_part_version(paths, part, version):
+        return set_part_version([hou.node(p) for p in paths if hou.node(p)], part, version)
 
     def load_shot(self, root, shot, version):
         r = load_shot(hou.node(self.parent_path), root, shot, version)
@@ -2033,6 +2133,29 @@ def cam_parms(path: str) -> dict[str, float]:
     return {n: node.parm(n).eval() for n in CAM_PARMS if n not in unused and node.parm(n) is not None}
 
 
+def cam_mode(path: str) -> str:
+    """The loader's Aperture mode; an older node without the menu set the width (config.CAM_APERTURE_WIDTH)."""
+    node = hou.node(path)
+    parm = node.parm(config.P_CAM_APERTURE) if node is not None else None
+    if node is None:
+        return ""
+    return parm.evalAsString() if parm is not None else config.CAM_APERTURE_WIDTH
+
+
+def set_cam_mode(path: str, token: str) -> bool:
+    """The loader's Aperture mode (publish / width / ratio); one undo step."""
+    from apps.houdini.solaris_adapter import undo_group
+
+    node = hou.node(path)
+    parm = node.parm(config.P_CAM_APERTURE) if node is not None else None
+    if parm is None or token not in (config.CAM_APERTURE_PUBLISH, config.CAM_APERTURE_WIDTH,
+                                     config.CAM_APERTURE_RATIO):
+        return False
+    with undo_group(f"Camera aperture {node.name()}"):
+        parm.set(token)
+    return True
+
+
 def set_cam_parm(path: str, name: str, value: float) -> bool:
     """One of the loader's camera settings; one undo step."""
     from apps.houdini.solaris_adapter import undo_group
@@ -2253,7 +2376,8 @@ def select_prims(network: str, prims: list[str]) -> bool:
             if pane.pwd().path() != network:
                 continue
             if tuple(pane.currentSceneGraphSelection() or ()) != tuple(prims):
-                pane.setCurrentSceneGraphSelection(list(prims))
+                with hou.undos.disabler():  # view state: Ctrl+Z undoes the artist's edit, not this selection
+                    pane.setCurrentSceneGraphSelection(list(prims))
             done = True
         except (AttributeError, hou.OperationFailed, hou.ObjectWasDeleted):
             continue
