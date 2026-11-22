@@ -1107,6 +1107,29 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   - Roots: within 0.1 cm (p95 per lock-frame) of the animated scalp, the drawn lock's limit; v0.1 set no
     absolute limit for mesh locks. The difference against v0.1 is reported.
   These replace the three "against rest" readings above; the cause was traced first and no number was widened.
+- **Short strands joining a free-hanging lock late (the user, 2026-11-23, on look4's hair_bang_20 sheet:
+  "a tuft of fur under the lock"; fixed in v0.2b)**: v0.1 gives a lock the skin its mesh lies over and joins
+  each strand where the mesh lies over its root. On `hair_bang_02` / `03` / `19` / `20` the lower half hangs
+  close over skin the lock owns, so 36-46 % of their strands start 0.4-0.9 along the lock and are 0.39-0.57
+  of the lock's median length: a dark short tuft beside the ribbon, at rest and in shots, old build and
+  new. The reference v006 has none. The crown and base caps join late too (27-60 %) but their strands stay
+  0.75-0.86 of the median: hair lying along the scalp, v0.1's design, kept (moving every late join to the
+  start would take 50-60 % of the roots off the skin under the caps: the thin skin v0.1 fixed).
+  Rule: a root whose strand would come out under `config.JOIN_SHORT` (about 0.6, set from the measured gap
+  between the two kinds) of its lock's median length starts the lock instead, in `root_place` where the
+  join is set, so every lock goes by one rule. Strand counts per lock do not change.
+  Graded: on the four fringe locks no strand under 0.6 of the lock's median length that starts past
+  `START_SPAN`; the caps' late joins unchanged within 5 % of their count; the start disc within
+  `START_DENSITY_MAX`; grooming-check on Helen passes at its limits (numbers that move are listed);
+  locks without such strands byte-equal to before at rest (r1 graded on those locks, the changed locks
+  reported). Rest picture ours before | after | reference for the four locks.
+- **Points past a piece's last sample (the manager, 2026-11-23)**: they do not ride one sample's rotation
+  rigidly (a flat wedge at hair_bang_20's tip, a 1.75 x frame-to-frame jump on sh025 hair_back_07). Graded
+  in s6: frame-to-frame motion of the hair within 1.4 x its piece's on 5 consecutive frames of each shot,
+  every lock; the tip zone's length (last 10 % of the strand) within the 5 % line against the piece.
+- **Open, the user's call**: mesh locks' roots following the animated scalp (input 4) as drawn locks do.
+  Roots follow the hair mesh, which lifts off the head near the roots in the shots (up to 1.0 cm; v0.1 the
+  same).
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
