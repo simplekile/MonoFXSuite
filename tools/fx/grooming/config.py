@@ -220,8 +220,17 @@ DRAWN_TAPER_DEFAULT = 0.3      # share of the width and thickness left at the ti
 # - DRAWN_WIDTH_RANGE_CM / DRAWN_THICK_RANGE_CM: a drawn lock from a few strands to 10 cm wide. Its footprint is
 #   REGION_FOOTPRINT x the width round its root: on Helen 10 cm took skin from 5 locks, 20 cm from 42 of 61 (half
 #   the head) and 40 cm from all of them, which no artist means by one lock (t79 limits.out).
+# - STROKE_POINTS_MAX: a stroke (draw, redraw) of more points is thinned to this many of its own points, evenly by
+#   index, before the fit (`grooming_adapter.thin_stroke`). The fit (`logic.stroke_handles`) measured on a 40 cm
+#   stroke with 0.05 cm of hand noise: 200 points 0.08 s, 1,000 0.10 s, 2,000 0.27 s, 4,000 0.39 s, 8,000 0.78 s,
+#   16,000 5.6 s (t84 recheck: 400,000 took 159 s). A mouse or pen stroke is a few hundred points; 2,000 keeps a
+#   point every 0.02 cm on a 40 cm lock, far under STROKE_TOL_CM, and the fit under 0.3 s.
+# - STROKE_TOL_RANGE_CM: the tolerance a fit may be given (t84 recheck: 0, negative, NaN and inf were taken). Below
+#   0.01 cm every stroke takes HANDLES_MAX (a hand's noise is larger), past 10 cm every one HANDLES_MIN.
 LOCK_REACH_MAX_CM = 300.0
 STROKE_SKIN_MAX_CM = 5.0
+STROKE_POINTS_MAX = 2000
+STROKE_TOL_RANGE_CM = (0.01, 10.0)
 SCALE_RANGE = (0.1, 10.0)
 DRAWN_WIDTH_RANGE_CM = (0.05, 10.0)
 DRAWN_THICK_RANGE_CM = (0.02, 5.0)

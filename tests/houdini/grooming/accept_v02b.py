@@ -31,9 +31,10 @@ Definitions this script makes on its own (for the checker to judge):
      capture, outside the node); offset_change and own_noise as defined there.
   6. "Cooks as before" (r1 Helen at rest, s5 the shot scenes as saved): NO BUILD IS BYTE-STABLE FROM RUN TO RUN.
      The build before v0.2b differs from itself by up to 0.0022 cm on Helen at rest, 0.05 cm on sh020 and 0.084 cm
-     on sh025 at frame 30 (t79, t84), so this build is held to that build's own spread: 7 of its runs, kept on disk
-     beside it (<base>_samples/) and reused, every pair; each new run within that spread + 2 float32 steps of every
-     one of them (`against_base`). Byte-equal pairs are reported.
+     on sh025 at frame 30 (t79, t84), so this build is held to that build's own spread: 20 of its runs (t84's second
+     round: with 7 a new run failed by chance about one time in 8), made from the committed base (a git archive of
+     --base-commit), kept on disk beside it (<base>_samples/) and reused; each new run within the largest difference
+     between any two of them + 2 float32 steps (`against_base`). Byte-equal pairs are reported.
 """
 from __future__ import annotations
 
@@ -1085,7 +1086,10 @@ def _npz_strands(path):
 # <scene key>/), keyed by the base build (--base-commit, else its HDA's sha1) and the scene file's sha1, and reused
 # by later runs; only the missing ones are made. The limits themselves never move.
 # ---------------------------------------------------------------------------
-BASE_SAMPLES = 7
+# t84 recheck (second round): 20 samples, not 7 (with 7 a new run is the largest of 8 about one time in 8: sh025
+# failed so by chance); the grade is the largest difference between any two of them + 2 float32 steps. Made from the
+# COMMITTED base (git archive of --base-commit), not a rebuilt HDA.
+BASE_SAMPLES = 20
 
 
 def _sha1_file(path, n=12):
@@ -1201,7 +1205,7 @@ def r1_m1_base():
                "saved_by_base.log")
     r = against_base("r1", hip, base_cache(hip), ["new_0", "new_1", "new_2"])
     add("r1_no_edit_is_the_groom_before_v02b", _graded(r), r,
-        {"counts": "equal per lock", "every_new_run_cm": "within the old build's own spread (7 runs) + 2 float32 steps"},
+        {"counts": "equal per lock", "every_new_run_cm": "within the largest difference between any two of the old build's %d runs + 2 float32 steps" % BASE_SAMPLES},
         "a fresh groom made and saved by the build before v0.2b (--base), opened and cooked (output 1 at rest) by it "
         "(%d processes, kept on disk and reused) and by this build (3 processes): every lock's strand count equal, and "
         "each new run's points within the old build's own spread (every pair of its runs) + 2 float32 steps of every "
@@ -1427,7 +1431,7 @@ def s_shots():
         rows5[tag] = against_base("s5_" + tag, hip, cache, ["new_0", "new_1"], f)
         rows5[tag]["frame"] = f
         ok5 = ok5 and _graded(rows5[tag]) and rows5[tag].get("same_points_a_strand", False)
-    add("s5_three_inputs_cook_as_before", ok5, rows5, "the build before v0.2b's own spread (7 runs) + 2 float32 steps",
+    add("s5_three_inputs_cook_as_before", ok5, rows5, "the largest difference between any two of the build before v0.2b's %d runs + 2 float32 steps" % BASE_SAMPLES,
         "the shot scenes as saved (three inputs, the anim wired, Shot deform on, \"Fit lookup per lock\" off as an "
         "old scene opens), output 1 at a frame, %d processes of the build before v0.2b (kept on disk, reused) and 2 "
         "of this one: the same strands and points a strand, and each new run's points within the old build's own "
@@ -1442,6 +1446,77 @@ def s_shots():
           "pictures exist", "flipbooks of the deformed frames of the lock moved 2 cm and 5 cm beside the unedited one "
           "(U4: the user judges them): the scenes are saved here, the pictures are made by the look step in the GUI "
           "(qc_capture.py); KNOWN until they exist")
+
+
+def v2_names_ids_strokes():
+    """t84 recheck (second round), against the node: names with a backslash, a backtick, `$`, a quote and a newline
+    stored and read back as given (a drawn lock's name and a density layer's name), the node cooking; a duplicate id
+    counts once (rotate [L, L] 30 deg = rotate [L] 30 deg, scale [L, L] x 2 = x 2); a huge / tiny axis turns as
+    (1, 1, 0); a stroke of 100,000 points is thinned to config.STROKE_POINTS_MAX and drawn in a few seconds."""
+    lid = ID[MOVE_LOCK]
+    names = ["c" + chr(92), "wip" + chr(92) + "old", "a`b`c", "cost $5", "a${HIP}b", 'q"uote', "new" + chr(10) + "line"]
+    spot, stroke = _drawn_setup()
+    rows, ok = {}, True
+    for nm in names:
+        r = {}
+        try:
+            d = ga.draw_lock(node, stroke, name=nm)
+            lay = ga.mask_add(node, name=nm)
+            cook_all()
+            back = ga.read_data(node)
+            r = {"drawn_name_back": back.lock(d["id"]).name == nm,
+                 "layer_name_back": back.mask(lay).name == nm, "errors": lib.node_errors(node)}
+            ga.delete_drawn_locks(node, [d["id"]])
+            ga.mask_remove(node, lay)
+        except Exception as e:      # noqa: BLE001
+            r = {"raised": "%s: %s" % (type(e).__name__, e)}
+        r["pass"] = r.get("drawn_name_back") is True and r.get("layer_name_back") is True and not r.get("errors")
+        ok = ok and r["pass"]
+        rows[repr(nm)] = r
+
+    def spine_of(i):
+        return np.array(ga.lock_handles(node, [i])[i]["frame"], dtype=float)
+    ax = ga.lock_handles(node, [lid])[lid]["axes"][2]
+    dup = {}
+    for tag, once, twice in (("rotate_30", lambda: ga.rotate_points(node, [lid], ax, 30.0),
+                              lambda: ga.rotate_points(node, [lid, lid, float(lid)], ax, 30.0)),
+                             ("scale_2", lambda: ga.scale_points(node, [lid], 2.0),
+                              lambda: ga.scale_points(node, [lid, lid], 2.0))):
+        once()
+        a = spine_of(lid)
+        ga.reset_points(node, [lid])
+        twice()
+        b = spine_of(lid)
+        ga.reset_points(node, [lid])
+        dup[tag] = float(np.abs(a - b).max()) * U
+    ok_dup = all(v <= 1e-9 for v in dup.values())
+    axis = {}
+    ga.rotate_points(node, [lid], (1.0, 1.0, 0.0), 30.0)
+    ref = spine_of(lid)
+    ga.reset_points(node, [lid])
+    for tag, a in (("1e200", (1e200, 1e200, 0.0)), ("1e-160", (1e-160, 1e-160, 0.0))):
+        ga.rotate_points(node, [lid], a, 30.0)
+        axis[tag] = float(np.abs(spine_of(lid) - ref).max()) * U
+        ga.reset_points(node, [lid])
+    ok_axis = all(v <= 1e-6 for v in axis.values())
+    S = np.asarray(stroke, dtype=float)
+    k = np.linspace(0, len(S) - 1, 100000)          # the drawn stroke, 100,000 points along it
+    big = np.stack([np.interp(k, np.arange(len(S)), S[:, c]) for c in range(3)], 1)
+    t0 = time.perf_counter()
+    d = ga.draw_lock(node, big.tolist())
+    big_s = round(time.perf_counter() - t0, 3)
+    cook_all()
+    ga.delete_drawn_locks(node, [d["id"]])
+    ok_big = big_s <= 5.0 and d["count"] <= config.HANDLES_MAX
+    add("v2_names_ids_axis_strokes", ok and ok_dup and ok_axis and ok_big,
+        {"names": rows, "duplicate_ids_cm": dup, "axis_scale_cm": axis,
+         "stroke_100000_points": {"points": int(len(big)), "seconds": big_s, "handles": d["count"],
+                                  "thinned_to": config.STROKE_POINTS_MAX}},
+        "names back as given, duplicates = once (0 cm), huge / tiny axis = (1,1,0) within 1e-6 cm, 100,000-point "
+        "stroke <= 5 s",
+        "t84 recheck (second round): groom_data read raw, a drawn lock's and a density layer's name with a backslash, "
+        "a backtick, $, a quote, a newline; one edit per lock a call; the rotate axis divided by its largest component "
+        "first; a stroke over config.STROKE_POINTS_MAX points thinned before the fit")
 
 
 def v1_bad_input():
@@ -1491,6 +1566,19 @@ def v1_bad_input():
             axes[2]) * 80.0 / U).tolist()),
         "set_drawn_width_1e6": lambda: ga.set_drawn(node, [d_id], width_cm=1e6),
         "set_drawn_taper_nan": lambda: ga.set_drawn(node, [d_id], taper=float("nan")),
+        # t84 recheck (second round)
+        "rotate_bool_id": lambda: ga.rotate_points(node, [True], axes[2], 20.0),
+        "scale_id_31_5": lambda: ga.scale_points(node, [lid + 0.5], 2.0),
+        "set_points_lock_twice": lambda: ga.set_points(node, {lid: W.tolist(), str(lid): W.tolist()}),
+        "draw_tol_0": lambda: ga.draw_lock(node, stroke, tol_cm=0.0),
+        "draw_tol_nan": lambda: ga.draw_lock(node, stroke, tol_cm=float("nan")),
+        "redraw_tol_inf": lambda: ga.redraw_lock(node, lid, W.tolist(), tol_cm=float("inf")),
+        "draw_zero_length_stroke": lambda: ga.draw_lock(node, [stroke[0]] * 4),
+        "draw_name_of_another_lock": lambda: ga.draw_lock(node, stroke, name=MOVE_LOCK),
+        "draw_name_not_text": lambda: ga.draw_lock(node, stroke, name=5),
+        "draw_name_spaces": lambda: ga.draw_lock(node, stroke, name="   "),
+        "set_drawn_taper_7": lambda: ga.set_drawn(node, [d_id], taper=7.0),
+        "set_drawn_taper_minus": lambda: ga.set_drawn(node, [d_id], taper=-0.0001),
     }
     nothing = {
         "set_points_measured_handles": lambda: set_frame(lid, H.tolist()),
@@ -1501,7 +1589,7 @@ def v1_bad_input():
     rows = {}
     ok = True
     for tag, fn in list(raises.items()) + list(nothing.items()):
-        text0, n0 = node.evalParm(config.DATA_PARM), len(hou.undos.undoLabels())
+        text0, n0 = ga.data_text(node), len(hou.undos.undoLabels())
         try:
             res = fn()
             got = {"raised": None, "message": res.get("message") if isinstance(res, dict) else res}
@@ -1509,7 +1597,7 @@ def v1_bad_input():
             got = {"raised": str(e)}
         except Exception as e:      # any other exception is a failure too
             got = {"raised_other": "%s: %s" % (type(e).__name__, e)}
-        text1 = node.evalParm(config.DATA_PARM)
+        text1 = ga.data_text(node)
         got.update(text_same=text1 == text0, undo_steps=len(hou.undos.undoLabels()) - n0,
                    nan_in_text="NaN" in text1 or "Infinity" in text1)
         if tag in raises:
@@ -1527,7 +1615,9 @@ def v1_bad_input():
         "t84 B-1, B-2, minors 1-3, against the node: %d inputs that must raise ValueError naming what is wrong "
         "(non-finite handles, strokes, axes, factors; a handle count outside 4..12 or not whole; past the limits in "
         "config: LOCK_REACH_MAX_CM %g, STROKE_SKIN_MAX_CM %g, SCALE_RANGE %s, DRAWN_WIDTH_RANGE_CM %s, "
-        "DRAWN_THICK_RANGE_CM %s; an unknown group) and %d whose result equals what is there (\"nothing changed\"): "
+        "DRAWN_THICK_RANGE_CM %s; an unknown group; t84's second round: a bool or fractional lock id, a lock given "
+        "twice, tol_cm 0 / NaN / inf, a zero-length stroke, a drawn lock's name another lock has, not text or "
+        "spaces, a taper outside 0-1) and %d whose result equals what is there (\"nothing changed\"): "
         "groom_data's text the same, no undo step, no NaN in the text, the node cooking without an error after"
         % (len(raises), config.LOCK_REACH_MAX_CM, config.STROKE_SKIN_MAX_CM, config.SCALE_RANGE,
            config.DRAWN_WIDTH_RANGE_CM, config.DRAWN_THICK_RANGE_CM, len(nothing)))
@@ -1542,10 +1632,37 @@ def n_drawn():
 
 # the drawn locks right after the edits of one lock: Draw's "only the locks that gave skin recook" is measured on
 # states never cooked before (u2 draws at the same place)
+def e6_roots_stay():
+    """The plan (After 037b's recheck): an edit that leaves the root handle in place moves no strand root: per strand
+    id the root equals the unedited lock's at rest. hair_base_07 (a wide cap: t84 found 78 % of its roots moved by id
+    on a 25 deg turn, 16 % off its own root set), hair_back_05 and the fringe lock hair_bang_05, each turned 25 deg
+    and its tip moved 2 cm. The root steps read the mesh as modelled, not the carried mesh."""
+    rows, ok = {}, True
+    for name in ("hair_base_07", "hair_back_05", "hair_bang_05"):
+        lid = ID[name]
+        row = ROW0[lid]
+        K = ga.lock_handles(node, [lid])[lid]["count"]
+        ga.reset_points(node, [lid])
+        r0 = {sid: P[0] for sid, P in hair()[lid]}
+        for tag, H in (("turn_25deg", alib.turn(row, K, 25.0)), ("tip_2cm", alib.bend(row, K, 2.0, U))):
+            set_frame(lid, H.tolist())
+            r1 = {sid: P[0] for sid, P in hair()[lid]}
+            ids = sorted(set(r0) & set(r1))
+            d = np.array([np.linalg.norm(r0[i] - r1[i]) for i in ids]) if ids else np.array([np.inf])
+            got = {"strands": [len(r0), len(r1)], "same_ids": len(ids), "root_max_cm": float(d.max())}
+            got["pass"] = len(r0) == len(r1) == len(ids) and got["root_max_cm"] <= config.ROOT_SAME_CM
+            ok = ok and got["pass"]
+            rows["%s_%s" % (name, tag)] = got
+            ga.reset_points(node, [lid])
+    add("e6_roots_stay_under_an_edit", ok, rows, "every strand's root within %g cm of its own (by id)" % config.ROOT_SAME_CM,
+        "an edit that leaves the root handle in place (a 25 deg turn about the root, the tip moved 2 cm) on a wide cap, a "
+        "back lock and a fringe lock: the same strands, and per strand id the root where the unedited lock had it")
+
+
 order = [("e1", e1_identity), ("e0", e0_network_rule), ("e2", e2_speed), ("e3", e3_e4_follow), ("e5", e5_mesh_display),
          ("g1", g1_root), ("g2", g2_root_regions), ("u1", u1_undo), ("n", n_drawn), ("u2", u2_steps),
          ("u3", u3_several), ("d1", d1_redraw), ("d2", d2_reset), ("h1", h1_counts), ("h2", h2_resample),
-         ("v1", v1_bad_input)]
+         ("v1", v1_bad_input), ("v2", v2_names_ids_strokes), ("e6", e6_roots_stay)]
 for tag, fn in order:
     if wanted(tag):
         C.run(tag + "_raised", fn)
