@@ -33,6 +33,8 @@ the report lists the locks that miss most, each with its width ratio by tenth, r
 whose hair narrows before its mesh does reads as falling numbers at the end, a flare as a rise.
 
 
+Edited and drawn locks (v0.2b, t83): every mesh check above reads the node's `MESH_CARRIED` (an edited lock's piece carried onto its edited spine), never the modelled piece: Helen's three edited locks against the modelled mesh read tip_center_off 1.67 and lock_outside 1.0, the edit itself, not a fault. A drawn lock has no mesh and is left out of them; `drawn_root_skin_worst_cm` (0.0025) and `drawn_width_off_worst` (0.20, hair width p2-p98 across the lock against the set width at 0.3 / 0.5 / 0.7 / 0.9) are its own, added only when a drawn lock exists. A drawn lock's hair reads ~0.83 of its set width (Helen drawn_01): strands fill an ellipse, the set width is its axis.
+
 Diagnose by stage before changing code: measure the same numbers on the HDA's inner nodes
 (`object_merge` of `<node>/SPINES`, `/foreach_end`, `/clump`, `/HAIR`) to find which node adds the
 problem; `qc_metrics.measure`, `summary`, `profile` and `coverage` import and take any curves node.

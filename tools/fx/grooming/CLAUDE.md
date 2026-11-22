@@ -1122,3 +1122,19 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     clipped; narrow (< NARROW_PX) the cells are icons, Reset a 28 px flat icon, spacing 6: one line at 400 px (39 px
     strip at scale 1, 50 px at 1.5); at 760 px Reset shape goes to a second line, as in the mockup. Minus / plus are
     `step_size` (28 px, 24 at least): at the default Medium font size 24 x 28 gave 22 px, under the floor.
+  - grooming-check on an edited groom (B5, t83, 2026-11-22): `qc_metrics.py` measures every lock against
+    `MESH_CARRIED` (`--mesh modelled` for comparison only), the reference against `pieces`. A drawn lock (`drawn` on
+    SPINES) is left out of every mesh number (VEX writes -1, `summary` masks it, its row's mesh fields are None) and
+    gets a "Drawn locks" section (roots off the rest scalp, strands against `lock_infos`, hair width / thickness at
+    0.3-0.9 against `logic.drawn_profile`) and two checks only when one exists (`drawn_root_skin_worst_cm` 0.0025,
+    `drawn_width_off_worst` 0.20), so a groom without one keeps t55's 27 checks and numbers. Helen with hair_bang_11
+    moved 2 cm, hair_bang_05 turned 25 deg, hair_bang_15 redrawn, drawn_01: carried passes (hair_bang_11 far p95
+    0.46 cm, tip off centre 0.01); modelled fails tip_center_off 1.67 and lock_outside 1.0 (far p95 1.74 cm). drawn_01:
+    274 / 274 strands, roots 1.5e-5 cm off the skin, width 0.83-0.84 of the set. `accept_v02b.py` q1 runs it.
+    `qc_metrics.py` imports `hou` lazily so `tests/test_grooming_check_metrics.py` tests its pure parts.
+  - `qc_capture.py` shot close-up (`QC_FRAMES` + `QC_LOCKS`): output 1 blasted by lock id at each frame, and its
+    animated piece alone in a second picture (ANIM_HAIR + the rest `piece` by point number; drawn with the hair it
+    lies under it, Alpha draws only inside packed geometry, a template's wire vanished on white), camera on the animated piece's box
+    + 3 cm, framed shrunk to 0.55 about its centre, so one lock in several scenes gets the same camera at a frame. The
+    `lock_*` close-ups blast output 1 by lock id (the eye never reached it). Compare shows the carried mesh, adds the
+    modelled piece for an edited lock, frames a drawn lock on its hair.
