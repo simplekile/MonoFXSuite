@@ -758,7 +758,11 @@ def k2j_draw_lock():
         rec["root_to_skin_cm"] = float("%.3g" % to_skin_cm(sp[0]))
         rec["strands"] = S["G"].strands_by_lock().get(new[0], 0)
         rec["length_cm"] = round(float(S["logic"].arc_lengths(sp)[-1]) * S["unit"], 2)
-        rec["shot_alone"] = shot("k2j_drawn_lock")
+        rec["shot_in_groom"] = shot("k2j_drawn_lock")
+        frame_on([new[0]])
+        rec["shot_alone"] = shot("k2j_drawn_lock_alone")
+        S["ga"].set_isolate(node, None)
+        node.cook()
         return (rec["strands"] > 0 and bool(rec["gave"]) and rec["tool_after"] == "draw"
                 and rec["selection_after"] == new and rec["root_to_skin_cm"] <= 0.0025
                 and rec["undo_label"] == "MONO Grooming: Draw lock")
@@ -775,6 +779,7 @@ def k2k_edit_drawn():
         return S["next"]()
     S["NAMES"][lid] = S["ga"].read_data(node).lock(lid).name
     S["ID"][S["NAMES"][lid]] = lid
+    frame_on([lid])
 
     def start():
         return to_global(gps.running().locks[lid]["world"][-1])
@@ -784,7 +789,11 @@ def k2k_edit_drawn():
         rec["edited"] = bool(lk.edited)
         rec["tip_moved_cm"] = round(float(np.linalg.norm(np.array(handles(lid)["points"])[-1]
                                                          - S["before_handles"][lid][-1])) * S["unit"], 3)
-        return rec["edited"] and rec["tip_moved_cm"] > 0.5 and rec["undo_label"] == "MONO Grooming: Move control points"
+        # the lock is framed alone and short (2.9 cm on Helen): its tip must move a twentieth of its length
+        length_cm = float(S["logic"].arc_lengths(S["before_spine"][lid])[-1]) * S["unit"]
+        rec["lock_length_cm"] = round(length_cm, 3)
+        return (rec["edited"] and rec["tip_moved_cm"] > 0.05 * length_cm
+                and rec["undo_label"] == "MONO Grooming: Move control points")
     gesture("k2k_control_point_edit_on_a_drawn_lock", [S["NAMES"][lid]], start, [(-60 * i / 20, 0) for i in range(21)],
             S["next"], check=check)
 
