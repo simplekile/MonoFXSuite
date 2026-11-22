@@ -61,6 +61,33 @@ def collect_camera_usd_export_objects(cam_obj: bpy.types.Object) -> list[bpy.typ
     return ordered
 
 
+def _fold_camera_prims(output_filepath: str) -> None:
+    """Put the Camera back on its object's prim path; the export must hold a Camera after it."""
+    from .usd_camera_fold import fold_cameras
+
+    try:
+        folded = fold_cameras(output_filepath)
+        logger.info("Camera USD: %d camera prim(s) folded into their Xform", folded)
+    except Exception as exc:  # the unfolded file still holds a camera, one level deeper
+        logger.warning("Camera USD: could not fold the camera prim: %s", exc)
+    try:
+        from pxr import Sdf
+
+        layer = Sdf.Layer.FindOrOpen(str(output_filepath))
+        layer.Reload(force=True)
+        cameras = []
+        layer.Traverse(
+            "/",
+            lambda path: cameras.append(path)
+            if path.IsPrimPath() and layer.GetPrimAtPath(path).typeName == "Camera"
+            else None,
+        )
+    except Exception:
+        return
+    if not cameras:
+        raise RuntimeError(f"Camera USD holds no Camera prim: {output_filepath}")
+
+
 def export_camera_anim_usd_cache(
     context: bpy.types.Context,
     cam_obj: bpy.types.Object,
@@ -107,7 +134,11 @@ def export_camera_anim_usd_cache(
             export_global_up_selection=str(export_up_axis),
             convert_scene_units=str(convert_scene_units),
             evaluation_mode="VIEWPORT",
+            # Blender 5.2.2 drops an animated camera's Camera prim when it merges it into its
+            # Xform (sh012a v007 came out as a bare Xform): export unmerged, fold afterwards.
+            merge_parent_xform=False,
         )
+        _fold_camera_prims(output_filepath)
     finally:
         scene.frame_start = prev_start
         scene.frame_end = prev_end

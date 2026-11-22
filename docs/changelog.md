@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+
+## [0.1.46] - 2026-11-22
+
+### Blender
+- **Publish Anim**: the camera USD holds the camera again. Blender 5.2.2 wrote the camera as an empty transform (sh012a v007 had no camera in Houdini); the camera keeps its usual prim path, and a camera export without a camera now fails the publish instead of passing silently.
+
 ### Houdini
 - **Mono Solaris desktop**: Houdini's Solaris layout with the MonoFX Loaders manager docked on the left (Desktop menu > Mono_Solaris); the floating manager window still opens as before.
 - **MonoFX Loader manager**: the inspector's Details section moved to the bottom, under the prim tree, so the prims start right under the loader's name.
@@ -19,6 +25,7 @@
 - **MonoFX Loader manager**: what is selected in the viewport and in the inspector's prim tree now follow each other. A prim picked in the viewport selects its row in the tree, and its loader in the list when another one was selected. Rows picked in the tree select their prims in the viewport. It follows what the viewport draws (the node with the display flag, not the selected node) and finds loaders the shot layout moved, e.g. /World/anim/actors/char_Helen.
 - **MonoFX Loader manager**: Shift+click a group's arrow in the inspector tree folds or opens it and everything under it; Ctrl+click folds or opens the whole tree.
 - **MonoFX Loader manager**: the hover in the inspector tree covers the whole row; it stopped short of the name, leaving the indentation and arrow dark. A hovered or selected row is one even band over its separators, and the show / viewport / render icons are centred in their row.
+
 
 ## [0.1.45] - 2026-11-22
 
