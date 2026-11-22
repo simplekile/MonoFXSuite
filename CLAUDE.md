@@ -453,6 +453,18 @@
 - Camera section: Aperture is the node's `mx_cam_aperture` menu (`adapter.cam_mode` / `set_cam_mode`); the line
   under it is the camera's aperture as the loader puts it out (`Controller.camera`), Width shows only in the width
   modes, Ratio only in "Set width and ratio", Focal length read-only.
+- Add assets drawer (the user's review, 2026-11-22): the picks live in the drawer (`AddDrawer._picks`), not in
+  the grid's selection, so a chip or the search never drops one ("N picked, M hidden by the filter"); Add and a
+  drop that lands clear them. Shift+click picks a range from the last clicked card, Clear unpicks all, a
+  double-click adds that asset and keeps the drawer open. A drag from an unpicked card carries it alone (Qt picked
+  it on the press: unpicked again), from a picked card every pick. `refresh_badges` rewrites the cards' second line
+  after each scan, without filling the grid again (scroll and picks stay).
+- Manager menus (2026-11-22): + opens Add assets (no menu); the shot crumb's menu starts with Load <shot> and its
+  versions, then the shots. The row menu: Update / Switch source / Reload / Retarget, then Select node / Frame /
+  Open folder (the clicked column's part first) / Open in Monos, then Asset (only when the loader needs one) and
+  Bake; an icon on every item. The version menu has no header band (one only for several loaders), dates without
+  this year (`_short_date`), rows at the small size (`STYLE_MENU_COMPACT`). The top bar has a stretch after the
+  Filter field: with the crumbs on their own row Qt otherwise spread the icon buttons over the bar.
 - Add assets drag (the user's ask, 2026-11-22): a card drag carries `<asset>.monofx_asset` files (JSON root + asset,
   in `%TEMP%/MonoFX/asset_drag`, `logic.write_asset_drags`): Houdini gives a drop only a file list. `drag_drop
   .handle_drop` sends them to `adapter.drop_assets` before anything else (even with drops off: never opened as a

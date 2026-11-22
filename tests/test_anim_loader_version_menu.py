@@ -44,10 +44,12 @@ def test_version_menu_lists_the_disk_and_sets_the_pick(make):  # noqa: F811 (the
     menu = w.version_menu(row, "lookdev", ["/stage/b"])
     acts = [a for a in menu.actions() if a.text() and not a.isSeparator()]
     texts = [a.text().split("\t") for a in acts]
-    assert texts[0] == ["V010  newest", "2026-11-20  Mai"]
-    assert texts[1][0] == "V009" and not acts[1].isEnabled() and not acts[1].icon().isNull()  # current: checked
+    year = __import__("datetime").date.today().year
+    short = "11-20" if year == 2026 else "2026-11-20"
+    assert texts[0] == ["V010", f"{short}  Mai"]  # compact: no header band, no year this year
+    assert texts[1][0] == "V009" and not acts[1].icon().isNull()  # current: checked
     assert texts[2] == ["V008", f"no {row.instance}"] and not acts[2].isEnabled()
-    assert texts[-1] == ["Open lookdev publish folder"]
+    assert texts[-1] == ["Open folder"]
     acts[0].trigger()
     assert w.backend.calls[-1] == ("set_version", ("/stage/b",), "lookdev", "V010")
     assert w.result.text().endswith("lookdev V010.")
@@ -141,3 +143,35 @@ def test_a_narrower_prim_column_gives_its_room_to_the_last_column(make):  # noqa
     p._fit_name()  # a refresh keeps the dragged width
     assert t.columnWidth(0) == w.px(60) and used() == vp
     w.hide()
+
+
+def test_top_icons_stay_together_when_the_crumbs_have_their_own_row(make):  # noqa: F811 (the fixture)
+    """The user's report: with the crumbs on their own row (narrow), the top bar's icon buttons drew far apart."""
+    from PySide6.QtWidgets import QApplication
+
+    mk, ui = make
+    w = mk(_backend())
+    w.resize(440, 700)  # the left column under 560 px: the crumbs go to their own row
+    w.show()
+    QApplication.processEvents()
+    w._place_nav()
+    QApplication.processEvents()
+    assert w.nav_row.isVisible()  # narrow: the crumbs on their own row
+    buttons = [w.viewport_button, *w.view_buttons.buttons(), w.refresh_button, w.load_button]
+    widths = {b.width() for b in buttons}
+    assert max(widths) <= w.px(40), widths  # each keeps its own size
+    gaps = [b.geometry().left() - a.geometry().right() for a, b in zip(buttons, buttons[1:])]
+    assert max(gaps) <= w.px(16), gaps  # side by side, not spread over the bar
+    w.hide()
+
+
+def test_plus_opens_add_assets_at_once(make):  # noqa: F811 (the fixture)
+    """The user's ask: no menu on +, the Add assets drawer opens (a second click closes it)."""
+    mk, ui = make
+    w = mk(_backend())
+    w._project = "P:/proj"
+    w.load_button.setEnabled(True)
+    w.load_button.click()
+    assert w._drawer_open and not w.drawer.isHidden()
+    w.load_button.click()
+    assert not w._drawer_open

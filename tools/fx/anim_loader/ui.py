@@ -112,6 +112,14 @@ LUCIDE.update({
                   '<path d="M9.5 4h5L17 7h3a2 2 0 0 1 2 2v7.5"/><path d="M14.121 15.121A3 3 0 1 1 9.88 10.88"/>',
     "scan": '<path d="M3 7V5a2 2 0 0 1 2-2h2"/><path d="M17 3h2a2 2 0 0 1 2 2v2"/>'
             '<path d="M21 17v2a2 2 0 0 1-2 2h-2"/><path d="M7 21H5a2 2 0 0 1-2-2v-2"/>',
+    # the row menu (the user's ask, 2026-11-22: an icon on every item)
+    "arrow-left-right": '<path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/>',
+    "mouse-pointer-click": '<path d="M14 4.1 12 6"/><path d="m5.1 8-2.9-.8"/><path d="m6 12-1.9 2"/>'
+                           '<path d="M7.2 2.2 8 5.1"/><path d="M9.037 9.69a.498.498 0 0 1 .653-.653l11 4.5a.5.5 0 0 1'
+                           '-.074.949l-4.349 1.041a1 1 0 0 0-.74.739l-1.04 4.35a.5.5 0 0 1-.95.074z"/>',
+    "external-link": '<path d="M15 3h6v6"/><path d="M10 14 21 3"/>'
+                     '<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+    "move-right": '<path d="M18 8 22 12 18 16"/><path d="M2 12H22"/>',
 })
 
 # The shared look helpers (tools/fx/look.py), under the names this module always had. The defaults are this
@@ -824,6 +832,9 @@ class AnimLoaderManager(QWidget):
             f"QLineEdit#filter:focus {{ border: 1px solid {ACCENT}; }}"))
         self.filter_edit.textChanged.connect(lambda _t: self._show_rows())
         t.addWidget(self.filter_edit)
+        # takes the spare width only when the crumbs go to their own row (narrow): without it Qt shared that width
+        # out between the icon buttons, which drew far apart (the user's report, 2026-11-22)
+        t.addStretch(0)
         self.viewport_button = self._icon_button("eye", "Viewport: solo, lookdev and groom in the viewport, "
                                                         "draw hulls only", STYLE_ICON_FLAT)
         self.viewport_menu = self._menu_for(self.viewport_button)
@@ -845,8 +856,11 @@ class AnimLoaderManager(QWidget):
         t.addWidget(self.refresh_button)
         refresh_key = QShortcut(QKeySequence(Qt.Key.Key_F5), self)
         refresh_key.activated.connect(self.refresh)
-        self.load_button = self._icon_button("plus", "Add: load a shot, or add assets", STYLE_ICON_FLAT)
-        self.load_menu = self._menu_for(self.load_button)
+        # + opens Add assets at once (the user's ask, 2026-11-22: no menu in between); loading a shot's version is
+        # in the shot crumb's menu
+        self.load_button = self._icon_button("plus", "Add assets: pick assets to load on Source Asset",
+                                             STYLE_ICON_FLAT)
+        self.load_button.clicked.connect(self._toggle_drawer)
         t.addWidget(self.load_button)
         left_lay.addWidget(top)
         self.nav_row, self._nav_layout = self._bar()
@@ -1123,6 +1137,8 @@ class AnimLoaderManager(QWidget):
             self._show_subd()
         self._fill_nav()
         self._update_bar()
+        if getattr(self, "_drawer_open", False):
+            self.drawer.refresh_badges()  # an asset just added reads "in the scene"
 
     def _tooltip(self, row: Row) -> str:
         if row.legacy:
@@ -1404,31 +1420,42 @@ class AnimLoaderManager(QWidget):
             return None, ""
         return row, part
 
+    # compact (the user's ask, 2026-11-22: "gon menu version"): tighter rows at the small size, no header band
+    STYLE_MENU_COMPACT = STYLE_MENU_SQ.replace("padding: 7px 16px", "padding: 4px 14px 4px 8px").replace(
+        f"font-size: {FS_META}px", f"font-size: {FS_SMALL}px")
+
+    @staticmethod
+    def _short_date(date: str) -> str:
+        """``2026-11-17 10:00`` as 11-17 this year, else 2025-11-17."""
+        import datetime
+
+        day = date[:10]
+        return day[5:] if day[:4] == str(datetime.date.today().year) else day
+
     def version_menu(self, row, part: str, paths: list[str]) -> QMenu:
-        """The versions of one part on disk, newest first: date and who saved the work file on the right, the
-        current one checked, a version without this instance's file greyed. A pick sets it on ``paths`` (the
-        clicked row, or the selection it is part of), one undo step (the user's pick, 2026-11-22)."""
+        """The versions of one part on disk, newest first: the date and who saved the work file on the right, the
+        current one checked, a version without this instance's file greyed; the part's publish folder last. A pick
+        sets it on ``paths`` (the clicked row, or the selection it is part of), one undo step (the user's pick,
+        2026-11-22)."""
         word = part_word(row, part)
         menu = QMenu(self)
-        menu.setStyleSheet(self.css(STYLE_MENU_SQ))
-        size = self.px(16)
+        menu.setStyleSheet(self.css(self.STYLE_MENU_COMPACT))
+        size = self.px(14)
         others = len(paths) - 1
-        note = f"+{others} selected" if others else ""
-        menu.addAction(self.subd_panel._menu_head(menu, _crisp_icon("layers", size, TEXT_LABEL).pixmap(size),
-                                                  f"{word.title()} of {row.instance}", note))
+        if others:  # says what a pick acts on; one row needs no title, the cell clicked says it
+            menu.addAction(f"{word.title()} of {len(paths)} loaders").setEnabled(False)
         picks = self.ctl.version_picks(row.node_path, part)
         if not picks:
             menu.addAction("None published").setEnabled(False)
-        for i, p in enumerate(picks):
-            side = "  ".join(x for x in (p.date[:10], p.author) if x) if p.date else "missing on disk"
-            if not p.holds:
-                side = f"no {row.instance}"
-            act = menu.addAction(_crisp_icon("check", size, ACCENT) if p.current else QIcon(),
-                                 f"{p.version}{'  newest' if i == 0 and not p.current else ''}\t{side}")
-            act.setEnabled(p.holds and not p.current or (p.current and others > 0))
+        for p in picks:
+            side = (f"no {row.instance}" if not p.holds else
+                    "  ".join(x for x in (self._short_date(p.date), p.author) if x) if p.date else "missing")
+            act = menu.addAction(_crisp_icon("check", size, ACCENT) if p.current else QIcon(), f"{p.version}\t{side}")
+            act.setEnabled(p.holds)
             act.triggered.connect(self._run(lambda v=p.version: self.ctl.set_version(paths, part, v, word)))
         menu.addSeparator()
-        folder = menu.addAction(_crisp_icon("folder", size, TEXT_LABEL), f"Open {word} publish folder")
+        folder = menu.addAction(_crisp_icon("folder", size, TEXT_LABEL), "Open folder")
+        folder.setToolTip(f"The {word} publish folder")
         folder.triggered.connect(lambda: self._open_part(row.node_path, part))
         return menu
 
@@ -1578,7 +1605,13 @@ class AnimLoaderManager(QWidget):
     def add_picked(self, names: list[str]) -> None:
         self.ctl.target_root = self._project
         self._run(lambda: self.ctl.add_assets(names))()
+        self.drawer.clear_picks()  # added: the picks are done (the user's review: a second Add made them again)
         self.close_drawer()
+
+    def add_assets_now(self, names: list[str]) -> None:
+        """Assets added from the drawer without closing it (a double-click)."""
+        self.ctl.target_root = self._project
+        self._run(lambda: self.ctl.add_assets(names))()
 
     def _fill_handoff_menu(self) -> None:
         m = self.handoff_menu
@@ -1628,15 +1661,19 @@ class AnimLoaderManager(QWidget):
             menu.exec(view.viewport().mapToGlobal(pos))
 
     def _folder_menu(self, menu: QMenu, row: Row, part: str) -> None:
-        """Open folder: the clicked column's publish folder first (the user's ask, 2026-11-20), then a submenu with
-        every part's folder (Anim / Model, Lookdev, Groom, Cloth)."""
+        """Open folder: a submenu with every part's publish folder (Anim / Model, Lookdev, Groom, Cloth), the clicked
+        column's first (the user's ask, 2026-11-20; its own item above the menu went with the shorter menu)."""
         folders = self.ctl.part_folders(row.node_path)
+        icon = _crisp_icon("folder", self.px(16), TEXT_LABEL)
         if not folders:
-            menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))
+            menu.addAction(icon, "Open folder", lambda: self._link(row.node_path, "folder"))
             return
         sub = QMenu("Open folder", menu)  # QMenu(title, parent): addMenu(title)'s submenu died with its wrapper
+        sub.setIcon(icon)
         sub.setStyleSheet(self.css(STYLE_MENU_SQ))
-        for key, (word, folder) in folders.items():
+        order = sorted(folders, key=lambda k: k != part)  # the clicked column first, the rest in column order
+        for key in order:
+            word, folder = folders[key]
             act = sub.addAction(f"{word} publish", lambda k=key: self._open_part(row.node_path, k))
             act.setToolTip(folder)
         sub.setToolTipsVisible(True)
@@ -1654,14 +1691,10 @@ class AnimLoaderManager(QWidget):
             return None
         menu = QMenu(self)
         menu.setStyleSheet(self.css(STYLE_MENU_SQ))
-        column = self.ctl.part_folders(row.node_path).get(part) if part and row.kind != "layer" else None
-        if column is not None:
-            act = menu.addAction(f"Open {column[0].lower()} publish folder",
-                                 lambda: self._open_part(row.node_path, part))
-            act.setToolTip(column[1])
-        menu.addAction("Select node", lambda: self._select_node(item))
-        menu.addSeparator()
         if row.kind == "layer":
+            menu.addAction(_crisp_icon("mouse-pointer-click", self.px(16), TEXT_LABEL), "Select node",
+                           lambda: self._select_node(item))
+            menu.addSeparator()
             sel = self.ctl.layer_paths(self.ctl.selection) if row.node_path in self.ctl.selection else []
             convertible = set(self.ctl.legacy_paths())
             paths = [p for p in (sel or [row.node_path]) if p in convertible]
@@ -1678,44 +1711,58 @@ class AnimLoaderManager(QWidget):
             menu.addSeparator()
             menu.addAction("Open folder", lambda: self._link(row.node_path, "folder"))
             return menu
+        # shorter, an icon on every item (the user's ask, 2026-11-22): what changes the loader, then where to find
+        # it, then the rare ones; Asset only when the loader does not know its asset (the node's parm pane has it)
+        icon = lambda name: _crisp_icon(name, self.px(16), TEXT_LABEL)  # noqa: E731
+        paths = self.ctl.selection if row.node_path in self.ctl.selection else [row.node_path]
+        n = f" ({len(paths)})" if len(paths) > 1 else ""
         if not row.legacy and row.behind:
             news = self.ctl.news(row.node_path)
             label = f"Update to {news[0].part} {news[0].new}" if len(news) == 1 else "Update this loader"
-            menu.addAction(label, self._run(lambda: self.ctl._update([row.node_path])))
+            menu.addAction(icon("circle-up"), label, self._run(lambda: self.ctl._update([row.node_path])))
         if not row.legacy and row.kind == "geo":
-            paths = self.ctl.selection if row.node_path in self.ctl.selection else [row.node_path]
             other = "shot" if row.asset_source else "asset"
-            n = f" ({len(paths)})" if len(paths) > 1 else ""
-            menu.addAction(f"Switch to Source {other.title()}{n}",
+            menu.addAction(icon("arrow-left-right"), f"Switch to Source {other.title()}{n}",
                            self._run(lambda: self.ctl.set_source(other, list(paths))))
         if not row.legacy and row.kind in ("geo", "cam"):
-            paths = self.ctl.selection if row.node_path in self.ctl.selection else [row.node_path]
-            n = f" ({len(paths)})" if len(paths) > 1 else ""
-            act = menu.addAction(f"Reload from disk{n}", self._run(lambda: self.ctl.reload_from_disk(list(paths))))
+            act = menu.addAction(icon("rotate-cw"), f"Reload from disk{n}",
+                                 self._run(lambda: self.ctl.reload_from_disk(list(paths))))
             act.setToolTip("Read the files again, for a publish written again into the same version")
+        target = self.ctl.target_shot
+        if not row.legacy and row.shot and target and row.shot != target:
+            menu.addAction(icon("move-right"), f"Retarget to {target}",
+                           self._run(lambda: self.ctl.retarget([row.node_path])))
+        if row.legacy:  # an old loader or a baked one: its one action
+            menu.addAction(icon("circle-up"), "Upgrade to MonoFX Loader",
+                           self._run(lambda: self.ctl.upgrade_paths([row.node_path])))
+        menu.addSeparator()
+        menu.addAction(icon("mouse-pointer-click"), "Select node", lambda: self._select_node(item))
         if not row.legacy:
-            menu.addSeparator()
+            menu.addAction(icon("scan"), "Frame in the viewport", lambda: self._link(row.node_path, "frame"))
             self._folder_menu(menu, row, part)
             if row.kind != "cam":
-                menu.addAction("Open in Monos", lambda: self._link(row.node_path, "monos"))
-            menu.addAction("Frame in the viewport", lambda: self._link(row.node_path, "frame"))
-        if row.legacy:  # an old loader or a baked one: its one action
-            menu.addAction("Upgrade to MonoFX Loader", self._run(lambda: self.ctl.upgrade_paths([row.node_path])))
-        elif row.kind in ("geo", "cam"):
-            paths = self.ctl.selection if row.node_path in self.ctl.selection else [row.node_path]
-            n = f" ({len(paths)})" if len(paths) > 1 else ""
-            menu.addAction(f"Bake to plain nodes{n}", self._run(lambda: self.ctl.bake(list(paths))))
-        target = self.ctl.target_shot
-        retarget = not row.legacy and row.shot and target and row.shot != target
-        if retarget or row.needs_asset or (not row.legacy and row.kind == "geo"):
-            menu.addSeparator()
-        if retarget:
-            menu.addAction(f"Retarget to {target}", self._run(lambda: self.ctl.retarget([row.node_path])))
-        if row.needs_asset or (not row.legacy and row.kind == "geo"):
-            sub = menu.addMenu("Asset")
+                menu.addAction(icon("external-link"), "Open in Monos", lambda: self._link(row.node_path, "monos"))
+        rare = []
+        if row.needs_asset:
+            sub = QMenu("Asset", menu)
+            sub.setIcon(icon("box"))
+            sub.setStyleSheet(self.css(STYLE_MENU_SQ))
             root = next((i.state.project_root for i in self.ctl._infos if i.path == row.node_path and i.state), "")
             for asset in getattr(self.backend, "assets", lambda r: [])(root):
                 sub.addAction(asset, self._run(lambda a=asset: self.ctl.set_asset(row.node_path, a)))
+            rare.append(sub)
+        if not row.legacy and row.kind in ("geo", "cam"):
+            rare.append((icon("package"), f"Bake to plain nodes{n}", self._run(lambda: self.ctl.bake(list(paths)))))
+        if rare:
+            menu.addSeparator()
+            for entry in rare:
+                if isinstance(entry, QMenu):
+                    menu.addMenu(entry)
+                else:
+                    menu.addAction(*entry)
+        acts = menu.actions()
+        while acts and acts[0].isSeparator():  # nothing above the first group
+            menu.removeAction(acts.pop(0))
         return menu
 
     def _projects(self) -> list[str]:
@@ -1765,6 +1812,10 @@ class AnimLoaderManager(QWidget):
         self.ctl.target_shot = shot
         self.ctl.target_root = root
         self.shot_menu.clear()
+        self.load_menu = self.shot_menu  # Load shot: the crumb's menu starts with the shot's versions
+        self._fill_load_menu()
+        if self.shots:
+            self.shot_menu.addSection("Shots")
         for name in self.shots:
             act = self.shot_menu.addAction(name)
             act.setCheckable(True)
@@ -1772,24 +1823,26 @@ class AnimLoaderManager(QWidget):
             act.triggered.connect(lambda _=False, x=name: self.pick_shot(x))
         self.shot_button.setText(f"{shot} \u25be" if shot else ("Pick a shot \u25be" if self.shots else "No shot"))
         self.shot_button.setVisible(bool(root))
-        self._fill_load_menu()
+        self.load_button.setEnabled(bool(root))
 
     def _fill_load_menu(self) -> None:
+        """The shot crumb's menu starts with Load <shot> and its anim versions, newest first."""
         root, shot = self._project, self.ctl.target_shot
         self.versions = list(reversed(logic.list_versions(logic.anim_publish_dir(Path(root), shot)))) \
             if root and shot else []
-        self.load_menu.clear()
         self.load_menu.addSection(f"Load shot {shot}" if shot else "Load shot")
         if not self.versions:
             self.load_menu.addAction(f"No anim publish in {shot}" if shot else "Pick a project first").setEnabled(False)
+        icon = _crisp_icon("circle-plus", self.px(16), TEXT_LABEL)
         for i, version in enumerate(self.versions):
-            act = self.load_menu.addAction(f"Load {shot} {version}" + (" (newest)" if i == 0 else ""))
+            act = self.load_menu.addAction(icon, f"Load {shot} {version}" + (" (newest)" if i == 0 else ""))
             act.triggered.connect(lambda _=False, v=version: self.load_version(v))
-        self.load_menu.addSeparator()
-        assets = self.load_menu.addAction("Add assets\u2026")
-        assets.setToolTip("Pick assets to load on Source Asset (newest model, groom, lookdev)")
-        assets.setEnabled(bool(root))
-        assets.triggered.connect(self.open_drawer)
+
+    def _toggle_drawer(self) -> None:
+        if getattr(self, "_drawer_open", False):
+            self.close_drawer()
+        elif self._project:
+            self.open_drawer()
 
     def pick_project(self, path: str) -> None:
         """A project from the menu, or BROWSE: Qt's folder picker; a folder anywhere inside a project finds its
@@ -3367,30 +3420,49 @@ DRAG_FOLDER = Path(os.environ.get("TEMP", Path.home())) / "MonoFX" / "asset_drag
 
 
 class _AssetGrid(QListWidget):
-    """Add assets' cards: a drag carries the picked assets (the card under the mouse with them) as one
-    ``<asset>.monofx_asset`` file each, which a Network Editor, a Scene Viewer or the list take in (the user's ask,
-    2026-11-22)."""
+    """Add assets' cards (the user's review, 2026-11-22). Click picks / unpicks a card, Shift+click picks every card
+    from the last clicked one, a marquee from the empty space picks what it touches. A drag carries
+    ``<asset>.monofx_asset`` files, which a Network Editor, a Scene Viewer or the loaders list take in: from a
+    picked card, every pick (those a filter hides too); from an unpicked card, that card alone, the picks left as
+    they were (as Explorer drags a file that is not selected). Qt drags only a card picked before the press and
+    draws a marquee otherwise, so the drag starts here."""
 
     root = ""
-    _press = None  # (where the left button went down, the card under it)
+    drawer = None   # the AddDrawer, which holds the picks (a filter hides some of them)
+    _press = None   # (where the left button went down, the card under it, whether it was picked then)
+    _anchor = ""    # the asset of the last plain click: Shift+click picks from it
 
     def mimeTypes(self):  # noqa: N802 (Qt)
         return ["text/uri-list"]
 
-    # Qt drags only a card that was picked before the press; pressing an unpicked card and moving drew a marquee
-    # (the user's report, 2026-11-22). A press on any card and a move past the drag distance drags it, with the
-    # picked ones; a press on the empty space still draws the marquee.
     def mousePressEvent(self, event):  # noqa: N802 (Qt)
         pos = event.position().toPoint()
         item = self.itemAt(pos) if event.button() == Qt.MouseButton.LeftButton else None
-        self._press = (pos, item) if item is not None else None
+        if item is not None and event.modifiers() & Qt.KeyboardModifier.ShiftModifier and self._anchor:
+            self.pick_range(self._anchor, item.data(ROLE_ROW))
+            self._press = None
+            event.accept()
+            return
+        self._press = (pos, item, item.isSelected()) if item is not None else None
         super().mousePressEvent(event)
+        if item is not None:
+            self._anchor = item.data(ROLE_ROW)
+
+    def pick_range(self, a: str, b: str) -> None:
+        """Picks every shown card from ``a`` to ``b`` (in the grid's order)."""
+        names = [self.item(i).data(ROLE_ROW) for i in range(self.count())]
+        if b not in names:
+            return
+        i, j = sorted((names.index(a) if a in names else names.index(b), names.index(b)))
+        for k in range(i, j + 1):
+            self.item(k).setSelected(True)
 
     def mouseMoveEvent(self, event):  # noqa: N802 (Qt)
         press = self._press
         if press is not None and event.buttons() & Qt.MouseButton.LeftButton and \
                 (event.position().toPoint() - press[0]).manhattanLength() >= QApplication.startDragDistance():
             self._press = None
+            self._drag_was_picked = press[2]
             self.start_asset_drag(press[1])
             return
         super().mouseMoveEvent(event)
@@ -3399,30 +3471,40 @@ class _AssetGrid(QListWidget):
         self._press = None
         super().mouseReleaseEvent(event)
 
+    def drag_names(self, item, was_picked: bool) -> list[str]:
+        """What a drag from ``item`` carries: every pick from a picked card, else that card alone."""
+        if was_picked:
+            return self.drawer.picked() if self.drawer is not None else [i.data(ROLE_ROW) for i in self.selectedItems()]
+        return [item.data(ROLE_ROW)]
+
     def start_asset_drag(self, item) -> None:
-        """Drags ``item`` with the picked cards (it is picked first)."""
         from PySide6.QtGui import QDrag
 
-        if not item.isSelected():
-            item.setSelected(True)
-        data = self.mimeData(self.selectedItems())
+        was_picked = getattr(self, "_drag_was_picked", item.isSelected())
+        if not was_picked and item.isSelected():
+            item.setSelected(False)  # Qt picked it on the press; a drag of an unpicked card leaves the picks alone
+        data = self._mime(self.drag_names(item, was_picked))
         if not data.hasUrls():
             return
         drag = QDrag(self)
         drag.setMimeData(data)
         size = max(24, self.iconSize().width() // 2)
         drag.setPixmap(item.icon().pixmap(size, size * self.iconSize().height() // max(1, self.iconSize().width())))
-        drag.exec(Qt.DropAction.CopyAction)
+        done = drag.exec(Qt.DropAction.CopyAction)
         self.setState(QAbstractItemView.State.NoState)  # the release went to the drop: no marquee left behind
+        if was_picked and done != Qt.DropAction.IgnoreAction and self.drawer is not None:
+            self.drawer.clear_picks()  # placed: the picks are done, as after Add
 
-    def mimeData(self, items):  # noqa: N802 (Qt)
+    def _mime(self, names: list[str]):
         from PySide6.QtCore import QMimeData, QUrl
 
-        names = [i.data(ROLE_ROW) for i in items if i.data(ROLE_ROW)]
         data = QMimeData()
         if names and self.root:
             data.setUrls([QUrl.fromLocalFile(f) for f in logic.write_asset_drags(DRAG_FOLDER, self.root, names)])
         return data
+
+    def mimeData(self, items):  # noqa: N802 (Qt)
+        return self._mime([i.data(ROLE_ROW) for i in items if i.data(ROLE_ROW)])
 
 
 class AddDrawer(QWidget):
@@ -3437,6 +3519,7 @@ class AddDrawer(QWidget):
         self.owner = owner
         self.root = ""
         self.group = ""
+        self._picks: list[str] = []  # the picked assets in pick order, those a chip or the search hides too
         self.setObjectName("addDrawer")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(owner.px(14), owner.px(12), owner.px(14), owner.px(10))
@@ -3494,11 +3577,20 @@ class AddDrawer(QWidget):
             f"QListWidget#assetGrid::item:selected {{ background: {SELECTED}; border: 1px solid {ACCENT_LINE};"
             f" color: {TEXT_PRIMARY}; }}"
             f"QListWidget#assetGrid::item:selected:hover {{ background: {look.SELECTED_HOVER_LOADER}; border: 1px solid {ACCENT}; }}"))
-        self.list.itemSelectionChanged.connect(self._picked_changed)
+        self.list.drawer = self
+        self.list.itemSelectionChanged.connect(self._selection_changed)
+        self.list.itemDoubleClicked.connect(self._add_one)
         lay.addWidget(self.list, 1)
         foot = QHBoxLayout()
         self.count = owner._label("", FS_META, color=TEXT_LABEL)
+        self.count.setWordWrap(True)
         foot.addWidget(self.count, 1)
+        self.clear_link = QPushButton("Clear")
+        self.clear_link.setStyleSheet(owner.css(STYLE_LINK))
+        self.clear_link.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.clear_link.setToolTip("Unpick every asset (those the filter hides too)")
+        self.clear_link.clicked.connect(self.clear_picks)
+        foot.addWidget(self.clear_link)
         self.add_button = owner._button("Add", STYLE_PRIMARY)
         self.add_button.setToolTip("A MonoFX Loader on Source Asset for each picked asset (newest model, groom, "
                                    "lookdev), wired into assets_merge. One undo step.")
@@ -3548,18 +3640,36 @@ class AddDrawer(QWidget):
         self.fill_groups()
         self.fill()
 
+    def _in_scene(self) -> set[str]:
+        return {r.asset for r in self.owner.ctl.rows() if r.asset_source}
+
+    @staticmethod
+    def _card_text(name: str, versions: tuple, in_scene: set[str]) -> str:
+        sub = "in the scene, adds another" if name in in_scene else (
+            f"UV {versions[0] or '\u2013'}, LD {versions[1] or '\u2013'}")
+        return f"{name}\n{sub}"
+
+    def refresh_badges(self) -> None:
+        """The cards' second line again (an asset just added reads "in the scene"), without filling the grid
+        again: its scroll and picks stay."""
+        in_scene = self._in_scene()
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            versions = item.data(ROLE_HEADER)
+            if versions is not None:
+                item.setText(self._card_text(item.data(ROLE_ROW), versions, in_scene))
+
     def fill(self) -> None:
         from PySide6.QtGui import QIcon, QPixmap
 
-        keep = set(self.picked())
+        self.list.blockSignals(True)  # the picks stay what they are while the cards are made again
         self.list.clear()
         self.list.root = self.root
-        in_scene = {r.asset for r in self.owner.ctl.rows() if r.asset_source}
+        in_scene = self._in_scene()
         w, h = self.owner.px(self.THUMB[0]), self.owner.px(self.THUMB[1])
         for it in logic.asset_catalog(self.root, self.group, self.search.text(), self.model_only.isChecked()):
-            sub = "in the scene, adds another" if it.name in in_scene else (
-                f"UV {it.model or '\u2013'}, LD {it.lookdev or '\u2013'}")
-            item = QListWidgetItem(f"{it.name}\n{sub}")
+            item = QListWidgetItem(self._card_text(it.name, (it.model, it.lookdev), in_scene))
+            item.setData(ROLE_HEADER, (it.model, it.lookdev))
             pix = QPixmap(it.thumb) if it.thumb else QPixmap()
             if pix.isNull():
                 pix = QPixmap(w, h)
@@ -3569,19 +3679,53 @@ class AddDrawer(QWidget):
             item.setData(ROLE_ROW, it.name)
             item.setToolTip(f"{it.name} ({logic.group_label(it.group)})")
             self.list.addItem(item)
-            if it.name in keep:
+            if it.name in self._picks:
                 item.setSelected(True)
-        if self.list.count() == 0:
-            self.count.setText("No assets match." if self.root else "Pick a project first.")
+        self.list.blockSignals(False)
         self._picked_changed()
 
     def picked(self) -> list[str]:
-        return [i.data(ROLE_ROW) for i in self.list.selectedItems()]
+        """Every picked asset, those a chip or the search hides too (the user's review: a filter dropped them)."""
+        return list(self._picks)
+
+    def _shown(self) -> dict[str, object]:
+        return {self.list.item(i).data(ROLE_ROW): self.list.item(i) for i in range(self.list.count())}
+
+    def _selection_changed(self) -> None:
+        """The shown cards' picks into the drawer's; the hidden ones stay picked."""
+        shown = self._shown()
+        on = {n for n, it in shown.items() if it.isSelected()}
+        self._picks = [n for n in self._picks if n not in shown or n in on] + \
+            [n for n in shown if n in on and n not in self._picks]
+        self._picked_changed()
+
+    def clear_picks(self) -> None:
+        self._picks = []
+        self.list.blockSignals(True)
+        self.list.clearSelection()
+        self.list.blockSignals(False)
+        self._picked_changed()
+
+    def _add_one(self, item) -> None:
+        """Double-click: that asset now, the drawer stays open and the other picks as they were."""
+        name = item.data(ROLE_ROW)
+        self._picks = [n for n in self._picks if n != name]
+        self.list.blockSignals(True)
+        item.setSelected(False)
+        self.list.blockSignals(False)
+        self._picked_changed()
+        self.owner.add_assets_now([name])
 
     def _picked_changed(self) -> None:
-        n = len(self.picked())
+        n = len(self._picks)
+        hidden = n - sum(1 for name in self._shown() if name in self._picks)
         self.add_button.setText(f"Add {n}" if n else "Add")
         self.add_button.setEnabled(n > 0)
-        if self.list.count():
-            self.count.setText(f"{n} picked, Source Asset, newest versions" if n
-                               else f"{self.list.count()} assets, click to pick")
+        self.clear_link.setVisible(n > 0)
+        if n:
+            self.count.setText(f"{n} picked" + (f", {hidden} hidden by the filter" if hidden else "")
+                               + ", Source Asset, newest versions")
+        elif self.list.count():
+            self.count.setText(f"{self.list.count()} assets: click to pick, drag to place, double-click to add")
+        else:
+            self.count.setText("No assets match." if self.root else "Pick a project first.")
