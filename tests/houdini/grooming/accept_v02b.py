@@ -11,8 +11,8 @@ sandbox. Everything is written under <out_dir>: accept.json ({item, pass, value,
 `passed`), accept_log.txt, and the files of the checks run in a process of their own (accept_v02b_sub.py: the
 build before v0.2b against this one, a schema 6 scene, save / reopen, the shots; accept_v02a_sub.py: full-cook
 timing). Hython's exit code is not reliable: read the JSON. Run it with no other Houdini cooking (speed limits are
-absolute). One check id per "Done when" line this task (B2) can check in hython; the lines of the viewer state
-(B3), the panel (B4) and grooming-check on the carried mesh (B5), and the user's own try, are listed with
+absolute). One check id per "Done when" line B2 and B5 (q1, grooming-check) can check in hython; the lines of the viewer state
+(B3), the panel (B4) and the user's own try, are listed with
 `"pass": "not_here"` and the task that owns them.
 
 Definitions this script makes on its own (for the checker to judge):
@@ -219,9 +219,6 @@ def labels_after(fn):
 # lines owned by other tasks: listed, never left out
 # ---------------------------------------------------------------------------
 NOT_HERE = {
-    "q1_grooming_check_on_edited_groom": ("B5", "grooming-check passes, limits unchanged, on a groom with a moved, a "
-                                          "rotated and a redrawn lock: its mesh checks read the carried mesh (B5, "
-                                          "qc_metrics.py; the mesh is MESH_CARRIED here)"),
     "g1b_root_on_skin_at_every_event_of_the_drag": ("B3", "the root handle on the skin at every event of a drag "
                                                     "(viewer state, accept_v02b_gui.py); after the cook: g1 here"),
     "k1_control_points_and_paint": ("B3", "entering one ends the other; Esc, another node, deleting the node, "
@@ -1100,6 +1097,74 @@ def r2_qc():
           evidence="qc_noedit/qc_report.json")
 
 
+QC_EDITED_LOCKS = {"moved": MOVE_LOCK, "rotated": "hair_bang_05", "redrawn": "hair_bang_15"}
+
+
+def q1_qc_edited():
+    """grooming-check (qc_metrics.py, limits as they are) on a groom with a moved, a rotated, a redrawn and a drawn
+    lock: passes measured against the carried mesh, its limits are the ones of the groom with no edit (r2's report;
+    the drawn lock adds its own two checks), the edited locks are listed with their mesh numbers and the drawn lock
+    with "do not apply". The same groom against the modelled mesh is run beside it for the record (not a condition:
+    an edited lock is bent away from its modelled mesh on purpose)."""
+    lid = ID[MOVE_LOCK]
+    set_frame(lid, alib.bend(ROW0[lid], default_k(lid), 2.0, U))
+    lid = ID[QC_EDITED_LOCKS["rotated"]]
+    ga.rotate_points(node, [lid], ga.lock_handles(node, [lid])[lid]["axes"][2], 25.0)
+    lid = ID[QC_EDITED_LOCKS["redrawn"]]
+    R = np.array(ga.lock_handles(node, [lid])[lid]["axes"])
+    P = ROW0[lid]["P"]
+    Q = logic.rotate_about_root(P, R[2], -20.0) + R[1] * (np.linspace(0, 1, len(P)) ** 2 * 2.0 / U)[:, None]
+    redraw = ga.redraw_lock(node, lid, Q.tolist())
+    _spot, stroke = _drawn_setup()
+    drawn = ga.draw_lock(node, stroke, 2.0, 0.6, 0.3)
+    cook_all()
+    hip = OUT + "/q1_edited.hiplc"
+    hou.hipFile.save(hip)
+    reps = {}
+    for mode in ("carried", "modelled"):
+        out = OUT + "/qc_edited_" + mode
+        hython([QC, SUITE, hip, out, "--mesh", mode] + (["--ref", REF] if REF else []), "qc_edited_%s.log" % mode)
+        path = out + "/qc_report.json"
+        reps[mode] = json.load(open(path, encoding="utf-8")) if os.path.isfile(path) else None
+    rep = reps["carried"]
+    if rep is None:
+        add("q1_grooming_check_on_edited_groom", False, "no qc_report.json", note="see qc_edited_carried.log")
+        return
+    base_path = OUT + "/qc_noedit/qc_report.json"
+    base = {c["check"]: c["limit"] for c in json.load(open(base_path, encoding="utf-8"))["checks"]}         if os.path.isfile(base_path) else None
+    limits = {c["check"]: c["limit"] for c in rep["checks"]}
+    moved_limits = None if base is None else {k: [limits.get(k), v] for k, v in base.items() if limits.get(k) != v}
+    extra = sorted(set(limits) - set(base or limits))
+    failed = [c["check"] for c in rep["checks"] if not c["pass"]]
+    names = set(QC_EDITED_LOCKS.values())
+    listed = {r["name"] for r in rep.get("edited_locks", [])}
+    drawn_rows = rep.get("drawn_locks", [])
+    drawn_ok = any(r["name"] == drawn["name"] and "do not apply" in r.get("mesh_checks", "") for r in drawn_rows)
+
+    def edited_numbers(r):
+        return None if r is None else {e["name"]: {k: r3(e.get(k)) for k in ("dmax_p95_cm", "dtip_p95_cm", "other_mean",
+                                                                         "coverage", "width_tip", "tip_center_off",
+                                                                         "outside_worst")}
+                                     for e in r.get("edited_locks", []) if e["name"] in names}
+    modelled = reps["modelled"]
+    ok = rep["passed"] and not failed and moved_limits == {} and set(extra) <= {"drawn_root_skin_worst_cm",
+                                                                               "drawn_width_off_worst"}         and names <= listed and drawn_ok and rep.get("mesh", "").startswith("carried")
+    add("q1_grooming_check_on_edited_groom", ok,
+        {"passed": rep["passed"], "failed": failed, "mesh": rep.get("mesh"), "limits_moved": moved_limits,
+         "checks_added": extra, "edited_listed": sorted(listed), "drawn": drawn_rows,
+         "edited_against_carried": edited_numbers(rep), "edited_against_modelled": edited_numbers(modelled),
+         "modelled_failed": None if modelled is None else [c["check"] for c in modelled["checks"] if not c["pass"]],
+         "redraw_gap_cm": r3(redraw.get("gap_cm")), "drawn_lock": drawn["name"]},
+        "passed, limits as with no edit",
+        "grooming-check on the groom with %s moved 2 cm at the tip, %s turned 25 deg about its root, %s redrawn and a "
+        "lock drawn on bare skin: passes against the carried mesh with every limit equal the groom with no edit's "
+        "(qc_noedit, r2; needs --t55), the drawn lock's mesh checks said not to apply; the modelled mesh run beside it "
+        "for the record" % (MOVE_LOCK, QC_EDITED_LOCKS["rotated"], QC_EDITED_LOCKS["redrawn"]),
+        evidence="qc_edited_carried/qc_report.json, qc_edited_modelled/qc_report.json",
+        note="" if base is not None else "no qc_noedit report (run r2 first): limits not compared")
+    restore()
+
+
 def x1_fullcook():
     if not BASE:
         add("x1_full_cook_within_10pct", False, None, "--base <suite>", note="not run: no --base")
@@ -1239,7 +1304,7 @@ for tag, fn in (("p1", p1_survive), ("p2", p2_orphan), ("p3", p3_publish)):
     if wanted(tag):
         C.run(tag + "_raised", fn)
         restore()
-for tag, fn in (("r1", r1_m1_base), ("r2", r2_qc), ("x1", x1_fullcook), ("s", s_shots)):
+for tag, fn in (("r1", r1_m1_base), ("r2", r2_qc), ("q1", q1_qc_edited), ("x1", x1_fullcook), ("s", s_shots)):
     if wanted(tag):
         C.run(tag + "_raised", fn)
 C.meta["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")

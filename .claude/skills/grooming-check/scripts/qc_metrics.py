@@ -30,7 +30,10 @@ import time
 
 import numpy as np
 
-import hou
+try:
+    import hou
+except ImportError:     # pytest imports the pure parts (tests/test_grooming_check_metrics.py)
+    hou = None
 
 SUITE = HIP = OUT = REF = None
 FRESH = False
