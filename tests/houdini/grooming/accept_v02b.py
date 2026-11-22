@@ -1448,6 +1448,116 @@ def s_shots():
           "(qc_capture.py); KNOWN until they exist")
 
 
+# ---------------------------------------------------------------------------
+# s6: the shot deform that replaces v0.1's (B-3 decided by the user, 2026-11-22; the plan's "The cause, and the
+# deform that replaces v0.1's in shots"): accept_v02b_deform.py on this build and on the build before v0.2b (--base,
+# v0.1's Point Deform), every lock of sh020 and sh025. Graded: 0 folds by the plan's rule (the hair against its own
+# animated piece); unedited strand length p95 within 5 % where the piece itself does not fold; edited locks (tip 2 cm,
+# turn 25 deg; every fringe lock of sh020, t84's 9 locks of sh025) median length within 2 % and tip turn within 5 deg
+# of rest where the piece does not fold (reported where it does); roots off the animated scalp no further than v0.1's
+# + SHOT_ROOT_CM; no point left behind; no node error. Reported: the move against v0.1 (p95 per lock-frame), the hair
+# against its piece (now - rest), frame to frame against the piece, the frame cost against v0.1's.
+# ---------------------------------------------------------------------------
+DEFORM_SHOTS = {"sh020": ("10,25,45,60,75,105,135", "73,74,75,76,77"), "sh025": ("5,20,25,40,50", "20,21,22,23,24")}
+DEFORM_SH025_LOCKS = ("hair_bang_05", "hair_bang_11", "hair_bang_17", "hair_back_05", "hair_back_20", "hair_back_01",
+                      "hair_back_13", "hair_base_07", "hair_base_09")
+DEFORM_LENGTH_P95 = 0.05     # unedited strand length p95 within this of rest (the plan)
+DEFORM_COST_PROBLEM_S = 1.5  # a frame of output 1 over this is reported as a problem (the plan)
+
+
+def deform_run(suite, hip, tag, frames, edit, consec):
+    outf = OUT + "/" + tag + ".json"
+    if os.path.isfile(outf):
+        os.remove(outf)
+    hython([HERE + "/accept_v02b_deform.py", suite, hip, outf, frames, ",".join(edit), consec], tag + ".log",
+           timeout=10800)
+    if not os.path.isfile(outf):
+        return {"error": "no file: see " + OUT + "/" + tag + ".log"}
+    with open(outf, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def s6_deform():
+    shots = [(t, h) for t, h in (("sh020", SH020), ("sh025", SH025)) if h]
+    if not shots or not BASE:
+        add("s6_shot_deform_follows_each_lock_s_own_piece", False, None, "--sh020 / --sh025 and --base",
+            note="not run: needs the shot scenes and the build before v0.2b")
+        return
+    rows, ok = {}, True
+    for tag, hip in shots:
+        frames, consec = DEFORM_SHOTS[tag]
+        edit = sorted(n for n in NAMES.values() if n.startswith("hair_bang_")) if tag == "sh020" else \
+            [n for n in DEFORM_SH025_LOCKS if n in ID]
+        new = deform_run(SUITE, hip, "s6_%s_new" % tag, frames, edit, consec)
+        old = deform_run(BASE, hip, "s6_%s_v01" % tag, frames, [], "")
+        if "error" in new or "error" in old:
+            rows[tag] = {"new": new.get("error"), "v01": old.get("error")}
+            ok = False
+            continue
+        lf = [(n, f, r) for n, v in new["unedited"].items() for f, r in v.items()]
+        ov = old["unedited"]
+        folds = [(n, f) for n, f, r in lf if r["fold"]]
+        v01_folds = [(n, f) for n, v in ov.items() for f, r in v.items() if r["fold"]]
+        stretch = [(n, f, round(r["len_p95"], 4), round(r["piece_len_ratio"], 4)) for n, f, r in lf
+                   if not r["piece_folds"] and r["len_p95"] > 1 + DEFORM_LENGTH_P95]
+        v01_stretch = sum(1 for n, f, r in lf if not r["piece_folds"] and ov.get(n, {}).get(f, {}).get("len_p95", 0)
+                          > 1 + DEFORM_LENGTH_P95)
+        roots = [(n, f, round(r["roots_skin_p95_cm"], 4), round(ov[n][f]["roots_skin_p95_cm"], 4)) for n, f, r in lf
+                 if n in ov and f in ov[n] and r["roots_skin_p95_cm"] is not None
+                 and ov[n][f]["roots_skin_p95_cm"] is not None
+                 and r["roots_skin_p95_cm"] > ov[n][f]["roots_skin_p95_cm"] + SHOT_ROOT_CM]
+        left = sum(r["left_behind"] for _, _, r in lf)
+        ed_fail, ed_report = [], []
+        for n, v in new["edited"].items():
+            for case, fr in v.items():
+                for f, r in fr.items():
+                    bad = abs(r["len_p50"] - 1) > SHOT_LENGTH or r["tip_turn_change"] > TIP_TURN_DEG
+                    if bad:
+                        (ed_report if r["piece_folds"] else ed_fail).append(
+                            (n, case, f, round(r["len_p50"], 4), round(r["tip_turn_change"], 2)))
+        # the move against v0.1, every 10th strand
+        A = np.load(OUT + "/s6_%s_new_samples.npz" % tag)
+        B = np.load(OUT + "/s6_%s_v01_samples.npz" % tag)
+        mv = {}
+        for k in A.files:
+            if k in B.files and A[k].shape == B[k].shape:
+                f, lid, _s = k.split("|")
+                mv.setdefault((f, lid), []).append(np.linalg.norm(A[k] - B[k], axis=1))
+        mvp = np.array([float(np.percentile(np.concatenate(v), 95)) for v in mv.values()])
+        tp = np.array([r["to_piece_now_cm"] - r["to_piece_rest_cm"] for _, _, r in lf])
+        cons = [(r["hair_max_cm"] / max(r["piece_max_cm"], 1e-6), n, f) for n, v in new["consecutive"].items()
+                for f, r in v.items()]
+        cost_new, cost_old = list(new["cost_s"].values()), list(old["cost_s"].values())
+        good = not folds and not stretch and not roots and not left and not ed_fail and not new.get("errors")
+        ok = ok and good
+        rows[tag] = {
+            "pass": good, "lock_frames": len(lf), "folds": folds, "v01_folds": len(v01_folds),
+            "length_p95_over": stretch, "v01_length_p95_over": v01_stretch,
+            "roots_worse_than_v01": roots, "left_behind": left,
+            "edited_cases": sum(len(fr) for v in new["edited"].values() for fr in v.values()),
+            "edited_failing": ed_fail, "edited_reported_piece_folds": ed_report,
+            "move_vs_v01_p95_cm": {"median": float(np.median(mvp)), "p95": float(np.percentile(mvp, 95)),
+                                   "max": float(mvp.max())} if len(mvp) else None,
+            "to_piece_now_minus_rest_cm": {"median": float(np.median(tp)), "max": float(tp.max())},
+            "frame_to_frame_hair_over_piece": {"median": float(np.median([c[0] for c in cons])) if cons else None,
+                                               "worst": sorted(cons, reverse=True)[:5]},
+            "cost_s": {"new": cost_new, "v01": cost_old,
+                       "over_%gs" % DEFORM_COST_PROBLEM_S: [c for c in cost_new if c > DEFORM_COST_PROBLEM_S]},
+            "errors": new.get("errors"), "deform_problem": new.get("deform_problem")}
+    add("s6_shot_deform_follows_each_lock_s_own_piece", ok, rows,
+        {"folds": 0, "unedited_length_p95": 1 + DEFORM_LENGTH_P95, "edited_length": SHOT_LENGTH,
+         "tip_turn_deg": TIP_TURN_DEG, "roots_cm_over_v01": SHOT_ROOT_CM, "left_behind": 0},
+        "every lock of sh020 (frames %s) and sh025 (%s), this build against the build before v0.2b (v0.1's Point "
+        "Deform): no fold of the hair against its own animated piece (turning over rest minus the piece's over 90 deg, "
+        "or a new kink over 90 the piece does not have); unedited strand length p95 within %g %% where the piece does "
+        "not fold; edited locks (tip 2 cm, turn 25 deg) median length within %g %% and tip turn within %g deg of rest "
+        "where the piece does not fold (reported where it does); roots off the animated scalp within v0.1's + %g cm; "
+        "nothing left behind. Reported: the move against v0.1, the hair against its piece, frame to frame against the "
+        "piece, the frame cost (over %g s a problem)"
+        % (DEFORM_SHOTS["sh020"][0], DEFORM_SHOTS["sh025"][0], DEFORM_LENGTH_P95 * 100, SHOT_LENGTH * 100, TIP_TURN_DEG,
+           SHOT_ROOT_CM, DEFORM_COST_PROBLEM_S), evidence="s6_*.json")
+
+
 def v2_names_ids_strokes():
     """t84 recheck (second round), against the node: names with a backslash, a backtick, `$`, a quote and a newline
     stored and read back as given (a drawn lock's name and a density layer's name), the node cooking; a duplicate id
@@ -1671,7 +1781,8 @@ for tag, fn in (("p1", p1_survive), ("p2", p2_orphan), ("p3", p3_publish)):
     if wanted(tag):
         C.run(tag + "_raised", fn)
         restore()
-for tag, fn in (("r1", r1_m1_base), ("r2", r2_qc), ("q1", q1_qc_edited), ("x1", x1_fullcook), ("s", s_shots)):
+for tag, fn in (("r1", r1_m1_base), ("r2", r2_qc), ("q1", q1_qc_edited), ("x1", x1_fullcook), ("s", s_shots),
+                ("s6", s6_deform)):
     if wanted(tag):
         C.run(tag + "_raised", fn)
 C.meta["finished"] = time.strftime("%Y-%m-%d %H:%M:%S")
