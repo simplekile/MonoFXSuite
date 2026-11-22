@@ -3429,7 +3429,7 @@ class InspectorPanel(QWidget):
         return menu
 
     # groom curves (the user's pick, layout A, 2026-11-22): Karma's render-time curve settings, render only
-    MENU_CURVE_BASIS = "Render curves smooth (Karma)"
+    MENU_CURVE_BASIS = "Curve shape"
     MENU_CURVE_WIDTH = "Width (Karma)"
     MENU_CURVE_STYLE = "Render as (Karma CPU)"
     MENU_CURVE_PUBLISH = "Use the publish's"
@@ -3476,8 +3476,8 @@ class InspectorPanel(QWidget):
         shot_basis = all(c.basis_source == "shot" for c in choices)
         basis = common([c.basis for c in choices]) if shot_basis else None
         published = common([c.published_basis for c in choices])
-        sub = submenu(self.MENU_CURVE_BASIS, "spline", "How Karma renders the strands at render time; the cache and"
-                                                       " the viewport are left as they are")
+        sub = submenu(self.MENU_CURVE_BASIS, "spline", "How the strands run between their points, in the viewport and"
+                                                       " the render; smooth curves keep their roots pinned")
         add(sub, self.MENU_CURVE_PUBLISH + (f" ({CURVE_WORD.get(published, published)})" if published else ""),
             not any(c.basis_source == "shot" for c in choices), lambda: self.set_curves(pats, basis=None))
         few = min(c.min_cvs for c in choices)

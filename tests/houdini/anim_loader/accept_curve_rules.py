@@ -39,7 +39,7 @@ def curves(node, inst="char_Robot"):
     out = {}
     for prim in node.stage().Traverse():
         if prim.IsA(UsdGeom.BasisCurves) and f"/{inst}/" in prim.GetPath().pathString:
-            vals = {}
+            vals = {"shape": [prim.GetAttribute(n).Get() for n in ("type", "basis", "wrap")]}
             for key, pv in logic.CURVE_PRIMVARS.items():
                 a = prim.GetAttribute("primvars:" + pv)
                 vals[key] = a.Get() if a and a.HasAuthoredValue() else None
@@ -70,7 +70,7 @@ def main():
     b.set_curves_many({robot.path(): ["Groom/**"]}, basis="bspline", width=1.5)
     after = curves(robot)
     check("basis and width land on every curves prim", after and all(
-        v["basis"] == logic.CURVE_BASIS_KARMA["bspline"] and v["width"] == 1.5 and v["style"] is None
+        v["shape"] == ["cubic", "bspline", "pinned"] and v["basis"] == 0 and v["width"] == 1.5 and v["style"] is None
         for v in after.values()), after)
     check("the points stay the cache's", {k: v["points"] for k, v in after.items()}
           == {k: v["points"] for k, v in before.items()})

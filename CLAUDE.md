@@ -589,12 +589,12 @@
   fallback as a value. Dicing is `primvars:karma:object:dicingquality` (render only).
 - Groom curves per shot (the user's pick of three mockups, layout A, 2026-11-22; `logic.curve_plan`,
   `adapter.author_curves` from the same `render_only` Python LOP): BasisCurves have no subdivisionScheme or dicing, so
-  a shot sets Karma's render-time curve primvars, constant, on each curves prim: `karma:object:curve_basis` (int, 1
-  linear / 3 B-spline / 4 Catmull-Rom; Bezier left out: it needs 4 + 3N CVs and Helen's 9 / 33-CV strands break it;
-  cubic needs 4 CVs, the menu greys it below that), `width_scale` (float, x the published widths) and `curve_style`
-  (0 flat, 1 rounded = Karma's default, 2 oriented; Karma XPU renders rounded only, Karma CPU no oriented linear
-  curves). Render only: the cache's points / widths (value clips) and the viewport are left alone; the clips carry
-  none of these, so a default beats nothing (sh025: values reach `beauty_pass`, points keep 46 samples). Rules: hidden
+  a shot sets on each curves prim its Curve shape (the prim's own type / basis / wrap, see below; Bezier left out: it
+  needs 4 + 3N CVs and Helen's 9 / 33-CV strands break it; cubic needs 4 CVs, the menu greys it below that) and two
+  Karma primvars, constant: `width_scale` (float, x the published widths) and `curve_style` (0 flat, 1 rounded =
+  Karma's default, 2 oriented; Karma XPU renders rounded only, Karma CPU no oriented linear curves). The cache's
+  points / widths (value clips) are left alone; the clips carry none of these, so a default beats nothing (sh025:
+  values reach `beauty_pass`, points keep 46 samples). Rules: hidden
   `mx_curve_rules`, JSON `pattern` (as subdivision) + `basis` / `width` / `style`, a later rule wins field by field
   (`set_curve_rules`: KEEP keeps a field, None takes it off, an empty rule goes). What the publish says: the groom
   file's type / basis (`groom_curve_facts`, first frame) under the lookdev's (`lookdev_curve_opinions`, Karma
@@ -603,11 +603,13 @@
   close-ups showed "as published" = linear), so it now takes type / basis / wrap off its copy wherever the lookdev
   authors them, except a cubic lookdev over a cache with a curve under 4 CVs (Karma drops those). `pinned` matters:
   a non-periodic B-spline starts at (P0 + 4 P1 + P2) / 6, which leaves Helen's Hair_Back roots ~2 cm (max 2.8) off
-  the scalp; pinned starts at P0. A shot's "Render curves smooth" (Karma's curve_basis) does not change the wrap: on a
-  linear, non-periodic cache without a lookdev shape the roots may float like that (not checked in a render).
+  the scalp; pinned starts at P0. A shot's Curve shape is the curves' own type / basis / wrap (cubic + pinned for
+  B-spline / Catmull-Rom, linear + non-periodic for Linear; `adapter.karma_curve_values`, "token" values), with
+  Karma's curve_basis set back to 0: the Karma override smooths but never pins, wrap pinned or not (one-strand husk
+  test, Karma CPU and XPU, 2026-11-22). So the viewport shows the shot's shape too.
   Inspector:
   a curves row's SCHEME is its basis, FROM its source, WIDTH (col 8, `COL_WIDTH`, shown only when the tree has curves)
-  its scale; the curves rows' menu has Render curves smooth / Width / Render as (Karma CPU). Clear overrides, Same
+  its scale; the curves rows' menu has Curve shape / Width (Karma) / Render as (Karma CPU). Clear overrides, Same
   overrides on the other loaders and Bake (`BAKED_SUBD_CODE`'s `CURVES`) include them. No viewport thinning: Houdini GL
   has no "draw a fraction of the curves" setting, and a per-frame proxy copy was turned down (the user's call); the
   viewport toggle and the lookdev's proxy meshes keep the viewport light. Check: hython

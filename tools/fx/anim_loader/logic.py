@@ -1035,11 +1035,12 @@ def clear_subd_rules(rules: list[dict], patterns: list[str] | None) -> list[dict
 
 
 # --- groom curves per shot (the user's pick, layout A, 2026-11-22) ------------------------------------------------
-# BasisCurves have no subdivisionScheme and no dicing. What a lighter sets per shot are Karma's render-time curve
-# properties, primvars on each curves prim, so the cache (value clips) and the viewport are left alone:
-#   basis  primvars:karma:object:curve_basis   Override Curves Basis: the linear groom rendered smooth (B-spline,
-#                                              Catmull-Rom) or a cubic one forced linear; cubic needs 4+ CVs a curve.
-#                                              Bezier (4 + 3N CVs) is left out: Helen's 9 / 33-CV strands break it.
+# BasisCurves have no subdivisionScheme and no dicing. What a lighter sets per shot, on each curves prim (the cache's
+# points and widths, value clips, are left alone):
+#   basis  the curves' own type / basis / wrap: B-spline or Catmull-Rom = cubic, pinned (the root stays on the scalp),
+#          linear = linear, non-periodic; viewport and render alike. Not Karma's curve_basis override: it smooths
+#          but never pins (one-strand test, Karma CPU and XPU), and Helen's B-spline roots sat ~2 cm off her scalp.
+#          Cubic needs 4+ CVs a curve. Bezier (4 + 3N CVs) is left out: Helen's 9 / 33-CV strands break it.
 #   width  primvars:karma:object:width_scale   a multiplier on the published widths
 #   style  primvars:karma:object:curve_style   Render Curves As: rounded (Karma's default), flat or oriented ribbons;
 #                                              Karma XPU renders rounded only, Karma CPU no oriented linear curves.

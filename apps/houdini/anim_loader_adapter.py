@@ -1420,8 +1420,11 @@ if root is not None:
         if not prim:
             continue
         for name, (kind, value) in values.items():
-            UsdGeom.PrimvarsAPI(prim).CreatePrimvar(name, Sdf.ValueTypeNames.Int if kind == "int" else
-                                                    Sdf.ValueTypeNames.Float, UsdGeom.Tokens.constant).Set(value)
+            if kind == "token":  # the curves' own type / basis / wrap
+                prim.CreateAttribute(name, Sdf.ValueTypeNames.Token, False, Sdf.VariabilityUniform).Set(value)
+            else:
+                UsdGeom.PrimvarsAPI(prim).CreatePrimvar(name, Sdf.ValueTypeNames.Int if kind == "int" else
+                                                        Sdf.ValueTypeNames.Float, UsdGeom.Tokens.constant).Set(value)
     for mesh, (scheme, dicing) in PLAN.items():
         prim = stage.GetPrimAtPath(root + mesh)
         if not prim:
@@ -2205,10 +2208,20 @@ def node_curve_plan(node) -> dict:
 
 
 def karma_curve_values(overrides: dict) -> dict[str, tuple[str, object]]:
-    """{primvar name: (value type, value)} that a shot's curve overrides author (render only, Karma)."""
+    """{name: (value type, value)} that a shot's curve overrides author: "token" values are the curves' own USD
+    type / basis / wrap, the rest constant primvars (Karma, render only).
+    The basis is the USD shape, not Karma's curve_basis override (the user's ask, 2026-11-22: pin the roots): with
+    the override Karma smooths a linear curve but never pins it, wrap pinned or not, and a B-spline root sat ~2 cm off
+    Helen's scalp; a cubic curve with wrap pinned starts at its root (Karma CPU and XPU, one-strand test). Karma's
+    override goes back to geometry default (0) so a lookdev's cannot undo the shot's pick."""
     out = {}
     if "basis" in overrides:
-        out[logic.CURVE_PRIMVARS["basis"]] = ("int", logic.CURVE_BASIS_KARMA[overrides["basis"]])
+        smooth = overrides["basis"] != logic.CURVE_LINEAR
+        out["type"] = ("token", "cubic" if smooth else "linear")
+        if smooth:
+            out["basis"] = ("token", overrides["basis"])
+        out["wrap"] = ("token", "pinned" if smooth else "nonperiodic")
+        out[logic.CURVE_PRIMVARS["basis"]] = ("int", 0)
     if "width" in overrides:
         out[logic.CURVE_PRIMVARS["width"]] = ("float", float(overrides["width"]))
     if "style" in overrides:
@@ -2217,8 +2230,8 @@ def karma_curve_values(overrides: dict) -> dict[str, tuple[str, object]]:
 
 
 def author_curves(node, stage) -> None:
-    """Called by the HDA's render_only Python LOP: Karma's curve basis, width scale and style on every groom curves
-    prim a shot rule names (constant primvars on the stage's active layer: the cache's clips carry none of them)."""
+    """Called by the HDA's render_only Python LOP: the curve shape (type / basis / wrap), Karma's width scale and
+    style on every groom curves prim a shot rule names (on the stage's active layer: the cache's clips carry none)."""
     from pxr import Sdf, Usd, UsdGeom
 
     rules = logic.parse_curve_rules(_s(node, config.P_CURVE_RULES))
@@ -2234,7 +2247,10 @@ def author_curves(node, stage) -> None:
             values = karma_curve_values(logic.curve_overrides(prim.GetPath().pathString[len(root):], rules))
             api = UsdGeom.PrimvarsAPI(prim)
             for name, (kind, value) in values.items():
-                api.CreatePrimvar(name, types[kind], UsdGeom.Tokens.constant).Set(value)
+                if kind == "token":
+                    prim.CreateAttribute(name, Sdf.ValueTypeNames.Token, False, Sdf.VariabilityUniform).Set(value)
+                else:
+                    api.CreatePrimvar(name, types[kind], UsdGeom.Tokens.constant).Set(value)
 
 
 def shown_for(meshes: list[str], curves: list[str], anim: str, lookdev: str, show: dict | None) -> dict:
