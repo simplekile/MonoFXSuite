@@ -154,6 +154,12 @@ def look_at(lids):
     set_view(m * 0.8 + n * 0.2, box)
 
 
+def frame_on(lids):
+    S["ga"].set_isolate(S["node"], lids)
+    S["node"].cook()
+    look_at(lids)
+
+
 def drag(points, step_ms, done, mods=QtCore.Qt.NoModifier, settle_ms=1500):
     pts = list(points)
     info = {}
@@ -279,7 +285,7 @@ def last_drag():
 
 
 def gesture(tag, lid_names, start_of, offsets, then, mods=QtCore.Qt.NoModifier, keys=(), enter=True,
-            tool="points", check=None, step_ms=30):
+            tool="points", check=None, step_ms=30, arm="", hold=False):
     """Enter the tool on these locks, picture before, drag from `start_of()` (a global px) along `offsets`
     (px from the start), picture after, then the shared checks and `check(rec)` for the gesture's own."""
     gps, ga, node = S["gps"], S["ga"], S["node"]
@@ -300,27 +306,49 @@ def gesture(tag, lid_names, start_of, offsets, then, mods=QtCore.Qt.NoModifier, 
         later(600, press)
 
     def press():
-        for k, t in keys:
+        for k, t in keys:              # R / E arm the next drag: held through it, or tapped before it
             post_key(k, t)
+            if not hold:
+                post_key(k, t, release=True)
         pump()
+        S["state_after_keys"] = viewer().currentState()
+        pop = app.activePopupWidget()
+        S["popup_after_keys"] = (type(pop).__name__ + " " + pop.objectName()) if pop is not None else None
+        grab = QtWidgets.QWidget.mouseGrabber()
+        S["grabber_after_keys"] = type(grab).__name__ if grab is not None else None
+        S["menu_actions"] = list(gps.STATS.get("menu", []))[-4:]
+        if arm:
+            S["pk"].update(held=arm)
+        S["held_after_keys"] = S["pk"].STATE.held
         viewer().curViewport().draw()
         pump()
         a = start_of()
         S["press_global"] = a
+        S["events_at_press"] = gps.STATS["events"]
         S["press_viewport"] = tuple(viewer().curViewport().size())
         pts = [(a[0] + dx, a[1] + dy) for dx, dy in offsets]
         later(150, lambda: drag(pts, step_ms, done, mods))
 
     def done(_info):
-        for k, t in keys:
-            post_key(k, t, release=True)
-        pump()
+        rec["held_after_drag"] = S["pk"].STATE.held
+        rec["key_held_through_drag"] = bool(hold and keys)
+        if hold:
+            for k, t in keys:
+                post_key(k, t, release=True)
+            pump()
         labels = hou.undos.undoLabels()
         rec["undo_steps"] = len(labels) - S["labels0"]
         rec["undo_label"] = labels[0] if labels else ""
         got = (gps.STATS["draws"] if tool == "draw" else gps.STATS["drags"])
         if len(gps.STATS["drags"]) + len(gps.STATS["draws"]) == S["drags0"]:
             C.add(tag, False, {"failed": "no gesture reached the state", "last_mouse": gps.LIVE.get("last_mouse"),
+                               "state_after_keys": S.get("state_after_keys"), "held": S.get("held_after_keys"),
+                               "popup": S.get("popup_after_keys"), "grabber": S.get("grabber_after_keys"),
+                               "menu_actions": S.get("menu_actions"), "events": gps.STATS["events"],
+                               "events_at_press": S.get("events_at_press"), "press_global": S.get("press_global"),
+                               "gl_visible": S["gl"].isVisible(), "pick": gps.STATS.get("pick"),
+                               "state_now": viewer().currentState(), "ended": gps.STATS["ended"][-3:],
+                               "tool": gps.current_tool(), "mouse_log": gps.STATS.get("mouse_log", [])[-30:],
                                "errors": gps.STATS["errors"][-2:], "keys": gps.STATS["keys"][-6:]})
             return then()
         d = dict(got[-1])
@@ -430,6 +458,7 @@ def k2a_move_fringe():
 def g1b_root_drag():
     restore()
     lid = S["ID"][FRINGE]
+    frame_on([lid])          # each step frames its own lock: run alone, the view was the default (t81 r15)
 
     def start():
         return to_global(S["gps"].running().locks[lid]["world"][0])
@@ -455,6 +484,7 @@ def g1b_root_drag():
 def k2b_rotate():
     restore()
     lid = S["ID"][FRINGE]
+    frame_on([lid])          # each step frames its own lock: run alone, the view was the default (t81 r15)
 
     def start():
         return to_global(S["gps"].running().locks[lid]["world"][-1])
@@ -466,15 +496,17 @@ def k2b_rotate():
         ok = handles_match(rec, lid, want)
         rec["root_moved_cm"] = round(float(np.linalg.norm(np.array(handles(lid)["points"])[0]
                                                           - S["before_handles"][lid][0])) * S["unit"], 5)
-        return ok and abs(ang) > 5 and rec["root_moved_cm"] < 1e-3 and rec["undo_label"] == "MONO Grooming: Rotate lock"
-    gesture("k2b_rotate_about_root", [FRINGE], start, [(-70 * i / 20, 30 * i / 20) for i in range(21)],
-            S["next"], keys=[(QtCore.Qt.Key_R, "r")], check=check)
+        return (ok and abs(ang) > 5 and rec["root_moved_cm"] < 1e-3 and rec["undo_label"] == "MONO Grooming: Rotate lock"
+                and rec.get("held_after_drag") == "")
+    gesture("k2b_rotate_about_root", [FRINGE], start, [(-160 * i / 20, 70 * i / 20) for i in range(21)],
+            S["next"], keys=[(QtCore.Qt.Key_R, "r")], check=check, hold=True)
 
 
 @step
 def k2c_scale():
     restore()
     lid = S["ID"][FRINGE]
+    frame_on([lid])          # each step frames its own lock: run alone, the view was the default (t81 r15)
 
     def start():
         return to_global(S["gps"].running().locks[lid]["world"][-1])
@@ -487,9 +519,11 @@ def k2c_scale():
         L0 = float(S["logic"].arc_lengths(S["before_spine"][lid])[-1])
         L1 = float(S["logic"].arc_lengths(spines()[lid]["P"])[-1])
         rec["spine_length_ratio"] = round(L1 / L0, 4)
-        return ok and f > 1.1 and abs(L1 / L0 - f) / f < 0.05 and rec["undo_label"] == "MONO Grooming: Scale lock"
+        return (ok and f > 1.1 and abs(L1 / L0 - f) / f < 0.05 and rec["undo_label"] == "MONO Grooming: Scale lock"
+                and rec.get("held_after_drag") == "")
+    by_key = os.environ.get("ACCEPT_SCALE_ARM", "key") == "key"
     gesture("k2c_scale_about_root", [FRINGE], start, [(100 * i / 20, 0) for i in range(21)], S["next"],
-            keys=[(QtCore.Qt.Key_E, "e")], check=check)
+            keys=[(QtCore.Qt.Key_E, "e")] if by_key else (), arm="" if by_key else "scale", check=check)
 
 
 def _poly_dist(points, line):
@@ -507,6 +541,7 @@ def _poly_dist(points, line):
 def k2d_redraw():
     restore()
     lid = S["ID"][FRINGE]
+    frame_on([lid])          # each step frames its own lock: run alone, the view was the default (t81 r15)
 
     def start():
         return to_global(S["gps"].running().locks[lid]["world"][0])
@@ -612,6 +647,10 @@ def k2g_handle_keys():
         rec["undo_steps_plus"] = len(labels) - n0
         rec["undo_label"] = labels[0] if labels else ""
         rec["keys_seen"] = gps.STATS["keys"][-4:]
+        rec["key_step"] = gps.STATS.get("key_step")
+        rec["handles_step"] = gps.STATS.get("handles_step")
+        rec["message"] = S["pk"].STATE.message
+        rec["last_drag"] = {k: v for k, v in (last_drag() or {}).items() if k in ("kind", "result", "to", "step")}
         rec["shot"] = shot("k2g_plus_one_handle")
         ok_u, rec["undo_redo"] = undo_redo(before, data_now())
         rec["undo_ok"] = ok_u
@@ -660,7 +699,9 @@ def k2h_click_selects():
 
     def after_empty(_i):
         rec["after_empty_click"] = [S["NAMES"].get(i) for i in S["pk"].STATE.lock_ids]
-        rec["clicks"] = gps.STATS["clicks"][-3:]
+        rec["clicks"] = gps.STATS["clicks"][-4:]
+        rec["mouse_log"] = gps.STATS.get("mouse_log", [])[-40:]
+        rec["ids"] = {n: S["ID"][n] for n in ("hair_bang_11", "hair_bang_14")}
         rec["shot"] = shot("k2h_two_selected")
         rec["errors"] = gps.STATS["errors"][-2:]
         ok = (rec["after_click"] == ["hair_bang_14"] and rec["after_shift_click"] == ["hair_bang_14", "hair_bang_11"]

@@ -40,6 +40,7 @@ from tools.fx.grooming import points_keys as pk
 
 STATE = config.POINTS_STATE
 LABEL = "MONO Grooming: Edit points"
+HOTKEY_CONTEXT = "h.pane.gview.state.sop." + STATE
 LIVE: dict = {}      # "state": the running state object, "prev": the viewer's state before the tool
 STATS: dict = {"drags": [], "draws": [], "clicks": [], "keys": [], "events": 0, "enters": 0, "exits": 0,
                "came_back": 0, "errors": [], "ended": [], "esc": 0}
@@ -110,8 +111,9 @@ def _key_filter():
     held_keys = {QtCore.Qt.Key_R: pk.HELD_KEYS[pk.KEY_ROTATE], QtCore.Qt.Key_E: pk.HELD_KEYS[pk.KEY_SCALE]}
 
     class _KeyFilter(QtCore.QObject):
-        """Esc ends the tool from anywhere (the gesture in progress is dropped: nothing was written yet); R / E
-        pressed and released are followed so a drag knows they are held."""
+        """Esc ends the tool from anywhere (the gesture in progress is dropped: nothing was written yet). R / E
+        ARM the next drag (`STATE.held`): a press arms it, a second press disarms it, the drag uses it once and
+        the release is ignored, so held through the drag or tapped before it, both work (t81: both checked)."""
 
         def eventFilter(self, obj, event):
             try:
@@ -131,12 +133,10 @@ def _key_filter():
                     import hdefereval
                     hdefereval.executeDeferred(lambda: exit_tool("Esc"))
                     return True
-                if key in held_keys and kind != QtCore.QEvent.ShortcutOverride and not event.isAutoRepeat():
+                if key in held_keys and kind == QtCore.QEvent.KeyPress and not event.isAutoRepeat():
                     mode = held_keys[key]
-                    if kind == QtCore.QEvent.KeyPress:
-                        pk.update(held=mode)
-                    elif pk.STATE.held == mode:
-                        pk.update(held="")
+                    pk.update(held="" if pk.STATE.held == mode else mode)
+                    LIVE["armed_at"] = time.perf_counter()
                     state = running()
                     if state is not None:
                         state.queue_show()
@@ -494,23 +494,60 @@ class PointsTool(object):
         except Exception:
             _note(traceback.format_exc())
 
+    def onMenuAction(self, kwargs):
+        try:
+            item = kwargs["menu_item"]
+            STATS["menu"] = (STATS.get("menu", []) + [item])[-20:]
+            self._drop_stale()
+            asked = pk.menu_fields(item)
+            if "held" in asked and time.perf_counter() - LIVE.get("armed_at", 0.0) < 0.5:
+                asked = {}            # the R / E hotkey of a key the filter has just taken
+            if "handles" in asked:
+                if pk.STATE.tool == pk.TOOL_POINTS and self.cur is None:
+                    self.step_handles(asked["handles"])
+            elif asked:
+                pk.update(**asked)
+                self.queue_show()
+        except Exception:
+            _note(traceback.format_exc())
+
+    def _drop_stale(self) -> None:
+        """A gesture whose button is no longer down (its release went to the pane, t81 r10) is closed: a drag that
+        moved is written as on release, a press that did not is dropped."""
+        if self.cur is None:
+            return
+        try:
+            QtCore, QtWidgets = _qt()
+            down = bool(QtWidgets.QApplication.mouseButtons() & QtCore.Qt.LeftButton)
+        except Exception:
+            down = True
+        if down:
+            return
+        STATS["stale_gestures"] = STATS.get("stale_gestures", 0) + 1
+        c = self.cur
+        if c.get("moved") and c.get("kind") != "draw":
+            mx, my = LIVE.get("last_mouse") or c["press_px"]
+            self._release(None, mx, my)
+        else:
+            self.cur = None
+            self.redraw()
+
     # ---- keys ----
     def onKeyEvent(self, kwargs):
         try:
             key = kwargs["ui_event"].device().keyString()
             STATS["keys"] = (STATS["keys"] + [key])[-30:]
+            self._drop_stale()
             name = pk.key_name(key)
             if name in ("esc", "escape"):
                 exit_tool("Esc")
                 return True
             if name in (pk.KEY_ROTATE, pk.KEY_SCALE):
-                # held for the next drag (the application filter follows press and release); consumed so
-                # Houdini's own R / E do not run
-                if not pk.STATE.held:
-                    pk.update(held=pk.HELD_KEYS[name])
-                    self.queue_show()
+                # armed by the application filter (it sees the press first); consumed so Houdini's own R / E do
+                # not run
                 return True
             step = pk.handle_step(key)
+            STATS["key_step"] = {"key": key, "step": step, "tool": pk.STATE.tool, "busy": self.cur is not None}
             if step and pk.STATE.tool == pk.TOOL_POINTS and self.cur is None:
                 self.step_handles(step)
                 return True
@@ -521,6 +558,7 @@ class PointsTool(object):
     def step_handles(self, step: int) -> None:
         """Minus / plus: one handle fewer / more on EACH lock (a lock at its limit stays); one undo step."""
         ids = list(self.order)
+        STATS["handles_step"] = {"step": step, "ids": ids, "counts": [self.locks[i]["count"] for i in ids]}
         if not ids:
             _say("MONO Grooming: Select a lock")
             return
@@ -623,9 +661,21 @@ class PointsTool(object):
         """The lock whose spine passes nearest the click on screen, within HAIR_PICK_PX."""
         np = _np()
         vp = self.scene_viewer.curViewport()
+        _x, _y, w, h = vp.size()
+        direction, origin = vp.mapToWorld(w * 0.5, h * 0.5)
+        eye = np.array(tuple(origin * self.inverse))
+        ahead = np.array(tuple(direction.multiplyAsDir(self.inverse)))
         dist = {}
         for lid, P in self.spines.items():
-            S = np.array([tuple(vp.mapToScreen(hou.Vector3(*map(float, p)) * self.xform)) for p in P[::2]])
+            Q = P[::2]
+            # only what is in front of the camera and inside the view: a point behind it maps mirrored, one far
+            # outside lands anywhere, and a click on empty space must keep the selection
+            Q = Q[(Q - eye) @ ahead > 0]
+            S = np.array([tuple(vp.mapToScreen(hou.Vector3(*map(float, p)) * self.xform)) for p in Q])
+            if len(S) < 2:
+                continue
+            keep = (S[:, 0] >= 0) & (S[:, 0] <= w) & (S[:, 1] >= 0) & (S[:, 1] <= h)
+            S = S[keep]
             if len(S) < 2:
                 continue
             a, b = S[:-1], S[1:]
@@ -641,12 +691,33 @@ class PointsTool(object):
         dev = ui_event.device()
         mx, my = float(dev.mouseX()), float(dev.mouseY())
         LIVE["last_mouse"] = (mx, my)
+        log = STATS.setdefault("mouse_log", [])
+        log.append((round(mx), round(my), bool(dev.isLeftButton()), bool(dev.isShiftKey()),
+                    self.cur["kind"] if self.cur else None))
+        del log[:-80]
         if not _on():
             import hdefereval
             hdefereval.executeDeferred(_leave_viewer)
             return False
         left = dev.isLeftButton()
         o, d = self._ray(ui_event)
+        # a press and release with no motion comes as ONE event, reason Picked, the button still down and no
+        # release after it (t81 r11): it is a whole click
+        picked = ui_event.reason() == hou.uiEventReason.Picked
+        log[-1] = log[-1] + (("picked",) if picked else ())
+        if picked and left and self.cur is None:
+            why = _not_ours(self.node)
+            if why:
+                _end(why)
+                return False
+            if pk.STATE.tool == pk.TOOL_DRAW:
+                _say("MONO Grooming: drag from the skin to draw a lock")
+                return True
+            if self.stale:
+                self.refresh()
+            self._press(dev, mx, my, o, d)
+            self._release(dev, mx, my)
+            return True
         if pk.STATE.tool == pk.TOOL_DRAW:
             return self._mouse_draw(dev, left, mx, my, o, d)
         if self.cur is None:
@@ -669,7 +740,7 @@ class PointsTool(object):
             self._drag_turn(mx, o, d)
         elif c["kind"] == "redraw":
             self._drag_stroke(mx, my, o, d)
-        if not left:
+        if not left or picked:
             self._release(dev, mx, my)
         return True
 
@@ -801,6 +872,9 @@ class PointsTool(object):
             else:
                 self.redraw()
         c["result"] = res
+        if c["kind"] != "click" and c.get("held"):
+            pk.update(held="")            # R / E armed that one drag
+            self.queue_show()
         c["axis"] = c["normal"].tolist() if c.get("normal") is not None else None
         for key in ("start", "worlds", "normal", "a", "pivot", "plane"):
             c.pop(key, None)
@@ -840,10 +914,16 @@ class PointsTool(object):
     def _click(self, mx, my, c) -> None:
         """A click without a drag: the lock under it becomes the selection (Shift adds, Ctrl toggles)."""
         t = time.perf_counter()
+        if c.get("hit") is not None:
+            # a press on a handle wins over the hair under it (review_b, decided): no selection change
+            STATS["clicks"].append({"hit": None, "on_handle": list(c["hit"]), "at": (mx, my)})
+            self.redraw()
+            return
         hit = self.pick_hair(mx, my)
         new = pk.click_selection(pk.STATE.lock_ids, hit, c.get("shift", False), c.get("ctrl", False))
         c.update(picked=hit, selection=new, pick_s=time.perf_counter() - t)
-        STATS["clicks"].append({"hit": hit, "selection": new, "pick_s": c["pick_s"]})
+        STATS["clicks"].append({"hit": hit, "selection": new, "pick_s": c["pick_s"], "at": (mx, my),
+                                "shift": c.get("shift"), "ctrl": c.get("ctrl"), "before": list(pk.STATE.lock_ids)})
         del STATS["clicks"][:-50]
         if new != pk.STATE.lock_ids:
             pk.update(lock_ids=new)
@@ -980,6 +1060,21 @@ def register(force: bool = False) -> None:
                            help="The next lock's thickness, cm")
     template.bindParameter(hou.parmTemplateType.Float, name="taper", label="Tip taper", min_limit=0.0,
                            max_limit=1.0, default_value=defaults["taper"], help="0 = blunt, 1 = pointed")
+    # R / E as the state's own hotkeys: else Houdini's R / E run and take the viewport to their tools (t81 r10:
+    # a posted R left the viewer in "edit"); the press arrives as a menu action, the release through the filter
+    keys = hou.PluginHotkeyDefinitions()
+    keys.addContext(HOTKEY_CONTEXT, LABEL, "Edit points / Draw lock of MONO Grooming")
+    keys.addCommandCategory(HOTKEY_CONTEXT, LABEL, "Edit points / Draw lock of MONO Grooming")
+    menu = hou.ViewerStateMenu(STATE + "_menu", LABEL)
+    for item, text, key in pk.menu_items():
+        hotkey = ""
+        if key:
+            hotkey = HOTKEY_CONTEXT + "." + item
+            keys.addCommand(hotkey, text, text)
+            keys.addDefaultBinding(HOTKEY_CONTEXT, hotkey, [key])
+        menu.addActionItem(item, text, hotkey=hotkey)
+    template.bindHotkeyDefinitions(keys)
+    template.bindMenu(menu)
     hou.ui.registerViewerState(template)
 
 

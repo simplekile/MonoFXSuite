@@ -154,7 +154,7 @@ def test_hud_rows_as_sketched():
     for want in ("Locks", "Drag", "Rotate about root", "Scale about root", "Redraw", "Handles", "Done"):
         assert want in labels
     keys = {r.get("label"): r.get("key") for r in edit["rows"]}
-    assert keys["Rotate about root"] == "R + LMB" and keys["Scale about root"] == "E + LMB"
+    assert keys["Rotate about root"] == "R, LMB" and keys["Scale about root"] == "E, LMB"
     assert keys["Redraw"] == "Shift + LMB" and keys["Done"] == "esc"
     draw = pk.hud_template("draw")
     labels = [r.get("label") for r in draw["rows"] if "label" in r]
@@ -230,3 +230,16 @@ def test_no_hou_no_qt():
     assert "import hou" not in src and "PySide" not in src
     assert "\r\n" not in open(pk.__file__, "rb").read().decode("utf-8")
     assert sys.modules.get("tools.fx.grooming.points_keys") is pk
+
+
+def test_menu_items_and_fields():
+    items = pk.menu_items()
+    ids = [i for i, _l, _k in items]
+    assert len(ids) == len(set(ids))
+    keys = {i: k for i, _l, k in items}
+    assert keys["hold_rotate"] == "r" and keys["hold_scale"] == "e"
+    for m in pk.MODES:
+        assert pk.menu_fields(f"mode_{m}") == {"mode": m}
+    assert pk.menu_fields("hold_rotate") == {"held": "rotate"}
+    assert pk.menu_fields("handles_more") == {"handles": 1} and pk.menu_fields("handles_less") == {"handles": -1}
+    assert pk.menu_fields("nope") == {} and pk.menu_fields("mode_twist") == {}

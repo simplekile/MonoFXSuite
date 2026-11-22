@@ -9,8 +9,9 @@ viewer state (as `brush_keys.py` is to Paint's).
   `width_cm`, `thick_cm`, `taper` (the next drawn lock's), plus `held` (a mode held by its key for one drag, "" when
   none: the panel lights that cell), `message` (the last sentence for the panel's line) and `node` (the node's path).
   `update(**fields)` changes it and calls every `HOOKS["tool"]` callable with the record when something changed.
-- Gestures (the design gate, review_b finding 3): the strip's switch is the sticky mode; R / E / Shift held at the
-  press act for that drag only (`drag_mode`). A press on a handle wins over the hair under it; a click (no drag)
+- Gestures (the design gate, review_b finding 3): the strip's switch is the sticky mode; R / E pressed arm the
+  next drag only (`held`: held through the drag or tapped before it; a second press disarms), Shift held at the
+  press redraws (`drag_mode`). A press on a handle wins over the hair under it; a click (no drag)
   on hair selects that lock, Shift / Ctrl extends or toggles (`click_selection`), on empty space keeps the selection.
 - The HUD (`hud_template` / `hud_values`) and the state bar (`BAR`) as mockup B sketched them.
 """
@@ -318,8 +319,8 @@ def hud_template(tool: str) -> dict:
     return {"title": "MONO Grooming", "desc": "Edit points", "icon": "SOP_edit", "rows": [
         {"id": "locks", "label": "Locks", "value": ""},
         {"id": "drag", "label": "Drag", "key": "LMB", "value": ""},
-        {"id": "rotate", "label": "Rotate about root", "key": "R + LMB"},
-        {"id": "scale", "label": "Scale about root", "key": "E + LMB"},
+        {"id": "rotate", "label": "Rotate about root", "key": "R, LMB"},
+        {"id": "scale", "label": "Scale about root", "key": "E, LMB"},
         {"id": "redraw", "label": "Redraw", "key": "Shift + LMB"},
         {"id": "handles", "label": "Handles", "key": "- / +", "value": ""},
         {"type": "divider"},
@@ -379,6 +380,32 @@ def field_change(parm: str, value, rec: ToolRecord) -> dict:
     return {} if math.isclose(new, getattr(rec, field), abs_tol=1e-6) else {field: new}
 
 
+def menu_items() -> list[tuple[str, str, str]]:
+    """The right-click menu: (item id, label, hotkey or ""). R / E are hotkeys of the state so Houdini's own R / E
+    do not run while it is on; minus / plus come as key events."""
+    items = [(f"mode_{m}", f"Drag: {MODE_LABELS[m]}", "") for m in MODES]
+    items += [("hold_rotate", "Rotate about root, next drag (R)", KEY_ROTATE),
+              ("hold_scale", "Scale about root, next drag (E)", KEY_SCALE)]
+    items += [("handles_less", "One handle fewer (-)", ""), ("handles_more", "One handle more (+)", "")]
+    return items
+
+
+def menu_fields(item: str) -> dict:
+    """What a menu item (or its hotkey) asks: {"mode"}, {"held"} or {"handles": -1 / +1}; {} for one it does
+    not know."""
+    if item.startswith("mode_") and item[5:] in MODES:
+        return {"mode": item[5:]}
+    if item == "hold_rotate":
+        return {"held": "rotate"}
+    if item == "hold_scale":
+        return {"held": "scale"}
+    if item == "handles_less":
+        return {"handles": -1}
+    if item == "handles_more":
+        return {"handles": 1}
+    return {}
+
+
 def status_text(rec: ToolRecord, n_locks: int) -> str:
     """The status bar line while a tool is on."""
     if rec.tool == TOOL_POINTS:
@@ -395,4 +422,4 @@ __all__ = ["TOOL_SELECT", "TOOL_POINTS", "TOOL_DRAW", "TOOL_PAINT", "TOOLS", "MO
            "HOOKS", "ToolRecord", "update", "reset", "drag_mode", "handle_step", "next_count", "bar_handles",
            "scale_factor", "wheel_width", "signed_angle", "is_drag", "map_handle", "click_selection", "nearest",
            "handles_text", "locks_text", "hud_template", "hud_values", "bar_values", "bar_visible", "field_change",
-           "status_text", "BAR", "PICK_PX", "HAIR_PICK_PX", "DRAG_PX", "KEY_ROTATE", "KEY_SCALE", "HELD_KEYS"]
+           "status_text", "menu_items", "menu_fields", "BAR", "PICK_PX", "HAIR_PICK_PX", "DRAG_PX", "KEY_ROTATE", "KEY_SCALE", "HELD_KEYS"]
