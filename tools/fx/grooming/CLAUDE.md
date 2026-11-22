@@ -1138,3 +1138,26 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     + 3 cm, framed shrunk to 0.55 about its centre, so one lock in several scenes gets the same camera at a frame. The
     `lock_*` close-ups blast output 1 by lock id (the eye never reached it). Compare shows the carried mesh, adds the
     modelled piece for an edited lock, frames a drawn lock on its hair.
+- v0.2b, an EDITED lock in a shot (U4 changed by the user, 2026-11-22; sandbox `tests/t79_redraw_network/u4/`):
+  - What v0.1's deform did (t79 u4 diag, sh020): hair_bang_11 moved 5 cm turns its tip 22 deg from the unedited lock at
+    rest but 59-92 deg in the frames (the hook the user saw), its offset in the lock's moving frame changes by p95
+    2.8-3.9 cm: the deform captures the moved points on the hair mesh far from where they now lie.
+  - Built: `edit_ride_spines` (`VEX_SPINE_PACK`: per edited lock its unedited spine, two copies 1 cm out along the
+    width / thickness axes, and its edited spine, prim `skey` = lock_id x 4 + kind) -> `edit_ride_capture` /
+    `edit_ride_deform` (v0.1's Point Deform) -> `edit_ride_fk` (`VEX_EDIT_FK`: per spine point the unedited spine's
+    rotation rest -> frame, `rot`; the edited spine rebuilt from its root, each rest segment turned by the rotation
+    there and keeping its length) -> in `_deform_drawn`, `*_edited_ride` (`VEX_EDIT_RIDE`: each strand point around the
+    rebuilt spine with its rest offset turned, blending into v0.1's own deform over the first 0.2 of the strand, so
+    the roots move as the unedited lock's). Unedited locks keep v0.1's points; with no edited lock nothing changes.
+  - Tried first and dropped: the same offset in the unedited spine's moving frame (offset change p95 0.28-1.6 cm on
+    sh020 but strands 13 % longer: an offset curve changes length where its centreline bends); its frame from both
+    offset copies took the hair mesh's local shear. Where the piece moves rigidly (sh025) every method is near exact.
+  - Measured (t79 run7): length 0.998-1.004, roots as the unedited lock's, nothing left behind, tip turn within 3.7
+    deg of rest (sh020) and 0.2 deg (sh025), for 2 cm, 5 cm and 25 deg. A shot frame with one edited lock ~1.4-1.6 s
+    against ~1.0 s (the split of the 4 M points). The offset-in-the-moving-frame limit is the manager's to set
+    (`s1b` KNOWN): on sh020 it changes by p95 0.66-2.07 cm against the unedited lock's own 0.36-0.56.
+  - An EMPTY Blast group deletes everything: `drawn_group([])` is `@lock_id==-1` (with an edited lock and no drawn
+    one every strand had gone to the drawn branch and stayed at rest).
+  - Deleting a drawn lock: 3.8 s -> 0.49 s (`_prim_centres`: the fine scalp's prim centres and groups read in bulk,
+    summed in vertex order, bit-identical to the per-prim loop; mesh distances by `primFloatListAttribValues`).
+    Update regions gains the same (2.2 s on Helen).
