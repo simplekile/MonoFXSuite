@@ -63,6 +63,12 @@
     {"label": "t74 FAINT eye on a hovered row", "fg": "#6b6b73", "bg": "#1f1f25", "kind": "ui"},
     {"label": "t74 FAINT_ON_SELECTED eye on the selected row", "fg": "#868694", "bg": "#273352", "kind": "ui"},
     {"label": "t74 FAINT_ON_SELECTED eye on a selected row hovered", "fg": "#868694", "bg": "#2c395b", "kind": "ui"},
-    {"label": "t74 TEXT_LABEL section title on BG_APP", "fg": "#a3a3ae", "bg": "#111113", "kind": "text"}
+    {"label": "t74 TEXT_LABEL section title on BG_APP", "fg": "#a3a3ae", "bg": "#111113", "kind": "text"},
+    {"label": "t82 (t78 B) ACCENT control-points icon on selected + hover", "fg": "#5b8cff", "bg": "#2c395b", "kind": "ui"},
+    {"label": "t82 (t78 B) TEXT_ERROR Delete lock on a filled button", "fg": "#fca5a5", "bg": "#25252c", "kind": "text"},
+    {"label": "t82 (t78 B) warn text (In shots: at rest) on BG_APP", "fg": "#f5b14c", "bg": "#111113", "kind": "text"},
+    {"label": "t82 (t78 B) B after review: warn icon on selected + hover", "fg": "#f5b14c", "bg": "#2c395b", "kind": "ui"},
+    {"label": "t82 TEXT_LABEL key chip (Esc, R, E, Shift) on KEY_BG", "fg": "#a3a3ae", "bg": "#2a2a32", "kind": "text"},
+    {"label": "t82 ACCENT held-mode border on the tool strip", "fg": "#5b8cff", "bg": "#151a28", "kind": "ui"}
   ]
 }

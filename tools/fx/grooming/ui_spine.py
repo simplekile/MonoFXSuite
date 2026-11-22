@@ -84,6 +84,8 @@ def sheet(z) -> str:
     QToolButton[cell="true"]:checked:hover {{ background: {K.CHECKED_HOVER}; border-color: {ACCENT}; }}
     QToolButton[cell="true"][dim="true"] {{ background: {K.BUTTON_DISABLED}; color: {OFF_TEXT}; border-color: {LINE}; }}
     QToolButton[held="true"] {{ border-color: {ACCENT}; }}
+    QToolButton[cell="true"][iconcell="true"] {{ padding: {p(4)}px {p(6)}px; }}
+    QToolButton#HandlesAuto {{ padding: {p(3)}px {p(7)}px; font-size: {p(14)}px; }}
     QLabel#HandlesValue {{ background: {_ui().BG_RAISED}; border: {b}px solid #2e2e36; border-radius: {p(6)}px;
                            padding: 0px {p(7)}px; color: {TEXT_LABEL}; font-size: {p(15)}px; }}
     QLabel#HandlesValue[own="true"] {{ color: {TEXT_PRIMARY}; font-weight: 600; }}
@@ -155,7 +157,7 @@ def _seg(cells: list[QToolButton]) -> QWidget:
 
 class _Flow(QWidget):
     """Groups of widgets on one line, or on as many as the width needs (a larger font size): never clipped. A group
-    marked `stretch` takes what is left on its line."""
+    marked `right` sits at the right end of its line (Reset shape), the others from the left."""
 
     def __init__(self, groups: list[tuple[QWidget, bool]], spacing: int) -> None:
         super().__init__()
@@ -198,14 +200,22 @@ class _Flow(QWidget):
             line = QHBoxLayout()
             line.setContentsMargins(0, 0, 0, 0)
             line.setSpacing(self._spacing)
-            stretched = False
+            pushed = False
             for k in row:
-                w, stretch = self._groups[k]
-                line.addWidget(w, 1 if stretch else 0)
-                stretched = stretched or stretch
-            if not stretched:
+                w, right = self._groups[k]
+                if right and not pushed:
+                    line.addStretch(1)
+                    pushed = True
+                line.addWidget(w)
+            if not pushed:
                 line.addStretch(1)
             self._outer.addLayout(line)
+
+    def set_spacing(self, spacing: int) -> None:
+        if spacing != self._spacing:
+            self._spacing = spacing
+            self._outer.setSpacing(spacing)
+            self._place(self._rows)
 
     def refit(self) -> None:
         rows = self._plan(max(self.width(), 1))
@@ -285,10 +295,15 @@ def _step_button(ui, icon: str, tip: str, event: str, *args) -> QToolButton:
     b.setAccessibleName(tip.split(":")[0])
     b.setCursor(Qt.CursorShape.PointingHandCursor)
     ui._icon(b, icon, TEXT_LABEL, 14)
-    b.setFixedSize(ui.z.px(24), ui.z.px(28))
+    b.setFixedSize(*step_size(ui.z))
     ui._icon_buttons_small = getattr(ui, "_icon_buttons_small", []) + [b]
     b.clicked.connect(lambda: ui._fire(event, *args))
     return b
+
+
+def step_size(z) -> tuple[int, int]:
+    """Minus / plus: 24 px wide at least at every UI size (the WCAG floor; Medium is 0.9 of the type sizes)."""
+    return max(24, z.px(28)), max(24, z.px(28))
 
 
 def build_tool_strip(ui) -> QWidget:
@@ -325,18 +340,17 @@ def build_tool_strip(ui) -> QWidget:
     ui._handles_plus = _step_button(ui, "plus", "More handles: one more on each selected lock (+)", "step_handles", 1)
     auto = QToolButton()
     auto.setText("auto")
-    auto.setProperty("toggle", True)
+    auto.setObjectName("HandlesAuto")
     auto.setCursor(Qt.CursorShape.PointingHandCursor)
     auto.clicked.connect(lambda: ui._fire("handles_auto"))
     ui._handles_auto = auto
     ui._handles_box = _row(_small("Handles"), ui._handles_value, ui._handles_minus, ui._handles_plus, auto)
     reset = QToolButton()
-    reset.setProperty("toggle", True)
     reset.setCursor(Qt.CursorShape.PointingHandCursor)
     reset.clicked.connect(lambda: ui._fire("reset_shape"))
     ui._icon(reset, "rotate-ccw", TEXT_LABEL, 14)
     ui._strip_reset = reset
-    ui._points_flow = _Flow([(ui._strip_who, False), (ui._mode_seg, False), (ui._handles_box, True), (reset, False)],
+    ui._points_flow = _Flow([(ui._strip_who, False), (ui._mode_seg, False), (ui._handles_box, False), (reset, True)],
                             z.px(10))
 
     # Draw lock: what the next lock gets
@@ -398,6 +412,7 @@ def show_tools(ui, cells: list[dict], strip: dict) -> None:
     ui._draw_flow.setVisible(tool == S.TOOL_DRAW)
     if tool == S.TOOL_POINTS:
         _show_points(ui, strip, narrow)
+        ui._points_flow.set_spacing(z.px(6 if narrow else 10))
         ui._points_flow.refit()
     elif tool == S.TOOL_DRAW:
         ui._next_label.setText("Next" if narrow else "Next lock")
@@ -425,6 +440,10 @@ def _show_points(ui, strip: dict, narrow: bool) -> None:
         c.setText("" if narrow else f" {label}")
         c.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly if narrow else
                              Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        if bool(c.property("iconcell")) != narrow:
+            c.setProperty("iconcell", narrow)
+            c.style().unpolish(c)
+            c.style().polish(c)
         c.setIcon(K._crisp_icon(icon, z.px(14), ACCENT if (on or held == m) else TEXT_LABEL))
         c.setIconSize(QSize(z.px(14), z.px(14)))
         if bool(c.property("held")) != (held == m):
@@ -439,7 +458,7 @@ def _show_points(ui, strip: dict, narrow: bool) -> None:
         ui._handles_value.setProperty("own", bool(h.get("own")))
         ui._handles_value.style().unpolish(ui._handles_value)
         ui._handles_value.style().polish(ui._handles_value)
-    ui._handles_value.setMinimumWidth(z.px(56))
+    ui._handles_value.setMinimumWidth(z.px(44 if narrow else 56))
     ui._handles_value.setFixedHeight(z.px(28))
     ui._handles_minus.setEnabled(not h.get("min"))
     ui._handles_plus.setEnabled(not h.get("max"))
@@ -451,10 +470,20 @@ def _show_points(ui, strip: dict, narrow: bool) -> None:
     ui._strip_reset.setToolTip(reset.get("tip", ""))
     ui._strip_reset.setAccessibleName("Reset shape")
     n = reset.get("n", 0)
+    ui._handles_box.layout().setSpacing(z.px(3 if narrow else 5))
+    flat = narrow   # narrow: a 28 px flat icon (review 1), wide: a button with its words
+    if bool(ui._strip_reset.property("flat")) != flat:
+        ui._strip_reset.setProperty("flat", flat)
+        ui._strip_reset.setProperty("iconflat", flat)
+        ui._strip_reset.style().unpolish(ui._strip_reset)
+        ui._strip_reset.style().polish(ui._strip_reset)
     if narrow:
         ui._strip_reset.setText("")
         ui._strip_reset.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+        ui._strip_reset.setFixedSize(max(24, z.px(28)), max(24, z.px(28)))
     else:
+        ui._strip_reset.setMinimumSize(0, 0)
+        ui._strip_reset.setMaximumSize(16777215, 16777215)
         ui._strip_reset.setText(" Reset shape" + (f" ({n})" if n > 1 else ""))
         ui._strip_reset.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
 
@@ -574,6 +603,8 @@ def drawn_section(ui, props: dict) -> None:
                           unit=v["unit"], tip=S.TAPER_TIP if key == "taper" else
                           f"{v['label']} at the root, cm (the footprint follows the width: Update regions)",
                           clamp=key == "taper")
+        if not v["unit"]:   # the field lines up with the ones followed by "cm"
+            row.layout().addSpacing(QFontMetrics(z.font("small")).horizontalAdvance("cm") + row.layout().spacing())
         lay.addWidget(row)
     delete = QToolButton()
     delete.setObjectName("DeleteLock")

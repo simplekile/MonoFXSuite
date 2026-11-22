@@ -1417,7 +1417,7 @@ class GroomingUI(QWidget):
         for b in self._icon_buttons:
             b.setFixedSize(z.px(28), z.px(28))
         for b in getattr(self, "_icon_buttons_small", []):
-            b.setFixedSize(z.px(24), z.px(28))
+            b.setFixedSize(*SP.step_size(z))
         self._hda_label.setPixmap(_hda_icon(z.px(20)))
         self._tree.z = z
         self._tree.setIndentation(z.px(18))
