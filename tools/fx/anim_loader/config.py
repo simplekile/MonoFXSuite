@@ -80,6 +80,9 @@ OPEN_FOLDER_BITS = {"anim": 1, "lookdev": 2, "groom": 4, "cloth": 8}
 
 # Shot rules for subdivision (JSON list of {"pattern", "scheme", "dicing"}), see logic.subd_plan.
 P_SUBD_RULES = "mx_subd_rules"
+# Shot rules for groom curves (JSON list of {"pattern", "basis", "width", "style"}), see logic.curve_plan: Karma's
+# curve basis, width scale and style per curves prim (render only).
+P_CURVE_RULES = "mx_curve_rules"
 # Hidden: what the shot shows of each prim (the user's pick, layout B, 2026-11-17): JSON [{"pattern": <prim under the
 # instance, no leading "/">, "show": hidden | render | proxy | both}], authored by the show_rules Python LOP last
 P_SHOW_RULES = "mx_show_rules"

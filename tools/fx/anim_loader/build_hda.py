@@ -155,6 +155,8 @@ if root is not None:
     # Subdivision per mesh: shot rule > lookdev > anim > none (adapter.author_subd, logic.subd_plan)
     from apps.houdini import anim_loader_adapter
     anim_loader_adapter.author_subd(hda, stage)
+    # Groom curves: Karma's curve basis / width scale / style from the shot's rules (adapter.author_curves)
+    anim_loader_adapter.author_curves(hda, stage)
 for top in instance_prims(stage):
     for prim in Usd.PrimRange(top):
         if not look_vp:
@@ -513,6 +515,7 @@ def _parm_templates() -> hou.ParmTemplateGroup:
         T.StringParmTemplate("mx_groom_asset", "Groom Asset (2.1)", 1),
         T.StringParmTemplate("mx_cloth_asset", "Cloth Asset (2.1)", 1),
         T.StringParmTemplate(config.P_SUBD_RULES, "Subdivision Rules", 1),
+        T.StringParmTemplate(config.P_CURVE_RULES, "Curve Rules", 1),
         T.StringParmTemplate(config.P_SHOW_RULES, "Show Rules", 1),
         T.StringParmTemplate(config.P_GROOM_TOPO, "Groom Topology File", 1),
         *[T.StringParmTemplate(n, n, 1) for n in config.P_LAYERS],

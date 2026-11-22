@@ -699,7 +699,7 @@ def test_header_menu_shows_and_hides_columns_and_remembers(make):
     p = w.subd_panel
     menu = p.columns_menu()
     names = [a.text() for a in menu.actions() if not a.isSeparator()]
-    assert names == ["Show (eye)", "Viewport", "Render", "Faces", "From", "Scheme", "Dice"]
+    assert names == ["Show (eye)", "Viewport", "Render", "Faces", "From", "Scheme", "Dice", "Width (curves)"]
     # Faces and From are off by default (the user's ask)
     assert [a.text() for a in menu.actions() if not a.isSeparator() and a.data() != "shown"] == ["Faces", "From"]
     assert p.tree.isColumnHidden(1) and p.tree.isColumnHidden(2) and not p.tree.isColumnHidden(3)
@@ -732,3 +732,86 @@ def test_reload_from_disk_lists_every_file_and_is_on_the_row_menu(make):
     _act(win.row_menu(item), "Reload from disk").trigger()
     assert ("reload", ("/stage/a",)) in b.calls
     assert win.ctl.message.startswith("Reloaded 7 files of 1 loader")
+
+
+def _curves_window(make, rules=()):
+    """char_Helen with two groom curves prims (linear, as sh025's groom), plan from logic.curve_plan."""
+    from tools.fx.anim_loader import logic as lg
+
+    w, ui = _subd_window(make)
+    b = w.backend
+    facts = {"/Groom/Hair_Back": {"type": "linear", "basis": "", "min_cvs": 37},
+             "/Groom/Eyelash": {"type": "linear", "basis": "", "min_cvs": 9}}
+    plan = b.subd(None)["/stage/b"]
+    detail = {**plan, "curves": {"/Groom/Hair_Back": 197_728, "/Groom/Eyelash": 8280},
+              "curve_plan": lg.curve_plan(facts, {}, list(rules))}
+    b.subd = lambda infos: {"/stage/b": detail}
+    b.set_curves_many = lambda by, **f: b.calls.append(("set_curves_many", {k: tuple(v) for k, v in by.items()},
+                                                        {k: v for k, v in f.items() if v is not lg.KEEP}))
+    w.ctl.refresh()
+    _select(w, ui, "/stage/a")
+    _select(w, ui, "/stage/b")
+    tree = w.subd_panel.tree
+    tops = {tree.topLevelItem(i).text(0): tree.topLevelItem(i) for i in range(tree.topLevelItemCount())}
+    return w, ui, b, tops["Groom"]
+
+
+def test_groom_curves_show_their_karma_basis_and_width(make):
+    """The user's pick (layout A, 2026-11-22): Scheme holds the curves' render basis, WIDTH their width scale; the
+    WIDTH column shows only while the tree holds curves."""
+    w, ui, _b, groom = _curves_window(make, [{"pattern": "Groom/Hair_Back", "basis": "bspline", "width": 1.5}])
+    p = w.subd_panel
+    hair, lash = groom.child(0), groom.child(1)
+    assert (hair.text(0), hair.text(3), hair.text(ui.COL_WIDTH)) == ("Hair_Back", "B-spline", "\u00d71.5")
+    assert (lash.text(3), lash.text(ui.COL_WIDTH)) == ("Linear", "\u00d71")
+    assert groom.text(3) == "mixed" and groom.text(ui.COL_WIDTH) == "mixed"
+    assert hair.foreground(3).color().name() == ui.ACCENT.lower()  # the shot's override in the accent
+    assert not p.tree.isColumnHidden(ui.COL_WIDTH)
+    _select(w, ui, "/stage/a")  # no detail: the tree hides
+    p._any_curves = False
+    p._apply_columns()
+    assert p.tree.isColumnHidden(ui.COL_WIDTH)
+
+
+def test_groom_curves_menu_sets_basis_width_style_in_one_step(make):
+    from tools.fx.anim_loader.logic import KEEP
+
+    w, ui, b, groom = _curves_window(make)
+    p = w.subd_panel
+    hair = groom.child(0)
+    menu = p.menu_for(hair)
+    subs = {a.text(): a.menu() for a in menu.actions() if a.menu() is not None}
+    assert {p.MENU_CURVE_BASIS, p.MENU_CURVE_WIDTH, p.MENU_CURVE_STYLE} <= set(subs)
+    assert not menu.actions()[1].text() == p.MENU_OFF  # no subdivision verbs on a curves row
+    assert all(a.text() not in (p.MENU_OFF, p.MENU_CATMULL) for a in menu.actions())
+    basis = subs[p.MENU_CURVE_BASIS]
+    assert [a.text() for a in basis.actions()] == ["Use the publish's (Linear)", "Linear", "B-spline", "Catmull-Rom"]
+    _act(basis, "B-spline").trigger()
+    assert b.calls[-1] == ("set_curves_many", {"/stage/b": ("Groom/Hair_Back",)}, {"basis": "bspline"})
+    assert "B-spline" in w.result.text() or "B-spline" in w.ctl.message
+    _act(subs[p.MENU_CURVE_WIDTH], "×1.5").trigger()
+    assert b.calls[-1][2] == {"width": 1.5}
+    # the group row: both curves prims through the group's pattern (the change rebuilt the tree: find it again)
+    groom = next(p.tree.topLevelItem(i) for i in range(p.tree.topLevelItemCount())
+                 if p.tree.topLevelItem(i).text(0) == "Groom")
+    gsubs = {a.text(): a.menu() for a in p.menu_for(groom).actions() if a.menu() is not None}
+    style = gsubs[p.MENU_CURVE_STYLE]
+    oriented = _act(style, "Oriented ribbons")
+    assert not oriented.isEnabled()  # Karma CPU: no oriented ribbons on linear curves
+    _act(style, "Flat ribbons").trigger()
+    assert b.calls[-1] == ("set_curves_many", {"/stage/b": ("Groom/**",)}, {"style": "flat"})
+    _act(gsubs[p.MENU_CURVE_BASIS], "Use the publish's (Linear)").trigger()
+    assert b.calls[-1][2] == {"basis": None}
+    assert KEEP is not None
+
+
+def test_groom_curves_cubic_needs_four_cvs(make):
+    from tools.fx.anim_loader import logic as lg
+
+    w, ui, _b, groom = _curves_window(make)
+    lash = groom.child(1)
+    c = lash.data(0, ui.ROLE_CURVE)
+    lash.setData(0, ui.ROLE_CURVE, lg.CurveChoice(**{**c.__dict__, "min_cvs": 2}))
+    basis = next(a.menu() for a in w.subd_panel.menu_for(lash).actions()
+                 if a.text() == w.subd_panel.MENU_CURVE_BASIS)
+    assert not _act(basis, "B-spline").isEnabled() and _act(basis, "Linear").isEnabled()

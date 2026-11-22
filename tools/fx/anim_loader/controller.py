@@ -30,6 +30,7 @@ class LoaderInfo:
     layer: Any = None  # a Sublayer / Reference file reading a publish (logic.PublishRef); its node is no loader
     baked: bool = False  # a loader baked to plain nodes: Upgrade restores it
     show: Any = None  # {"rules", "hide_on", "hide", "viewport"}: what the worker needs for the SHOWN column
+    curve_rules: str = ""  # the shot's groom curve rules (logic.parse_curve_rules)
 
 
 @dataclass(frozen=True)
@@ -536,6 +537,42 @@ class Controller:
         if dicing is not KEEP:
             parts.append(f"dicing {dicing:g}" if dicing is not None else "dicing cleared")
         self.message = f"{path.rsplit('/', 1)[-1]}: {', '.join(parts)} on {what} (shot override)."
+
+    CURVE_WORDS = {"linear": "linear", "bspline": "B-spline", "catmullRom": "Catmull-Rom", "flat": "flat ribbons",
+                   "rounded": "rounded", "oriented": "oriented ribbons"}
+
+    def set_curves(self, path: str, patterns: list[str], basis: Any = KEEP, width: Any = KEEP,
+                   style: Any = KEEP) -> None:
+        """The shot's Karma curve settings on those groom curves rows; a field left out keeps its value, None takes
+        it off (the publish decides again)."""
+        self.set_curves_many({path: patterns}, basis=basis, width=width, style=style)
+
+    def set_curves_many(self, by_loader: dict[str, list[str]], basis: Any = KEEP, width: Any = KEEP,
+                        style: Any = KEEP) -> None:
+        """One menu pick over rows of one or several loaders: one undo step when the backend can."""
+        many = getattr(self.backend, "set_curves_many", None)
+        one = getattr(self.backend, "set_curves", None)
+        if many is not None:
+            ok = many(by_loader, basis=basis, width=width, style=style)
+        elif one is not None:
+            ok = all(one(p, pats, basis=basis, width=width, style=style) is not False
+                     for p, pats in by_loader.items())
+        else:
+            ok = False
+        if ok is False:
+            self.message = "This loader has no curve settings: Upgrade it in the manager first."
+            return
+        patterns = [p for pats in by_loader.values() for p in pats]
+        parts = []
+        if basis is not KEEP:
+            parts.append(f"rendered {self.CURVE_WORDS[basis]}" if basis else "the publish's curve basis")
+        if width is not KEEP:
+            parts.append(f"width ×{width:g}" if width else "the publish's width")
+        if style is not KEEP:
+            parts.append(f"as {self.CURVE_WORDS[style]}" if style else "Karma's default style")
+        names = ", ".join(p.removesuffix("/**").rsplit("/", 1)[-1] for p in patterns[:3])
+        more = f" +{len(patterns) - 3}" if len(patterns) > 3 else ""
+        self.message = f"{names}{more}: {', '.join(parts)} (shot override, Karma)."
 
     def clear_subd(self, path: str, patterns: list[str] | None) -> None:
         """The shot's overrides of those rows, subdivision and what they show alike."""

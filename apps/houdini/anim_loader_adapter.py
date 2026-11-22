@@ -1412,7 +1412,16 @@ vp = hda.evalParm("mx_viewport")
 look_vp, groom_vp = vp & 1, vp & 2
 # Subdivision per mesh, baked from the MonoFX Loader (shot rule > lookdev > anim > none): mesh -> (scheme, dicing)
 PLAN = %s
+# The shot's Karma curve settings per groom curves prim, baked: path -> {primvar: (type, value)}
+CURVES = %s
 if root is not None:
+    for path, values in CURVES.items():
+        prim = stage.GetPrimAtPath(root + path)
+        if not prim:
+            continue
+        for name, (kind, value) in values.items():
+            UsdGeom.PrimvarsAPI(prim).CreatePrimvar(name, Sdf.ValueTypeNames.Int if kind == "int" else
+                                                    Sdf.ValueTypeNames.Float, UsdGeom.Tokens.constant).Set(value)
     for mesh, (scheme, dicing) in PLAN.items():
         prim = stage.GetPrimAtPath(root + mesh)
         if not prim:
@@ -1525,7 +1534,9 @@ def bake_loaders(paths: list[str]) -> tuple[list[str], list[str]]:
             subd = by_name.get("render_only")
             if subd is not None:
                 data = {m: (c.scheme, c.dicing) for m, c in plan.items()}
-                subd.parm("python").set(BAKED_SUBD_CODE % repr(data))
+                rules = logic.parse_curve_rules(_s(node, config.P_CURVE_RULES))
+                curves = {c: karma_curve_values(logic.curve_overrides(c, rules)) for c in node_curve_plan(node)}
+                subd.parm("python").set(BAKED_SUBD_CODE % (repr(data), repr({c: v for c, v in curves.items() if v})))
             show = by_name.get("show_rules")
             if show is not None:
                 show.parm("python").set(BAKED_SHOW_CODE % repr(logic.parse_show_rules(_s(node, config.P_SHOW_RULES))))
@@ -1614,7 +1625,8 @@ class HoudiniBackend:
             readable = kind in (config.HDA_TYPE, config.OLD_TYPE)  # 2.2 has the same parms: its state is real
             out.append(LoaderInfo(n.path(), read_state(n) if readable else None, legacy, n.name(),
                                   _s(n, config.P_SUBD_RULES) if readable else "",
-                                  show=_show_settings(n) if readable else None))
+                                  show=_show_settings(n) if readable else None,
+                                  curve_rules=_s(n, config.P_CURVE_RULES) if readable else ""))
         for n in find_baked():  # baked loaders: Upgrade restores them
             out.append(LoaderInfo(n.path(), None, True, n.name(), "", None, True))
         for node, i, ref in find_publish_layers():  # Sublayer / Reference LOPs reading a publish
@@ -1649,10 +1661,10 @@ class HoudiniBackend:
             look = r.lookdev if st.enabled.get("lookdev") else ""
             geo = geometry_file(r.anim, look, logic.is_asset(st))
             plan, faces = plan_for(geo, look, i.subd_rules)
-            groom = logic.first_frame_path(r.groom, r.frames.get("groom", (None,))[0]) \
-                if st.enabled.get("groom") and r.groom else ""
+            groom = _groom_file(st)
             curves = groom_curve_counts(groom)
             out[i.path] = {"plan": plan, "faces": faces, "curves": curves,
+                           "curve_plan": curve_plan_for(groom, look, getattr(i, "curve_rules", "")),
                            "shown": shown_for(list(plan), list(curves), geo, look, getattr(i, "show", None))}
         return out
 
@@ -1674,6 +1686,36 @@ class HoudiniBackend:
         left = logic.clear_subd_rules(rules, patterns)
         with undo_group(f"Clear subdivision {node.name()}"):
             node.parm(config.P_SUBD_RULES).set(json.dumps(left) if left else "")
+
+    @staticmethod
+    def set_curves(path, patterns, basis=logic.KEEP, width=logic.KEEP, style=logic.KEEP):
+        """The shot's groom curve rules for those patterns (logic.set_curve_rules); one undo step."""
+        from apps.houdini.solaris_adapter import undo_group
+
+        node = hou.node(path)
+        if node is None or node.parm(config.P_CURVE_RULES) is None:
+            return False
+        rules = logic.parse_curve_rules(_s(node, config.P_CURVE_RULES))
+        left = logic.set_curve_rules(rules, list(patterns), basis=basis, width=width, style=style)
+        with undo_group(f"Groom curves {node.name()}"):
+            node.parm(config.P_CURVE_RULES).set(json.dumps(left) if left else "")
+        return True
+
+    @staticmethod
+    def set_curves_many(by_loader, basis=logic.KEEP, width=logic.KEEP, style=logic.KEEP):
+        """One menu pick over rows of several loaders; one undo step. False when a loader has no curve rules."""
+        from apps.houdini.solaris_adapter import undo_group
+
+        nodes = {p: hou.node(p) for p in by_loader}
+        if any(n is None or n.parm(config.P_CURVE_RULES) is None for n in nodes.values()):
+            return False
+        with undo_group("Groom curves"):
+            for path, patterns in by_loader.items():
+                node = nodes[path]
+                rules = logic.parse_curve_rules(_s(node, config.P_CURVE_RULES))
+                left = logic.set_curve_rules(rules, list(patterns), basis=basis, width=width, style=style)
+                node.parm(config.P_CURVE_RULES).set(json.dumps(left) if left else "")
+        return True
 
     @staticmethod
     def set_show(path, edits):
@@ -1708,9 +1750,12 @@ class HoudiniBackend:
         subd = logic.clear_subd_rules(logic.parse_subd_rules(_s(node, config.P_SUBD_RULES)), patterns)
         show = logic.parse_show_rules(_s(node, config.P_SHOW_RULES))
         show = logic.clear_show_rules(show, patterns)
+        curves = logic.clear_curve_rules(logic.parse_curve_rules(_s(node, config.P_CURVE_RULES)), patterns)
         with undo_group(f"Clear overrides {node.name()}"):
             node.parm(config.P_SUBD_RULES).set(json.dumps(subd) if subd else "")
             node.parm(config.P_SHOW_RULES).set(json.dumps(show) if show else "")
+            if node.parm(config.P_CURVE_RULES) is not None:
+                node.parm(config.P_CURVE_RULES).set(json.dumps(curves) if curves else "")
 
     @staticmethod
     def subd_to_asset(path):
@@ -1719,13 +1764,15 @@ class HoudiniBackend:
 
         src = hou.node(path)
         asset = _s(src, config.P_ASSET)
-        subd, show = _s(src, config.P_SUBD_RULES), _s(src, config.P_SHOW_RULES)
+        subd, show, curves = _s(src, config.P_SUBD_RULES), _s(src, config.P_SHOW_RULES), _s(src, config.P_CURVE_RULES)
         others = [n for n in find_loaders() if n.type().name() == config.HDA_TYPE and n.path() != path
                   and asset and _s(n, config.P_ASSET) == asset]
         with undo_group(f"Overrides to every {asset}"):
             for n in others:
                 n.parm(config.P_SUBD_RULES).set(subd)
                 n.parm(config.P_SHOW_RULES).set(show)
+                if n.parm(config.P_CURVE_RULES) is not None:
+                    n.parm(config.P_CURVE_RULES).set(curves)
         return len(others)
 
     @staticmethod
@@ -2057,9 +2104,10 @@ def show_opinions(path: str) -> dict[str, dict]:
     return _SHOW_CACHE[key]
 
 
-def groom_curve_counts(path: str) -> dict[str, int]:  # not groom_curves (the cache's own paths, refresh)
-    """{path under the instance ("/Groom/<name>"): control points} of the groom file's curves (its first frame for a
-    sequence), where the loader puts them (logic.groom_targets)."""
+def groom_curve_facts(path: str) -> dict[str, dict]:
+    """{path under the instance ("/Groom/<name>"): {"cvs", "curves", "min_cvs", "type", "basis", and Karma's
+    "curve_basis" / "width_scale" / "curve_style" when authored}} of the groom file's curves (its first frame for a
+    sequence), where the loader puts them (logic.groom_targets). Cached by modification time."""
     import os
 
     from pxr import Usd, UsdGeom
@@ -2069,15 +2117,124 @@ def groom_curve_counts(path: str) -> dict[str, int]:  # not groom_curves (the ca
     key = (path, os.path.getmtime(path))
     if key not in _CURVES_CACHE:
         stage = Usd.Stage.Open(path, Usd.Stage.LoadNone)
-        counts = {}
+        facts = {}
         for prim in stage.TraverseAll():
             if prim.IsA(UsdGeom.BasisCurves):
-                pts = UsdGeom.BasisCurves(prim).GetPointsAttr()
+                c = UsdGeom.BasisCurves(prim)
+                pts = c.GetPointsAttr()
                 v = pts.Get(Usd.TimeCode.EarliestTime()) if pts.GetNumTimeSamples() else pts.Get()
-                counts[prim.GetPath().pathString] = len(v) if v is not None else 0
+                counts = c.GetCurveVertexCountsAttr().Get(Usd.TimeCode.EarliestTime())
+                f = {"cvs": len(v) if v is not None else 0, "curves": len(counts) if counts is not None else 0,
+                     "min_cvs": min(counts) if counts is not None and len(counts) else 0,
+                     "type": str(c.GetTypeAttr().Get() or "cubic"), "basis": str(c.GetBasisAttr().Get() or "")}
+                f.update(_karma_curve_values(prim))
+                facts[prim.GetPath().pathString] = f
         _CURVES_CACHE.clear() if len(_CURVES_CACHE) > 32 else None
-        _CURVES_CACHE[key] = {dst: counts[src] for src, dst in logic.groom_targets(list(counts))}
+        _CURVES_CACHE[key] = {dst: facts[src] for src, dst in logic.groom_targets(list(facts))}
     return _CURVES_CACHE[key]
+
+
+def groom_curve_counts(path: str) -> dict[str, int]:  # not groom_curves (the cache's own paths, refresh)
+    """{path under the instance ("/Groom/<name>"): control points} of the groom file's curves."""
+    return {k: f["cvs"] for k, f in groom_curve_facts(path).items()}
+
+
+_KARMA_CURVE_KEYS = {"primvars:" + v: k for k, v in (("curve_basis", logic.CURVE_PRIMVARS["basis"]),
+                                                       ("width_scale", logic.CURVE_PRIMVARS["width"]),
+                                                       ("curve_style", logic.CURVE_PRIMVARS["style"]))}
+
+
+def _karma_curve_values(prim) -> dict:
+    out = {}
+    for name, key in _KARMA_CURVE_KEYS.items():
+        attr = prim.GetAttribute(name)
+        if attr and attr.HasAuthoredValue():
+            out[key] = attr.Get()
+    return out
+
+
+_LOOK_CURVES_CACHE: dict = {}
+
+
+def lookdev_curve_opinions(path: str) -> dict[str, dict]:
+    """{prim path: {"type", "basis", Karma's curve values}} the lookdev authors on curves prims (overs too: Helen's
+    lookdev sets type, basis and widths on /Groom/<name>). Cached by modification time."""
+    import os
+
+    from pxr import Usd, UsdGeom
+
+    if not path or not os.path.isfile(path):
+        return {}
+    key = (path, os.path.getmtime(path))
+    if key not in _LOOK_CURVES_CACHE:
+        stage = Usd.Stage.Open(path, Usd.Stage.LoadNone)
+        out = {}
+        for prim in stage.TraverseAll():
+            if not (prim.IsA(UsdGeom.BasisCurves) or not prim.GetTypeName()):
+                continue
+            ops = _karma_curve_values(prim)
+            for name in ("type", "basis"):
+                attr = prim.GetAttribute(name)
+                if attr and attr.HasAuthoredValue():
+                    ops[name] = str(attr.Get())
+            if ops:
+                out[prim.GetPath().pathString] = ops
+        _LOOK_CURVES_CACHE.clear() if len(_LOOK_CURVES_CACHE) > 32 else None
+        _LOOK_CURVES_CACHE[key] = out
+    return _LOOK_CURVES_CACHE[key]
+
+
+def curve_plan_for(groom: str, lookdev: str, rules_text: str) -> dict:
+    """The groom curves' plan (logic.curve_plan) from the publish files (no hou: the manager's worker thread)."""
+    return logic.curve_plan(groom_curve_facts(groom), lookdev_curve_opinions(lookdev),
+                            logic.parse_curve_rules(rules_text))
+
+
+def _groom_file(state) -> str:
+    """The groom file a loader reads its curves from (the first frame of a cache), "" without a groom."""
+    if state is None or not state.enabled.get("groom"):
+        return ""
+    r = logic.resolve(state)
+    return logic.first_frame_path(r.groom, r.frames.get("groom", (None,))[0]) if r.groom else ""
+
+
+def node_curve_plan(node) -> dict:
+    """A loader's groom curves plan, as the manager shows it."""
+    look = _s(node, config.P_PATH["lookdev"]) if node.evalParm(config.P_ENABLE["lookdev"]) else ""
+    return curve_plan_for(_groom_file(read_state(node)), look, _s(node, config.P_CURVE_RULES))
+
+
+def karma_curve_values(overrides: dict) -> dict[str, tuple[str, object]]:
+    """{primvar name: (value type, value)} that a shot's curve overrides author (render only, Karma)."""
+    out = {}
+    if "basis" in overrides:
+        out[logic.CURVE_PRIMVARS["basis"]] = ("int", logic.CURVE_BASIS_KARMA[overrides["basis"]])
+    if "width" in overrides:
+        out[logic.CURVE_PRIMVARS["width"]] = ("float", float(overrides["width"]))
+    if "style" in overrides:
+        out[logic.CURVE_PRIMVARS["style"]] = ("int", logic.CURVE_STYLE_KARMA[overrides["style"]])
+    return out
+
+
+def author_curves(node, stage) -> None:
+    """Called by the HDA's render_only Python LOP: Karma's curve basis, width scale and style on every groom curves
+    prim a shot rule names (constant primvars on the stage's active layer: the cache's clips carry none of them)."""
+    from pxr import Sdf, Usd, UsdGeom
+
+    rules = logic.parse_curve_rules(_s(node, config.P_CURVE_RULES))
+    root = instance_root(node)
+    if not rules or root is None:
+        return
+    types = {"int": Sdf.ValueTypeNames.Int, "float": Sdf.ValueTypeNames.Float}
+    for top in instance_paths(node):
+        start = stage.GetPrimAtPath(top)
+        for prim in Usd.PrimRange(start) if start else ():
+            if not prim.IsA(UsdGeom.BasisCurves):
+                continue
+            values = karma_curve_values(logic.curve_overrides(prim.GetPath().pathString[len(root):], rules))
+            api = UsdGeom.PrimvarsAPI(prim)
+            for name, (kind, value) in values.items():
+                api.CreatePrimvar(name, types[kind], UsdGeom.Tokens.constant).Set(value)
 
 
 def shown_for(meshes: list[str], curves: list[str], anim: str, lookdev: str, show: dict | None) -> dict:

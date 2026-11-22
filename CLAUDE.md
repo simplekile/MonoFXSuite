@@ -582,6 +582,26 @@
   `GR_OSDSubdSurfaceVK`; Helen alone 12.5 GB with a plain Sublayer, 2.5 GB with `none`). Opinions are read from
   the publish files themselves with `TraverseAll` (lookdev holds overs): Graft Stages flattens and writes the
   fallback as a value. Dicing is `primvars:karma:object:dicingquality` (render only).
+- Groom curves per shot (the user's pick of three mockups, layout A, 2026-11-22; `logic.curve_plan`,
+  `adapter.author_curves` from the same `render_only` Python LOP): BasisCurves have no subdivisionScheme or dicing, so
+  a shot sets Karma's render-time curve primvars, constant, on each curves prim: `karma:object:curve_basis` (int, 1
+  linear / 3 B-spline / 4 Catmull-Rom; Bezier left out: it needs 4 + 3N CVs and Helen's 9 / 33-CV strands break it;
+  cubic needs 4 CVs, the menu greys it below that), `width_scale` (float, x the published widths) and `curve_style`
+  (0 flat, 1 rounded = Karma's default, 2 oriented; Karma XPU renders rounded only, Karma CPU no oriented linear
+  curves). Render only: the cache's points / widths (value clips) and the viewport are left alone; the clips carry
+  none of these, so a default beats nothing (sh025: values reach `beauty_pass`, points keep 46 samples). Rules: hidden
+  `mx_curve_rules`, JSON `pattern` (as subdivision) + `basis` / `width` / `style`, a later rule wins field by field
+  (`set_curve_rules`: KEEP keeps a field, None takes it off, an empty rule goes). What the publish says: the groom
+  file's type / basis (`groom_curve_facts`, first frame) under what the lookdev authors (`lookdev_curve_opinions`:
+  Helen's V009 sets type cubic, basis bspline on /Groom/*, so her linear cache renders B-spline already). Inspector:
+  a curves row's SCHEME is its basis, FROM its source, WIDTH (col 8, `COL_WIDTH`, shown only when the tree has curves)
+  its scale; the curves rows' menu has Render curves smooth / Width / Render as (Karma CPU). Clear overrides, Same
+  overrides on the other loaders and Bake (`BAKED_SUBD_CODE`'s `CURVES`) include them. No viewport thinning: Houdini GL
+  has no "draw a fraction of the curves" setting, and a per-frame proxy copy was turned down (the user's call); the
+  viewport toggle and the lookdev's proxy meshes keep the viewport light. Check: hython
+  `tests/houdini/anim_loader/accept_curve_rules.py <fake_project> <out>` (10 checks); sh025's char_Helen was checked
+  the same way and in the GUI (sandbox copy `sh025_curves_041.hiplc`, groom set to v004: it pointed at a v900 not on
+  disk).
 - Manager › Subdivision column (the user's pick of three mockups, 2026-11-17: beside List / Grid, under them when
   narrower than 760 px): the selected loader's anim meshes by group (`logic.mesh_groups`, first two path levels),
   faces, where the scheme comes from (shot / lookdev / publish / default; on a mesh only when it differs from its
