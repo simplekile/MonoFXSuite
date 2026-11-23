@@ -33,6 +33,12 @@ with two checks added only on a groom that has a drawn lock (`drawn_root_skin_wo
 lock every number is the one before v0.2b (t55's 27, checked in t83 and by `accept_v02b.py` r2); q1 there checks an
 edited groom.
 
+**Latest join (v0.2b, 2026-11-23).** Skin owned by a lock whose Latest join (`join_limit`) is under 1 is left out of
+`skin_thin_share` / `lock_skin_thin_worst`, as skin under floating mesh is: the artist set its late roots to start the
+lock. It gets its own section (`latest_join_skin`: its bare share and its thin share were it judged, reported) and one
+check added only then, `latest_skin_uncovered` (no hair of any lock within 5 mm over it, at most 0.05). With no lock
+under 1 the checks and numbers are the ones before.
+
 `--fresh` empties the groom data and runs Detect and Split regions first: use it after a change to
 root detection, spines or regions, since a scene keeps what was detected with the old code.
 A scene also keeps the parm values it was saved with, so after changing an HDA default the old

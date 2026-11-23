@@ -85,3 +85,39 @@ def test_the_script_reads_the_carried_mesh(qc):
     assert 'measure(imp, ref_mesh, None, "ref")' in text      # the reference stays on the modelled mesh
     cap = (SCRIPT.parent / "qc_capture.py").read_text(encoding="utf-8")
     assert "/MESH_CARRIED" in cap and "@lock_id!=" in cap and "solo({name})" not in cap
+
+
+def test_latest_join_skin_is_left_out_and_nothing_moves_without_it(qc):
+    """Skin owned by a lock with Latest join under 1 leaves skin_thin_*; with no such lock every number is as before."""
+    owners = [[1], [1, 2], [2], [3], []]
+    area = np.array([1.0, 2.0, 1.0, 4.0, 3.0])
+    ratio = np.array([0.1, 0.2, 0.9, 0.3, 1.0])
+    arch = np.array([False, False, False, True, False])
+    asked = np.ones(5, dtype=bool)
+    share, per, has, thin, latest = qc.skin_thin_numbers(owners, area, ratio, arch, asked)
+    assert share == pytest.approx(3.0 / 4.0) and not latest.any()
+    assert per[1] == pytest.approx(1.0) and per[2] == pytest.approx(2.0 / 3.0)
+    share2, per2, has2, _thin2, latest2 = qc.skin_thin_numbers(owners, area, ratio, arch, asked, {1})
+    assert list(latest2) == [True, True, False, False, False]
+    assert share2 == 0.0 and per2[1] == 0.0 and not has2[:2].any()
+    assert per2[2] == pytest.approx(0.0)        # its prim shared with lock 1 is left out with it
+
+
+def test_latest_join_locks_reads_the_resolved_setting(qc):
+    from tools.fx.grooming.model import GroomData, Group, Lock
+    data = GroomData(groups=[Group(id="f", name="F", overrides={"join_limit": 0.3}), Group(id="b", name="B")],
+                     locks=[Lock(id=1, name="a", group="f"), Lock(id=2, name="b", group="b"),
+                            Lock(id=3, name="c", group="b", overrides={"join_limit": 0.5})])
+    assert qc.latest_join_locks(data) == {1, 3}
+    assert qc.latest_join_locks(GroomData(locks=[Lock(id=1, name="a", group="")])) == set()
+
+
+def test_near_any_and_latest_skin_lines(qc):
+    rng = np.random.default_rng(5)
+    pts = rng.uniform(0, 10, (3000, 3))
+    q = rng.uniform(-2, 12, (200, 3))
+    brute = (((q[:, None, :] - pts[None, :, :]) ** 2).sum(-1) <= 0.25).any(1)
+    assert (qc.near_any(q, pts, 0.5) == brute).all()
+    assert not qc.near_any(q, np.zeros((0, 3)), 0.5).any()
+    lines = qc.latest_skin_lines(np.array([1.0, 1.0, 2.0]), [True, False, False], [True, True, False])
+    assert lines == {"area_cm2": 4.0, "bare_share": 0.75, "uncovered_share": 0.5}

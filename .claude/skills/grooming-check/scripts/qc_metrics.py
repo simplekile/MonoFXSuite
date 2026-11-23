@@ -576,7 +576,7 @@ def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5, far
 
     Density layers (v0.2a, `cover`: grooming_masks.layer_cover, per lock its prims with the layers' keep and
     density there): a prim asks each owner's automatic density x keep + the layers' density, over its
-    owners. Returns per prim (owners, area cm2, ratio, under floating mesh, asked): `asked` is False where
+    owners. Returns per prim (owners, area cm2, ratio, under floating mesh, asked, centre cm): `asked` is False where
     the skin within `radius_cm` asks for less than one root in all (painted "= 0"): there is nothing to be
     thin against. Skin under floating mesh a layer covers in full is judged like any other (the artist
     painted its density); elsewhere it stays the tool's own thin skin."""
@@ -639,7 +639,89 @@ def skin_density(hair, regions, mesh, spines, infos, unit_cm, radius_cm=0.5, far
         wanted = near @ want
         ratio[i:i + 1000] = (near @ have) / np.maximum(wanted, 1e-9)
         asked[i:i + 1000] = wanted >= 1.0
-    return owners, area, ratio, arch, asked
+    return owners, area, ratio, arch, asked, cen
+
+
+LATEST_SKIN_UNCOVERED_MAX = 0.05   # skin under a lock with Latest join under 1: share with no hair within 0.5 cm
+
+
+def latest_join_locks(data) -> set:
+    """Lock ids whose Latest join (setting `join_limit`, v0.2b) resolves under 1: their late roots start the lock on
+    purpose (the artist's setting), so the skin they own is left out of the thin-skin numbers."""
+    out = set()
+    for lk in getattr(data, "locks", []):
+        try:
+            if float(data.resolve(lk.id).get("join_limit", 1.0)) < 1.0:
+                out.add(lk.id)
+        except KeyError:
+            continue
+    return out
+
+
+def skin_thin_numbers(owners, area, ratio, arch, asked, latest_ids=frozenset()):
+    """The thin-skin numbers over the skin that asks for roots: skin under floating mesh (`arch`) and skin owned by a
+    lock with Latest join under 1 (`latest_ids`, any owner) left out. Returns (skin_thin_share, {lock id: its thin
+    share}, has, thin, latest): `has` the prims judged, `thin` those with under half the roots asked within 5 mm,
+    `latest` the prims left out for Latest join. With no such lock every number is the one before it existed."""
+    area = np.asarray(area, dtype=float)
+    owned = np.array([len(o) > 0 for o in owners], dtype=bool)
+    lat = set(latest_ids)
+    latest = np.array([bool(set(o) & lat) for o in owners], dtype=bool) if lat else np.zeros(len(area), dtype=bool)
+    has = owned & ~np.asarray(arch, dtype=bool) & np.asarray(asked, dtype=bool) & ~latest
+    thin = has & (np.asarray(ratio) < 0.5)
+    share = float(area[thin].sum() / max(area[has].sum(), 1e-9))
+    per = {}
+    for own, a, h, th in zip(owners, area, has, thin):
+        for o in own:
+            tot = per.setdefault(o, [0.0, 0.0])
+            tot[0] += a
+            tot[1] += a if th else 0.0
+    return share, {o: v[1] / max(v[0], 1e-9) for o, v in per.items()}, has, thin, latest
+
+
+def near_any(query, pts, radius):
+    """For each query point, whether any of `pts` lies within `radius` (same unit), by a grid of `radius` cells."""
+    query = np.asarray(query, dtype=float).reshape(-1, 3)
+    pts = np.asarray(pts, dtype=float).reshape(-1, 3)
+    out = np.zeros(len(query), dtype=bool)
+    if not len(query) or not len(pts):
+        return out
+    lo = np.minimum(pts.min(0), query.min(0)) - 2 * radius
+    kp = np.floor((pts - lo) / radius).astype(np.int64)
+    kq = np.floor((query - lo) / radius).astype(np.int64)
+    dim = np.maximum(kp.max(0), kq.max(0)) + 3
+
+    def key(k):
+        return k[:, 0] + dim[0] * (k[:, 1] + dim[1] * k[:, 2])
+
+    order = np.argsort(key(kp), kind="stable")
+    sk, sp = key(kp)[order], pts[order]
+    r2 = radius * radius
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                todo = np.nonzero(~out)[0]
+                if not len(todo):
+                    return out
+                kk = key(kq[todo] + np.array([dx, dy, dz]))
+                a, b = np.searchsorted(sk, kk, "left"), np.searchsorted(sk, kk, "right")
+                for i, j0, j1 in zip(todo, a, b):
+                    if j1 > j0 and (((sp[j0:j1] - query[i]) ** 2).sum(1) <= r2).any():
+                        out[i] = True
+    return out
+
+
+def latest_skin_lines(area, roots_near, hair_near):
+    """Skin under Latest join (one entry per prim of it): its area, the share with no root of any lock within 0.5 cm
+    (bare, reported) and the share with no hair of any lock passing within 0.5 cm over it (uncovered: bare skin that
+    would show; graded), by area."""
+    area = np.asarray(area, dtype=float)
+    tot = float(area.sum())
+    if tot <= 0:
+        return {"area_cm2": 0.0, "bare_share": 0.0, "uncovered_share": 0.0}
+    return {"area_cm2": tot,
+            "bare_share": float(area[~np.asarray(roots_near, bool)].sum() / tot),
+            "uncovered_share": float(area[~np.asarray(hair_near, bool)].sum() / tot)}
 
 
 def shape_along(pos, lock, u, mesh_pos, mesh_piece, spines, bins=10, unit_cm=100.0):
@@ -1072,7 +1154,7 @@ def main():
     report["turned_locks"] = [{"name": r["name"], "turned": r["turned_profile"]} for r in
                               sorted(locks, key=lambda r: -r.get("turned_worst", 0.0))[:8] if "turned_profile" in r]
     t = time.time()
-    owners, area, ratio, arch, asked = skin_density(
+    owners, area, ratio, arch, asked, skin_cen = skin_density(
         hair, merge(node.path() + "/SCALP_REGIONS", "qc_regions"), mesh, spines, ga.lock_infos(node), unit_cm,
         far_cm=float(node.evalParm("root_far_cm")) if node.parm("root_far_cm") else ROOT_FAR_CM, cover=cover)
     report["skin_arch_cm2"] = float(area[arch].sum())
@@ -1080,19 +1162,25 @@ def main():
     # skin that asks for no root (painted "= 0") is not thin skin: nothing was to grow there
     owned = np.array([len(o) > 0 for o in owners])
     report["skin_none_asked_cm2"] = float(area[owned & ~arch & ~asked].sum())
-    has = owned & ~arch & asked
-    thin = has & (ratio < 0.5)
-    s["skin_thin_share"] = float(area[thin].sum() / max(area[has].sum(), 1e-9))
-    per = {}
-    for own, a, th in zip(owners, area, thin):
-        for o in own:
-            tot = per.setdefault(o, [0.0, 0.0])
-            tot[0] += a
-            tot[1] += a if th else 0.0
+    # skin owned by a lock with Latest join under 1 (v0.2b): its late roots start the lock on purpose, so it is left
+    # out of the thin-skin numbers like skin under floating mesh, and judged on its own lines (latest_join_skin)
+    latest_ids = latest_join_locks(ga.read_data(node))
+    s["skin_thin_share"], per, has, thin, latest = skin_thin_numbers(owners, area, ratio, arch, asked, latest_ids)
     for r in locks:
         if r["lock_id"] in per:
-            r["skin_thin"] = per[r["lock_id"]][1] / max(per[r["lock_id"]][0], 1e-9)
+            r["skin_thin"] = per[r["lock_id"]]
     s["lock_skin_thin_worst"] = max((r.get("skin_thin", 0.0) for r in locks), default=0.0)
+    if latest_ids:
+        # the skin the thin-skin numbers would have judged (skin under floating mesh stays reported apart, as before)
+        judged = latest & owned & asked & ~arch
+        lcen = skin_cen[judged]
+        lines_l = latest_skin_lines(area[judged], near_any(lcen, pos[starts] * unit_cm, 0.5),
+                                    near_any(lcen, pos * unit_cm, 0.5))
+        report["latest_join_skin"] = dict(
+            lines_l, locks=sorted(r["name"] for r in locks if r["lock_id"] in latest_ids),
+            under_floating_mesh_cm2=float(area[latest & arch].sum()),
+            thin_share_were_it_judged=float(area[judged & (ratio < 0.5)].sum() / max(area[judged].sum(), 1e-9)))
+        s["latest_skin_uncovered"] = lines_l["uncovered_share"]
     report["skin_ratio_p"] = [round(float(v), 3) for v in np.percentile(ratio[has], [5, 25, 50, 75, 95])] if has.any() else []
     log(f"skin density: {time.time() - t:.1f}s")
     report["along_lock"] = {
@@ -1122,6 +1210,11 @@ def main():
         limits["drawn_width_off_worst"] = {
             "abs": DRAWN_WIDTH_SHARE, "ref_x": None,
             "why": "a drawn lock's hair width against its set width at 0.3 / 0.5 / 0.7 / 0.9 of it, |ratio - 1|, worst"}
+    if "latest_skin_uncovered" in s:   # only with a lock whose Latest join is under 1: otherwise the checks as before
+        limits["latest_skin_uncovered"] = {
+            "max": LATEST_SKIN_UNCOVERED_MAX, "ref_x": None,
+            "why": "skin owned by a lock with Latest join under 1 (left out of skin_thin_*: its late roots start the "
+                   "lock on purpose) with no hair of any lock passing within 5 mm over it: bare skin that would show"}
     for key, lim in limits.items():
         why = lim["why"] + (f". Stricter than v006: {lim['stricter']}" if lim.get("stricter") else "")
         v006 = lim.get("v006")                   # the approved groom, measured on Helen (t52) where it can be
@@ -1173,6 +1266,12 @@ def main():
     if report.get("outside_locks"):
         lines += ["", "## Hair outside its lock (share beyond the mesh's cross-section by 2 mm, by tenth, root -> tip)", ""]
         lines += [f"- {t['name']}: " + " ".join("-" if v is None else f"{v:.2f}" for v in t["outside"]) for t in report["outside_locks"]]
+    if report.get("latest_join_skin"):
+        lj = report["latest_join_skin"]
+        lines += ["", "## Skin under Latest join (left out of skin_thin_*: late roots start the lock on purpose)", "",
+                  f"{lj['area_cm2']:.1f} cm2 owned by {', '.join(lj['locks'])}: no root within 5 mm {lj['bare_share']:.0%} "
+                  f"(reported), no hair passing within 5 mm {lj['uncovered_share']:.1%} (graded, latest_skin_uncovered); "
+                  f"judged as thin skin it would read {lj['thin_share_were_it_judged']:.0%}"]
     if report.get("skin_ratio_p"):
         lines += ["", "Skin: roots within 5 mm over what the regions ask (p5 p25 p50 p75 p95): "
                   + " ".join(f"{v:.2f}" for v in report["skin_ratio_p"])
