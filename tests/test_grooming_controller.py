@@ -629,6 +629,17 @@ def test_shot_deform_on_with_a_mismatched_anim_says_why_it_stays_at_rest(env) ->
     assert "follows the animated hair mesh" in view.messages[-1][0]
 
 
+def test_shot_deform_on_with_a_point_that_is_not_finite_does_not_blame_the_point_order(env) -> None:
+    """6f3f176 refuses a frame with an inf / NaN point: its own sentence, not the one about another point count."""
+    adapter, view, c = env
+    c.set_shot_deform(False)
+    adapter.deform_problem = lambda node: "Anim hair mesh: 3 points not finite at this frame: no deform"
+    assert c.set_shot_deform(True)
+    text, error = view.messages[-1]
+    assert "3 points not finite at this frame" in text and "stays at rest" in text and error is True
+    assert "same order" not in text
+
+
 def test_isolate_another_lock_while_isolated_switches_to_it(env) -> None:
     adapter, view, c = env
     c.select_locks([1, 2])

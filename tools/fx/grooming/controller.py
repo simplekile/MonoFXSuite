@@ -1060,8 +1060,9 @@ class GroomController(SpineMixin, LayersMixin):
         self.view.set_deform_state(*self.deform_state())
         problem = self._deform_problem() if on else ""
         if problem:   # the anim cannot drive this groom: say so, the hair stays at rest
-            self.view.set_message(problem + ": the hair stays at rest (the animated hair mesh needs the rest"
-                                  " hair mesh's points, in the same order)", error=True)
+            why = "" if "not finite" in problem else \
+                " (the animated hair mesh needs the rest hair mesh's points, in the same order)"
+            self.view.set_message(problem + ": the hair stays at rest" + why, error=True)
             return True
         self.view.set_message("Deform on: the hair follows the animated hair mesh. Every lock is drawn as strands, "
                               "the others are only dimmed (not see-through), each edit deforms it again"

@@ -36,7 +36,8 @@ edited groom.
 **Latest join (v0.2b, 2026-11-23).** Skin owned by a lock whose Latest join (`join_limit`) is under 1 is left out of
 `skin_thin_share` / `lock_skin_thin_worst`, as skin under floating mesh is: the artist set its late roots to start the
 lock. It gets its own section (`latest_join_skin`: its bare share and its thin share were it judged, reported) and one
-check added only then, `latest_skin_uncovered` (no hair of any lock within 5 mm over it, at most 0.05). With no lock
+check added only then, `latest_skin_uncovered` (no hair point of any lock within 5 mm: bare at the skin's surface, not what
+a camera sees; at most 0.05). With no lock
 under 1 the checks and numbers are the ones before.
 
 `--fresh` empties the groom data and runs Detect and Split regions first: use it after a change to

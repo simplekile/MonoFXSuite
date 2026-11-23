@@ -304,11 +304,12 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   the fringe's tuft (hair_bang_19 / 20: 36 % of strands joining 0.4-0.9 along, 0.39 of the lock's length) and the caps
   lying along the scalp (42-46 % late, 0.75-0.86 of their lock) cannot be told apart by length or skin distance
   (t79 report 9.11). Helen's fringe at 0.3: no strand starts past 0.3 on bang_02 / 03 / 19 / 20, other groups
-  byte-equal, counts unchanged; their own skin goes 22 % -> 81 % bare (v006: 97 %), so grooming-check's
+  byte-equal, counts unchanged; their own skin goes 22 % -> 81 % bare (no root within 5 mm) (v006: 97 %), so grooming-check's
   `skin_thin_share` 0.017 -> 0.128 and `lock_skin_thin_worst` 0.031 -> 0.414 fail their limits (0.05, 0.2; at 0.5:
   0.101, 0.341). The limits were not moved: that is the artist's trade on that group (t79 report 9.13).
   grooming-check (3a84bbe) leaves skin owned by a lock with Latest join under 1 out of skin_thin_* and judges it on
-  `latest_skin_uncovered` (no hair within 5 mm, at most 0.05): fringe at 0.5 0.003 pass, at 0.3 0.077 fail (t79 9.14).
+  `latest_skin_uncovered` (no hair point within 5 mm, bare at the skin's surface, not what a camera sees; at most
+  0.05): fringe at 0.5 0.003 pass, at 0.3 0.077 fail (t79 9.14); hair over the skin further up is not counted (t84).
   Start roots are laid out as one sunflower on a disc round the lock's root at up to
   `START_DENSITY_MAX` (6) x its density, each point moved onto the region (a point off it is dropped, the
   disc grows to at most 3x: grown without bound it reached skin 4 cm away, hair_bang_03, and its strands ran
@@ -1276,6 +1277,11 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     and the drawn locks' line say how many): one inf point of hair_bang_11's piece gave 5,302 NaN strands across 20
     locks with no error (t84 round 3). Mesh / guide display parts are
     still Point Deformed (their own mesh), so `deform_radius` now only drives those.
+  - A bad frame's message is of that frame: the panel keeps the scalp's line per data and frame (`adapter.current_frame`;
+    kept per data only, a bad frame's line stayed on good frames), and the point-count sentence is not added to it. What
+    is NOT covered: the panel does not re-read on a frame change (poll looks at the data), so scrubbing onto a bad frame
+    shows the hair at rest with no line until something refreshes it, `deform_problem` is read when Shot deform is
+    turned on and at publish, at the frame of that moment only, and the warnings inside the locked HDA reach no artist.
   - Known coupling (t84 round 3): the root zone takes the translation of its root's mesh neighbours from ANY piece
     within ROOT_ANCHOR_CM, so a piece moving on its own moves the root zones of the locks rooted near it: one piece
     moved 5 cm moved 20 neighbouring locks' roots up to 1.25 cm (22-25 %; 50 cm gave 12.5 cm), median 0. Roots off

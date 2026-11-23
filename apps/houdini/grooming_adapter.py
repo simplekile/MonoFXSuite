@@ -3188,6 +3188,12 @@ def scalp_wired(node) -> bool:
     return len(node.inputs()) > 3 and node.inputs()[3] is not None
 
 
+def current_frame() -> float:
+    """The frame Houdini is at: what the panel keeps a per-frame message by."""
+    _require_hou()
+    return float(hou.frame())
+
+
 def animated_scalp(node) -> dict:
     """What the drawn locks do in a shot (U2): {"wired", "ok" (they follow it), "anim_points", "rest_points",
     "drawn", "message"} (the panel's line, "" when nothing needs saying). Never an error or a warning on the node:
@@ -3352,6 +3358,6 @@ __all__ = [
     "import_masks", "masks_from_publish",
     # v0.2b control points and drawn locks (the viewer state B3 and the panel B4)
     "lock_handles", "lock_spines", "set_points", "reset_points", "rotate_points", "scale_points", "set_handle_count", "redraw_lock",
-    "draw_lock", "set_drawn", "delete_drawn_locks", "edited_ids", "drawn_ids", "scalp_wired", "animated_scalp",
+    "draw_lock", "set_drawn", "delete_drawn_locks", "edited_ids", "drawn_ids", "scalp_wired", "animated_scalp", "current_frame",
     "import_spines", "spines_from_publish", "spine_record", "NODE_SPINES_MEASURED", "NODE_MESH_CARRIED",
 ]

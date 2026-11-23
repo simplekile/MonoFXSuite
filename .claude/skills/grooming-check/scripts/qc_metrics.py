@@ -713,8 +713,9 @@ def near_any(query, pts, radius):
 
 def latest_skin_lines(area, roots_near, hair_near):
     """Skin under Latest join (one entry per prim of it): its area, the share with no root of any lock within 0.5 cm
-    (bare, reported) and the share with no hair of any lock passing within 0.5 cm over it (uncovered: bare skin that
-    would show; graded), by area."""
+    (bare, reported) and the share with no hair point of any lock within 0.5 cm of it (uncovered: bare at the skin's
+    surface, graded), by area. Not what a camera sees: hair hanging 0.6-6 cm over the skin does not count. Points, not
+    segments, against one centre a prim."""
     area = np.asarray(area, dtype=float)
     tot = float(area.sum())
     if tot <= 0:
@@ -1214,7 +1215,8 @@ def main():
         limits["latest_skin_uncovered"] = {
             "max": LATEST_SKIN_UNCOVERED_MAX, "ref_x": None,
             "why": "skin owned by a lock with Latest join under 1 (left out of skin_thin_*: its late roots start the "
-                   "lock on purpose) with no hair of any lock passing within 5 mm over it: bare skin that would show"}
+                   "lock on purpose) with no hair point of any lock within 5 mm of its prim's centre: bare at the skin's "
+                   "surface (not what a camera sees: hair hanging over it further than that does not count)"}
     for key, lim in limits.items():
         why = lim["why"] + (f". Stricter than v006: {lim['stricter']}" if lim.get("stricter") else "")
         v006 = lim.get("v006")                   # the approved groom, measured on Helen (t52) where it can be
