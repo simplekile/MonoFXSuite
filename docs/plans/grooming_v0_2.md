@@ -1242,6 +1242,19 @@ of the product was changed. Numbers are Helen's, hython unless said.**
     zone of 0.7 of the strand (hair 0.9 cm off its piece on sh025), a zone of 4 cm.
   - Not known: edited and drawn locks under part two, input 4 bad or with another point count, the cost a
     frame, other shots, why hair_bang_03's last place turns 20 deg in one frame (the one pair left).
+- **Root-zone rule, part one as built (037, 7bf276d; 9.21)**: s6 grades the joint turn over rest in the root
+  half on sh025 (30 deg): 0 locks on frames 5 / 20 / 25 / 30 / 40 / 50, worst 27.3 (the build before: 13
+  locks, 58.6); sh020 reported (hair_bang_20 frame 10: 32.3). Every other s6 count as before (folds 0,
+  length 35 / 5, tip 78 / 0, roots 74 / 57, frame-to-frame 41 / 0 pairs, edited 0 failing); hair-to-piece
+  on sh025 moves both ways (p95 0.230 -> 0.240, worst 0.36 -> 0.26). Cost +4-7 % a frame. s6's sh020 run
+  died once of two with a native segfault in hython (cause unknown): s6 is run again before it is trusted.
+  Part two on the trial, for the user's choice (sheets in t79 `part17/sheets`): falls back exactly with input
+  4 not wired, another point count or non-finite; edited roots by id 0.0; drawn locks unchanged; +12-19 % a
+  frame. Found: the fringe flares in the pictures (hair_bang_19 frame 75, hair_bang_20 frame 10); the
+  edited 2 % length line fails 2 cases (hair_bang_19 / 20 turned 25 deg, sh020 frame 60, 2.23 / 2.06 %); a
+  bad scalp on one frame jumps mesh locks up to 1.54 cm for that frame; with no drawn lock the panel says
+  nothing about the fallback. Not tested: sh025 with input 4 bad, an edited drawn lock, a publish, other
+  shots.
 - **A bad frame is found when it is reached (known limit of v0.2b, the manager, 2026-11-23)**: the deform's
   message (`deform_problem`: another point count, a non-finite point) and the publish preflight read the
   current frame only, and the panel does not re-read on a frame change. The panel's line belongs to the
