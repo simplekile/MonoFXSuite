@@ -1830,6 +1830,15 @@ if (np > 3) {
     for (int i = 1; i < np; i++) us[i] = run >= 0 ? max(us[i], us[i - 1]) : min(us[i], us[i - 1]);
 }
 for (int i = 0; i < np; i++) setpointattrib(0, "dfu", pts[i], us[i]);
+// the root's place on the piece as modelled (input 3) minus its place on the carried one: 0 for a lock not edited (the
+// same mesh); for an edited lock the root anchor turns by the rotation at the modelled place, so its roots stay the
+// unedited lock's (t84 round 3: hair_bang_19 turned 25 deg moved its roots 0.126 cm in sh020 frame 10, its root
+// places having slid up to 0.11 along a piece whose rotation changes fast there)
+{
+    int rhp; vector ruv;
+    xyzdist(3, grp, point(0, "P", pts[0]), rhp, ruv);
+    f@rdfu_shift = rhp >= 0 ? primuv(3, "pu", rhp, ruv) - us[0] : 0.0;
+}
 float rad = %(rr)s / max(chf("../unit_cm"), 1e-6);
 vector r = point(0, "P", pts[0]);
 int nb[] = nearpoints(3, "", r, rad, %(rn)d);
@@ -1998,7 +2007,20 @@ matrix3 R = qconvert(slerp(qa, qb, t));
 vector along = e1 + (@P - e0) * R;
 if (prim(0, "rok", pr)) {
     vector rc0 = prim(0, "rc0", pr), rc1 = prim(0, "rc1", pr);
-    vector at_root = rc1 + (@P - rc0) * R;
+    // an edited lock's root zone turns by the rotation at its root's place on the piece as modelled (VEX_PIECE_U
+    // rdfu_shift, 0 for a lock not edited): its roots stay the unedited lock's
+    matrix3 Rr = R;
+    float sh = prim(0, "rdfu_shift", pr);
+    if (sh != 0) {
+        float u2 = clamp((f@dfu + sh - 2 * sg) / max(1 - 4 * sg, 1e-6), 0.0, 1.0) * (n - 1);
+        int j0 = min(int(floor(u2)), n - 2);
+        float t2 = u2 - j0;
+        matrix3 Rc = point(1, "rot", primpoint(1, lid, j0)), Rd = point(1, "rot", primpoint(1, lid, j0 + 1));
+        vector4 qc = quaternion(Rc), qd = quaternion(Rd);
+        if (dot(qc, qd) < 0) qd = -qd;
+        Rr = qconvert(slerp(qc, qd, t2));
+    }
+    vector at_root = rc1 + (@P - rc0) * Rr;
     int nv = primvertexcount(0, pr);
     float s = nv > 1 ? float(vertexprimindex(0, pointvertex(0, @ptnum))) / (nv - 1) : 0.0;
     along = lerp(at_root, along, smooth(0, %(rb)s, s));
@@ -2645,7 +2667,7 @@ def _build_groom(sub, keys, loop, begin, end, anim_hair, pub_clean, in_scalp, an
 # what the shot deform's capture puts on strands (VEX_PIECE_U, VEX_PIECE_ROOT), taken off before an output (and v0.1's
 # Point Deform capture, in case a lock's capture was cached by a build before this one)
 CAPTURE_POINT_ATTRIBS = "dfu pCaptPts pCaptWeights"
-CAPTURE_PRIM_ATTRIBS = "rnb rnw rc0 rc1 rok"
+CAPTURE_PRIM_ATTRIBS = "rnb rnw rc0 rc1 rok rdfu_shift"
 
 
 def _layout_sections(sub, sections) -> None:
