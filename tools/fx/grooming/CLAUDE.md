@@ -1287,8 +1287,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     (`VEX_PIECE_U` `rdfu_shift` = that place minus the place on the carried piece, 0 for a lock not edited): read on the
     carried piece the place slid with the edit (hair_bang_19 turned 25 deg: up to 0.11 along a piece whose rotation
     changes fast at the crumple), and its roots sat up to 0.20 cm from the unedited lock's in sh020 frame 10 (t84 round
-    3, by strand id). Now 0 by id; unedited locks within the build's own run-to-run spread (0.0078 cm, two float32 steps
-    330 m out).
+    3, by strand id). Now 0 by id. Unedited locks (control, 3 runs a build, every strand, sh020 10 / 25 and
+    sh025 5 / 25): `rdfu_shift` 0 on all; before against after identical but hair_bang_20 on sh025 (0.0059 cm), which
+    two runs of one build also differ by.
   - A test that reads `groom_data` with `evalParm` makes Houdini evaluate a backtick in a lock name as an expression;
     the failed expression stays in the process's error state and the next SOP verb reports it (t84 round 3:
     ``a%(x)s${HIP}`b``, `grooming_masks._vertex_tables`' attribpromote raised). The tool reads it raw and is not
@@ -1328,9 +1329,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     (t79 9.13): the piece's last tenth folds back on itself and the hair follows it (on the piece within 0.2 cm, places
     right to 0.011); points past the last sample are not the cause. Tried and dropped (t79 9.14): where residual / size
     passed 0.5, points carried by their 8 nearest own-piece mesh points blended by the residual. The line is crossed
-    all shot long by sh025's 20 back locks (2.14 on hair_back_15, mid-lock): their pieces hold parts that move apart
-    (2.6-6 % of point pairs stretch over 20 %), and a point's nearest rest points could belong to a part gone
-    elsewhere: back hair moved up to 16.4 cm. A residual line does not tell a tip folding back from a piece made of
+    all shot long by sh025's 20 back locks (2.14 on hair_back_15, mid-lock): in 2.6-6 % of their point pairs the
+    distance changes over 20 % (p50 1.000), and back hair moved up to 16.4 cm. Why is NOT established (a part of the piece
+    moving apart, its points the nearest ones, was assumed, never tested). A residual line does not tell a tip folding back from a piece made of
     parts; nearest points would have to be limited to the strand's own part and place.
   - accept_v02b after the change: s1 grades the edited lock against the unedited one at that frame (the plan's line);
     s5 (three-input scenes) grades the same strands and points a strand and no error, and reports the move from v0.1
