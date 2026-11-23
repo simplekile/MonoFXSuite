@@ -1148,6 +1148,14 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   nearest animated mesh points, blended in by the residual; every other rotation untouched. Graded: no new
   fold, the edited-lock lines, frame-to-frame 1.4 x, and locks whose residual stays under the line
   byte-equal to before in the shots.
+- **After 037's 9.14 (the manager, 2026-11-23)**: grooming-check's `latest_skin_uncovered` (skin under a
+  lock with Latest join under 1 that no hair passes within 0.5 cm, at most 0.05) is built (3a84bbe). On
+  Helen the fringe at 0.5 passes (0.003, part of the tuft stays), at 0.3 it fails (0.077, about 3 cm2 of
+  skin with no hair over it); the limit stays, the value is the artist's to choose per group or per lock.
+  The crumpling-tip fix was built and dropped: a residual line cannot tell a tip folding back from a piece
+  made of parts that move apart (sh025's 20 back locks cross it at every frame; their hair moved up to
+  16 cm). The flat block at hair_bang_20's tip on sh020 frame 10 stays, a known limit of v0.2b: the hair
+  follows a piece whose tip the animation folds back on itself.
 - **The jump at a piece's end (037's (b), a275757)**: it came from 32-bit sums, not from the end rotations:
   the shots sit about 330 m from the origin and the centre of an end window came out 0.34-0.38 cm off, by a
   different amount each frame. Positions are summed as offsets from the window's first point. Graded in s6:
