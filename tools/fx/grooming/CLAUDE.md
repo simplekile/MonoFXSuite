@@ -1283,6 +1283,16 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     correlation 0.92-0.95; hair_bang_20 at sh020 10 its worst tenth's neighbours lift 0.69 cm, hair_back_03 at sh025
     30 1.47 cm, own piece); turning the stand-off by the scalp's rotation instead of the piece's changes it by 0.25 cm
     at most.
+  - An edited lock's root zone turns by the piece's rotation at its root's place on the piece AS MODELLED
+    (`VEX_PIECE_U` `rdfu_shift` = that place minus the place on the carried piece, 0 for a lock not edited): read on the
+    carried piece the place slid with the edit (hair_bang_19 turned 25 deg: up to 0.11 along a piece whose rotation
+    changes fast at the crumple), and its roots sat up to 0.20 cm from the unedited lock's in sh020 frame 10 (t84 round
+    3, by strand id). Now 0 by id; unedited locks within the build's own run-to-run spread (0.0078 cm, two float32 steps
+    330 m out).
+  - A test that reads `groom_data` with `evalParm` makes Houdini evaluate a backtick in a lock name as an expression;
+    the failed expression stays in the process's error state and the next SOP verb reports it (t84 round 3:
+    ``a%(x)s${HIP}`b``, `grooming_masks._vertex_tables`' attribpromote raised). The tool reads it raw and is not
+    affected; tests must read it with `unexpandedString()`.
   - VEX traps met: `vector(prim(...))` / `vector(point(...))` picks the float overload and copies one number into all
     three (roots landed at (x, x, x)): read into typed variables. A rotation fitted to a root's neighbours alone is
     ill-posed where they lie near one line (a ribbon's edge: 0.9 cm with no animation); fitted per root where they

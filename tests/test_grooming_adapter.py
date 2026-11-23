@@ -974,3 +974,14 @@ def test_latest_join_rule_is_in_root_pick_and_off_at_its_default():
     assert '_wrangle(sub, "root_pick", VEX_ROOT_PICK, DETAIL, [hairgen, frame, begin, mesh_pu])' in build
     attrs = ga.lock_display_attribs(ga.model.GroomData(), [-1])
     assert attrs["join_limit"] == [1.0]
+
+
+def test_edited_lock_root_zone_turns_at_its_modelled_place():
+    """t84 round 3: an edited lock's roots stay the unedited lock's in a shot: the capture records the root's place on
+    the piece as modelled against the carried one, and the root zone turns by the rotation there; the shift is taken
+    off with the capture's other attributes."""
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert 'f@rdfu_shift = rhp >= 0 ? primuv(3, "pu", rhp, ruv) - us[0] : 0.0;' in build
+    assert 'float sh = prim(0, "rdfu_shift", pr);' in build and "if (sh != 0) {" in build
+    assert 'CAPTURE_PRIM_ATTRIBS = "rnb rnw rc0 rc1 rok rdfu_shift"' in build
