@@ -1152,9 +1152,10 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   lock with Latest join under 1 that no hair passes within 0.5 cm, at most 0.05) is built (3a84bbe). On
   Helen the fringe at 0.5 passes (0.003, part of the tuft stays), at 0.3 it fails (0.077, about 3 cm2 of
   skin with no hair over it); the limit stays, the value is the artist's to choose per group or per lock.
-  The crumpling-tip fix was built and dropped: a residual line cannot tell a tip folding back from a piece
-  made of parts that move apart (sh025's 20 back locks cross it at every frame; their hair moved up to
-  16 cm). The flat block at hair_bang_20's tip on sh020 frame 10 stays, a known limit of v0.2b: the hair
+  The crumpling-tip fix was built and dropped: sh025's 20 back locks cross the residual line at every frame
+  and their hair moved up to 16 cm. Why it moved is NOT established (037's 9.17 withdraws "pieces made of
+  parts that move apart": measured is only that 2.6-6 % of point pairs on three back pieces change distance
+  by over 20 %); a new try starts from the cause. The flat block at hair_bang_20's tip on sh020 frame 10 stays, a known limit of v0.2b: the hair
   follows a piece whose tip the animation folds back on itself.
 - **The jump at a piece's end (037's (b), a275757)**: it came from 32-bit sums, not from the end rotations:
   the shots sit about 330 m from the origin and the centre of an end window came out 0.34-0.38 cm off, by a
@@ -1164,8 +1165,39 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   piece on sh020's fringe (78 lock-frames, v0.1 149), and a flat block at hair_bang_20's tip on sh020 frame
   10 where the animated piece's tip crumples.
 - **Open, the user's call**: mesh locks' roots following the animated scalp (input 4) as drawn locks do.
-  Roots follow the hair mesh, which lifts off the head near the roots in the shots (up to 1.0 cm; v0.1 the
-  same).
+  Roots sit up to 1.0-1.6 cm off the animated scalp in the shots (v0.1 too, on fewer lock-frames on sh025).
+  The cause is not established: 037 measured that a root's distance off the scalp follows how far its mesh
+  neighbours' centre rises off it (r 0.70-0.95, 3 locks, 2 frames); 037b measured the piece's root end no
+  further from the scalp in the shot than at rest on hair_bang_20 (1.04 cm both) and reads the error as the
+  root riding the piece's frame. "Following the animated scalp removes it" is a guess until tried; the trial
+  (an experiment, not a build) comes before the user decides.
+- **After 037b's third round (t84) and 037's 9.16-9.17 (the manager, 2026-11-23)**:
+  - A non-finite point in the animated hair mesh, like another point count, turns the deform off for that
+    frame with a message (6f3f176; it made 5,302 NaN strands in 20 locks with no message).
+  - An edited lock's roots are the unedited lock's by strand id in a shot too (df93331: the root zone turns
+    by the piece's rotation at the root's place on the piece as modelled; hair_bang_19 turned 25 deg sat
+    0.126 cm p95 off at sh020 frame 10, now 0). Measured by id on two cases at one frame; the re-check does
+    hair_bang_03 and hair_bang_20 turned 25 deg and other frames. Unedited locks: no effect seen on 4 frames
+    (3 runs a build, every strand).
+  - Edited lock's length, which reading the plan means: the ratio. (edited at the frame / edited at rest) over
+    (unedited at the frame / unedited at rest), median, within 2 %. An edit changes the lock's own length at
+    rest (a tip moved 2 cm: 0.90-1.07); "the edit adds no stretch of its own" is about the frame, not that.
+  - Known coupling, by design: the root zone of a lock takes the translation of the animated mesh points
+    within 1.5 cm of each root, of any piece. A piece moved 5 cm against its neighbours moves the root zone
+    of the 20 locks rooted within 5.2 cm of it by up to 1.25 cm (22-25 % of the move; 037b). "Each lock
+    follows its own piece" holds past the root zone only.
+  - Frame-to-frame 1.4 x: NOT met on frames s6 did not grade: hair_base_20 on sh020 60 -> 61 at 1.406 (hair
+    0.119 cm, piece 0.085; 1.21-1.36 on 62-64), reproduced by 037 with s6's own measure. The limit stays.
+    s6 grades every consecutive pair of both shots (or says what it cost and which pairs it took); the cause
+    is traced before anything else is done about it (the coupling above is a guess).
+  - The fold line names its piece centreline: the piece's turning is read along `pu`, the parameter the hair
+    is carried by (s6). On hair_bang_20 at sh020 frame 10 that gives hair kink 93.0 against piece kink 104.7
+    (no fold); 037b's bins by nearest spine place put the piece under 90 and count one. Both say the piece
+    itself folds there: it is the crumpling tip, the known limit, and it sits at the line. Shown to the user
+    at User look.
+  - The drawn-lock name with a backtick that failed once in 037b's sequence is the harness (`evalParm` on
+    groom_data leaves a failed expression that the next SOP verb reports); the tool reads raw. Tests read
+    it with `unexpandedString()`.
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
