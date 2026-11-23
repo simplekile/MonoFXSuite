@@ -293,6 +293,20 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   floating mesh (`region_join` `far_w`: smoothstep of the lock's mesh height over the skin from 0.25 to 0.75 cm
   at `root_far_cm` 0.5, `ROOT_FAR_SOFT` 0.5; a root moves with that chance) start the lock, for every lock,
   and the start-share estimate counts them as full length.
+  **Latest join** (setting `join_limit`, the user's decision 2026-11-23, a per-group override like the others): an own
+  root whose join would fall past this share of the lock starts the lock too, laid out with the far roots. Default 1
+  (off: every lock as v0.1, r1 byte-equal, grooming-check unchanged). It runs in `root_pick` with each root's own
+  join, computed as `root_place` will (own piece's nearest `pu` on the mesh as modelled, input 3; inside the footprint
+  the spine's nearest place), before the roots are laid out: not in `region_start` / `region_join` (a region prim's
+  centre joins elsewhere than its roots: on hair_bang_02 / 03 it moved none of their late roots), not in `root_place`
+  (a late root kept in place but joined at the start runs back up the lock, a hairpin). root_spread's stretch leaves
+  the join as it is once the lock has a start root, which every root it moves becomes. Why a setting and not a rule:
+  the fringe's tuft (hair_bang_19 / 20: 36 % of strands joining 0.4-0.9 along, 0.39 of the lock's length) and the caps
+  lying along the scalp (42-46 % late, 0.75-0.86 of their lock) cannot be told apart by length or skin distance
+  (t79 report 9.11). Helen's fringe at 0.3: no strand starts past 0.3 on bang_02 / 03 / 19 / 20, other groups
+  byte-equal, counts unchanged; their own skin goes 22 % -> 81 % bare (v006: 97 %), so grooming-check's
+  `skin_thin_share` 0.017 -> 0.128 and `lock_skin_thin_worst` 0.031 -> 0.414 fail their limits (0.05, 0.2; at 0.5:
+  0.101, 0.341). The limits were not moved: that is the artist's trade on that group (t79 report 9.13).
   Start roots are laid out as one sunflower on a disc round the lock's root at up to
   `START_DENSITY_MAX` (6) x its density, each point moved onto the region (a point off it is dropped, the
   disc grows to at most 3x: grown without bound it reached skin 4 cm away, hair_bang_03, and its strands ran
@@ -1288,7 +1302,10 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     between places (45 deg), and freezing the rotation past the last well fitting place (fit residual over 0.25 of the
     window's size): each folded fringe locks that did not fold (sh020 14 lock-frames, edited tip turn to 66 deg) or sh025
     back locks. Left: hair_bang_20's tip crumples in sh020 frame 10 (fit residual 0.5-0.9 of the window), its places
-    flip 45-133 deg and the last strands draw a flat block (look4 `sh020_hair_bang_20_*_f0010_b.png`).
+    flip 45-133 deg and the last strands draw a flat block (look4 `sh020_hair_bang_20_*_f0010_b.png`). Traced
+    (t79 9.13): the piece's last tenth folds back on itself and the hair follows it (on the piece within 0.2 cm, places
+    right to 0.011); points past the last sample are not the cause. Fix if wanted: where residual / size > ~0.5, carry
+    points by their nearest animated mesh points blended by the residual, not by the window's rotation.
   - accept_v02b after the change: s1 grades the edited lock against the unedited one at that frame (the plan's line);
     s5 (three-input scenes) grades the same strands and points a strand and no error, and reports the move from v0.1
     (3.1 / 7.6 cm at most on sh020 / sh025), since the deform that replaced v0.1's moves every lock; r1 (rest) still

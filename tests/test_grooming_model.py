@@ -98,6 +98,20 @@ def test_root_flip_excluded_round_trip_and_old_json_defaults():
     assert old.lock(1).root_flip is False and old.lock(1).excluded is False
 
 
+def test_latest_join_is_off_by_default_and_a_group_override_round_trips():
+    """Latest join (join_limit, v0.2b): 1 = off for every lock; an older scene (no value stored, same schema) reads 1;
+    set on a group it reaches that group's locks only."""
+    assert BUILTIN_DEFAULTS["join_limit"] == 1.0
+    old = GroomData.from_json('{"schema": 7, "groups": [{"id": "g", "name": "G"}], '
+                              '"locks": [{"id": 1, "name": "a", "group": "g"}]}')
+    assert old.resolve(1)["join_limit"] == 1.0 and old.source_of(1, "join_limit") == "builtin"
+    data = GroomData(groups=[Group(id="g", name="G", overrides={"join_limit": 0.3}), Group(id="h", name="H")],
+                     locks=[Lock(id=1, name="a", group="g"), Lock(id=2, name="b", group="h")])
+    back = GroomData.from_json(data.to_json())
+    assert back.resolve(1)["join_limit"] == 0.3 and back.resolve(2)["join_limit"] == 1.0
+    assert back.schema == SCHEMA
+
+
 def test_shown_follows_lock_and_group_eyes():
     data = GroomData(groups=[Group(id="g", name="G"), Group(id="h", name="H", visible=False)],
                      locks=[Lock(id=1, name="a", group="g"), Lock(id=2, name="b", group="g", visible=False),

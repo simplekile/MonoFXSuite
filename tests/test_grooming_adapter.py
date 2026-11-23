@@ -956,3 +956,15 @@ def test_the_parms_own_callback_still_writes_the_note_with_undo_off(monkeypatch)
     n.parms[ga.LOOKUP_PARM].v = 1
     ga.on_lookup_changed(n)
     assert n.data[ga.LOOKUP_NOTE] == "on: set by hand" and fake.steps == []
+
+
+def test_latest_join_rule_is_in_root_pick_and_off_at_its_default():
+    """Latest join (v0.2b): root_pick reads each lock's join_limit (a settings prim attribute) and the mesh as modelled
+    (input 3, mesh_pu) for each own root's join; at 1, or when the attribute is not there, nothing is computed."""
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert 'float jl = hasprimattrib(2, "join_limit") ? prim(2, "join_limit", 0) : 1.0;' in build
+    assert "if (jl < 1) {" in build and "|| ujs[k] > jl;" in build
+    assert '_wrangle(sub, "root_pick", VEX_ROOT_PICK, DETAIL, [hairgen, frame, begin, mesh_pu])' in build
+    attrs = ga.lock_display_attribs(ga.model.GroomData(), [-1])
+    assert attrs["join_limit"] == [1.0]

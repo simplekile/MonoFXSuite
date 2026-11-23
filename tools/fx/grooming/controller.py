@@ -37,6 +37,7 @@ SETTING_RANGES: dict[str, tuple[float, float]] = {
     "length_mult": (0.0, 2.0),
     "frizz": (0.0, 1.0),
     "root_skin": (0.0, 10.0),
+    "join_limit": (0.0, 1.0),
 }
 # Names as Houdini uses them: Hair Generate's "Thickness" (and the `width` attribute) is one strand's, so
 # the lock's measured cross-section is "Lock width" / "Lock thickness", never plain Width / Thickness.
@@ -49,6 +50,7 @@ SETTING_LABELS: dict[str, str] = {
     "length_mult": "Length ×",
     "frizz": "Frizz",
     "root_skin": "Root to skin",
+    "join_limit": "Latest join",
 }
 SETTING_UNITS: dict[str, str] = {"density": "/cm²", "twist_add": "°", "root_skin": "cm"}
 # Stored value x scale = the value the panel shows (twist is stored in radians, shown in degrees like the
@@ -66,6 +68,9 @@ SETTING_TIPS: dict[str, str] = {
     "root_skin": "Where the lock's root floats off the skin (a mesh lying on another lock), this length of it is "
                  "bent down so its strands grow from the skin, as guides do. Locks whose root touches the skin "
                  "are never changed. 0: off",
+    "join_limit": "How far along the lock a strand may join it. A strand rooted past this share of the lock's "
+                  "length grows from the lock's root instead, so a lock hanging free past the skin it lies on "
+                  "gets no short strands joining it halfway. 1: off (strands join where their root is)",
 }
 
 DISPLAY_LABELS: dict[str, str] = {

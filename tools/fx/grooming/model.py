@@ -29,6 +29,7 @@ BUILTIN_DEFAULTS: dict[str, float] = {
     "length_mult": 1.0,   # x measured length
     "frizz": 0.0,         # 0..1
     "root_skin": 3.0,     # cm of the spine bent down to the skin, only where the root floats (ROOT_GAP_CM)
+    "join_limit": 1.0,    # 0..1 of the lock: an own root joining past it starts the lock instead (1: off, v0.1)
 }
 SETTING_KEYS: tuple[str, ...] = tuple(BUILTIN_DEFAULTS)
 

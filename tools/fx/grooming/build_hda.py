@@ -1204,13 +1204,40 @@ for (int pr = 0; pr < n; pr++) rk[pr] = rand(set(pr, 7.31, lid));
 int o[] = argsort(rk);
 // the lock's own roots under floating mesh (region_join far_w, a share of them where it fades) start it too,
 // laid out with the extras
+// Latest join (setting join_limit, the user's decision 2026-11-23): an own root whose join would fall past this share
+// of the lock starts the lock too. Its join as root_place sets it: its own piece's nearest point's pu (input 3, the
+// mesh as modelled), inside the footprint the spine's nearest place. root_spread's stretch leaves it as it is once
+// the lock has a start root, which every root this moves becomes. 1 (the default): off. A lock hanging free past the
+// skin it lies on (Helen's fringe) had 36 %% of its strands joining 0.4-0.9 along it, a short dark tuft; the caps
+// lying along the scalp join late too but run 0.75-0.86 of the lock, so no one cut tells them apart: per group
+float jl = hasprimattrib(2, "join_limit") ? prim(2, "join_limit", 0) : 1.0;
+float ujs[]; resize(ujs, n);
+if (jl < 1) {
+    int jfl = prim(2, "root_flip", 0);
+    string jown = "@piece=" + itoa(prim(2, "piece", 0));
+    float jfr = detail(1, "fp_r");
+    for (int k = wn + sn; k < n; k++) {
+        vector r = point(0, "P", primpoint(0, o[k], 0));
+        float u0 = 0;
+        if (distance(r, fc) > jfr) {
+            int hp; vector huv;
+            xyzdist(3, jown, r, hp, huv);
+            if (hp >= 0) { float pu = primuv(3, "pu", hp, huv); u0 = clamp(jfl ? 1 - pu : pu, 0, %(umax)s); }
+        } else {
+            int sq; vector suv;
+            xyzdist(2, r, sq, suv);
+            u0 = clamp(suv.x, 0, %(umax)s);
+        }
+        ujs[k] = u0;
+    }
+}
 int isf[]; resize(isf, n);
 int nf = 0;
 for (int k = wn + sn; k < n; k++) {
     int pt = primpoint(0, o[k], 0);
     int spr = haspointattrib(0, "skinprim") ? point(0, "skinprim", pt) : prim(0, "skinprim", o[k]);
     float fw = spr >= 0 ? prim(1, "far_w", spr) : 0.0;
-    int fr = rand(set(o[k], 3.7, lid)) < fw;
+    int fr = rand(set(o[k], 3.7, lid)) < fw || ujs[k] > jl;
     if (fr) { isf[k] = 1; nf++; }
 }
 int m = sn + nf;
@@ -1265,7 +1292,7 @@ for (int k = 0; k < n; k++) {
     if (ist) setprimattrib(0, "start_pos", pr, sp[slot[k]]);
 }
 foreach (int pr; drop) removeprim(0, pr, 1);
-""" % {"dmax": config.START_DENSITY_MAX}
+""" % {"dmax": config.START_DENSITY_MAX, "umax": JOIN_MAX_U}
 
 VEX_ROOT_PLACE = """// per strand (a prim wrangle: the lookups run in parallel; one detail wrangle cost 1.1 s on Helen):
 // where its root ends up (v@root_at), where along its lock it joins it (fit_u0, before root_spread
@@ -2172,7 +2199,7 @@ def build_network(sub) -> None:
         'max(1, rint(detail("../region_frame", "lock_strands", 0) * prim("../foreach_begin", 0, "strand_factor", 0)) '
         '+ detail("../region_frame", "whorl_n", 0) + detail("../region_start", "start_x", 0))')
     hairgen.parm("thickness").setExpression('ch("../strand_width")')
-    pick = _wrangle(sub, "root_pick", VEX_ROOT_PICK, DETAIL, [hairgen, frame, begin])
+    pick = _wrangle(sub, "root_pick", VEX_ROOT_PICK, DETAIL, [hairgen, frame, begin, mesh_pu])
     # density layers (v0.2a), only for a lock a layer covers (the switches read its mask_set; the others go
     # through the v0.1 nodes alone). The automatic roots are grown as without layers and each is kept by
     # the chance mask_keep where it ends up (mask_thin); a second scatter lays the layers' own roots on the
