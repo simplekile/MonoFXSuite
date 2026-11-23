@@ -1222,6 +1222,26 @@ of the product was changed. Numbers are Helen's, hython unless said.**
     built.
   - Edited roots by strand id: 0.0 on hair_bang_03 / 19 / 20 (turn 25 deg, tip 2 cm) at sh020 10 / 25 / 60;
     the build before the fix 0.007-0.126 p95 on the same cases. Not tested: the other 58 locks, sh025.
+- **The root-zone rule (the manager, 2026-11-23, from 037's 9.20; four frames to choose on, sh020 45 / 60 / 75
+  and sh025 20 / 40 held out)**. Traced: the scalp trial jumped because the frame of a 0.087 cm wide scalp
+  polygon turns 2.23 deg on float32 steps of its corners (13 cm from the root that is 0.5 cm); with the
+  piece's rotation instead 150 pairs over 1.4 become 1. The joint turn in the root half (sh025, 13 locks over
+  30 deg, worst 58.6; v0.1 has it worse: 20 locks, worst 76) comes from the anchor turning an offset of up
+  to 13 cm by each point's own rotation along the piece.
+  - Built now, part one: the root zone keeps ONE rotation per strand, the piece's rotation at the root's
+    place as modelled. Read on the trial: joint turn over 30 deg 13 -> 0 locks (worst 27), no other line
+    changes (frame-to-frame stays 41 pairs on sh020, roots over 0.1 cm stay).
+  - Part two, the user's call (the open question above): the root zone's translation taken from the
+    animated scalp where input 4 is good, else the neighbours' as now. Read on the trial: frame-to-frame 1
+    pair on sh020 (hair_bang_03's tip, not the root zone), roots over 0.1 cm 0 on every frame, folds 0. Its
+    cost is on sh020's crumpling fringe (hair_bang_20 / 19): the first 35 % of the strand stretches up to
+    2.25 x rest (1.45 now), worst joint turn 43-55 deg (20-35 now), on held-out frames too. Whether that is
+    the root zone or hair_bang_20's crumpling piece is not known. The user chooses on pictures (part one |
+    part one + two, hair_bang_19 / 20 on sh020 10 / 75 and the back locks on sh025 30).
+  - Not chosen: own-piece neighbours, no anchor (roots worse on sh025), the scalp polygon's own frame, a
+    zone of 0.7 of the strand (hair 0.9 cm off its piece on sh025), a zone of 4 cm.
+  - Not known: edited and drawn locks under part two, input 4 bad or with another point count, the cost a
+    frame, other shots, why hair_bang_03's last place turns 20 deg in one frame (the one pair left).
 - **A bad frame is found when it is reached (known limit of v0.2b, the manager, 2026-11-23)**: the deform's
   message (`deform_problem`: another point count, a non-finite point) and the publish preflight read the
   current frame only, and the panel does not re-read on a frame change. The panel's line belongs to the
