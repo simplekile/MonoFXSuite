@@ -1302,8 +1302,15 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     hair_bang_03 32 -> 33, not traced); own-piece neighbours move every lock and put more roots off the scalp, so not
     built. Roots carried by the animated scalp (trial, not built): 0 roots over 0.1 cm, but 150 sh020 pairs over 1.4
     (worst 18) and root-zone stretch to 2.3 x on hair_bang_20. A short window hid both: grade every pair.
-  - On sh025 13 back locks gain ~52 deg (max 58.6) of joint turn over rest on every strand in the root half, under the fold
-    rule's 90; without the anchor about 25. Not traced, not compared with v0.1.
+  - On sh025 13 back locks gain ~52 deg (max 58.6) of joint turn over rest on most strands near the root, under the fold
+    rule's 90 (t79 9.20). v0.1's deform (a3b2d08) has it, worse: 20 locks over 30, worst 76. Cause, by experiment: the
+    root zone turns each point's offset from its root (up to 13 cm) by that point's OWN rotation along the piece; one
+    rotation per strand (the root's) alone makes it 0 locks, 27 deg, and changes no other line. Not built.
+  - Root zone by experiment (t79 9.20; nothing built): the scalp trial's jump is the polygon frame's float32 noise (a 0.09 cm
+    polygon turns 2.2 deg while the skin turns 0.03) times the 13 cm lever; the scalp's translation with the piece's rotation
+    does not jump (1 pair over 1.4 against 150). A zone over 0.7 of the strand takes the hair off its own piece (0.9 cm):
+    always read the hair-to-piece distance beside the joint and stretch lines. `scalp_patch` as first written fell back
+    silently where the scalp is coarse (forehead): an experiment that can fall back must count how often it did.
   - A test that reads `groom_data` with `evalParm` makes Houdini evaluate a backtick in a lock name as an expression;
     the failed expression stays in the process's error state and the next SOP verb reports it (t84 round 3:
     ``a%(x)s${HIP}`b``, `grooming_masks._vertex_tables`' attribpromote raised). The tool reads it raw and is not
