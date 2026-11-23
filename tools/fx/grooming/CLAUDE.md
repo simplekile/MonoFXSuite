@@ -1271,8 +1271,18 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     strand point: e1(u) + (P - e0(u)) * rot(u), past the first / last place carried rigidly by it; its root zone takes
     the translation of its root's neighbours with the piece's rotation and blends into that over `config.ROOT_BLEND`
     of the strand. One deform for edited and unedited locks; drawn locks pass it and keep the follicle (VEX_FOLLICLE);
-    an animated mesh of another point count keeps v0.1's answer (rest pose, `deform_ok`). Mesh / guide display parts are
+    an animated mesh of another point count keeps v0.1's answer (rest pose, `deform_ok`), and so does one with a point
+    that is not finite at that frame (`bad_points`, checked each frame in `ANIM_HAIR` / `ANIM_SCALP`; `deform_problem`
+    and the drawn locks' line say how many): one inf point of hair_bang_11's piece gave 5,302 NaN strands across 20
+    locks with no error (t84 round 3). Mesh / guide display parts are
     still Point Deformed (their own mesh), so `deform_radius` now only drives those.
+  - Known coupling (t84 round 3): the root zone takes the translation of its root's mesh neighbours from ANY piece
+    within ROOT_ANCHOR_CM, so a piece moving on its own moves the root zones of the locks rooted near it: one piece
+    moved 5 cm moved 20 neighbouring locks' roots up to 1.25 cm (22-25 %; 50 cm gave 12.5 cm), median 0. Roots off
+    the animated scalp follow the lift of those neighbours (t79 9.15: root off vs the neighbours' centre's lift,
+    correlation 0.92-0.95; hair_bang_20 at sh020 10 its worst tenth's neighbours lift 0.69 cm, hair_back_03 at sh025
+    30 1.47 cm, own piece); turning the stand-off by the scalp's rotation instead of the piece's changes it by 0.25 cm
+    at most.
   - VEX traps met: `vector(prim(...))` / `vector(point(...))` picks the float overload and copies one number into all
     three (roots landed at (x, x, x)): read into typed variables. A rotation fitted to a root's neighbours alone is
     ill-posed where they lie near one line (a ribbon's edge: 0.9 cm with no animation); fitted per root where they

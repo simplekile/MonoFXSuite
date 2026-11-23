@@ -375,6 +375,12 @@ def test_anim_mismatch_text():
     assert ga.anim_mismatch_text(196202, 196202) == ""
     assert ga.anim_mismatch_text(196102, 196202) == "Anim hair mesh: 196102 points, rest hair mesh 196202: no deform"
     assert "no prims named like" in ga.anim_mismatch_text(0, 196202)
+    assert ga.anim_mismatch_text(196202, 196202, 1) == "Anim hair mesh: 1 points not finite at this frame: no deform"
+    assert ga.anim_mismatch_text(196202, 196202, 0) == ""
+    assert "not finite" in ga.scalp_text(1, True, 10, 10, 3) and ga.scalp_text(1, True, 10, 10, 0) == ""
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert build.count("i@bad_points = bad;") == 2 and build.count("&& bad == 0;") == 2
     assert callable(ga.deform_problem)
 
 

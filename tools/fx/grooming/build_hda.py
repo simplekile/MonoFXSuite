@@ -1650,9 +1650,20 @@ if (find(nm, name) < 0 && find(nm, path) < 0 && find(nm, leaf) < 0) removeprim(0
 """
 
 VEX_ANIM_CHECK = """// deform only with the rest mesh's points: another count would move the wrong points
-i@deform_ok = npoints(0) == npoints(1) && npoints(0) > 0;
-if (!i@deform_ok && npoints(0) > 0)
+// a point that is not finite (inf / NaN, a broken cache frame) is refused the same way: carried, it made NaN strands
+// in every lock near it (t84: one inf point of hair_bang_11's piece, 5,302 NaN strands across 20 locks)
+int bad = 0;
+if (npoints(0) == npoints(1))
+    for (int p = 0; p < npoints(0); p++) {
+        vector x = point(0, "P", p);
+        if (!isfinite(x.x) || !isfinite(x.y) || !isfinite(x.z)) bad++;
+    }
+i@bad_points = bad;
+i@deform_ok = npoints(0) == npoints(1) && npoints(0) > 0 && bad == 0;
+if (npoints(0) != npoints(1) && npoints(0) > 0)
     warning("Anim hair mesh: %d points, rest hair mesh %d: no deform", npoints(0), npoints(1));
+if (bad > 0)
+    warning("Anim hair mesh: %d points not finite at this frame: no deform", bad);
 """
 
 # ---------------------------------------------------------------------------
@@ -1998,7 +2009,16 @@ if (prim(0, "rok", pr)) {
 VEX_SCALP_CHECK = """// a drawn lock follows the animated scalp (input 4, U2) only with the rest scalp's points; otherwise it stays at
 // rest, the adapter says why on the panel's line (`animated_scalp`), and nothing warns here: a warning inside the
 // locked HDA reaches no artist (t56), and a scene without the input is not wrong
-i@deform_ok = npoints(0) == npoints(1) && npoints(0) > 0;
+// a point that is not finite (inf / NaN, a broken cache frame) is refused the same way: carried, it made NaN strands
+// in every lock near it (t84: one inf point of hair_bang_11's piece, 5,302 NaN strands across 20 locks)
+int bad = 0;
+if (npoints(0) == npoints(1))
+    for (int p = 0; p < npoints(0); p++) {
+        vector x = point(0, "P", p);
+        if (!isfinite(x.x) || !isfinite(x.y) || !isfinite(x.z)) bad++;
+    }
+i@bad_points = bad;
+i@deform_ok = npoints(0) == npoints(1) && npoints(0) > 0 && bad == 0;
 i@anim_points = npoints(0);
 i@rest_points = npoints(1);
 """
