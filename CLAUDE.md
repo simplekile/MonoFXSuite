@@ -206,6 +206,14 @@
   depsgraph, so that Subdivision is switched off in the viewport for the export (cage points, no double
   subdivision) and back on in `_restore_frame`; if it cannot be switched off the points stay subdivided
   and the scheme is `none`. Check in Blender: `tests/blender/accept_anim_usd_subdiv.py`.
+- Anim USD prim names (2026-11-23): the last part comes from the rig file (`override_library.reference.name`,
+  `_rig_source_name`), not the shot's object name: lookdev binds to the rig's names and Blender adds `.001` to an
+  override whose name is taken (sh015: `/Geo_Whale_001`). Never just cut `.NNN`: rigs have real ones
+  (`Geo_Pants.001`). Siblings that share one source (a copied mesh): one keeps it, the others keep their shot name
+  (`sibling_prim_segments`). The namespace of merged instances (`/helenwhalerig2/...`) still comes from the shot.
+- A rig namespace is picked against the whole file, and Remove Rig Link deletes the whole override hierarchy
+  (`hierarchy_root`): both left name clashes that became `.001`. The library goes only when no local data uses it.
+  Check in Blender: `tests/blender/accept_rig_instances.py`.
 - Anim camera USD (`anim_usd_cache_camera_writer`, 2026-11-22): Blender 5.2.2's `wm.usd_export` with
   `export_animation` and `merge_parent_xform=True` writes the camera object as a bare Xform and no Camera prim
   (sh012a v007: Houdini had no camera; the same add-on on v006's file failed too). The writer exports with

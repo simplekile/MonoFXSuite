@@ -49,6 +49,7 @@ from .anim_usd_cache_paths import (
     namespace_prefix_from_name,
     sanitize_prim_segment,
     segments_to_prim_path,
+    sibling_prim_segments,
     single_top_level_prim_name,
     strip_blender_namespace,
     uv_primvar_names,
@@ -955,6 +956,13 @@ def _ancestor_chain(obj: bpy.types.Object) -> list[bpy.types.Object]:
     return chain
 
 
+def _rig_source_name(obj: Optional[bpy.types.Object]) -> str:
+    """Name in the rig file of a library override; ``""`` for any other object."""
+    override = getattr(obj, "override_library", None)
+    reference = getattr(override, "reference", None)
+    return str(getattr(reference, "name", "") or "")
+
+
 def _assign_paths_top_down(
     mesh_objects: Sequence[bpy.types.Object],
     *,
@@ -984,15 +992,19 @@ def _assign_paths_top_down(
     nodes: dict[str, _HierarchyNode] = {}
     used_siblings: dict[str, set[str]] = {}
 
-    def _walk(obj_name: str, parent_path: str) -> None:
-        obj = _object_by_name(obj_name)
-        raw_name = obj.name if obj else obj_name
-        segment = sanitize_prim_segment(raw_name)
+    def _walk_siblings(obj_names: Sequence[str], parent_path: str) -> None:
         if not parent_path and root_override.strip():
-            segment = sanitize_prim_segment(root_override.strip())
-        sibling_key = parent_path or "/"
-        used = used_siblings.setdefault(sibling_key, set())
-        segment = dedupe_sibling_segment(segment, used)
+            override = sanitize_prim_segment(root_override.strip())
+            segments = [override] * len(obj_names)
+        else:
+            segments = sibling_prim_segments(
+                [(name, _rig_source_name(_object_by_name(name))) for name in obj_names]
+            )
+        used = used_siblings.setdefault(parent_path or "/", set())
+        for obj_name, segment in zip(obj_names, segments):
+            _walk(obj_name, dedupe_sibling_segment(segment, used), parent_path)
+
+    def _walk(obj_name: str, segment: str, parent_path: str) -> None:
         prim_path = (
             segments_to_prim_path([segment])
             if not parent_path
@@ -1004,16 +1016,18 @@ def _assign_paths_top_down(
             is_mesh=obj_name in mesh_names,
             prim_path=prim_path,
         )
-        for child_name in sorted(children.get(obj_name, [])):
-            _walk(child_name, prim_path)
+        _walk_siblings(sorted(children.get(obj_name, [])), prim_path)
 
+    roots_by_path: dict[str, list[str]] = {}
     for root_name in roots:
         start_path = multi_instance_root_path(
             root_name,
             multi_instance=multi_instance,
             used_siblings=used_siblings,
         )
-        _walk(root_name, start_path)
+        roots_by_path.setdefault(start_path, []).append(root_name)
+    for start_path, names in roots_by_path.items():
+        _walk_siblings(names, start_path)
     return nodes
 
 
