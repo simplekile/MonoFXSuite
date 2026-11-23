@@ -1121,10 +1121,13 @@ def deform_state(node) -> tuple[bool, bool]:
     return wired, bool(p.eval()) if p is not None else True
 
 
-def anim_mismatch_text(anim_points: int, rest_points: int) -> str:
+def anim_mismatch_text(anim_points: int, rest_points: int, bad_points: int = 0) -> str:
     """Why the shot deform is refused, "" when it can run: the animated hair mesh must have the rest hair
-    mesh's points (another count would move the wrong points). The same words as the HDA's warning."""
+    mesh's points (another count would move the wrong points), all finite at this frame (`bad_points`: inf / NaN,
+    a broken cache frame). The same words as the HDA's warnings."""
     if anim_points == rest_points and rest_points > 0:
+        if bad_points > 0:
+            return f"Anim hair mesh: {bad_points} points not finite at this frame: no deform"
         return ""
     if anim_points <= 0:
         return "Anim hair mesh: no prims named like the rest hair mesh: no deform"
@@ -1143,7 +1146,8 @@ def deform_problem(node) -> str:
         return ""
     if ga is None or gr is None:
         return ""
-    return anim_mismatch_text(len(ga.iterPoints()), len(gr.iterPoints()))
+    bad = int(ga.attribValue("bad_points")) if ga.findGlobalAttrib("bad_points") is not None else 0
+    return anim_mismatch_text(len(ga.iterPoints()), len(gr.iterPoints()), bad)
 
 
 def set_shot_deform(node, on: bool) -> None:
@@ -2475,7 +2479,7 @@ def footprint_owners(centres, owners: Sequence[Sequence[int]], root, radius: flo
     return sel, gave
 
 
-def scalp_text(drawn: int, wired: bool, anim_points: int, rest_points: int) -> str:
+def scalp_text(drawn: int, wired: bool, anim_points: int, rest_points: int, bad_points: int = 0) -> str:
     """Pure: the panel's line for the drawn locks in a shot (U2), "" when there is nothing to say (no drawn lock,
     or the animated scalp follows)."""
     if drawn <= 0:
@@ -2485,6 +2489,9 @@ def scalp_text(drawn: int, wired: bool, anim_points: int, rest_points: int) -> s
         return f"No animated scalp wired into input 4: {locks} at rest in a shot (the mesh locks deform as before)"
     if anim_points != rest_points or rest_points <= 0:
         return (f"Animated scalp: {anim_points} points, rest scalp {rest_points}: {locks} at rest "
+                "(the mesh locks deform as before)")
+    if bad_points > 0:
+        return (f"Animated scalp: {bad_points} points not finite at this frame: {locks} at rest "
                 "(the mesh locks deform as before)")
     return ""
 
@@ -3187,16 +3194,17 @@ def animated_scalp(node) -> dict:
     unwired or with another point count than the rest scalp they stay at rest. Cooks ANIM_SCALP when wired."""
     drawn = len(drawn_ids(node))
     wired = scalp_wired(node)
-    a = r = 0
+    a = r = bad = 0
     if wired:
         try:
             g = _cooked(node, NODE_ANIM_SCALP)
             a, r = int(g.attribValue("anim_points")), int(g.attribValue("rest_points"))
+            bad = int(g.attribValue("bad_points")) if g.findGlobalAttrib("bad_points") is not None else 0
         except (hou.Error, hou.OperationFailed):
             pass
-    msg = scalp_text(drawn, wired, a, r)
-    return {"wired": wired, "ok": wired and a == r and r > 0, "anim_points": a, "rest_points": r, "drawn": drawn,
-            "message": msg}
+    msg = scalp_text(drawn, wired, a, r, bad)
+    return {"wired": wired, "ok": wired and a == r and r > 0 and bad == 0, "anim_points": a, "rest_points": r,
+            "bad_points": bad, "drawn": drawn, "message": msg}
 
 
 def spine_record(data: model.GroomData) -> dict:
