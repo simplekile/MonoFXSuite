@@ -1470,12 +1470,15 @@ def s_shots():
 # the graded frames, and every consecutive pair of the shot's playbar for the frame-to-frame line (the plan, 2026-11-23: a
 # window of 5 frames a shot (73-77, 20-24) missed 41 pairs of sh020 over the line, worst 3.5 x; about 1 s a frame)
 DEFORM_SHOTS = {"sh020": ("10,25,45,60,75,105,135", ",".join(str(f) for f in range(0, 121))),
-                "sh025": ("5,20,25,40,50", ",".join(str(f) for f in range(0, 46)))}
+                "sh025": ("5,20,25,30,40,50", ",".join(str(f) for f in range(0, 46)))}
 DEFORM_SH025_LOCKS = ("hair_bang_05", "hair_bang_11", "hair_bang_17", "hair_back_05", "hair_back_20", "hair_back_01",
                       "hair_back_13", "hair_base_07", "hair_base_09")
 DEFORM_LENGTH_P95 = 0.05     # unedited strand length within this of its piece's over its span, p95 (the plan, 2026-11-23)
 DEFORM_ROOT_CM = 0.1         # roots off the animated scalp, p95 a lock-frame: the drawn lock's limit (the plan, 2026-11-23)
 DEFORM_COST_PROBLEM_S = 1.5  # a frame of output 1 over this is reported as a problem (the plan)
+DEFORM_JOINT_DEG = 30.0      # a lock's joint turn over rest in the root half, p95 of its strands (the plan, 2026-11-23),
+                             # graded on sh025 (its 13 back locks read up to 58.6 before the root-zone rule); sh020
+                             # reported: hair_bang_20's crumpling tip is over it in any variant
 DEFORM_F2F = 1.4             # a lock's largest hair move from one frame to the next over its piece's (the plan, 2026-11-23)
 
 
@@ -1533,6 +1536,7 @@ def s6_deform():
         rworst = max(((r["roots_skin_p95_cm"] or 0.0), n, f) for n, f, r in lf)
         v01_roots = sum(1 for v in ov.values() for r in v.values()
                         if r["roots_skin_p95_cm"] is not None and r["roots_skin_p95_cm"] > DEFORM_ROOT_CM)
+        joint = [(n, f, round(r["joint_turn_p95_deg"], 1)) for n, f, r in lf if r["joint_turn_p95_deg"] > DEFORM_JOINT_DEG]
         left = sum(r["left_behind"] for _, _, r in lf)
         ed_fail, ed_report = [], []
         ed_rest = []
@@ -1563,7 +1567,7 @@ def s6_deform():
         jumps = sorted([(round(a, 3), n, f) for a, n, f in cons if a > DEFORM_F2F], reverse=True)
         cost_new, cost_old = list(new["cost_s"].values()), list(old["cost_s"].values())
         good = not folds and not stretch and not tip and not jumps and not roots and not left and not ed_fail \
-            and not new.get("errors")
+            and not new.get("errors") and not (joint and tag == "sh025")
         ok = ok and good
         rows[tag] = {
             "pass": good, "lock_frames": len(lf), "folds": folds, "v01_folds": len(v01_folds),
@@ -1572,6 +1576,8 @@ def s6_deform():
             "frame_to_frame_over_%g" % DEFORM_F2F: jumps,
             "length_vs_rest_p95_over_reported": vs_rest,
             "roots_over_%gcm" % DEFORM_ROOT_CM: roots, "v01_roots_over": v01_roots,
+            "joint_turn_over_%g" % DEFORM_JOINT_DEG: joint, "joint_turn_graded": tag == "sh025",
+            "joint_turn_worst_deg": max(r["joint_turn_p95_deg"] for _, _, r in lf),
             "roots_worst": {"cm": rworst[0], "lock": rworst[1], "frame": rworst[2]},
             "roots_minus_v01_cm": {"median": float(np.median(rdiff)), "p95": float(np.percentile(rdiff, 95)),
                                    "max": float(rdiff.max())} if len(rdiff) else None, "left_behind": left,
@@ -1588,11 +1594,12 @@ def s6_deform():
             "errors": new.get("errors"), "deform_problem": new.get("deform_problem")}
     add("s6_shot_deform_follows_each_lock_s_own_piece", ok, rows,
         {"folds": 0, "unedited_length_vs_piece_p95": DEFORM_LENGTH_P95, "tip_zone_vs_piece_p95": DEFORM_LENGTH_P95,
-         "frame_to_frame_over_piece": DEFORM_F2F, "edited_length_vs_unedited": SHOT_LENGTH,
+         "frame_to_frame_over_piece": DEFORM_F2F, "joint_turn_over_rest_sh025_deg": DEFORM_JOINT_DEG, "edited_length_vs_unedited": SHOT_LENGTH,
          "tip_turn_deg": TIP_TURN_DEG, "roots_cm": DEFORM_ROOT_CM, "left_behind": 0},
         "every lock of sh020 (frames %s) and sh025 (%s), this build against the build before v0.2b (v0.1's Point "
         "Deform): no fold of the hair against its own animated piece (turning over rest minus the piece's over 90 deg, "
-        "or a new kink over 90 the piece does not have); unedited: each strand's length ratio within %g %% (p95) of its "
+        "or a new kink over 90 the piece does not have); the joint turn over rest in the root half (p95 of a lock's strands) "
+        "under 30 deg on sh025 (sh020 reported); unedited: each strand's length ratio within %g %% (p95) of its "
         "piece's length ratio over the strand's span (the plan, 2026-11-23: the animation stretches the pieces; against "
         "rest reported), and the same for each strand's last 10 %%; the hair's largest move from one frame to the next "
         "within %g x its piece's on every consecutive pair of each shot's playbar; edited locks (tip 2 cm, turn 25 deg) median "

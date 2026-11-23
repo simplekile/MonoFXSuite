@@ -2007,19 +2007,18 @@ matrix3 R = qconvert(slerp(qa, qb, t));
 vector along = e1 + (@P - e0) * R;
 if (prim(0, "rok", pr)) {
     vector rc0 = prim(0, "rc0", pr), rc1 = prim(0, "rc1", pr);
-    // an edited lock's root zone turns by the rotation at its root's place on the piece as modelled (VEX_PIECE_U
-    // rdfu_shift, 0 for a lock not edited): its roots stay the unedited lock's
-    matrix3 Rr = R;
-    float sh = prim(0, "rdfu_shift", pr);
-    if (sh != 0) {
-        float u2 = clamp((f@dfu + sh - 2 * sg) / max(1 - 4 * sg, 1e-6), 0.0, 1.0) * (n - 1);
-        int j0 = min(int(floor(u2)), n - 2);
-        float t2 = u2 - j0;
-        matrix3 Rc = point(1, "rot", primpoint(1, lid, j0)), Rd = point(1, "rot", primpoint(1, lid, j0 + 1));
-        vector4 qc = quaternion(Rc), qd = quaternion(Rd);
-        if (dot(qc, qd) < 0) qd = -qd;
-        Rr = qconvert(slerp(qc, qd, t2));
-    }
+    // ONE rotation for the whole zone, the piece's at the strand's root (the root-zone rule, 2026-11-23): an offset
+    // of up to 13 cm from the root turned by each point's own rotation along the piece bent the root half by up to 58
+    // deg (sh025, 13 back locks; v0.1 the same). An edited lock's root's place is the one on the piece as modelled
+    // (VEX_PIECE_U rdfu_shift, 0 for a lock not edited): its roots stay the unedited lock's
+    float dr = point(0, "dfu", primpoint(0, pr, 0)), sh = prim(0, "rdfu_shift", pr);
+    float u2 = clamp((dr + sh - 2 * sg) / max(1 - 4 * sg, 1e-6), 0.0, 1.0) * (n - 1);
+    int j0 = min(int(floor(u2)), n - 2);
+    float t2 = u2 - j0;
+    matrix3 Rc = point(1, "rot", primpoint(1, lid, j0)), Rd = point(1, "rot", primpoint(1, lid, j0 + 1));
+    vector4 qc = quaternion(Rc), qd = quaternion(Rd);
+    if (dot(qc, qd) < 0) qd = -qd;
+    matrix3 Rr = qconvert(slerp(qc, qd, t2));
     vector at_root = rc1 + (@P - rc0) * Rr;
     int nv = primvertexcount(0, pr);
     float s = nv > 1 ? float(vertexprimindex(0, pointvertex(0, @ptnum))) / (nv - 1) : 0.0;

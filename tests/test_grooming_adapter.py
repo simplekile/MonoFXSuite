@@ -983,5 +983,14 @@ def test_edited_lock_root_zone_turns_at_its_modelled_place():
     import pathlib
     build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
     assert 'f@rdfu_shift = rhp >= 0 ? primuv(3, "pu", rhp, ruv) - us[0] : 0.0;' in build
-    assert 'float sh = prim(0, "rdfu_shift", pr);' in build and "if (sh != 0) {" in build
+    assert 'float dr = point(0, "dfu", primpoint(0, pr, 0)), sh = prim(0, "rdfu_shift", pr);' in build
     assert 'CAPTURE_PRIM_ATTRIBS = "rnb rnw rc0 rc1 rok rdfu_shift"' in build
+
+
+def test_the_root_zone_keeps_one_rotation_per_strand():
+    """The root-zone rule (2026-11-23): the anchor turns the strand by the piece's rotation at its ROOT, never by each
+    point's own (which bent the root half by up to 58 deg, sh025)."""
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    zone = build[build.index("ONE rotation for the whole zone"):build.index("vector at_root = rc1 + (@P - rc0) * Rr;")]
+    assert "primpoint(0, pr, 0)" in zone and "f@dfu" not in zone and "matrix3 Rr = R" not in zone

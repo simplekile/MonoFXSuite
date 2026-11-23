@@ -1270,8 +1270,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     linear fit of the centre was tried and dropped: it extrapolated the animated mesh's local jitter at the ends);
     `piece_fk` rebuilds an EDITED lock's centreline from its root with those rotations (U4's rule, no stretch). A
     strand point: e1(u) + (P - e0(u)) * rot(u), past the first / last place carried rigidly by it; its root zone takes
-    the translation of its root's neighbours with the piece's rotation and blends into that over `config.ROOT_BLEND`
-    of the strand. One deform for edited and unedited locks; drawn locks pass it and keep the follicle (VEX_FOLLICLE);
+    the translation of its root's neighbours with ONE rotation, the piece's at the strand's root (the root-zone rule,
+    2026-11-23; each point's own bent the root half up to 58 deg, v0.1 76), and blends into that over
+    `config.ROOT_BLEND` of the strand. One deform for edited and unedited locks; drawn locks pass it and keep the follicle (VEX_FOLLICLE);
     an animated mesh of another point count keeps v0.1's answer (rest pose, `deform_ok`), and so does one with a point
     that is not finite at that frame (`bad_points`, checked each frame in `ANIM_HAIR` / `ANIM_SCALP`; `deform_problem`
     and the drawn locks' line say how many): one inf point of hair_bang_11's piece gave 5,302 NaN strands across 20
@@ -1305,7 +1306,9 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   - On sh025 13 back locks gain ~52 deg (max 58.6) of joint turn over rest on most strands near the root, under the fold
     rule's 90 (t79 9.20). v0.1's deform (a3b2d08) has it, worse: 20 locks over 30, worst 76. Cause, by experiment: the
     root zone turns each point's offset from its root (up to 13 cm) by that point's OWN rotation along the piece; one
-    rotation per strand (the root's) alone makes it 0 locks, 27 deg, and changes no other line. Not built.
+    rotation per strand (the root's) alone makes it 0 locks, 27 deg, and changes no other line: built (t79 9.21; s6
+    grades the joint turn on sh025, 30 deg). It moves the hair's distance to its own piece on sh025 by up to 0.18 cm
+    both ways (p95 0.230 -> 0.240, worst 0.36 -> 0.26) and costs 4-7 % a frame.
   - Root zone by experiment (t79 9.20; nothing built): the scalp trial's jump is the polygon frame's float32 noise (a 0.09 cm
     polygon turns 2.2 deg while the skin turns 0.03) times the 13 cm lever; the scalp's translation with the piece's rotation
     does not jump (1 pair over 1.4 against 150). A zone over 0.7 of the strand takes the hair off its own piece (0.9 cm):

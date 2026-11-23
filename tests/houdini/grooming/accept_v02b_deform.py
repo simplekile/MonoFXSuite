@@ -104,6 +104,23 @@ def span_ratio(rest_strand, L0, L1):
     return b / max(a, 1e-9)
 
 
+def joint_turn_p95(strs, rest, share=0.5):
+    """p95 over the lock's strands of the largest joint turn at the frame minus at rest in the root `share` of the strand:
+    a kink the animation's own turning does not need (t79 9.20: the root anchor bent it by up to 58 deg on sh025)."""
+    out = []
+    for s, P in strs.items():
+        if s not in rest or rest[s].shape != P.shape:
+            continue
+        h = max(3, int(len(P) * share))
+
+        def jt(X):
+            t = np.diff(X[:h], axis=0)
+            t /= np.maximum(np.linalg.norm(t, axis=1, keepdims=True), 1e-12)
+            return np.degrees(np.arccos(np.clip((t[1:] * t[:-1]).sum(1), -1, 1)))
+        out.append(float((jt(P) - jt(rest[s])).max()))
+    return float(np.percentile(out, 95)) if out else 0.0
+
+
 def tip_zone(P, share=0.1):
     """The points of the strand's last `share` of its rest length (at least two)."""
     L = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
@@ -198,6 +215,7 @@ for i, f in enumerate(FRAMES):
             "piece_span_ratio_p50": float(np.median(pr)),
             "tip_vs_piece_p95_off": float(np.percentile(np.abs(tz - 1), 95)),
             "len_vs_surface_p95_off": float(np.percentile(np.abs(sr - 1), 95)),
+            "joint_turn_p95_deg": joint_turn_p95(d, REST[lid]),
             "roots_skin_p95_cm": float(np.percentile(skin, 95)) if len(skin) else None, "left_behind": left,
             "to_piece_rest_cm": gap(R_LINE[lid], P_LINE[lid]), "to_piece_now_cm": gap(centreline(list(d.values())), pl1),
             "piece_len_ratio": float(np.linalg.norm(np.diff(pl1, axis=0), axis=1).sum()
