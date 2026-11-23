@@ -465,6 +465,31 @@ def test_rows_say_edited_drawn_and_at_rest(env) -> None:
     assert not _child(view.tree, 5)["at_rest"]
 
 
+def test_the_scalp_line_is_read_again_on_another_frame(env) -> None:
+    """A scalp that is not finite at one frame (6f3f176) is a message of that frame: kept per data only, the panel went on
+    saying it on a good frame, or never said it on the bad one, until the data changed."""
+    adapter, view, c = env
+    now = {"frame": 74}
+    adapter.current_frame = lambda: now["frame"]
+    adapter.scalp = {"wired": True, "ok": True, "drawn": 1, "message": ""}
+    c._scalp_cache = None
+    c.refresh()
+    assert not _child(view.tree, 5)["at_rest"]
+    reads = []
+    real = adapter.animated_scalp
+    adapter.animated_scalp = lambda node: (reads.append(now["frame"]), real(node))[1]
+    c.refresh()
+    assert reads == []                                   # the same frame and data: not read again
+    adapter.scalp = {"wired": True, "ok": False, "drawn": 1, "message": "Animated scalp: 1 points not finite"}
+    now["frame"] = 75
+    c.refresh()
+    assert reads == [75] and _child(view.tree, 5)["at_rest"]
+    adapter.scalp = {"wired": True, "ok": True, "drawn": 1, "message": ""}
+    now["frame"] = 76
+    c.refresh()
+    assert reads == [75, 76] and not _child(view.tree, 5)["at_rest"]
+
+
 def test_a_drawn_lock_shows_its_shape_and_the_shot_warning(env) -> None:
     adapter, view, c = env
     c.select_locks([5])

@@ -386,12 +386,14 @@ class SpineMixin:
         show(self.tool_cells(), strip)
 
     def scalp_info(self, data: model.GroomData) -> dict:
-        """`adapter.animated_scalp(node)` while drawn locks exist (U2), kept per data shown: {"message": ...}."""
+        """`adapter.animated_scalp(node)` while drawn locks exist (U2), kept per data shown and frame (a scalp that
+        is not finite at one frame says so at that frame): {"message": ...}."""
         drawn = tuple(lk.id for lk in data.locks if lk.drawn)
         read = getattr(self.adapter, "animated_scalp", None)
         if not drawn or read is None or self.node is None:
             return {}
-        key = (drawn, getattr(self, "_last_json", None))
+        now = getattr(self.adapter, "current_frame", None)
+        key = (drawn, getattr(self, "_last_json", None), now() if now is not None else None)
         if self._scalp_cache is not None and self._scalp_cache[0] == key:
             return self._scalp_cache[1]
         try:
