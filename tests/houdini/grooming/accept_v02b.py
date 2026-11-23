@@ -1467,7 +1467,10 @@ def s_shots():
 # + SHOT_ROOT_CM; no point left behind; no node error. Reported: the move against v0.1 (p95 per lock-frame), the hair
 # against its piece (now - rest), frame to frame against the piece, the frame cost against v0.1's.
 # ---------------------------------------------------------------------------
-DEFORM_SHOTS = {"sh020": ("10,25,45,60,75,105,135", "73,74,75,76,77"), "sh025": ("5,20,25,40,50", "20,21,22,23,24")}
+# the graded frames, and every consecutive pair of the shot's playbar for the frame-to-frame line (the plan, 2026-11-23: a
+# window of 5 frames a shot (73-77, 20-24) missed 41 pairs of sh020 over the line, worst 3.5 x; about 1 s a frame)
+DEFORM_SHOTS = {"sh020": ("10,25,45,60,75,105,135", ",".join(str(f) for f in range(0, 121))),
+                "sh025": ("5,20,25,40,50", ",".join(str(f) for f in range(0, 46)))}
 DEFORM_SH025_LOCKS = ("hair_bang_05", "hair_bang_11", "hair_bang_17", "hair_back_05", "hair_back_20", "hair_back_01",
                       "hair_back_13", "hair_base_07", "hair_base_09")
 DEFORM_LENGTH_P95 = 0.05     # unedited strand length within this of its piece's over its span, p95 (the plan, 2026-11-23)
@@ -1592,7 +1595,7 @@ def s6_deform():
         "or a new kink over 90 the piece does not have); unedited: each strand's length ratio within %g %% (p95) of its "
         "piece's length ratio over the strand's span (the plan, 2026-11-23: the animation stretches the pieces; against "
         "rest reported), and the same for each strand's last 10 %%; the hair's largest move from one frame to the next "
-        "within %g x its piece's on 5 consecutive frames of each shot; edited locks (tip 2 cm, turn 25 deg) median "
+        "within %g x its piece's on every consecutive pair of each shot's playbar; edited locks (tip 2 cm, turn 25 deg) median "
         "length within %g %% of the unedited lock's at the "
         "same frame and tip turn within %g deg of rest where the piece does not fold (reported where it does; against rest "
         "reported); roots within %g cm (p95) of the animated scalp (the drawn lock's limit; against v0.1 reported); "

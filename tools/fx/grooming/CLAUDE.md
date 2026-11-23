@@ -1290,6 +1290,14 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     3, by strand id). Now 0 by id. Unedited locks (control, 3 runs a build, every strand, sh020 10 / 25 and
     sh025 5 / 25): `rdfu_shift` 0 on all; before against after identical but hair_bang_20 on sh025 (0.0059 cm), which
     two runs of one build also differ by.
+  - Frame to frame, every pair (t79 9.18): s6 grades all consecutive pairs of the playbars (sh020 0-120, sh025 0-45; a
+    5-frame window had shown a worst of 1.09). As built 41 sh020 pairs are over 1.4 (worst 3.50, hair_base_20 52 -> 53),
+    sh025 none. 40 are the root zone's neighbours from other pieces (own-piece neighbours or no anchor: 1 left, the tip of
+    hair_bang_03 32 -> 33, not traced); own-piece neighbours move every lock and put more roots off the scalp, so not
+    built. Roots carried by the animated scalp (trial, not built): 0 roots over 0.1 cm, but 150 sh020 pairs over 1.4
+    (worst 18) and root-zone stretch to 2.3 x on hair_bang_20. A short window hid both: grade every pair.
+  - On sh025 13 back locks gain ~52 deg (max 58.6) of joint turn over rest on every strand in the root half, under the fold
+    rule's 90; without the anchor about 25. Not traced, not compared with v0.1.
   - A test that reads `groom_data` with `evalParm` makes Houdini evaluate a backtick in a lock name as an expression;
     the failed expression stays in the process's error state and the next SOP verb reports it (t84 round 3:
     ``a%(x)s${HIP}`b``, `grooming_masks._vertex_tables`' attribpromote raised). The tool reads it raw and is not
