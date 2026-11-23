@@ -122,6 +122,36 @@ def dedupe_sibling_segment(segment: str, used: set[str]) -> str:
         n += 1
 
 
+def sibling_prim_segments(siblings: Sequence[tuple[str, str]]) -> list[str]:
+    """
+    Prim names of objects under one parent, from ``(object name, rig source name)``.
+
+    The source name is the object's name in the rig it is linked from (``""`` for an
+    object that is no library override). It wins, because lookdev binds to it and Blender
+    adds ``.001`` to an override whose name is taken in the shot. When siblings share one
+    source (a copied mesh), one keeps it and the others keep their own name, as objects
+    without a source do.
+    """
+    own = [sanitize_prim_segment(name) for name, _source in siblings]
+    wanted = [
+        sanitize_prim_segment(source) if source else own[i]
+        for i, (_name, source) in enumerate(siblings)
+    ]
+    holders: dict[str, int] = {}
+    for i, segment in enumerate(wanted):
+        key = segment.casefold()
+        held = holders.get(key)
+        if held is None or (own[held].casefold() != key and own[i].casefold() == key):
+            holders[key] = i
+    used = set(holders)
+    return [
+        segment
+        if holders[segment.casefold()] == i
+        else dedupe_sibling_segment(own[i], used)
+        for i, segment in enumerate(wanted)
+    ]
+
+
 def build_prim_path_segments(
     object_names: Iterable[str],
     *,
@@ -259,6 +289,7 @@ __all__ = [
     "sanitize_namespace_segment",
     "sanitize_prim_segment",
     "segments_to_prim_path",
+    "sibling_prim_segments",
     "single_top_level_prim_name",
     "strip_blender_namespace",
     "uv_primvar_names",

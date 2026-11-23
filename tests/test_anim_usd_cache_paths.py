@@ -231,3 +231,62 @@ def test_uv_primvar_names_are_valid_and_unique():
     assert _paths.uv_primvar_names(["UV Map.001", "st", "2nd"], 0) == ["st", "st_1", "_2nd"]
     assert _paths.uv_primvar_names([], -1) == []
     assert _paths.uv_primvar_names(["a"], -1) == ["a"]
+
+
+def test_sibling_segments_use_the_rig_source_name():
+    # sh015: Blender had renamed the whale's Geo_Whale override to Geo_Whale.001.
+    assert _paths.sibling_prim_segments(
+        [("helenwhalerig::Geo_Whale.001", "Geo_Whale")]
+    ) == ["Geo_Whale"]
+
+
+def test_sibling_segments_keep_a_suffix_the_rig_itself_has():
+    assert _paths.sibling_prim_segments(
+        [
+            ("atarig::Geo_Pants.001", "Geo_Pants.001"),
+            ("atarig::Geo_Pants.002", "Geo_Pants.002"),
+        ]
+    ) == ["Geo_Pants_001", "Geo_Pants_002"]
+
+
+def test_sibling_segments_without_a_rig_source_keep_the_object_name():
+    assert _paths.sibling_prim_segments([("Cube.001", ""), ("rig::Geo", "")]) == [
+        "Cube_001",
+        "Geo",
+    ]
+
+
+def test_sibling_segments_copy_of_a_rig_mesh_keeps_its_own_name():
+    assert _paths.sibling_prim_segments(
+        [("rig::Geo_Top", "Geo_Top"), ("rig::Geo_Top.001", "Geo_Top")]
+    ) == ["Geo_Top", "Geo_Top_001"]
+
+
+def test_sibling_segments_exact_name_wins_over_an_earlier_copy():
+    assert _paths.sibling_prim_segments(
+        [("a::Geo_Top.001", "Geo_Top"), ("rig::Geo_Top", "Geo_Top")]
+    ) == ["Geo_Top_001", "Geo_Top"]
+
+
+def test_sibling_segments_copy_never_takes_a_real_mesh_name():
+    assert _paths.sibling_prim_segments(
+        [
+            ("rig::Body", "Body"),
+            ("rig::Body.001", "Body"),
+            ("rig::Body.002", "Body.001"),
+        ]
+    ) == ["Body", "Body_001_2", "Body_001"]
+
+
+def test_sibling_segments_swapped_suffixes_go_back_to_the_rig_names():
+    # env_Castle in sh015: RingB.003 is the library's RingB.001, RingB.005 its RingB.003.
+    assert _paths.sibling_prim_segments(
+        [("RingB.003", "RingB.001"), ("RingB.005", "RingB.003")]
+    ) == ["RingB_001", "RingB_003"]
+
+
+def test_sibling_segments_same_name_gets_a_number_as_before():
+    assert _paths.sibling_prim_segments([("Body.001", ""), ("Body_001", "")]) == [
+        "Body_001",
+        "Body_001_2",
+    ]

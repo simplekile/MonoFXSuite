@@ -880,11 +880,8 @@ def _hierarchy_prefix_in_use(
             if _matches(coll.name):
                 return True
         return False
-    for obj in bpy.data.objects:
-        if _matches(obj.name):
-            return True
-    for coll in bpy.data.collections:
-        if _matches(coll.name):
+    for id_blocks in (bpy.data.objects, bpy.data.collections):
+        if any(b.library is None and _matches(b.name) for b in id_blocks):
             return True
     return False
 
@@ -921,13 +918,11 @@ def _ensure_rig_armature_editable(rig_coll: bpy.types.Collection) -> None:
             return
 
 
-def _allocate_rig_hierarchy_prefix(
-    asset_folder: str,
-    scope: Optional[bpy.types.Collection] = None,
-) -> str:
+def _allocate_rig_hierarchy_prefix(asset_folder: str) -> str:
+    """A prefix free in the whole file: object names are unique per file, not per collection."""
     return rig_naming.unique_rig_hierarchy_prefix(
         asset_folder,
-        lambda prefix: _hierarchy_prefix_in_use(prefix, scope, asset_folder),
+        lambda prefix: _hierarchy_prefix_in_use(prefix, None, asset_folder),
     )
 
 
@@ -1055,7 +1050,7 @@ def create_file_reference(path: str, namespace: str) -> str:
     override_coll = _make_library_override(linked)
     rig_coll = _consolidate_rig_hierarchy(linked, override_coll, parent_col)
     asset_folder = _asset_folder_for_link(fp, ns)
-    prefix = _allocate_rig_hierarchy_prefix(asset_folder, parent_col)
+    prefix = _allocate_rig_hierarchy_prefix(asset_folder)
     _prepare_rig_prefix_renames(rig_coll, prefix, asset_folder)
     _apply_rig_hierarchy_prefix(rig_coll, prefix, asset_folder)
     _ensure_rig_armature_editable(rig_coll)
@@ -1265,11 +1260,30 @@ def replace_reference_path(ref_node_short: str, new_path: str) -> int:
 
 
 def _remove_override_hierarchy(ov_root: bpy.types.Collection) -> None:
+    """
+    Delete the rig's overrides: root, child collections and objects.
+
+    Anything left behind keeps its name, and the next link of the rig gets ``.001``.
+    Only overrides of this hierarchy go; the artist's own objects and other instances stay.
+    """
+
+    def _owned(id_block: bpy.types.ID) -> bool:
+        ov = id_block.override_library
+        return ov is not None and ov.hierarchy_root == ov_root
+
+    doomed = [o for o in ov_root.all_objects if _owned(o)]
+    doomed += [c for c in ov_root.children_recursive if _owned(c)]
     _unlink_collection_from_hierarchy(ov_root)
-    try:
-        bpy.data.collections.remove(ov_root)
-    except Exception:
-        pass
+    bpy.data.batch_remove([*doomed, ov_root])
+
+
+def _library_used_by_local_data(lib: bpy.types.Library) -> bool:
+    """True when data of this file still uses data linked from *lib*."""
+    linked = {i for i in lib.users_id if i.library == lib}
+    if not linked:
+        return False
+    users = bpy.data.user_map(subset=linked)
+    return any(u.library is None for using in users.values() for u in using)
 
 
 def remove_file_reference(
@@ -1284,7 +1298,11 @@ def remove_file_reference(
     if ov_coll is not None:
         lib = _source_library_for_collection(ov_coll)
         _remove_override_hierarchy(ov_coll)
-        if lib is not None and not _library_has_override_usage(lib):
+        if (
+            lib is not None
+            and not _library_has_override_usage(lib)
+            and not _library_used_by_local_data(lib)
+        ):
             lib_name = lib.name
             if lib_name in bpy.data.libraries:
                 try:
