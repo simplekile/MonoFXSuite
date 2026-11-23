@@ -1279,6 +1279,16 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     the skin as drawn locks do (not built). Frame to frame (no jump asked): a strand's tip past its piece's last sample
     rides that sample's rotation, which jitters with the end of the animated piece: hair_back_07 sh025 20 -> 21, tip
     0.99 cm against the piece's 0.56.
+  - (b), the jump at a piece's end (the manager, 2026-11-23): the cause was 32-bit sums, not the end rotations. The
+    shots sit ~330 m from the origin and VEX sums positions in 32-bit floats: a window of ~2,600 points' centre was
+    0.34 cm off, by a different amount every frame, so an end place moved 0.95 cm where its points moved 0.53
+    (hair_back_07, sh025 20 -> 21: the tip 1.75 x its piece). Every sum of positions (`piece_samples`, `piece_fit`,
+    `VEX_PIECE_ROOT`) is now taken as offsets from the window's first point: the tip moves 0.57 cm, the frame-to-frame
+    worst 1.09 x. Tried and dropped: replacing a loosely fitting place's rotation by its neighbours', a limit on the turn
+    between places (45 deg), and freezing the rotation past the last well fitting place (fit residual over 0.25 of the
+    window's size): each folded fringe locks that did not fold (sh020 14 lock-frames, edited tip turn to 66 deg) or sh025
+    back locks. Left: hair_bang_20's tip crumples in sh020 frame 10 (fit residual 0.5-0.9 of the window), its places
+    flip 45-133 deg and the last strands draw a flat block (look4 `sh020_hair_bang_20_*_f0010_b.png`).
   - accept_v02b after the change: s1 grades the edited lock against the unedited one at that frame (the plan's line);
     s5 (three-input scenes) grades the same strands and points a strand and no error, and reports the move from v0.1
     (3.1 / 7.6 cm at most on sh020 / sh025), since the deform that replaced v0.1's moves every lock; r1 (rest) still

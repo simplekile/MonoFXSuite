@@ -1829,19 +1829,22 @@ for (int sp = 0; sp < nl; sp++) {
         float uk = 2 * sig + (1 - 4 * sig) * float(k) / (K - 1);
         while (lo < n && pus[ord[lo]] < uk - 3 * sig) lo++;
         int idx[]; float w[];
-        vector c0 = 0, e0 = 0; float ws = 0;
+        // sums of offsets from the window's first point: positions far from the origin lose their last digits in a
+        // 32-bit sum (a shot ~330 m out: 0.34 cm on a window of 2,600 points, a centre that jittered frame to frame)
+        vector ref0 = 0, refe = 0, c0 = 0, e0 = 0; float ws = 0;
         for (int j = lo; j < n && pus[ord[j]] <= uk + 3 * sig; j++) {
             int pt = mp[ord[j]];
             float z = (pus[ord[j]] - uk) / sig;
             float wt = exp(-0.5 * z * z);
             vector x0 = point(1, "P", pt), xe = point(1, "Pc", pt);
-            append(idx, pt); append(w, wt); c0 += wt * x0; e0 += wt * xe; ws += wt;
+            if (len(idx) == 0) { ref0 = x0; refe = xe; }
+            append(idx, pt); append(w, wt); c0 += wt * (x0 - ref0); e0 += wt * (xe - refe); ws += wt;
         }
         int p = addpoint(0, {0, 0, 0});
         if (ws > 1e-9) {
             for (int j = 0; j < len(w); j++) w[j] /= ws;
-            setpointattrib(0, "P", p, c0 / ws);
-            setpointattrib(0, "c0", p, c0 / ws); setpointattrib(0, "e0", p, e0 / ws);
+            setpointattrib(0, "P", p, ref0 + c0 / ws);
+            setpointattrib(0, "c0", p, ref0 + c0 / ws); setpointattrib(0, "e0", p, refe + e0 / ws);
             setpointattrib(0, "idx", p, idx); setpointattrib(0, "w", p, w);
             made[k] = 1;
         }
@@ -1874,8 +1877,11 @@ float w[] = f[]@w;
 3@rot = ident();
 v@c1 = v@c0; v@e1 = v@e0;
 if (len(idx) < 3) return;
-vector m1 = 0;
-for (int j = 0; j < len(idx); j++) { vector x1 = point(1, "P", idx[j]); m1 += w[j] * x1; }
+// a sum of offsets from the window's first point (32-bit floats lose the last digits of positions far from the
+// origin: summed as they are, a centre ~330 m out was 0.34 cm off and jittered from frame to frame)
+vector ref1 = point(1, "P", idx[0]), m1 = 0;
+for (int j = 0; j < len(idx); j++) { vector x1 = point(1, "P", idx[j]); m1 += w[j] * (x1 - ref1); }
+m1 += ref1;
 matrix3 H = 0;
 for (int j = 0; j < len(idx); j++) {
     vector x0 = point(2, "P", idx[j]), x1 = point(1, "P", idx[j]);
@@ -1892,17 +1898,18 @@ vector c1 = m1;
 VEX_PIECE_FK = """// an EDITED lock's centreline in the frame (U4 as changed by the user, 2026-11-22): rebuilt from its root, each rest
 // segment of its carried centre (e0) turned by its piece's rotation there: no stretch, its bends against the piece
 // kept. Before this the rotations came from v0.1's Point Deform of the unedited spine, which folded where v0.1 folded
-if (!i@edited) return;
 int pp[] = primpoints(0, @primnum);
 int n = len(pp);
 if (n < 2) return;
-matrix3 R0 = point(0, "rot", pp[0]);
+if (!i@edited) return;
+vector4 Qn[]; resize(Qn, n);
+for (int k = 0; k < n; k++) { matrix3 Rk = point(0, "rot", pp[k]); Qn[k] = quaternion(Rk); }
+matrix3 R0 = qconvert(Qn[0]);
 vector c0 = point(0, "c0", pp[0]), c1 = point(0, "c1", pp[0]), e0p = point(0, "e0", pp[0]);
 vector e1 = c1 + (e0p - c0) * R0;
 setpointattrib(0, "e1", pp[0], e1);
 for (int k = 1; k < n; k++) {
-    matrix3 Ra = point(0, "rot", pp[k - 1]), Rb = point(0, "rot", pp[k]);
-    vector4 qa = quaternion(Ra), qb = quaternion(Rb);
+    vector4 qa = Qn[k - 1], qb = Qn[k];
     if (dot(qa, qb) < 0) qb = -qb;
     matrix3 Rm = qconvert(normalize(qa + qb));
     vector ea = point(0, "e0", pp[k - 1]), eb = point(0, "e0", pp[k]);
@@ -1923,10 +1930,11 @@ VEX_PIECE_ROOT = """// per strand: where its root's neighbours on the hair mesh 
 int nb[] = i[]@rnb;
 float wt[] = f[]@rnw;
 if (len(nb) < 1) return;
+vector r0 = point(1, "P", nb[0]), r1 = point(2, "P", nb[0]);       // offsets from the first: 32-bit sums
 vector c0 = 0, c1 = 0; float ws = 0;
-for (int i = 0; i < len(nb); i++) { vector a = point(1, "P", nb[i]), b = point(2, "P", nb[i]); c0 += wt[i] * a; c1 += wt[i] * b; ws += wt[i]; }
+for (int i = 0; i < len(nb); i++) { vector a = point(1, "P", nb[i]), b = point(2, "P", nb[i]); c0 += wt[i] * (a - r0); c1 += wt[i] * (b - r1); ws += wt[i]; }
 if (ws <= 0) return;
-v@rc0 = c0 / ws; v@rc1 = c1 / ws; i@rok = 1;
+v@rc0 = r0 + c0 / ws; v@rc1 = r1 + c1 / ws; i@rok = 1;
 """
 
 VEX_PIECE_DEFORM = """// the shot deform of a lock of the mesh (v0.2b B-3): each strand point carried by its piece at its place along it, P =

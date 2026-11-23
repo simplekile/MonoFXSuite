@@ -104,6 +104,21 @@ def span_ratio(rest_strand, L0, L1):
     return b / max(a, 1e-9)
 
 
+def tip_zone(P, share=0.1):
+    """The points of the strand's last `share` of its rest length (at least two)."""
+    L = np.concatenate([[0], np.cumsum(np.linalg.norm(np.diff(P, axis=0), axis=1))])
+    i = int(np.searchsorted(L, L[-1] * (1 - share)))
+    return min(i, len(P) - 2)
+
+
+def surface_chain(rest_strand, mesh_pts, own):
+    """The own piece's rest mesh points nearest each point of the strand (in order, repeats dropped): the surface the
+    strand lies over."""
+    idx = own[np.argmin(((rest_strand[:, None, :] - mesh_pts[own][None, :, :]) ** 2).sum(-1), axis=1)]
+    keep = np.concatenate([[True], idx[1:] != idx[:-1]])
+    return idx[keep]
+
+
 def lens(d):
     return {s: float(np.linalg.norm(np.diff(P, axis=0), axis=1).sum()) for s, P in d.items()}
 
@@ -119,6 +134,14 @@ R_TURN = {lid: turning(c) for lid, c in R_LINE.items()}
 P_LINE = {lid: piece_line(P_mesh, pc) for lid, pc in PIECE.items() if pc >= 0}
 P_TURN = {lid: turning(c) for lid, c in P_LINE.items()}
 P_LINE48 = {lid: piece_line(P_mesh, pc, 48) for lid, pc in PIECE.items() if pc >= 0}
+# reported (the manager, 2026-11-23): the length line against the piece's SURFACE under each strand instead of the
+# centreline, on every 10th strand of a lock
+SURF = {}
+for _lid, _pc in PIECE.items():
+    if _pc < 0 or _lid not in REST:
+        continue
+    _own = np.nonzero(piece_pt == _pc)[0]
+    SURF[_lid] = {s: surface_chain(REST[_lid][s], P_mesh, _own) for s in sorted(REST[_lid])[::10]}
 out = {"suite": SUITE, "hip": HIP, "frames": FRAMES, "rest_frame": rest_frame, "unedited": {}, "cost_s": {},
        "edited": {}, "consecutive": {}, "deform_problem": ga.deform_problem(node)}
 samples = {}
@@ -141,6 +164,22 @@ for i, f in enumerate(FRAMES):
         pl48 = piece_line(PA, pc, 48)
         pr = np.array([span_ratio(REST[lid][s], P_LINE48[lid], pl48) for s in sids])
         rel = r / np.maximum(pr, 1e-9)
+        # the tip zone (the last 10 % of each strand's rest length) against its piece over the zone's span
+        tz = []
+        for s in sids:
+            i0 = tip_zone(REST[lid][s])
+            l0 = np.linalg.norm(np.diff(REST[lid][s][i0:], axis=0), axis=1).sum()
+            l1 = np.linalg.norm(np.diff(d[s][i0:], axis=0), axis=1).sum()
+            tz.append((l1 / max(l0, 1e-9)) / max(span_ratio(REST[lid][s][i0:], P_LINE48[lid], pl48), 1e-9))
+        tz = np.array(tz)
+        # reported: against the surface under the strand (its nearest rest mesh points' chain, rest -> frame)
+        sr = []
+        for s, ch in SURF.get(lid, {}).items():
+            if s in d and len(ch) > 1:
+                c0 = np.linalg.norm(np.diff(P_mesh[ch], axis=0), axis=1).sum()
+                c1 = np.linalg.norm(np.diff(PA[ch], axis=0), axis=1).sum()
+                sr.append((L1[s] / max(R_LEN[lid][s], 1e-9)) / max(c1 / max(c0, 1e-9), 1e-9))
+        sr = np.array(sr) if sr else np.ones(1)
         t1, k1 = turning(centreline(list(d.values())))
         pl1 = piece_line(PA, pc)
         pt1, pk1 = turning(pl1)
@@ -157,6 +196,8 @@ for i, f in enumerate(FRAMES):
             "len_p50": float(np.median(r)), "len_p95": float(np.percentile(r, 95)),
             "len_vs_piece_p95_off": float(np.percentile(np.abs(rel - 1), 95)), "len_vs_piece_p50": float(np.median(rel)),
             "piece_span_ratio_p50": float(np.median(pr)),
+            "tip_vs_piece_p95_off": float(np.percentile(np.abs(tz - 1), 95)),
+            "len_vs_surface_p95_off": float(np.percentile(np.abs(sr - 1), 95)),
             "roots_skin_p95_cm": float(np.percentile(skin, 95)) if len(skin) else None, "left_behind": left,
             "to_piece_rest_cm": gap(R_LINE[lid], P_LINE[lid]), "to_piece_now_cm": gap(centreline(list(d.values())), pl1),
             "piece_len_ratio": float(np.linalg.norm(np.diff(pl1, axis=0), axis=1).sum()
