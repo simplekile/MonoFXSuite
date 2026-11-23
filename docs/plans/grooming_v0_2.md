@@ -1130,6 +1130,24 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   exact. Rest picture before | after | reference for the four locks, and the scalp under them from the
   side (bare skin that shows is reported). The panel shows the parameter where it shows the others; if
   that needs more than a row in the existing list, it is a panel task of its own (skill dcc-panel-design).
+- **Latest join as built (037, 8a5e516) and the thin-skin measure (the manager, 2026-11-23)**: the parameter
+  is `join_limit`, "Latest join" in the panel (one more row, per-group or per-lock override), default 1,
+  schema stays 7. At the default r1 and all 27 grooming-check numbers are unchanged. With Helen's fringe
+  group at 0.3 the tuft is gone at rest and in the shot, other groups byte-equal, strand counts unchanged;
+  at 0.5 part of it stays. The fringe's own skin goes from 22 % to 81 % bare (the reference v006: 97 %),
+  so grooming-check's `skin_thin_share` (0.017 -> 0.128, limit 0.05) and `lock_skin_thin_worst` (0.031 ->
+  0.414, limit 0.2) fail. The limits stay. Skin owned by a lock whose Latest join is under 1 is left out of
+  the two thin-skin numbers, as skin under floating mesh already is (the artist asked for its roots to move
+  to the lock's start), and is reported on its own line: its bare share, and how much of it has no hair of
+  any lock passing within 0.5 cm over it (bare skin that would show). That second number is graded: at
+  most 0.05 of that skin on Helen. Whether the look is right is the user's (the scalp picture).
+- **The flat block at a crumpling tip (report only until decided)**: on sh020 frame 10 hair_bang_20's
+  animated piece folds back on itself at the tip (its last tenth 0.30 -> 0.17 cm wide, the fit's residual
+  over window size 0.89, the rotation turning 45 then 133 deg between u 0.84 and 0.88); the hair follows
+  the hook. Fix to build: where the residual over size is above about 0.5, points are carried by their
+  nearest animated mesh points, blended in by the residual; every other rotation untouched. Graded: no new
+  fold, the edited-lock lines, frame-to-frame 1.4 x, and locks whose residual stays under the line
+  byte-equal to before in the shots.
 - **The jump at a piece's end (037's (b), a275757)**: it came from 32-bit sums, not from the end rotations:
   the shots sit about 330 m from the origin and the centre of an end window came out 0.34-0.38 cm off, by a
   different amount each frame. Positions are summed as offsets from the window's first point. Graded in s6:
