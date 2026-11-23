@@ -1473,6 +1473,7 @@ DEFORM_SH025_LOCKS = ("hair_bang_05", "hair_bang_11", "hair_bang_17", "hair_back
 DEFORM_LENGTH_P95 = 0.05     # unedited strand length within this of its piece's over its span, p95 (the plan, 2026-11-23)
 DEFORM_ROOT_CM = 0.1         # roots off the animated scalp, p95 a lock-frame: the drawn lock's limit (the plan, 2026-11-23)
 DEFORM_COST_PROBLEM_S = 1.5  # a frame of output 1 over this is reported as a problem (the plan)
+DEFORM_F2F = 1.4             # a lock's largest hair move from one frame to the next over its piece's (the plan, 2026-11-23)
 
 
 def deform_run(suite, hip, tag, frames, edit, consec):
@@ -1512,6 +1513,11 @@ def s6_deform():
         stretch = [(n, f, round(r["len_vs_piece_p95_off"], 4), round(r["len_p95"], 4), round(r["piece_span_ratio_p50"], 4))
                    for n, f, r in lf if r["len_vs_piece_p95_off"] > DEFORM_LENGTH_P95]
         v01_stretch = sum(1 for n, f, r in lf if ov.get(n, {}).get(f, {}).get("len_vs_piece_p95_off", 0) > DEFORM_LENGTH_P95)
+        # the tip zone (last 10 % of each strand) against the piece over its span: the same line (the plan, 2026-11-23)
+        tip = [(n, f, round(r["tip_vs_piece_p95_off"], 4)) for n, f, r in lf if r["tip_vs_piece_p95_off"] > DEFORM_LENGTH_P95]
+        # reported: the same line with the piece's surface under each strand as the reference
+        surface = [(n, f, round(r["len_vs_surface_p95_off"], 4)) for n, f, r in lf
+                   if r["len_vs_surface_p95_off"] > DEFORM_LENGTH_P95]
         vs_rest = {"new": sum(1 for n, f, r in lf if not r["piece_folds"] and r["len_p95"] > 1 + DEFORM_LENGTH_P95),
                    "v01": sum(1 for n, f, r in lf if not r["piece_folds"]
                               and ov.get(n, {}).get(f, {}).get("len_p95", 0) > 1 + DEFORM_LENGTH_P95)}
@@ -1551,12 +1557,16 @@ def s6_deform():
         tp = np.array([r["to_piece_now_cm"] - r["to_piece_rest_cm"] for _, _, r in lf])
         cons = [(r["hair_max_cm"] / max(r["piece_max_cm"], 1e-6), n, f) for n, v in new["consecutive"].items()
                 for f, r in v.items()]
+        jumps = sorted([(round(a, 3), n, f) for a, n, f in cons if a > DEFORM_F2F], reverse=True)
         cost_new, cost_old = list(new["cost_s"].values()), list(old["cost_s"].values())
-        good = not folds and not stretch and not roots and not left and not ed_fail and not new.get("errors")
+        good = not folds and not stretch and not tip and not jumps and not roots and not left and not ed_fail \
+            and not new.get("errors")
         ok = ok and good
         rows[tag] = {
             "pass": good, "lock_frames": len(lf), "folds": folds, "v01_folds": len(v01_folds),
             "length_vs_piece_over": stretch, "v01_length_vs_piece_over": v01_stretch,
+            "tip_zone_vs_piece_over": tip, "length_vs_surface_over_reported": surface,
+            "frame_to_frame_over_%g" % DEFORM_F2F: jumps,
             "length_vs_rest_p95_over_reported": vs_rest,
             "roots_over_%gcm" % DEFORM_ROOT_CM: roots, "v01_roots_over": v01_roots,
             "roots_worst": {"cm": rworst[0], "lock": rworst[1], "frame": rworst[2]},
@@ -1574,19 +1584,22 @@ def s6_deform():
                        "over_%gs" % DEFORM_COST_PROBLEM_S: [c for c in cost_new if c > DEFORM_COST_PROBLEM_S]},
             "errors": new.get("errors"), "deform_problem": new.get("deform_problem")}
     add("s6_shot_deform_follows_each_lock_s_own_piece", ok, rows,
-        {"folds": 0, "unedited_length_vs_piece_p95": DEFORM_LENGTH_P95, "edited_length_vs_unedited": SHOT_LENGTH,
+        {"folds": 0, "unedited_length_vs_piece_p95": DEFORM_LENGTH_P95, "tip_zone_vs_piece_p95": DEFORM_LENGTH_P95,
+         "frame_to_frame_over_piece": DEFORM_F2F, "edited_length_vs_unedited": SHOT_LENGTH,
          "tip_turn_deg": TIP_TURN_DEG, "roots_cm": DEFORM_ROOT_CM, "left_behind": 0},
         "every lock of sh020 (frames %s) and sh025 (%s), this build against the build before v0.2b (v0.1's Point "
         "Deform): no fold of the hair against its own animated piece (turning over rest minus the piece's over 90 deg, "
         "or a new kink over 90 the piece does not have); unedited: each strand's length ratio within %g %% (p95) of its "
         "piece's length ratio over the strand's span (the plan, 2026-11-23: the animation stretches the pieces; against "
-        "rest reported); edited locks (tip 2 cm, turn 25 deg) median length within %g %% of the unedited lock's at the "
+        "rest reported), and the same for each strand's last 10 %%; the hair's largest move from one frame to the next "
+        "within %g x its piece's on 5 consecutive frames of each shot; edited locks (tip 2 cm, turn 25 deg) median "
+        "length within %g %% of the unedited lock's at the "
         "same frame and tip turn within %g deg of rest where the piece does not fold (reported where it does; against rest "
         "reported); roots within %g cm (p95) of the animated scalp (the drawn lock's limit; against v0.1 reported); "
         "nothing left behind. Reported: the move against v0.1, the hair against its piece, frame to frame against the "
         "piece, the frame cost (over %g s a problem)"
-        % (DEFORM_SHOTS["sh020"][0], DEFORM_SHOTS["sh025"][0], DEFORM_LENGTH_P95 * 100, SHOT_LENGTH * 100, TIP_TURN_DEG,
-           DEFORM_ROOT_CM, DEFORM_COST_PROBLEM_S), evidence="s6_*.json")
+        % (DEFORM_SHOTS["sh020"][0], DEFORM_SHOTS["sh025"][0], DEFORM_LENGTH_P95 * 100, DEFORM_F2F, SHOT_LENGTH * 100,
+           TIP_TURN_DEG, DEFORM_ROOT_CM, DEFORM_COST_PROBLEM_S), evidence="s6_*.json")
 
 
 def v2_names_ids_strokes():
