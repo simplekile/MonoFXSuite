@@ -307,6 +307,8 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   byte-equal, counts unchanged; their own skin goes 22 % -> 81 % bare (v006: 97 %), so grooming-check's
   `skin_thin_share` 0.017 -> 0.128 and `lock_skin_thin_worst` 0.031 -> 0.414 fail their limits (0.05, 0.2; at 0.5:
   0.101, 0.341). The limits were not moved: that is the artist's trade on that group (t79 report 9.13).
+  grooming-check (3a84bbe) leaves skin owned by a lock with Latest join under 1 out of skin_thin_* and judges it on
+  `latest_skin_uncovered` (no hair within 5 mm, at most 0.05): fringe at 0.5 0.003 pass, at 0.3 0.077 fail (t79 9.14).
   Start roots are laid out as one sunflower on a disc round the lock's root at up to
   `START_DENSITY_MAX` (6) x its density, each point moved onto the region (a point off it is dropped, the
   disc grows to at most 3x: grown without bound it reached skin 4 cm away, hair_bang_03, and its strands ran
@@ -1304,8 +1306,12 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     back locks. Left: hair_bang_20's tip crumples in sh020 frame 10 (fit residual 0.5-0.9 of the window), its places
     flip 45-133 deg and the last strands draw a flat block (look4 `sh020_hair_bang_20_*_f0010_b.png`). Traced
     (t79 9.13): the piece's last tenth folds back on itself and the hair follows it (on the piece within 0.2 cm, places
-    right to 0.011); points past the last sample are not the cause. Fix if wanted: where residual / size > ~0.5, carry
-    points by their nearest animated mesh points blended by the residual, not by the window's rotation.
+    right to 0.011); points past the last sample are not the cause. Tried and dropped (t79 9.14): where residual / size
+    passed 0.5, points carried by their 8 nearest own-piece mesh points blended by the residual. The line is crossed
+    all shot long by sh025's 20 back locks (2.14 on hair_back_15, mid-lock): their pieces hold parts that move apart
+    (2.6-6 % of point pairs stretch over 20 %), and a point's nearest rest points could belong to a part gone
+    elsewhere: back hair moved up to 16.4 cm. A residual line does not tell a tip folding back from a piece made of
+    parts; nearest points would have to be limited to the strand's own part and place.
   - accept_v02b after the change: s1 grades the edited lock against the unedited one at that frame (the plan's line);
     s5 (three-input scenes) grades the same strands and points a strand and no error, and reports the move from v0.1
     (3.1 / 7.6 cm at most on sh020 / sh025), since the deform that replaced v0.1's moves every lock; r1 (rest) still
