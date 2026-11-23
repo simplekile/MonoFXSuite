@@ -1115,18 +1115,28 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   new. The reference v006 has none. The crown and base caps join late too (27-60 %) but their strands stay
   0.75-0.86 of the median: hair lying along the scalp, v0.1's design, kept (moving every late join to the
   start would take 50-60 % of the roots off the skin under the caps: the thin skin v0.1 fixed).
-  Rule: a root whose strand would come out under `config.JOIN_SHORT` (about 0.6, set from the measured gap
-  between the two kinds) of its lock's median length starts the lock instead, in `root_place` where the
-  join is set, so every lock goes by one rule. Strand counts per lock do not change.
-  Graded: on the four fringe locks no strand under 0.6 of the lock's median length that starts past
-  `START_SPAN`; the caps' late joins unchanged within 5 % of their count; the start disc within
-  `START_DENSITY_MAX`; grooming-check on Helen passes at its limits (numbers that move are listed);
-  locks without such strands byte-equal to before at rest (r1 graded on those locks, the changed locks
-  reported). Rest picture ours before | after | reference for the four locks.
-- **Points past a piece's last sample (the manager, 2026-11-23)**: they do not ride one sample's rotation
-  rigidly (a flat wedge at hair_bang_20's tip, a 1.75 x frame-to-frame jump on sh025 hair_back_07). Graded
-  in s6: frame-to-frame motion of the hair within 1.4 x its piece's on 5 consecutive frames of each shot,
-  every lock; the tip zone's length (last 10 % of the strand) within the 5 % line against the piece.
+  Rule (the manager, 2026-11-23, after 037's 9.11: no cut on length share or skin distance separates the
+  fringe's tuft from the caps, 42-46 % of the caps' strands are late too): a parameter like the other
+  built-in ones, with a per-group override: a root whose own join would fall past this share of its lock
+  starts the lock instead. Default 1 (off, v0.1's behaviour: every lock unchanged). The artist turns it
+  down on the group whose locks hang free (Helen's fringe: `START_SPAN` 0.3). It runs where roots are
+  picked for the start (`root_pick`), with each root's own join, before the roots are laid out: a late
+  root kept in place but joined at the start would make a hairpin, and `region_join`'s place is the region
+  prim's centre, not the root's. Strand counts per lock do not change.
+  Graded: with the parameter at its default every lock byte-equal to before at rest (r1) and grooming-check
+  unchanged; with Helen's fringe group at 0.3, on `hair_bang_02` / `03` / `19` / `20` no strand starts past
+  0.3 of its lock, the locks of other groups byte-equal, the start disc within `START_DENSITY_MAX`,
+  grooming-check on Helen passes at its limits (numbers that move are listed), roots under an edit (e6)
+  exact. Rest picture before | after | reference for the four locks, and the scalp under them from the
+  side (bare skin that shows is reported). The panel shows the parameter where it shows the others; if
+  that needs more than a row in the existing list, it is a panel task of its own (skill dcc-panel-design).
+- **The jump at a piece's end (037's (b), a275757)**: it came from 32-bit sums, not from the end rotations:
+  the shots sit about 330 m from the origin and the centre of an end window came out 0.34-0.38 cm off, by a
+  different amount each frame. Positions are summed as offsets from the window's first point. Graded in s6:
+  frame-to-frame motion of the hair within 1.4 x its piece's on 5 consecutive frames of each shot, every
+  lock (worst now 1.09 x). Reported, not met: the tip zone's length (last 10 % of the strand) against the
+  piece on sh020's fringe (78 lock-frames, v0.1 149), and a flat block at hair_bang_20's tip on sh020 frame
+  10 where the animated piece's tip crumples.
 - **Open, the user's call**: mesh locks' roots following the animated scalp (input 4) as drawn locks do.
   Roots follow the hair mesh, which lifts off the head near the roots in the shots (up to 1.0 cm; v0.1 the
   same).
