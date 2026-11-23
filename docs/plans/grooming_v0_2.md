@@ -1139,7 +1139,7 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   0.414, limit 0.2) fail. The limits stay. Skin owned by a lock whose Latest join is under 1 is left out of
   the two thin-skin numbers, as skin under floating mesh already is (the artist asked for its roots to move
   to the lock's start), and is reported on its own line: its bare share, and how much of it has no hair of
-  any lock passing within 0.5 cm over it (bare skin that would show). That second number is graded: at
+  any lock passing within 0.5 cm over it (bare at the skin's surface, not what a camera sees). That second number is graded: at
   most 0.05 of that skin on Helen. Whether the look is right is the user's (the scalp picture).
 - **The flat block at a crumpling tip (report only until decided)**: on sh020 frame 10 hair_bang_20's
   animated piece folds back on itself at the tip (its last tenth 0.30 -> 0.17 cm wide, the fit's residual
@@ -1222,6 +1222,11 @@ of the product was changed. Numbers are Helen's, hython unless said.**
     built.
   - Edited roots by strand id: 0.0 on hair_bang_03 / 19 / 20 (turn 25 deg, tip 2 cm) at sh020 10 / 25 / 60;
     the build before the fix 0.007-0.126 p95 on the same cases. Not tested: the other 58 locks, sh025.
+- **A bad frame is found when it is reached (known limit of v0.2b, the manager, 2026-11-23)**: the deform's
+  message (`deform_problem`: another point count, a non-finite point) and the publish preflight read the
+  current frame only, and the panel does not re-read on a frame change. The panel's line belongs to the
+  frame it was read at and a non-finite point has its own sentence (22fedb1). Checking a frame range before
+  a publish or a render is a task of its own, not in v0.2b.
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
