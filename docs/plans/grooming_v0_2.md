@@ -1198,6 +1198,30 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   - The drawn-lock name with a backtick that failed once in 037b's sequence is the harness (`evalParm` on
     groom_data leaves a failed expression that the next SOP verb reports); the tool reads raw. Tests read
     it with `unexpandedString()`.
+- **The root zone, after 037's 9.18 (the manager, 2026-11-23; nothing built, the limits stay)**: s6 now
+  grades every consecutive pair of both playbars (sh020 0-120, sh025 0-45; ddab10f).
+  - Frame-to-frame 1.4 x is NOT met: sh020 41 of 8,540 lock-pairs, worst 3.50 (hair_base_20 52 -> 53, hair
+    0.142 cm against the piece's 0.041; hair_base_20 24 pairs, hair_base_21 16, hair_bang_03 1); sh025 0,
+    worst 1.05. "1.406, once" and "worst 1.09" were five-frame windows. By experiment 40 of the 41 come from
+    the root zone taking the translation of other pieces' mesh points (own-piece neighbours, or no root
+    anchor at all, leave 1). The last (hair_bang_03 32 -> 33, 1.415, the strand tip) is not traced.
+  - Own-piece neighbours is not a clean fix: every lock moves, roots over 0.1 cm on sh025 go 9 / 12 -> 18 / 17
+    lock-frames (frames 5 / 30), the worst on sh020 frame 10 0.79 -> 1.13 cm.
+  - Roots carried by the animated scalp (trial, in-process, 4 frames, 61 locks): roots over 0.1 cm 11 / 11 /
+    9 / 12 -> 0 on all four; folds 0; but frame-to-frame worse (sh020 41 -> 150 pairs, worst 18.0, the 20
+    back locks' root zone; sh025 0 -> 8), and the first third of fringe strands stretches (hair_bang_20
+    frame 10 2.30 x rest against 1.45 now). Why the root zone jumps while the piece is nearly still is not
+    traced. Not tested: edited and drawn locks, cost, the look. As tried it is not buildable.
+  - Seen while measuring: on sh025 13 back locks gain about 52 deg (max 58.6) of joint turn over rest in the
+    root half on every strand at frames 5 and 30; under the fold line's 90, so nothing fails. Without the
+    root anchor 25 deg, under the scalp trial 18. Whether v0.1 had it is not tested. Goes to User look.
+  - So the root anchor is where three lines meet (frame-to-frame, roots on the scalp, this kink) and none of
+    the three variants meets all of them. Next is tracing, not building: why the scalp-carried root zone
+    jumps, what in the anchor makes the turn and whether v0.1 has it, the three lines with no anchor at all,
+    and hair_bang_03's tip. A root-zone rule is chosen from those results and written here before it is
+    built.
+  - Edited roots by strand id: 0.0 on hair_bang_03 / 19 / 20 (turn 25 deg, tip 2 cm) at sh020 10 / 25 / 60;
+    the build before the fix 0.007-0.126 p95 on the same cases. Not tested: the other 58 locks, sh025.
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
