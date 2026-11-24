@@ -4,6 +4,7 @@ fake adapter (B2's functions) and a fake viewer state (B3's interface); no Houdi
 from __future__ import annotations
 
 import contextlib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -700,4 +701,119 @@ def test_panel_paint_layer_properties_have_no_paint_button(app, prefs) -> None:
     ui._tool_cells["select"].click()
     app.processEvents()
     assert adapter.painting is None and ui._tool_cells["select"].isChecked()
+    ui.close()
+
+
+# ---------------------------------------------------------------------------
+# Properties fit their column (t86 (f) 1: a group's pane was 437 px wide in a 419 px column at 760 px)
+# ---------------------------------------------------------------------------
+
+def _helen(adapter) -> None:
+    """61 locks in 3 groups, two edited, a drawn lock edited and at rest: the widest words a row's status holds."""
+    locks, i = [], 1
+    for gid, n in (("bang", 20), ("back", 20), ("base", 21)):
+        for k in range(1, n + 1):
+            locks.append(Lock(id=i, name=f"hair_{gid}_{k:02d}", group=gid))
+            i += 1
+    data = GroomData(asset="char_Helen", groups=[Group(id=g, name=f"hair_{g}") for g in ("bang", "back", "base")],
+                     locks=locks)
+    for lid in (2, 4):
+        data.lock(lid).spine = [(0.0, 0.0, 0.0)] * 5
+    data.lock(8).overrides = {"clump": 0.6}
+    moved = [(0.0, 0.0, 0.0), (0.0, 0.07, 0.0), (0.0, 0.1, 0.02), (0.0, 0.14, 0.09)]
+    data.locks.append(Lock(id=901, name="drawn_02", group="back", source=config.SOURCE_DRAWN, curve=moved,
+                           drawn_curve=list(CURVE), width_cm=2.0, thick_cm=0.8, taper=0.5))
+    data.id_high = 901
+    adapter.text = data.to_json()
+
+
+@pytest.fixture
+def real_font(app):  # noqa: F811
+    """The face the grabs use: offscreen Qt without a font directory falls back to one about twice as wide (t75)."""
+    from PySide6.QtGui import QFont, QFontDatabase
+
+    path = Path(r"C:\Windows\Fonts\segoeui.ttf")
+    number = QFontDatabase.addApplicationFont(str(path)) if path.is_file() else -1
+    if number < 0:
+        pytest.skip("no Segoe UI on this machine")
+    substituted = "Inter" not in QFontDatabase.families()
+    if substituted:
+        QFont.insertSubstitution("Inter", "Segoe UI")
+    yield
+    if substituted:
+        QFont.removeSubstitutions("Inter")
+    QFontDatabase.removeApplicationFont(number)
+
+
+SELECTIONS = {"All locks": (ctl.SEL_DEFAULTS, ()), "group": (ctl.SEL_GROUP, ("base",)),
+              "lock": (ctl.SEL_LOCKS, (3,)), "drawn lock": (ctl.SEL_LOCKS, (901,))}
+
+
+@pytest.mark.parametrize("what", list(SELECTIONS))
+@pytest.mark.parametrize("scale", [1.0, 1.5])
+def test_properties_never_ask_for_more_than_their_column(app, prefs, real_font, monkeypatch, scale, what) -> None:
+    """At every window width the pane's minimum fits the column the tree leaves it: no sideways scroll, nothing cut."""
+    from tools.fx.grooming import ui as U
+
+    monkeypatch.setattr(U, "houdini_scale", lambda: scale)
+    adapter = SpineAdapter()
+    _helen(adapter)
+    ui = U.GroomingUI()
+    c = ctl.GroomController(adapter, ui)
+    ctl.bind(ui, c)
+    c.set_node(adapter.node)
+    kind, ids = SELECTIONS[what]
+    c.select(kind, ids)
+    ui.set_selection(c.selection)
+    ui.show()
+    cut = []
+    for width in [*range(400, 1241, 20), *range(1240, 399, -20)]:
+        ui.resize(int(width * scale), int(820 * scale))
+        for _ in range(4):
+            app.processEvents()
+        need, room = ui._props_widget.minimumSizeHint().width(), ui._scroll.viewport().width()
+        if need > room:
+            cut.append((width, need, room))
+    ui.close()
+    assert not cut, cut
+
+
+def test_compact_rows_follow_the_selection_shown(app, prefs) -> None:
+    """Whole rows with the levels-below column (All locks, a group) need more than a lock's: in a column between the
+    two a lock has whole rows and a group compact ones, and the next resize still rebuilds them (it compared with the
+    state of the selection before)."""
+    adapter, ui, c = _qt(app)
+    z = ui.z
+    between = z.px((ui.COMPACT_PX + ui.COMPACT_BELOW_PX) // 2)
+    ui.resize(1100, 820)
+    app.processEvents()
+    ui._tree_user = True     # the divider where the test puts it
+    ui._body.setSizes([ui._body.width() - between - ui._body.handleWidth(), between])
+    app.processEvents()
+
+    def slider() -> int:
+        from tools.fx.grooming.ui import _SettingRow
+        rows = [r for r in ui._props_widget.findChildren(_SettingRow) if not r.isHidden()]
+        return rows[-1].slider.minimumWidth()
+
+    c.select(ctl.SEL_LOCKS, (3,))
+    app.processEvents()
+    assert not ui._compact() and slider() == z.px(80)
+    c.select(ctl.SEL_GROUP, ("back",))
+    app.processEvents()
+    assert ui._compact() and slider() == z.px(40)
+    assert ui._was_compact is True
+    ui.close()
+
+
+def test_settings_hint_shows_every_word_on_a_narrow_column(app, prefs) -> None:
+    """The SETTINGS heading's hint wraps (one line asked for 401 px and pushed the whole pane wider)."""
+    from PySide6.QtWidgets import QLabel
+
+    adapter, ui, c = _qt(app)
+    c.select(ctl.SEL_GROUP, ("back",))
+    app.processEvents()
+    hint = next(lab for lab in ui._props_widget.findChildren(QLabel) if lab.text().startswith("bold: set here"))
+    assert hint.text() == "bold: set here, grey: inherited, last column: levels below"
+    assert hint.wordWrap() and hint.minimumSizeHint().width() < ui.z.px(150)
     ui.close()

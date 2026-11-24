@@ -1147,6 +1147,11 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     row click, and `show_tree` there deleted the item being selected, Houdini crashed in
     `QTreeWidgetItem::setSelected`; the rows' "editing" marks come on the next poll (`_rows_dirty`). Offscreen
     tests never caught it: only a tree rebuilt while Qt was still inside its own call does.
+  - Properties fit their column (t87, after t86's 760 px clip): no text in the pane asks for a whole line. The SETTINGS heading's
+    hint on one line asked for 401 px (pane 437) while `_tree_width` leaves Properties as little as 387 at Medium; the
+    "edited drawn" words and the at-rest icon (288c9ca) widened the tree to 340 at 760 px, so a group was cut. The hint wraps, and whole rows with the
+    levels-below column start at `COMPACT_BELOW_PX` (594; they ask for 591), not at `COMPACT_PX`: a group was also cut
+    at 780-880 px. `test_properties_never_ask_for_more_than_their_column` holds it at every width.
   - grooming-check on an edited groom (B5, t83, 2026-11-22): `qc_metrics.py` measures every lock against
     `MESH_CARRIED` (`--mesh modelled` for comparison only), the reference against `pieces`. A drawn lock (`drawn` on
     SPINES) is left out of every mesh number (VEX writes -1, `summary` masks it, its row's mesh fields are None) and

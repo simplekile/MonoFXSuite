@@ -1857,9 +1857,12 @@ class GroomingUI(QWidget):
         QTimer.singleShot(0, self._after_resize)
 
     COMPACT_PX = 540   # Properties narrower than this (x scale): setting rows and stat cells go compact
+    COMPACT_BELOW_PX = 594   # the same for All locks / a group: whole rows with the levels-below column ask for 591
 
     def _compact(self) -> bool:
-        return bool(self._narrow) or self._scroll.viewport().width() < self.z.px(self.COMPACT_PX)
+        below = any(s.get("below") is not None for s in self._props.get("settings") or [])
+        need = self.COMPACT_BELOW_PX if below else self.COMPACT_PX
+        return bool(self._narrow) or self._scroll.viewport().width() < self.z.px(need)
 
     def _after_resize(self) -> None:
         if not self.is_alive():
@@ -2268,6 +2271,7 @@ class GroomingUI(QWidget):
             return
         scroll = self._scroll.verticalScrollBar().value()
         self._clear_props()
+        self._was_compact = self._compact()   # of this selection: the next resize compares with what is shown
         kind = props.get("kind", SEL_NONE)
         lay = self._props_lay
         if kind == SEL_LAYER:
@@ -2304,11 +2308,16 @@ class GroomingUI(QWidget):
         if props.get("settings"):
             head = QHBoxLayout()
             head.addWidget(_label("SETTINGS", "caps"))
-            head.addStretch(1)
             own = {"lock": "this lock", "group": "this group", "defaults": ALL_LOCKS}.get(props.get("own", ""), "")
             if own and not self._narrow:   # narrow: the source column's tooltip says it
                 below = "" if props.get("own") == "lock" else ", last column: levels below"
-                head.addWidget(_label(f"bold: set here, grey: inherited{below}", "small"))
+                # wraps: on one line it asked for 401 px and pushed the whole pane past its column (t86 (f) 1)
+                hint = _label(f"bold: set here, grey: inherited{below}", "small")
+                hint.setWordWrap(True)
+                hint.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                head.addWidget(hint, 1)
+            else:
+                head.addStretch(1)
             holder = QWidget()
             holder.setLayout(head)
             head.setContentsMargins(z.px(4), 0, 0, z.px(4))
