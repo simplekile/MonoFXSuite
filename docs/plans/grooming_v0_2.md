@@ -1292,6 +1292,30 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   - The hython segfault inside s6 did not repeat: 0 of 10 runs of sh020 on this build (5 one after another,
     5 in parallel), 0 of 1 on the build before. Not explained and not excluded as the build's; every hython
     still segfaults on exit after its JSON is written (Houdini's shutdown, known).
+- **The part's independent check (044, t86, 2026-11-24, head 1ffbef4, the committed HDA): 31 of the 32
+  "Done when" lines PASS, 0 FAIL, 1 not covered (the user's own try).** pytest 1372 passed, 3 skipped;
+  `accept_v02b.py` 35 checks pass and only s6 fails, on the known limits above with the same numbers (41
+  pairs, roots 74 / 69, length 35 / 6, tip 78; joint turn sh025 0 over 30, worst 27.3); `accept_v02b_gui.py`
+  20 of 20; grooming-check on fresh Helen (parms at default) 27 of 27 equal to t55, and passes on a moved +
+  rotated + redrawn + drawn groom with no limit moved; full cook 0.990 x the build before v0.2b; everything
+  at once on one scene (edits, two drawn locks, v0.2a layers, Latest join 0.5) through undo / redo, save /
+  reopen, Detect, Update regions, publish and read-back; the mid-run segfault of s6 did not repeat (0 of 2).
+  Found, and what is done with each (the manager):
+  - The group Properties pane is clipped on the right at 760 px, scale 1 (20 widgets overflow, 437 px in
+    about 420; none at 820 / 900 or at scale 1.5; the build before v0.2b: none at 760). A panel rule, so it
+    is fixed before the PR (a fix round and its re-check).
+  - Deleting a drawn lock costs 0.84 s in the panel call + 0.20 s of recook (Draw: 0.22 s). No limit was set
+    for it; recorded as a known limit of v0.2b (t82 measured 5.0 s before the B2 fix).
+  - Reading a publish back is three calls, not one: `import_spines` brings edits and drawn locks (the "Done
+    when" line, met), the groups' settings (Latest join) and `import_masks` (layers) are read apart; with
+    all three the hair is 0.0 cm from the published. Recorded; one call for a whole publish is not in v0.2b.
+  - Notes for the next checker: `qc_metrics.py --fresh` on `helen_v01.hiplc` as saved fails 4 checks because
+    the scene is not at default parms (`accept_lib.fresh` first); a drawn lock's hair is 0.83 of its set
+    width (limit 0.8); a scene with a v0.2a paint layer owning part of the fringe fails
+    `lock_start_share_worst` and `lock_outside_worst` with or without v0.2b's edits (the layer's locks).
+  Not tested by the check: a hand on a mouse or pen, the docked panel's Tool bar driving the viewer state in
+  the GUI (t82 did), "no strand starts past 0.3" under Latest join (its measure did not discriminate; t84
+  round 3 checked counts and the other groups), other shots.
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
