@@ -1275,6 +1275,23 @@ of the product was changed. Numbers are Helen's, hython unless said.**
     (worst 1.40 cm, hair_back_03 on sh025); the cause is not established.
   Both are shown to the user at User look. Part two is listed under "Not in v0.2" with what a build must
   answer first.
+- **Root-zone part one, independent re-check (043, t85, 2026-11-24; code 7bf276d against df93331, the
+  committed HDA, both shots lock-frame by lock-frame): PASS.** Joint turn on sh025: 0 of 366 lock-frames over
+  30 deg, worst 27.3 (hair_back_13), the build before 78 (13 locks x 6 frames, worst 58.6); the checker's own
+  measure on the strand's points agrees (27.2). No s6 line gains or loses a lock-frame; r1 passes (3 runs,
+  0.00216 cm, limit 0.002192); edited roots by id on all 61 locks at rest, sh020 10 / 25 / 60 and sh025
+  20 / 30: 0.00076 cm at most (line 0.001); a moved root handle, a drawn lock with input 4 wired or not,
+  another point count, a non-finite point, Latest join 0.3 in a shot: no error, no NaN, nothing left behind.
+  Corrections to the numbers above:
+  - sh025's counts with frame 30 (s6 grades six frames since 7bf276d) are length 6, surface 12, roots 69
+    lock-frames of 366, equal on both builds; "5 / 10 / 57" were five frames. So the roots limit reads 74 / 69.
+  - Cost is +9.7 % a frame (0.352 against 0.321 s, sh020 20-27, alone, three A/B pairs), not +4-7 %.
+  - The joint line's margin depends on the measure: with each strand resampled by length (24 points, the
+    first 12) hair_back_13 reads 32.4 deg, one lock over 30 (the build before: 58 on both). The line stays
+    s6's (the strand's own points, 27.3); hair_back_13 is shown at User look with the 52 -> 27 deg locks.
+  - The hython segfault inside s6 did not repeat: 0 of 10 runs of sh020 on this build (5 one after another,
+    5 in parallel), 0 of 1 on the build before. Not explained and not excluded as the build's; every hython
+    still segfaults on exit after its JSON is written (Houdini's shutdown, known).
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
