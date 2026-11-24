@@ -16,8 +16,29 @@ and write output only under `tests/<folder>/`. Reference groom for Helen (approv
 ## 1. Numbers (`qc_metrics.py`, hython, ~1 min)
 
 ```bash
-hython .claude/skills/grooming-check/scripts/qc_metrics.py <suite> <scene.hiplc> <out_dir> --ref <groom.usd> [--fresh]
+hython .claude/skills/grooming-check/scripts/qc_metrics.py <suite> <scene.hiplc> <out_dir> --ref <groom.usd> [--fresh] [--mesh carried|modelled]
 ```
+
+**Edited and drawn locks (v0.2b, 2026-11-22).** A lock whose shape the artist edited (control points, rotate,
+redraw) is measured against its mesh piece CARRIED onto the edited spine (the node's `MESH_CARRIED`), not the
+modelled piece it was bent away from on purpose; the mesh views and close-ups of step 2 show that carried mesh too.
+`--mesh modelled` measures against the modelled mesh, for comparison only (Helen with three edited locks: carried
+passes, modelled fails `tip_center_off_worst` 1.67 and `lock_outside_worst` 1.0; t83). The reference is always
+graded on the modelled mesh. A lock drawn on the skin has no mesh: its strands are left out of every mesh number
+(distance to the mesh, on another lock, coverage, width / start share / shape) and the report says so; it counts in
+the shape checks, in density and in the skin, and its own section measures roots on the skin, strands against
+density x max(its skin, its cross-section), and hair width / thickness at 0.3 / 0.5 / 0.7 / 0.9 against the set ones,
+with two checks added only on a groom that has a drawn lock (`drawn_root_skin_worst_cm` 0.0025, `drawn_width_off_worst`
+0.20, the plan's "Done when"). The report lists the edited locks with their mesh numbers. With no edit and no drawn
+lock every number is the one before v0.2b (t55's 27, checked in t83 and by `accept_v02b.py` r2); q1 there checks an
+edited groom.
+
+**Latest join (v0.2b, 2026-11-23).** Skin owned by a lock whose Latest join (`join_limit`) is under 1 is left out of
+`skin_thin_share` / `lock_skin_thin_worst`, as skin under floating mesh is: the artist set its late roots to start the
+lock. It gets its own section (`latest_join_skin`: its bare share and its thin share were it judged, reported) and one
+check added only then, `latest_skin_uncovered` (no hair point of any lock within 5 mm: bare at the skin's surface, not what
+a camera sees; at most 0.05). With no lock
+under 1 the checks and numbers are the ones before.
 
 `--fresh` empties the groom data and runs Detect and Split regions first: use it after a change to
 root detection, spines or regions, since a scene keeps what was detected with the old code.
@@ -73,6 +94,17 @@ caps (wide, short) came out as narrow twisted ribbons while every other lock mat
 **Shot** (`QC_FRAMES=0,60,120`, a scene with the animated hair mesh wired): Shot deform on, one view a
 frame (`QC_VIEWS` for more): `shot_<view>_f<frame>` (ours deformed) and `shot_mesh_<view>_f<frame>` (the
 animated hair mesh, same camera). Nothing else is shot.
+
+**One lock in a shot** (`QC_FRAMES` and `QC_LOCKS=hair_bang_11`): that lock alone of output 1 at each frame, deformed,
+(`shot_lock_<name>_<view>_f<frame>`) and its animated mesh piece shaded alone (`shot_lock_mesh_...`), same camera: the
+two overlay pixel for pixel (tint one over the other). The camera frames the animated piece grown by `QC_LOCK_MARGIN_CM` (3), shrunk to
+`QC_LOCK_ZOOM` (0.55) about its centre (frameBoundingBox leaves a wide border), so the same lock
+unedited, moved 2 cm and moved 5 cm (three scenes) gets the same camera at a frame: put them side by side. A drawn
+lock is framed on its own hair. The whole-groom shot pictures are skipped. Before 2026-11-22 the only per-lock shot
+was compare mode, which framed the rest mesh and the deformed lock together (~330 m apart in sh020 / sh025): empty
+pictures. The rest-pose `lock_<name>` close-ups now blast output 1 by lock id too (they soloed by the eye, which
+output 1 ignores, and showed the whole groom). Compare mode adds the modelled piece as a column for an edited lock
+(`carried mesh | mesh as modelled | ours | reference`) and frames a drawn lock on its hair alone.
 
 Wait for "done" in `capture_log.txt`, then kill the Houdini it started (it often hangs on exit):
 only the process whose command line has `qc_capture`, never the fxhoudini MCP's.

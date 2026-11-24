@@ -17,6 +17,21 @@ locks of QC_REPORT (or QC_LOCKS=name,name) a close-up alone with the lock's mesh
 Shot mode (QC_FRAMES=0,60,120): the animated hair mesh stays wired, Shot deform is turned on, and for
 each frame and view (QC_VIEWS, default threequarter) `shot_<view>_f<frame>` (ours deformed) and
 `shot_mesh_<view>_f<frame>` (the animated hair mesh, same camera); nothing else is shot.
+
+Shot close-up of a lock (QC_FRAMES and QC_LOCKS=name,name): for each lock, frame and view, that lock ALONE of
+output 1 (blasted by lock_id, deformed),
+`shot_lock_<name>_<view>_f<frame>`, and its animated mesh piece shaded alone with the same camera, `shot_lock_mesh_<name>_<view>_f<frame>`. The
+camera frames the animated piece's box grown by QC_LOCK_MARGIN_CM (default 3 cm) on every side, grown again only
+if the hair leaves it, then framed shrunk to QC_LOCK_ZOOM (0.55) about its centre, so scenes with the same lock unedited, moved 2 cm and moved 5 cm get the same camera at each
+frame (the log says when the hair left the box). The two pictures overlay pixel for pixel (one picture over the
+other shows hair against piece); the piece drawn in the same picture does not show: it lies under its hair, and
+Alpha is drawn only inside packed geometry, a template's wire vanished on the white background. A drawn lock (no mesh) is framed on its own hair, margin the same.
+The whole-groom shot pictures are skipped then.
+
+v0.2b: the mesh shown beside a lock (mesh_*, compare, the close-ups' template) is the node's MESH_CARRIED (an edited
+lock's piece on its edited spine); compare adds the modelled piece as a column for an edited lock, and frames a drawn
+lock on its hair alone (it has no mesh). The `lock_<name>` close-ups show output 1's lock alone (blasted by lock_id):
+output 1 ignores the eye that solo() set, so they used to show the whole groom.
 """
 
 import json
@@ -33,6 +48,9 @@ REF = os.environ.get("QC_REF")
 # and the reference's strands of that lock side by side (front and side rows); whole-groom shots skipped
 COMPARE = os.environ.get("QC_COMPARE", "")
 FRAMES = [int(f) for f in os.environ.get("QC_FRAMES", "").split(",") if f.strip()]
+SHOT_LOCKS = [n for n in os.environ.get("QC_LOCKS", "").split(",") if n] if FRAMES else []
+LOCK_MARGIN_CM = float(os.environ.get("QC_LOCK_MARGIN_CM", "3"))
+LOCK_ZOOM = float(os.environ.get("QC_LOCK_ZOOM", "0.55"))   # camera distance after framing, shot close-ups
 os.makedirs(OUT, exist_ok=True)
 _log = open(os.path.join(OUT, "capture_log.txt"), "w", encoding="utf-8")
 
@@ -172,12 +190,17 @@ def aim_looks():
         lk.parmTuple("side").set(side)
 
 
-def set_view(view, bbox):
+def set_view(view, bbox, zoom=1.0):
+    """`zoom` < 1 frames the box shrunk to that share about its centre (frameBoundingBox leaves a wide border: a
+    24 cm box filled a fifth of the picture). Moving the camera by its translation emptied the picture."""
     vp = viewer().curViewport()
     vp.changeType(hou.geometryViewportType.Perspective)
     rx, ry = VIEWS.get(view, (-15, 40))
     cam = vp.defaultCamera()
     cam.setRotation(hou.hmath.buildRotate(rx, ry, 0).extractRotationMatrix3())
+    if zoom != 1.0:
+        c, h = bbox.center(), bbox.sizevec() * (0.5 * zoom)
+        bbox = hou.BoundingBox(c[0] - h[0], c[1] - h[1], c[2] - h[2], c[0] + h[0], c[1] + h[1], c[2] + h[2])
     vp.frameBoundingBox(bbox)
     aim_looks()
 
@@ -225,6 +248,23 @@ def s_open():
     if FRAMES and len(node.inputs()) > 2 and node.inputs()[2] is not None:
         ga.set_shot_deform(node, True)     # OnLoaded opened it at rest; the shot is the target
         S["anim_mesh"] = look_mesh(geo, node.inputs()[2], "anim_mesh")
+        if SHOT_LOCKS:
+            # one lock's animated mesh piece: the node's unpacked animated hair mesh (ANIM_HAIR, the rest mesh's
+            # points) with the rest pieces' `piece` on the same point numbers
+            am = geo.createNode("object_merge", "qc_anim_hair")
+            am.parm("objpath1").set(node.path() + "/ANIM_HAIR")
+            rp = geo.createNode("object_merge", "qc_rest_pieces")
+            rp.parm("objpath1").set(node.path() + "/pieces")
+            ap = geo.createNode("attribwrangle", "qc_anim_piece")
+            ap.setInput(0, am)
+            ap.setInput(1, rp)
+            ap.parm("class").set(2)
+            ap.parm("snippet").set('i@piece = point(1, "piece", @ptnum);')
+            one = geo.createNode("blast", "qc_anim_one")
+            one.setInput(0, ap)
+            one.parm("grouptype").set(3)
+            one.parm("group").set("@piece!=-1")
+            S["anim_one_blast"], S["anim_one"] = one, look_mesh(geo, one, "anim_one")
     else:
         node.setInput(2, None)             # rest pose: the hair mesh is the target
     ga.set_display(node, "hair", "lock")
@@ -241,14 +281,23 @@ def s_open():
                 imp.parm(k).set(v)
         S["ref"] = look_network(geo, imp, "ref")
         S["ref_raw"] = imp
+    modelled = geo.createNode("object_merge", "qc_pieces_modelled")      # the hair mesh as modelled
+    modelled.parm("objpath1").set(node.path() + "/pieces")
+    # v0.2b: an edited lock's mesh is its piece carried onto the edited spine (MESH_CARRIED; the mesh itself when
+    # nothing is edited)
     pieces = geo.createNode("object_merge", "qc_pieces")
-    pieces.parm("objpath1").set(node.path() + "/pieces")
+    pieces.parm("objpath1").set(node.path() + ("/MESH_CARRIED" if node.node("MESH_CARRIED") is not None else "/pieces"))
     tpl = geo.createNode("blast", "qc_lock_mesh")       # the solo lock's own mesh, as a wire template
     tpl.setInput(0, pieces)
     tpl.parm("grouptype").set(3)                         # points
     tpl.parm("group").set("@piece!=-1")
     S["tpl"] = tpl
     S["mesh"] = look_mesh(geo, pieces, "mesh")
+    lock_ours = geo.createNode("blast", "qc_lock_ours")    # one lock of output 1 (the eye does not reach it)
+    lock_ours.setInput(0, S["ours"])
+    lock_ours.parm("grouptype").set(4)
+    lock_ours.parm("group").set("@lock_id!=-1")
+    S["lock_ours"] = lock_ours
     if COMPARE:
         one_mesh = geo.createNode("blast", "qc_cmp_mesh")      # one lock's mesh
         one_mesh.setInput(0, pieces)
@@ -260,10 +309,15 @@ def s_open():
         one_ours.parm("grouptype").set(4)
         one_ours.parm("group").set("@lock_id!=-1")
         S["cmp_ours_blast"] = S["cmp_ours"] = one_ours
+        one_mod = geo.createNode("blast", "qc_cmp_modelled")    # an edited lock's piece as modelled
+        one_mod.setInput(0, modelled)
+        one_mod.parm("grouptype").set(3)
+        one_mod.parm("group").set("@piece!=-1")
+        S["cmp_mod_blast"], S["cmp_mod"] = one_mod, look_mesh(geo, one_mod, "cmp_mod")
         if REF:
             own = geo.createNode("attribwrangle", "qc_ref_piece")  # each reference strand -> a lock
             own.setInput(0, S["ref_raw"])
-            own.setInput(1, pieces)
+            own.setInput(1, modelled)     # the approved groom was made on the modelled mesh
             own.parm("class").set(1)
             own.parm("snippet").set(VEX_REF_PIECE)
             one_ref = geo.createNode("blast", "qc_cmp_ref")
@@ -275,6 +329,12 @@ def s_open():
                      for p in node.node("SPINES").geometry().prims()}
     S["lock_of"] = {p.attribValue("name"): int(p.attribValue("lock_id"))
                     for p in node.node("SPINES").geometry().prims()}
+    sg = node.node("SPINES").geometry()
+    S["edited"] = {p.attribValue("name") for p in sg.prims()
+                   if sg.findPrimAttrib("edited") is not None and p.attribValue("edited")}
+    S["drawn"] = {p.attribValue("name") for p in sg.prims()
+                  if sg.findPrimAttrib("drawn") is not None and p.attribValue("drawn")}
+    S["unit_cm"] = float(node.evalParm("unit_cm")) if node.parm("unit_cm") else 100.0
     S["ours"].setDisplayFlag(True)
     S["ours"].cook(force=True)
     scalp = geo.node("OUT_SCALP")
@@ -340,7 +400,61 @@ def add_shot_frames():
             STEPS.extend([_prep, _shot, _mesh, _mshot])
 
 
-if FRAMES:
+def grown(box, cm):
+    """A box grown by `cm` on every side (scene units from the node's unit_cm)."""
+    e = cm / S.get("unit_cm", 100.0)
+    lo, hi = box.minvec(), box.maxvec()
+    return hou.BoundingBox(lo[0] - e, lo[1] - e, lo[2] - e, hi[0] + e, hi[1] + e, hi[2] + e)
+
+
+def add_shot_locks():
+    """One lock alone at each frame: its deformed hair (output 1 blasted by lock_id) with its animated piece as a
+    wire template, then the piece shaded alone, the same camera for both (and for the same lock in another scene)."""
+    for name in SHOT_LOCKS:
+        for f in FRAMES:
+            for view in VIEWS:
+                def _prep(name=name, f=f, view=view):
+                    hou.setFrame(f)
+                    S["lock_ours"].parm("group").set(f"@lock_id!={S['lock_of'][name]}")
+                    S["lock_ours"].setDisplayFlag(True)
+                    S["lock_ours"].cook(force=True)
+                    hb = S["lock_ours"].geometry().boundingBox()
+                    box = None
+                    if "anim_one" in S and name not in S["drawn"]:
+                        S["anim_one_blast"].parm("group").set(f"@piece!={S['piece_of'].get(name, -1)}")
+                        S["anim_one"].cook(force=True)
+                        if S["anim_one"].geometry().points():
+                            box = grown(S["anim_one"].geometry().boundingBox(), LOCK_MARGIN_CM)
+                            if S["lock_ours"].geometry().points() and not (
+                                    box.contains(hb.minvec()) and box.contains(hb.maxvec())):
+                                log("hair leaves the framing box", name, f)
+                                box.enlargeToContain(hb)
+                    if box is None:
+                        box = grown(hb, LOCK_MARGIN_CM)
+                    S["shot_box"] = box
+                    S["lock_ours"].setDisplayFlag(True)
+                    set_view(view, box, LOCK_ZOOM)
+                    log("lock", name, "frame", f, "strands", len(S["lock_ours"].geometry().prims()))
+
+                def _shot(name=name, f=f, view=view):
+                    grab(f"shot_lock_{name}_{view}_f{f:04d}")
+
+                def _mesh(name=name, view=view):
+                    if "anim_one" in S and name not in S["drawn"]:
+                        S["anim_one"].setDisplayFlag(True)
+                        set_view(view, S["shot_box"], LOCK_ZOOM)
+                        S["anim_one"].cook(force=True)
+
+                def _mshot(name=name, f=f, view=view):
+                    if "anim_one" in S and name not in S["drawn"]:
+                        grab(f"shot_lock_mesh_{name}_{view}_f{f:04d}")
+
+                STEPS.extend([_prep, _shot, _mesh, _mshot])
+
+
+if FRAMES and SHOT_LOCKS:
+    STEPS.append(lambda: add_shot_locks_now())
+elif FRAMES:
     add_shot_frames()
 elif not COMPARE:
     add_views("", "ours")
@@ -360,6 +474,17 @@ def compare_names():
 
 CMP_VIEWS = ("threequarter", "left")
 CMP_COLS = ("mesh", "ours", "ref")
+CMP_NODE = {"mesh": "cmp_mesh", "modelled": "cmp_mod", "ours": "cmp_ours", "ref": "cmp_ref"}
+
+
+def cmp_cols(name):
+    """The columns of a lock's sheet: an edited lock adds its piece as modelled; a drawn lock has no mesh and no
+    reference strands of its own (they are given to the nearest mesh piece), so only our hair."""
+    if name in S.get("drawn", ()):
+        return ("ours",)
+    if name in S.get("edited", ()):
+        return ("mesh", "modelled", "ours", "ref")
+    return CMP_COLS
 
 
 def s_compare():
@@ -370,22 +495,26 @@ def s_compare():
             pc = S["piece_of"][name]
             S["cmp_ours_blast"].parm("group").set(f"@lock_id!={S['lock_of'][name]}")
             S["cmp_mesh_blast"].parm("group").set(f"@piece!={pc}")
+            S["cmp_mod_blast"].parm("group").set(f"@piece!={pc}")
             if "cmp_ref_blast" in S:
                 S["cmp_ref_blast"].parm("group").set(f"@qc_piece!={pc}")
             box = None
-            for col in ("cmp_mesh", "cmp_ours", "cmp_ref"):
-                if col in S:
-                    S[col].cook(force=True)
-                    b = S[col].geometry().boundingBox()
+            for col in cmp_cols(name):        # only what has points: an empty mesh box framed a drawn lock wide
+                key = CMP_NODE[col]
+                if key in S:
+                    S[key].cook(force=True)
+                    if not S[key].geometry().points():
+                        continue
+                    b = S[key].geometry().boundingBox()
                     if box is None:
                         box = b
-                    elif S[col].geometry().points():
+                    else:
                         box.enlargeToContain(b)
-            S["cmp_box"] = box
+            S["cmp_box"] = box if box is not None else S["bbox_all"]
         steps.append(_lock)
         for view in CMP_VIEWS:
-            for col in CMP_COLS:
-                node_key = {"mesh": "cmp_mesh", "ours": "cmp_ours", "ref": "cmp_ref"}[col]
+            for col in cmp_cols(name):
+                node_key = CMP_NODE[col]
 
                 def _prep(view=view, node_key=node_key):
                     if node_key in S:
@@ -409,8 +538,9 @@ def stitch(name):
     """3 columns (mesh, ours, reference) x 2 rows (views) from the parts, centre-cropped, labelled."""
     from PySide6 import QtGui
     parts = {}
+    cols = cmp_cols(name)
     for view in CMP_VIEWS:
-        for col in CMP_COLS:
+        for col in cols:
             f = os.path.join(OUT, f"_part_{name}_{view}_{col}.png")
             if os.path.exists(f):
                 img = QtGui.QImage(f)
@@ -419,13 +549,15 @@ def stitch(name):
     if not parts:
         return
     cw = max(p.width() for p in parts.values())
-    sheet = QtGui.QImage(cw * len(CMP_COLS), 700 * len(CMP_VIEWS) + 40, QtGui.QImage.Format_RGB32)
+    sheet = QtGui.QImage(cw * len(cols), 700 * len(CMP_VIEWS) + 40, QtGui.QImage.Format_RGB32)
     sheet.fill(QtGui.QColor(40, 40, 40))
     pt = QtGui.QPainter(sheet)
     pt.setPen(QtGui.QColor(230, 230, 230))
     f = pt.font(); f.setPixelSize(24); pt.setFont(f)
-    labels = {"mesh": "mesh", "ours": "MONO Grooming", "ref": "reference"}
-    for c, col in enumerate(CMP_COLS):
+    labels = {"mesh": "carried mesh" if name in S.get("edited", ()) else "mesh", "modelled": "mesh as modelled",
+              "ours": "MONO Grooming (drawn lock, no mesh)" if name in S.get("drawn", ()) else "MONO Grooming",
+              "ref": "reference"}
+    for c, col in enumerate(cols):
         pt.drawText(c * cw + 12, 30, f"{name}  {labels[col]}" if c == 0 else labels[col])
         for r, view in enumerate(CMP_VIEWS):
             if (view, col) in parts:
@@ -433,11 +565,22 @@ def stitch(name):
     pt.end()
     sheet.save(os.path.join(OUT, f"cmp_{name}.png"))
     for view in CMP_VIEWS:
-        for col in CMP_COLS:
+        for col in cols:
             try:
                 os.remove(os.path.join(OUT, f"_part_{name}_{view}_{col}.png"))
             except OSError:
                 pass
+
+
+def add_shot_locks_now():
+    """Queue the shot close-ups once the scene is open (lock names and pieces come from it)."""
+    global STEPS
+    queued = STEPS
+    STEPS = []
+    add_shot_locks()
+    new, STEPS = STEPS, queued
+    STEPS[_i[0]:_i[0]] = new
+    log("shot locks", SHOT_LOCKS, len(new), "steps")
 
 
 if COMPARE:
@@ -453,12 +596,13 @@ for name in worst:
     for i, view in enumerate(("threequarter", "left")):
         def _prep(name=name, view=view, first=(i == 0)):
             if first:
-                solo({name})
+                # output 1 ignores the eye solo() sets: the lock is blasted out of it by its id
+                S["lock_ours"].parm("group").set(f"@lock_id!={S['lock_of'].get(name, -1)}")
                 S["tpl"].parm("group").set(f"@piece!={S['piece_of'].get(name, -1)}")
-                S["tpl"].setTemplateFlag(True)
-            S["ours"].setDisplayFlag(True)
-            S["ours"].cook(force=False)
-            set_view(view, S["ours"].geometry().boundingBox())
+                S["tpl"].setTemplateFlag(name not in S.get("drawn", ()))
+            S["lock_ours"].setDisplayFlag(True)
+            S["lock_ours"].cook(force=True)
+            set_view(view, S["lock_ours"].geometry().boundingBox())
 
         def _shot(name=name, i=i):
             grab(f"lock_{name}_{'ab'[i]}")

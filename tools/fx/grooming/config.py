@@ -168,3 +168,102 @@ UNDO_CACHE_GB = 2.0
 # tools/fx/grooming/CLAUDE.md, "t67"
 UNDO_DEFORM_PARM = "undo_deform_gb"
 UNDO_DEFORM_GB = 4.0
+
+# ---- v0.2b lock redraw and control points (docs/plans/grooming_v0_2.md "v0.2b"; logic.py "Control points") ----
+# Field names in `groom_data` (model.Lock / model.Orphan, schema 7) are the contract for the network (B2), the
+# viewer state (B3) and the panel (B4): `spine` (K control points in the root frame, [] = the measured spine),
+# `handles` (the artist's count, None = by length), and for a drawn lock `source` SOURCE_DRAWN, `curve`,
+# `width_cm`, `thick_cm`, `taper`.
+SOURCE_MESH = "mesh"           # a lock detected from a hair mesh piece
+SOURCE_DRAWN = "drawn"         # a lock drawn on the skin (no mesh; Detect leaves it alone)
+LOCK_SOURCES: tuple[str, ...] = (SOURCE_MESH, SOURCE_DRAWN)
+# How many handles a lock shows (the user, U1, 2026-11-20): one every HANDLE_SPACING_CM of its length, at least
+# HANDLES_MIN, at most HANDLES_MAX (Helen: fringe 4-5, the 89.6 cm back locks 12); a per-lock number (`handles`)
+# overrides it, in the same range
+HANDLE_SPACING_CM = 8.0
+HANDLES_MIN = 4
+HANDLES_MAX = 12
+# A redrawn or drawn curve keeps as few control points as hold it within this of the stroke (spike t76 Q4:
+# 4 to 15 a lock on curves like Helen's), at most HANDLES_MAX (the manager, 2026-11-21: 12 everywhere); a stroke
+# 12 cannot hold is still taken, and the gap it leaves goes into the message
+STROKE_TOL_CM = 0.25
+# Changing the handle count of an edited lock re-fits its moves (logic.resample_spine); the edited spine is
+# expected to stay within this. Fewer handles than the edit was made with may not hold it (a local bend needs
+# handles close together): the function returns the distance so the caller can say so
+RESAMPLE_TOL_CM = 0.25
+# A stored root at the root frame's origin (within this, scene units) was never moved: it stays the measured root
+# (the spike's VEX rule); a moved root goes onto the skin (U5)
+ROOT_MOVED_EPS = 1e-7
+# Handles within this (scene units) of where they are now change nothing: the network's spine_edit leaves a spine
+# whose every handle lies this close to the measured one untouched (the per-lock loop is chaotic in the last bit:
+# 1e-7 in P moved hair 0.04 cm), and the adapter writes nothing for a result this close to what is stored or
+# measured (t84 minor 1: no undo step, "nothing changed"). 1e-4 cm in Helen's metres
+SPINE_STILL = 1e-6
+# A handle given within this of where the root is now (cm): the root did not move (it stays the measured one)
+ROOT_SAME_CM = 1e-4
+# A drawn lock's root goes onto the skin, the move fading out over this share of its length (the spike's drawn lock)
+DRAWN_ROOT_FADE = 0.25
+# A drawn lock (U3: it gets its footprint, REGION_FOOTPRINT x its width round its root, in the same undo step)
+DRAWN_WIDTH_CM = 2.0           # the panel's first values for a new drawn lock (spike t76 Q5's test lock)
+DRAWN_THICK_CM = 0.6
+DRAWN_TAPER_DEFAULT = 0.3      # share of the width and thickness left at the tip
+# Limits of what an edit may ask for (t84 B-2: a scale of 1e9 crashed the cook, a width of 1e6 cm or a stroke
+# 1e6 cm off the skin ran for minutes). Past them the adapter raises ValueError naming the limit and writes nothing.
+# Chosen from what an artist can mean, with room (Helen: locks 12.6-89.6 cm, a drawn lock 2 x 0.6 cm):
+# - LOCK_REACH_MAX_CM: every handle (and stroke point) within this of the lock's root. Floor-length hair on a 2 m
+#   character is under 2 m; 3 m leaves room for a lock laid out and back. Cost measured on Helen (t79 limits.out).
+# - STROKE_SKIN_MAX_CM: a stroke (draw, redraw) starts this close to the skin: the viewer state starts it on the
+#   skin; a few cm allows a start over the hair. Its root goes onto the skin, so further off the lock gets a jump
+#   (t84 minor 4: an 80 cm one was taken).
+# - SCALE_RANGE: one Scale is one drag; 0.1 x to 10 x (a 12.6 cm fringe lock to 126 cm), the result still within
+#   the reach.
+# - DRAWN_WIDTH_RANGE_CM / DRAWN_THICK_RANGE_CM: a drawn lock from a few strands to 10 cm wide. Its footprint is
+#   REGION_FOOTPRINT x the width round its root: on Helen 10 cm took skin from 5 locks, 20 cm from 42 of 61 (half
+#   the head) and 40 cm from all of them, which no artist means by one lock (t79 limits.out).
+# - STROKE_POINTS_MAX: a stroke (draw, redraw) of more points is thinned to this many of its own points, evenly by
+#   index, before the fit (`grooming_adapter.thin_stroke`). The fit (`logic.stroke_handles`) measured on a 40 cm
+#   stroke with 0.05 cm of hand noise: 200 points 0.08 s, 1,000 0.10 s, 2,000 0.27 s, 4,000 0.39 s, 8,000 0.78 s,
+#   16,000 5.6 s (t84 recheck: 400,000 took 159 s). A mouse or pen stroke is a few hundred points; 2,000 keeps a
+#   point every 0.02 cm on a 40 cm lock, far under STROKE_TOL_CM, and the fit under 0.3 s.
+# - STROKE_TOL_RANGE_CM: the tolerance a fit may be given (t84 recheck: 0, negative, NaN and inf were taken). Below
+#   0.01 cm every stroke takes HANDLES_MAX (a hand's noise is larger), past 10 cm every one HANDLES_MIN.
+LOCK_REACH_MAX_CM = 300.0
+STROKE_SKIN_MAX_CM = 5.0
+STROKE_POINTS_MAX = 2000
+STROKE_TOL_RANGE_CM = (0.01, 10.0)
+SCALE_RANGE = (0.1, 10.0)
+DRAWN_WIDTH_RANGE_CM = (0.05, 10.0)
+DRAWN_THICK_RANGE_CM = (0.02, 5.0)
+# prim attributes the network writes on a spine (B2): the stored control points as a flat float array (in each
+# lock's cache key like any prim attribute), and 1 on a lock whose spine the edit moved
+ATTR_EDIT_CP = "edit_cp"
+ATTR_EDITED = "edited"
+POINTS_STATE = "mono_grooming_control_points"   # the Python viewer state of the handles (B3)
+# The shot deform (v0.2b, B-3 decided 2026-11-22: v0.1's Point Deform gave a strand point the motion of every rest
+# mesh point within 2 cm, whatever lock it belongs to, and folded fringe locks whose piece does not fold). Each lock
+# follows ITS OWN piece by place along it (`pu`): PIECE_SAMPLES places along the piece, each the centre and best
+# rotation of the piece's points in a Gaussian window of PIECE_SIGMA_BINS samples by `pu` (t79 report 9.5: 48 / 1.5
+# gave 0 folds on sh020 and sh025 at every graded frame). Near the skin a strand takes the translation of the rest
+# mesh points within ROOT_ANCHOR_CM of its root (every piece: roots stay on the skin as v0.1's; own piece only left
+# fringe roots up to 0.3 cm further off) with the piece's rotation there, blending into the place-along-the-piece
+# deform over its first ROOT_BLEND of length (0.2 stretched strands rooted under a far part of their lock: 1.19 p95
+# on hair_bang_20, 0.35 1.17, 0.5 1.15).
+PIECE_SAMPLES = 48
+PIECE_SIGMA_BINS = 1.5
+ROOT_ANCHOR_CM = 1.5
+ROOT_ANCHOR_POINTS = 48
+ROOT_BLEND = 0.35
+# Undo step names (one undo step each, docs/plans/grooming_v0_2.md "Done when")
+UNDO_SPINE: dict[str, str] = {
+    "move": "MONO Grooming: Move control points",
+    "rotate": "MONO Grooming: Rotate lock",
+    "scale": "MONO Grooming: Scale lock",
+    "redraw": "MONO Grooming: Redraw lock",
+    "reset": "MONO Grooming: Reset lock",
+    "handles": "MONO Grooming: Set handle count",
+    "draw": "MONO Grooming: Draw lock",
+    "delete": "MONO Grooming: Delete drawn lock",
+    "drawn": "MONO Grooming: Drawn lock settings",     # width, thickness, taper of drawn locks
+}
+# a drawn lock's curve through its handles is sampled this many times a segment (the spike's Q4 fit)
+CURVE_SAMPLES = 40

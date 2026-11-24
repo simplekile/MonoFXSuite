@@ -98,6 +98,20 @@ def test_root_flip_excluded_round_trip_and_old_json_defaults():
     assert old.lock(1).root_flip is False and old.lock(1).excluded is False
 
 
+def test_latest_join_is_off_by_default_and_a_group_override_round_trips():
+    """Latest join (join_limit, v0.2b): 1 = off for every lock; an older scene (no value stored, same schema) reads 1;
+    set on a group it reaches that group's locks only."""
+    assert BUILTIN_DEFAULTS["join_limit"] == 1.0
+    old = GroomData.from_json('{"schema": 7, "groups": [{"id": "g", "name": "G"}], '
+                              '"locks": [{"id": 1, "name": "a", "group": "g"}]}')
+    assert old.resolve(1)["join_limit"] == 1.0 and old.source_of(1, "join_limit") == "builtin"
+    data = GroomData(groups=[Group(id="g", name="G", overrides={"join_limit": 0.3}), Group(id="h", name="H")],
+                     locks=[Lock(id=1, name="a", group="g"), Lock(id=2, name="b", group="h")])
+    back = GroomData.from_json(data.to_json())
+    assert back.resolve(1)["join_limit"] == 0.3 and back.resolve(2)["join_limit"] == 1.0
+    assert back.schema == SCHEMA
+
+
 def test_shown_follows_lock_and_group_eyes():
     data = GroomData(groups=[Group(id="g", name="G"), Group(id="h", name="H", visible=False)],
                      locks=[Lock(id=1, name="a", group="g"), Lock(id=2, name="b", group="g", visible=False),
@@ -133,9 +147,9 @@ def test_v01_data_migrates_to_layers_without_changing_anything_else():
     assert d.lock(1).overrides == {"clump": 0.4} and d.id_high == 1
     # the automatic groom is the base layer, always there; nothing else
     assert [(m.id, m.kind, m.name) for m in d.masks] == [(-1, "base", "Automatic")]
-    assert not d.has_layers() and d.density_layers() == [] and d.mask_id_high == -1 and d.schema == SCHEMA == 6
+    assert not d.has_layers() and d.density_layers() == [] and d.mask_id_high == -1 and d.schema == SCHEMA == 7
     new = migrate(dict(old))
-    assert new["schema"] == 6 and "masks" not in old and new["masks_dropped"] == []     # the input is not changed
+    assert new["schema"] == 7 and "masks" not in old and new["masks_dropped"] == []     # the input is not changed
     with pytest.raises(ValueError, match="newer than this tool"):
         migrate({"schema": SCHEMA + 1})
     layer = MaskLayer(0, "x")
@@ -265,7 +279,7 @@ def test_schema_3_layers_carry_over_what_has_a_meaning_and_name_what_is_dropped(
     ]}
     text = json.dumps(old)
     d = GroomData.from_json(text)
-    assert d.schema == 6
+    assert d.schema == SCHEMA
     assert [(m.id, m.kind, m.name, m.parent) for m in d.masks[1:]] == [
         (8, "density", "Older build 1", None), (0, "paint", "Half", 8),
         (9, "density", "Thin skin", None), (1, "paint", "Mask", 9),

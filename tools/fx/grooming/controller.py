@@ -21,6 +21,8 @@ from typing import Any, Callable
 
 from tools.fx.grooming import config, logic, model, workspace
 from tools.fx.grooming.layers import SEL_LAYER, LayersMixin
+from tools.fx.grooming import spine
+from tools.fx.grooming.spine import SpineMixin
 
 # How often the panel reads the viewport selection and the node's data (ms)
 SELECTION_POLL_MS = 400
@@ -35,6 +37,7 @@ SETTING_RANGES: dict[str, tuple[float, float]] = {
     "length_mult": (0.0, 2.0),
     "frizz": (0.0, 1.0),
     "root_skin": (0.0, 10.0),
+    "join_limit": (0.0, 1.0),
 }
 # Names as Houdini uses them: Hair Generate's "Thickness" (and the `width` attribute) is one strand's, so
 # the lock's measured cross-section is "Lock width" / "Lock thickness", never plain Width / Thickness.
@@ -47,6 +50,7 @@ SETTING_LABELS: dict[str, str] = {
     "length_mult": "Length ×",
     "frizz": "Frizz",
     "root_skin": "Root to skin",
+    "join_limit": "Latest join",
 }
 SETTING_UNITS: dict[str, str] = {"density": "/cm²", "twist_add": "°", "root_skin": "cm"}
 # Stored value x scale = the value the panel shows (twist is stored in radians, shown in degrees like the
@@ -64,6 +68,9 @@ SETTING_TIPS: dict[str, str] = {
     "root_skin": "Where the lock's root floats off the skin (a mesh lying on another lock), this length of it is "
                  "bent down so its strands grow from the skin, as guides do. Locks whose root touches the skin "
                  "are never changed. 0: off",
+    "join_limit": "How far along the lock a strand may join it. A strand rooted past this share of the lock's "
+                  "length grows from the lock's root instead, so a lock hanging free past the skin it lies on "
+                  "gets no short strands joining it halfway. 1: off (strands join where their root is)",
 }
 
 DISPLAY_LABELS: dict[str, str] = {
@@ -92,7 +99,7 @@ SHORTCUTS: tuple[tuple[str, str], ...] = (
     ("Drag rows", "Reorder, or move locks into another group"),
     ("Ctrl+Z / Ctrl+Shift+Z", "Undo / redo"),
     ("Shift / Ctrl click", "Select several locks"),
-)
+) + spine.SHORTCUTS   # v0.2b: Enter, R / E / Shift, minus / plus, Del, C
 
 # Selection kinds: what the properties column edits
 SEL_NONE, SEL_DEFAULTS, SEL_GROUP, SEL_LOCKS, SEL_ORPHAN = "none", "defaults", "group", "locks", "orphan"
@@ -147,7 +154,7 @@ def _names(names: list[str], most: int = 3) -> str:
     return shown + (f" +{len(names) - most}" if len(names) > most else "")
 
 
-class GroomController(LayersMixin):
+class GroomController(SpineMixin, LayersMixin):
     """The panel's actions on one node. *view* gets what to show (see the module docstring)."""
 
     def __init__(self, adapter: Any, view: Any, node: Any = None) -> None:
@@ -182,6 +189,7 @@ class GroomController(LayersMixin):
     # ------------------------------------------------------------------
     def set_node(self, node: Any) -> None:
         self.paint_off()
+        self.tool_reset()   # Edit points / Draw lock belonged to the old node
         self.focus_off()
         self.node = node
         self._path = self.node_path() if node is not None else ""   # said when the node is gone
@@ -202,6 +210,8 @@ class GroomController(LayersMixin):
             self.view.set_deform_state(*self.deform_state())
         self.refresh_publish_version()
         self.load_notes()
+        self.spine_notes()
+        self.show_tools()
         level = getattr(self.view, "xray_level", None)
         if level is not None:
             self.set_xray(level())
@@ -260,6 +270,7 @@ class GroomController(LayersMixin):
         path = getattr(self, "_path", "") or "The MONO Grooming node"
         self.paint_layer_id = None
         self._display_before_paint = None
+        self.tool_reset()
         exit_ = getattr(self.adapter, "paint_exit", None)
         if exit_ is not None:
             try:
@@ -301,6 +312,8 @@ class GroomController(LayersMixin):
         self.view.show_tree(self.tree_rows(data))
         self.view.set_selection(self.selection)
         self.view.show_properties(self.properties(data))
+        self.show_tools(data)
+        self.spine_after_refresh(data)
         try:
             self.view.set_regions_stale(data.regions_stale, data.stale_why)
         except TypeError:   # a view without the reasons
@@ -396,7 +409,7 @@ class GroomController(LayersMixin):
                               "badges": ["edited"] if o.overrides else [], "meta": o.group}
                              for o in data.orphans],
             })
-        return self.attach_layers(data, rows)
+        return self.attach_spine(data, self.attach_layers(data, rows))
 
     @staticmethod
     def _group_order(data: model.GroomData) -> list[str]:
@@ -446,7 +459,7 @@ class GroomController(LayersMixin):
         if kind == SEL_LAYER:
             return self.layer_properties(data)
         if kind == SEL_NONE:
-            overview, attribs = self._with_geometry(self._overview(data), None)
+            overview, attribs = self._with_geometry(self.spine_overview(data, self._overview(data)), None)
             return {"kind": SEL_NONE, "title": "", "settings": [], "measured": [],
                     "overview": overview, "attribs": attribs, "shortcuts": SHORTCUTS}
         if kind == SEL_ORPHAN:
@@ -497,8 +510,9 @@ class GroomController(LayersMixin):
             details.append(("Viewport", state["note"]))
         measured, attribs = self._with_geometry(self._measured(kind, infos),
                                                 None if kind == SEL_DEFAULTS else self.lock_ids_of(data, self.selection))
-        return {"kind": kind, "title": title, "subtitle": subtitle, "details": details, "own": own, "state": state,
-                "settings": settings, "measured": measured, "attribs": attribs}
+        return self.spine_props(data, {"kind": kind, "title": title, "subtitle": subtitle, "details": details,
+                                       "own": own, "state": state, "settings": settings, "measured": measured,
+                                       "attribs": attribs})
 
     def _with_geometry(self, measured: list[tuple[str, str]], lock_ids) -> tuple[list[tuple[str, str]], str]:
         """The measured cells plus what the hair geometry holds (adapter.geo_stats): the real strand
@@ -1046,8 +1060,9 @@ class GroomController(LayersMixin):
         self.view.set_deform_state(*self.deform_state())
         problem = self._deform_problem() if on else ""
         if problem:   # the anim cannot drive this groom: say so, the hair stays at rest
-            self.view.set_message(problem + ": the hair stays at rest (the animated hair mesh needs the rest"
-                                  " hair mesh's points, in the same order)", error=True)
+            why = "" if "not finite" in problem else \
+                " (the animated hair mesh needs the rest hair mesh's points, in the same order)"
+            self.view.set_message(problem + ": the hair stays at rest" + why, error=True)
             return True
         self.view.set_message("Deform on: the hair follows the animated hair mesh. Every lock is drawn as strands, "
                               "the others are only dimmed (not see-through), each edit deforms it again"
@@ -1182,7 +1197,10 @@ class GroomController(LayersMixin):
         return self._set_isolate(None)
 
     def escape(self) -> bool:
-        """Esc / the banner's button: Paint off first, then out of isolate; else nothing selected."""
+        """Esc / the banner's button: Edit points / Draw lock off first, then Paint, then out of isolate; else
+        nothing selected."""
+        if self.tool_off():
+            return True
         if self.paint_off():
             return True
         if self.isolate_off():
@@ -1217,6 +1235,7 @@ class GroomController(LayersMixin):
         """The panel hidden (closed, or its desktop left): Paint off, every lock in its colour, and the user's
         radial menu back once no panel is shown."""
         self.paint_off()
+        self.tool_reset()
         self.focus_off()
         call = getattr(self.adapter, "radial_off", None)
         if call is not None:
@@ -1461,7 +1480,8 @@ class GroomController(LayersMixin):
             self.select_layer(ids[0])
             return
         if self.paint_layer_id is not None:   # a lock row paints nothing: Paint ends
-            self.paint_off()
+            with self.inside_selection():   # the tree is rebuilt on the next poll, not inside its signal
+                self.paint_off()
         data = self.data()
         if kind == SEL_LOCKS:
             ids = [i for i in ids if data.lock(i) is not None]
@@ -1475,6 +1495,7 @@ class GroomController(LayersMixin):
         self.view.show_properties(self.properties(data))
         if kind in (SEL_LOCKS, SEL_GROUP) or hasattr(self.adapter, "set_focus"):
             self._sync_viewport(data)   # nothing selected: every lock in its colour again
+        self.spine_follow(data)   # Edit points: the handles follow the selection
 
     def _sync_viewport(self, data: model.GroomData | None = None, quiet: bool = False) -> None:
         """Show the panel's selection in the viewport: the selected locks keep their colour and the others
@@ -1546,6 +1567,7 @@ class GroomController(LayersMixin):
             self.node_gone()
             return
         self.poll_paint()
+        self.poll_spine()
         if self._drag_origin is not None:
             # a slider is being dragged: its ticks change groom_data, and showing it again would rebuild
             # the settings under the mouse and end the drag
@@ -1594,6 +1616,8 @@ class GroomController(LayersMixin):
             self.view.show_properties(self.properties(data))
         if known and hasattr(self.adapter, "set_focus"):
             self._sync_viewport(data)   # a pick in the viewport: focus instead of Houdini's highlight
+        if known:
+            self.spine_follow(data)
 
 
 # ----------------------------------------------------------------------
@@ -1668,6 +1692,17 @@ def bind(ui: Any, controller: GroomController) -> None:
     ui.on("set_brush", controller.set_brush)
     ui.on("settings_info", controller.settings_info)
     ui.on("set_node_setting", controller.set_node_setting)
+    # lock shapes (v0.2b): the Tool bar, its strip, Reset shape, drawn locks
+    ui.on("set_tool", controller.set_tool)
+    ui.on("toggle_tool", controller.toggle_tool)
+    ui.on("set_drag_mode", controller.set_drag_mode)
+    ui.on("set_new_lock", controller.set_new_lock)
+    ui.on("step_handles", controller.step_handles)
+    ui.on("handles_auto", controller.handles_auto)
+    ui.on("reset_shape", controller.reset_shape)
+    ui.on("set_drawn_value", controller.set_drawn_value)
+    ui.on("delete_drawn", controller.delete_drawn)
+    ui.on("drawn_selected", controller.drawn_selected)
 
 
 def _adapter():

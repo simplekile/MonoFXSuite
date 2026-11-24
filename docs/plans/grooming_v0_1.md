@@ -11,7 +11,9 @@ One Houdini SOP HDA, **MONO Grooming** (`mono::grooming::0.1`), plus a Qt panel,
 copy-pasted hairgen/hairclump network of `char_Helen_grooming_v007` (about 60 hairgen, 70 hairclump):
 
 1. Inputs: scalp mesh (with UV), hair mesh (one piece per lock, prim `name` when present), optional
-   animated hair mesh (same topology as the rest hair mesh).
+   animated hair mesh (same topology as the rest hair mesh), optional animated scalp (v0.2b, the user's
+   decision U2 of 2026-11-20: the same points as the rest scalp; locks drawn on the skin follow it in a shot,
+   and stay at rest without it; a packed USD input is unpacked as the animated hair mesh is).
 2. Detect locks: one lock per hair mesh piece, a stable `lock_id`, a name, a group from the region.
 3. Measure each lock: spine curve, width, thickness and twist along `curveu`.
 4. Split the scalp into growth regions (`lock_owner`), frozen until the user presses Update regions.

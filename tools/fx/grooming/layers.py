@@ -60,7 +60,10 @@ def owner_name(data: model.GroomData, layer: model.MaskLayer) -> str:
         if lk is not None:
             return lk.name or f"lock {lk.id}"
         orphan = next((o for o in data.orphans if o.id == key[1]), None)
-        return f"{orphan.name or key[1]} (missing)" if orphan else f"lock {key[1]}"
+        if orphan is not None:
+            return f"{orphan.name or key[1]} (missing)"
+        # its lock was a drawn lock, deleted (t80 N4): the layer stays, with no lock
+        return "no lock (its drawn lock was deleted)" if key[1] is None else f"lock {key[1]}"
     return "All locks"
 
 

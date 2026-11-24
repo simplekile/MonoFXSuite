@@ -293,6 +293,23 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
   floating mesh (`region_join` `far_w`: smoothstep of the lock's mesh height over the skin from 0.25 to 0.75 cm
   at `root_far_cm` 0.5, `ROOT_FAR_SOFT` 0.5; a root moves with that chance) start the lock, for every lock,
   and the start-share estimate counts them as full length.
+  **Latest join** (setting `join_limit`, the user's decision 2026-11-23, a per-group override like the others): an own
+  root whose join would fall past this share of the lock starts the lock too, laid out with the far roots. Default 1
+  (off: every lock as v0.1, r1 byte-equal, grooming-check unchanged). It runs in `root_pick` with each root's own
+  join, computed as `root_place` will (own piece's nearest `pu` on the mesh as modelled, input 3; inside the footprint
+  the spine's nearest place), before the roots are laid out: not in `region_start` / `region_join` (a region prim's
+  centre joins elsewhere than its roots: on hair_bang_02 / 03 it moved none of their late roots), not in `root_place`
+  (a late root kept in place but joined at the start runs back up the lock, a hairpin). root_spread's stretch leaves
+  the join as it is once the lock has a start root, which every root it moves becomes. Why a setting and not a rule:
+  the fringe's tuft (hair_bang_19 / 20: 36 % of strands joining 0.4-0.9 along, 0.39 of the lock's length) and the caps
+  lying along the scalp (42-46 % late, 0.75-0.86 of their lock) cannot be told apart by length or skin distance
+  (t79 report 9.11). Helen's fringe at 0.3: no strand starts past 0.3 on bang_02 / 03 / 19 / 20, other groups
+  byte-equal, counts unchanged; their own skin goes 22 % -> 81 % bare (no root within 5 mm) (v006: 97 %), so grooming-check's
+  `skin_thin_share` 0.017 -> 0.128 and `lock_skin_thin_worst` 0.031 -> 0.414 fail their limits (0.05, 0.2; at 0.5:
+  0.101, 0.341). The limits were not moved: that is the artist's trade on that group (t79 report 9.13).
+  grooming-check (3a84bbe) leaves skin owned by a lock with Latest join under 1 out of skin_thin_* and judges it on
+  `latest_skin_uncovered` (no hair point within 5 mm, bare at the skin's surface, not what a camera sees; at most
+  0.05): fringe at 0.5 0.003 pass, at 0.3 0.077 fail (t79 9.14); hair over the skin further up is not counted (t84).
   Start roots are laid out as one sunflower on a disc round the lock's root at up to
   `START_DENSITY_MAX` (6) x its density, each point moved onto the region (a point off it is dropped, the
   disc grows to at most 3x: grown without bound it reached skin 4 cm away, hair_bang_03, and its strands ran
@@ -987,3 +1004,401 @@ working only on `apps/houdini/grooming_adapter.py` or the `grooming-check` skill
     `QT_QPA_FONTDIR` (Windows fonts): without it Qt falls back to a font about twice as wide.
   - In Houdini a `ui.grab()` right after a scroll can show the tree's rows below the first two from the older
     scroll position (seen in t74 `gui_panel8` and later; not on screen): sample the top rows only.
+- v0.2b lock redraw, B1 model and logic (2026-11-20; plan `docs/plans/grooming_v0_2.md` "v0.2b", spike t76;
+  tests `tests/test_grooming_spine.py` on three Helen spines in `tests/fixtures/grooming/t76_spines.json`). The field
+  names are the contract for B2-B4:
+  - `groom_data` schema 7. `Lock.spine`: K control points (handles) in the lock's ROOT FRAME (origin the measured
+    spine's first point after Root to skin, rows tangent / width axis / thickness axis there, scene units), [] = the
+    measured spine. `Lock.handles`: the artist's handle count (U1), None = by length. A drawn lock is a `Lock` with
+    `source` "drawn" (`config.SOURCE_DRAWN`): `curve` its handles in REST SCENE SPACE (no measured spine, no root
+    frame, no mesh: U2's animated scalp moves it in a shot), `width_cm`, `thick_cm` at the root, `taper` (share left
+    at the tip); its `spine` stays []. `Orphan.spine` / `.handles` keep a missing lock's edit; `Orphan.from_lock`
+    is what Detect should build orphans with (the adapter's `apply_detect` still lists fields by hand: B2), and
+    `reassign_orphan` hands the edit on (not onto a drawn lock). `migrate()` 6 -> 7 sets the number only.
+    `GroomData.add_drawn_lock` (new id via `next_lock_id`, marks regions out of date "<name> drawn") /
+    `remove_drawn_lock` (drawn only; the id stays used) / `edited_locks`; `Lock.edited`, `.drawn`, `.reset_spine()`.
+  - The rule (`logic.edited_spine`, the spike's VEX line for line; the test carries a scalar port of the VEX and
+    matches it to 1e-13 cm): each handle's MOVE against the measured spine at k / (K - 1) of its length,
+    Catmull-Rom (uniform, ends clamped) along the spine, added to its points; the frame turns with the tangent by
+    the shortest turn; a root stored at the origin (`config.ROOT_MOVED_EPS`) is the measured root, a moved one goes
+    through `snap_root` (the network's scalp lookup, U5). Also: `root_frame`, `frame_to_world` / `world_to_frame`,
+    `direction_to_frame` / `_world`, `measured_handles` (the no-edit handles), `handle_count` (ceil(cm / 8) + 1 in
+    4..12, or the override), `lock_handle_count`, `resample_spine` (another count: least-squares fit of the moves,
+    root and tip kept; returns the gap in cm), `rotate_about_root` / `scale_about_root` (about the first point, any
+    space), `stroke_handles` (drawn stroke -> fewest handles within `STROKE_TOL_CM`), `redraw_handles` (a lock
+    redrawn: handles on the stroke so its EDITED spine lies within the tolerance), `curve_points` / `drawn_spine`
+    (a drawn lock's curve and its n-point spine), `drawn_footprint_cm` (`REGION_FOOTPRINT` x width), `drawn_profile`,
+    `flat_handles` / `unflat_handles` (the `edit_cp` prim array), `reset_locks`, `curve_gap`.
+  - Constants in `config.py` "v0.2b": `HANDLE_SPACING_CM` 8, `HANDLES_MIN` 4, `HANDLES_MAX` 12, `STROKE_TOL_CM` 0.25,
+    (`STROKE_HANDLES_MAX` 24 until 2026-11-21: now HANDLES_MAX), `RESAMPLE_TOL_CM` 0.25, `ATTR_EDIT_CP` / `ATTR_EDITED`, `POINTS_STATE`, `UNDO_SPINE`
+    (the undo step names), `DRAWN_*` first values.
+  - Measured on the fixture (sandbox `tests/t77_redraw_model/numbers.json`): re-sampling 5 -> 8 -> 5 moves the
+    edited spine 0.017-0.058 cm, but 0.22 cm for the 89.6 cm lock turned 25 deg (its tip 34 cm away): near the
+    0.25 cm tolerance; fewer handles than the edit was made with can miss a local bend (the caller says so).
+- v0.2b lock redraw, B2 network and adapter (2026-11-20; sandbox `tests/t79_redraw_network/`, `report.md` there;
+  acceptance `tests/houdini/grooming/accept_v02b.py` + `_sub.py` / `_shot.py` / `_lib.py`, pytest
+  `tests/test_grooming_adapter_spines.py`):
+  - Nodes after `root_skin`: `SPINES_MEASURED` (the spine as Root to skin left it: a mesh lock's handles are in its
+    root frame) -> `spine_edit` (prim wrangle `VEX_SPINE_EDIT`, the spike's rule = `logic.edited_spine` within
+    0.001 cm; input 1 the rest scalp for a moved root) -> `drawn_locks` (Python SOP `cook_drawn_locks`: one spine a
+    drawn lock, `drawn_spine_arrays`, resolved settings via `lock_display_attribs`, `piece` -1, `drawn` 1; detail
+    `edited_count`, `drawn_count`, `drawn_group`) -> `SPINES`. `cook_assign` writes `edit_cp` (flat handles,
+    `edit_cp_values`) and `drawn` 0 on every mesh spine, and matches pieces to the MESH locks only (`mesh_locks`).
+  - `spine_edit` moves the prim `root` only when the root handle moved: the measured `root` is spine_build's, not
+    the spine's first point after Root to skin, and rewriting it on an unmoved-root edit moved the footprint (an
+    identity edit of hair_back_20 moved hair 0.04 cm). `length` is scaled by the spine's length change; `curveu`
+    stays the measured one. Handles all within `SPINE_STILL` (1e-6 scene units) of the measured spine leave the
+    spine untouched and `edited` 0: the per-lock loop is chaotic in the last bit (float noise of 1e-7 in P and
+    2e-6 in the frame moved hair_back_20's strands 0.04 cm; a recook with no change is exact, 0.0).
+  - The carried mesh: `mesh_carry` (point wrangle `VEX_MESH_CARRY` on `mesh_pu`, inputs SPINES_MEASURED and
+    SPINES) puts each point of an EDITED lock's piece at its `pu` on the edited spine with the same offset in the
+    square frame (tangent, width axis, thickness axis) -> switch `mesh_carry_any` (the mesh itself while no lock
+    is edited: no edit = the network before v0.2b) -> `MESH_CARRIED`. Read by `region_join`, `root_place`,
+    `region_mesh` and the mesh display (`mesh_show` / `mesh_show_any` before `mesh_color`). Not by the shot
+    deform: U4 keeps v0.1's capture on the rest hair mesh for edited locks (the spike measured that one; a
+    capture on the carried mesh would need the animated mesh carried too). `mesh_su` stays on the mesh.
+  - `split_regions` takes roots from SPINES (a moved root's footprint) and widths from SPINES_LOCKS (measured, as
+    before), a drawn lock's radius from `logic.drawn_footprint_cm`; `region_mesh` reads MESH_CARRIED and SPINES.
+    `lock_infos` reads root and length after the edit, and the drawn locks from SPINES.
+  - The per-lock loop for a drawn lock (piece -1): `piece_or_none` (an empty `no_piece` instead of the Unpack of
+    nothing that warned "Input has no packed primitives") feeds `fit_cloud`; fit_to_lock's ellipse does the rest.
+  - Input 4 "Animated scalp" (U2, `build_hda.INPUT_LABELS`, max inputs 4, hidden `scalp_wired`, in
+    `_KEY_SKIP_PARMS`): unpacked as input 2 (`rest_scalp_names`, `anim_scalp_*`), `ANIM_SCALP` (detail
+    `deform_ok`, `anim_points`, `rest_points`; never a warning). The capture loops (`_capture_loop`) pass a drawn
+    lock's strands without a capture (switch `*_on_scalp` by its `drawn`); `_deform_drawn` (display
+    `deform_drawn_*`, output 1 `groom_drawn_*`) deforms the mesh locks as v0.1 and the drawn ones by the animated
+    scalp, each strand rigidly with the skin frame at its root (`VEX_FOLLICLE`: the hit polygon's normal and first
+    edge, rest scalp -> animated scalp), or leaves them at rest when it is not wired or has another point count;
+    while no lock is drawn the v0.1 Point Deform is used as it is. Point Deform captured on the scalp (the first
+    build, and the spike's choice) stretched a fringe drawn lock 1.9-3.5 % on sh025 (limit 2 %): mesh-lock hair on
+    the same skin captured that way stretched up to 46 %, the scalp's local stretch read far from the skin; a
+    larger radius helped the fringe and made the back of the head worse (1.37 at 0.1 m); Point Deform's piece
+    attribute moved nothing. The follicle frame: length 1.0000, roots 0.003 cm off the animated skin (t79 s3). `deform_keys` takes ANIM_SCALP as input 2 (its points in the key only
+    with drawn locks).
+  - Adapter (every change one undo step named from `config.UNDO_SPINE`, several locks at once; places in the
+    node's space): `lock_handles(node, ids)` -> per lock `points`, `frame`, `origin`, `axes`, `count`, `edited`,
+    `drawn`, `root_moved`, `spine`, `measured`, `length_cm`, `default_count`, `count_set`; `set_points(node,
+    {id: points}, space="points"|"frame", step="move")` -> {locks, roots_moved, message} (a root given where it is
+    keeps the stored root, `ROOT_SAME_CM`; a moved root marks regions out of date "<name>: a root moved");
+    `reset_points`, `rotate_points(node, ids, axis, degrees)`, `scale_points(node, ids, factor)`;
+    `set_handle_count(node, ids, count|None)` -> also `gap_cm` per lock, the message says how far past
+    `RESAMPLE_TOL_CM`; `redraw_lock(node, id, stroke)` -> also `gap_cm`, `count`; `draw_lock(node, stroke, width_cm,
+    thick_cm, taper, group, name)` -> {id, name, gave, gave_ids, gap_cm, count, message}, the footprint
+    (`footprint_owners`) in the same undo step (U3); the group of the lock that gave it most skin
+    (`most_skin_group`), named `drawn_NN` (the user, 2026-11-20); a stroke 12 handles cannot hold is taken and
+    the message gives the gap (`_gap_text`, also for redraw); `set_drawn(node, ids, width_cm, thick_cm, taper)` (step
+    "drawn"); `delete_drawn_locks(node, ids)` -> {locks, took, took_ids, message}: the skin it owned alone goes
+    to its neighbours in the same undo step by the rule of Update regions on those prims only (`_split(only=)`,
+    `logic.region_owners(every_lock=False)`: with every_lock the last rule gave EVERY lock one of the freed prims,
+    all 61 recooked), shared skin keeps its other owners (`give_back`); `edited_ids`, `drawn_ids`, `scalp_wired`, `animated_scalp(node)` -> {wired, ok,
+    anim_points, rest_points, drawn, message} (`scalp_text`, the panel's line); `import_spines(node, tool_dir)`
+    (`spines_from_publish`: edits by lock name, drawn locks with their id when unused here, regions out of date).
+  - Model after t80 (2026-11-21, B2 now owns model / logic / config): `Lock.drawn_curve` (the curve as drawn;
+    absent on load = the curve), a drawn lock whose `curve` differs is `edited`, `reset_spine` puts it back; one
+    clamp for a handle count (4..12, on load too); at most 12 handles for a stroke (`STROKE_HANDLES_MAX` gone);
+    `logic.drawn_handle_count`; `reassign_orphan` hands an edit on only when the orphan has one; rotate / scale with
+    a zero or non-finite axis / factor change nothing; a stroke with a non-finite point raises; `add_drawn_lock`
+    refuses a curve without length; a stored `source` outside `LOCK_SOURCES` is mesh; `UNDO_SPINE["drawn"]`.
+  - Shots as saved are not byte-reproducible on the build before v0.2b either (t79 s5): 7 runs of it on sh025
+    differ up to 0.084 cm at frame 30 in 10 locks (hair_back_03 / 06 / 11 / 18, hair_bang_09 / 10 / 19,
+    hair_base_02 / 04 / 13), the same locks and per-lock maxima as this build; at rest the same runs already differ
+    up to 0.0065 cm (the per-lock loop with "Fit lookup per lock" off, an old scene), the deform amplifies it.
+  - Detect: `match_locks` and `apply_detect` leave drawn locks alone (never missing, never new) and build orphans
+    with `Orphan.from_lock` (a missing lock keeps its edit). Publish: grooming_data.json holds the edits (schema
+    7), publish.json `spines` names the edited and drawn locks (`spine_record`).
+- v0.2b lock redraw, B4 panel (2026-11-22; mockup B of t78 + `review_b.md`, the pick and the review's fixes in
+  `ui_spine.py`'s docstring; sandbox `tests/t82_spine_panel/`, `report.md` there; pytest `tests/test_grooming_spine_panel.py`):
+  - Files: `spine.py` (Qt-free: texts, the handle count over several locks, the `SpineMixin` of the controller, mixed in
+    BEFORE `LayersMixin` so its `paint_on` / `paint_off` / `select_layer` / `_on_paint_exit` wrap v0.2a's) and
+    `ui_spine.py` (the Tool bar, the tinted strip, the drawn lock's section, row icon and words, the trash / Del /
+    right-click delete). Hooks only in `controller.py` / `ui.py` (CRLF, patched by script keeping CRLF); `ui_layers.py`
+    lost the paint layer's Paint button (the Tool bar's Paint cell replaced it, the user 2026-11-20) and shows a
+    density layer whose drawn lock was deleted under All locks with "no lock" (`spine.no_lock_layers`;
+    `layers.owner_name` says "no lock").
+  - The tool in hand: `controller.tool` (Edit points / Draw lock) or `paint_layer_id` (Paint): `tool_now()`. One tool at
+    a time: entering one ends the other (`set_tool`); Esc ends the shape tool first (`escape` -> `tool_off`); another
+    node / node gone / panel hidden end it (`tool_reset`, which also unhooks). Enter toggles Edit points, `-` / `+`
+    step handles while it is on (panel shortcuts, a text field keeps its keys); the radial menu got Edit points
+    (top_left) and Draw lock (right), Scalp X-ray moved into the Display submenu (`workspace.ENTRIES`).
+  - B3's modules are imported lazily: `adapter.points_state` (tests), else `apps.houdini.grooming_points_state` only
+    when the adapter is Houdini's own module; `tools.fx.grooming.points_keys.HOOKS["tool"]` is a LIST of callables
+    (B3's interface; the panel appends `_on_tool_record`, shown on the next poll) and `HOOKS["write"](node, result)`
+    cooks the state's write in the loading line and keeps a draw's `gave` for Properties' "Skin from". Without the
+    state the tool is the panel's own view state and the strip's Reset / Handles / drawn values still work (the
+    message says the state is not installed).
+  - Edit points never refuses: no lock -> the strip says "Select a lock"; a group = its locks; locks not drawn
+    (hidden, isolated out) get no handles and the line says why (`edit_targets`). Minus / plus act on each lock
+    (`stepped_counts`: one `set_handle_count` per target count, all in one undo step through `adapter.undo_group`
+    or `adapter.hou.undos.group`); "auto" puts the number by length back. Reset shape is in the strip while Edit
+    points is on, beside Hidden / Flip root / Exclude otherwise, never both (review 2).
+  - Rows: `shape_edited`, `drawn`, `at_rest`, `editing` (attached by `attach_spine`); `edited` / `drawn` are neutral
+    TEXT_LABEL words (review 13), an amber triangle (`ui_spine.WARN_ICON` part, drawn by the delegate) while a drawn
+    lock stays at rest in a shot (`adapter.animated_scalp`, cached per data shown); the own-settings dot is unchanged
+    (badge "edited") and its filter word is `own`; filter words `edited` (shape) and `drawn`.
+  - Strip layout (`ui_spine._Flow`): groups on one line, on two when they do not fit (a larger font size), never
+    clipped; narrow (< NARROW_PX) the cells are icons, Reset a 28 px flat icon, spacing 6: one line at 400 px (39 px
+    strip at scale 1, 50 px at 1.5); at 760 px Reset shape goes to a second line, as in the mockup. Minus / plus are
+    `step_size` (28 px, 24 at least): at the default Medium font size 24 x 28 gave 22 px, under the floor.
+  - Joined with B3's state (2026-11-22, t82 `gui4`): the panel registers on `points_keys.HOOKS` itself (the state
+    module has no HOOKS of its own; a fake with one passed while the real joint did nothing). The record's `tool`
+    "paint" (`yield_to_paint`) ends the panel's shape tool; its `lock_ids` (a click on hair) become the panel's
+    selection (an empty list, a click on empty space, changes nothing); `held` lights the strip's cell; `message`
+    goes to the message line. `spine_follow` never rebuilds the tree: it runs inside Qt's selection signal of a
+    row click, and `show_tree` there deleted the item being selected, Houdini crashed in
+    `QTreeWidgetItem::setSelected`; the rows' "editing" marks come on the next poll (`_rows_dirty`). Offscreen
+    tests never caught it: only a tree rebuilt while Qt was still inside its own call does.
+  - Properties fit their column (t87, after t86's 760 px clip): no text in the pane asks for a whole line. The SETTINGS heading's
+    hint on one line asked for 401 px (pane 437) while `_tree_width` leaves Properties as little as 387 at Medium; the
+    "edited drawn" words and the at-rest icon (288c9ca) widened the tree to 340 at 760 px, so a group was cut. The hint wraps, and whole rows with the
+    levels-below column start at `COMPACT_BELOW_PX` (594; they ask for 591), not at `COMPACT_PX`: a group was also cut
+    at 780-880 px. `test_properties_never_ask_for_more_than_their_column` holds it at every width.
+  - grooming-check on an edited groom (B5, t83, 2026-11-22): `qc_metrics.py` measures every lock against
+    `MESH_CARRIED` (`--mesh modelled` for comparison only), the reference against `pieces`. A drawn lock (`drawn` on
+    SPINES) is left out of every mesh number (VEX writes -1, `summary` masks it, its row's mesh fields are None) and
+    gets a "Drawn locks" section (roots off the rest scalp, strands against `lock_infos`, hair width / thickness at
+    0.3-0.9 against `logic.drawn_profile`) and two checks only when one exists (`drawn_root_skin_worst_cm` 0.0025,
+    `drawn_width_off_worst` 0.20), so a groom without one keeps t55's 27 checks and numbers. Helen with hair_bang_11
+    moved 2 cm, hair_bang_05 turned 25 deg, hair_bang_15 redrawn, drawn_01: carried passes (hair_bang_11 far p95
+    0.46 cm, tip off centre 0.01); modelled fails tip_center_off 1.67 and lock_outside 1.0 (far p95 1.74 cm). drawn_01:
+    274 / 274 strands, roots 1.5e-5 cm off the skin, width 0.83-0.84 of the set. `accept_v02b.py` q1 runs it.
+    `qc_metrics.py` imports `hou` lazily so `tests/test_grooming_check_metrics.py` tests its pure parts.
+  - `qc_capture.py` shot close-up (`QC_FRAMES` + `QC_LOCKS`): output 1 blasted by lock id at each frame, and its
+    animated piece alone in a second picture (ANIM_HAIR + the rest `piece` by point number; drawn with the hair it
+    lies under it, Alpha draws only inside packed geometry, a template's wire vanished on white), camera on the animated piece's box
+    + 3 cm, framed shrunk to 0.55 about its centre, so one lock in several scenes gets the same camera at a frame. The
+    `lock_*` close-ups blast output 1 by lock id (the eye never reached it). Compare shows the carried mesh, adds the
+    modelled piece for an edited lock, frames a drawn lock on its hair.
+- v0.2b, an EDITED lock in a shot (U4 changed by the user, 2026-11-22; sandbox `tests/t79_redraw_network/u4/`):
+  - What v0.1's deform did (t79 u4 diag, sh020): hair_bang_11 moved 5 cm turns its tip 22 deg from the unedited lock at
+    rest but 59-92 deg in the frames (the hook the user saw), its offset in the lock's moving frame changes by p95
+    2.8-3.9 cm: the deform captures the moved points on the hair mesh far from where they now lie.
+  - (REPLACED 2026-11-23 by the piece deform below: the `edit_ride_*` path is gone.) Built: `edit_ride_spines` (`VEX_SPINE_PACK`: per edited lock its unedited spine, two copies 1 cm out along the
+    width / thickness axes, and its edited spine, prim `skey` = lock_id x 4 + kind) -> `edit_ride_capture` /
+    `edit_ride_deform` (v0.1's Point Deform) -> `edit_ride_fk` (`VEX_EDIT_FK`: per spine point the unedited spine's
+    rotation rest -> frame, `rot`; the edited spine rebuilt from its root, each rest segment turned by the rotation
+    there and keeping its length) -> in `_deform_drawn`, `*_edited_ride` (`VEX_EDIT_RIDE`: each strand point around the
+    rebuilt spine with its rest offset turned, blending into v0.1's own deform over the first 0.2 of the strand, so
+    the roots move as the unedited lock's). Unedited locks keep v0.1's points; with no edited lock nothing changes.
+  - Tried first and dropped: the same offset in the unedited spine's moving frame (offset change p95 0.28-1.6 cm on
+    sh020 but strands 13 % longer: an offset curve changes length where its centreline bends); its frame from both
+    offset copies took the hair mesh's local shear. Where the piece moves rigidly (sh025) every method is near exact.
+  - Measured (t79 run7): length 0.998-1.004, roots as the unedited lock's, nothing left behind, tip turn within 3.7
+    deg of rest (sh020) and 0.2 deg (sh025), for 2 cm, 5 cm and 25 deg. A shot frame with one edited lock ~1.4-1.6 s
+    against ~1.0 s (the split of the 4 M points). Decided (the manager, 2026-11-22): no stretch wins over the same
+    offset; `s1b` grades the offset change in the moving frame on sh025 only (p95 <= 0.25 cm; measured 0.02-0.10), and
+    reports it on sh020 where the piece bends (p95 0.66-2.07 cm against the unedited lock's own 0.36-0.56).
+  - An EMPTY Blast group deletes everything: `drawn_group([])` is `@lock_id==-1` (with an edited lock and no drawn
+    one every strand had gone to the drawn branch and stayed at rest).
+  - Deleting a drawn lock: 3.8 s -> 0.49 s (`_prim_centres`: the fine scalp's prim centres and groups read in bulk,
+    summed in vertex order, bit-identical to the per-prim loop; mesh distances by `primFloatListAttribValues`).
+    Update regions gains the same (2.2 s on Helen).
+- v0.2b B2 after the independent check t84 (2026-11-22; FAIL on B-1 / B-2 / B-3; `t79_redraw_network/report.md`
+  section 8 answers each item):
+  - Every adapter write that takes numbers goes through ONE guard, `_finite` (with `_places` for handles and strokes,
+    `_in_range` for a factor / width / thickness, `_reach`): a NaN / inf, a wrong shape, a count outside
+    HANDLES_MIN..HANDLES_MAX (set_points took 2, 3 and 100) or a value past a limit raises ValueError naming it,
+    BEFORE anything is written. A NaN handle had been stored, written as `NaN` into groom_data (not JSON) and lost on
+    reload. `set_handle_count` takes a whole number only (7.5 and "7" went through int()); `draw_lock` refuses an
+    unknown group.
+  - Limits in config (B-2; scale 1e9 segfaulted the cook, width 1e6 cm and a stroke 1e6 cm off the skin ran for
+    minutes): LOCK_REACH_MAX_CM 300 (every handle / stroke point from the lock's root; floor-length hair on a 2 m
+    character is under 2 m; measured on Helen a 30 m stroke and an 8 x scale still cook in ~1 s, so the cost is far
+    off: the hang was 1e6 cm), STROKE_SKIN_MAX_CM 5 (a stroke starts on the skin; a few cm allows one started over
+    the hair; t84 minor 4's 80 cm redraw is refused), SCALE_RANGE 0.1-10 a call, DRAWN_WIDTH_RANGE_CM 0.05-10 (the
+    footprint is 0.5 x the width round the root: 10 cm took skin from 5 locks, 20 cm from 42 of 61, 40 cm from all),
+    DRAWN_THICK_RANGE_CM 0.02-5. Costs in `t79/limits.out`, `reach*.log`.
+  - A result within `config.SPINE_STILL` of what is stored or measured writes nothing (no undo step, "nothing
+    changed"): rotate with a zero axis or 0 deg, scale 1, the measured handles given back (minor 1). SPINE_STILL,
+    ROOT_SAME_CM and DRAWN_ROOT_FADE (the drawn root's fade, 0.25 of the length) live in config (minor 6).
+  - `lock_spines(node, ids)` (public, for the viewer state): per lock `spine` (SPINES) and `measured`
+    (SPINES_MEASURED, None for a drawn lock), each P / tangent / axis as numpy, and `drawn`. The viewer state
+    still reads `_spine_rows(_cooked(...))` (B3's to switch).
+  - accept_v02b: e1's identity passes by construction now (nothing written), so e1 adds the case that can fail:
+    every handle but the root 5 x SPINE_STILL off, the spine = logic.edited_spine within 0.001 cm (9e-6 / 1.3e-5 cm).
+    Found there: that 0.0005 cm spine move regrows hair_back_20 with 2.4 % of its strand points moved past 0.01 cm,
+    0.5 cm at most (hair_bang_11: 0.0005 cm everywhere): reported, not graded. v1 replays t84's bad inputs on the
+    node. s1 adds hair_bang_05 moved 2 cm (B-3) on sh020 frames 10 / 25 / 75 / 105 / 135 (and the earlier ones).
+    r1 and s5 grade against the old build's own spread over 7 of its runs, kept in `<base>_samples/<base key>/
+    <scene>_<sha1>/` and reused (`against_base`): NO BUILD IS BYTE-STABLE FROM RUN TO RUN (old build: Helen 0.0022 cm,
+    sh020 0.05 cm, sh025 0.084 cm); byte-equal pairs are reported, not required.
+  - B-3, hair_bang_05 moved 2 cm in sh020 under U4's deform: length 1.005 at frame 10, then 1.02-1.05 (median; p95 to
+    1.17) from frame 25 on, past s1's 2 %. Cause: v0.1's capture folds this lock's unedited spine BACK on itself there
+    (its turn total 466-493 deg against 228 at rest, 86-90 deg at one point), so the rest -> frame rotation the
+    edited lock rides spins ~180 deg over two spine points and strands 1 cm out are thrown (a 0.76 cm segment became
+    2.1 cm). Tried and dropped: the rotations smoothed along the spine (quaternion Gaussian, 2 cm: frame 10 1.005 ->
+    1.000, the fold-back frames 1.042, but the tip turn rose to 8.65 deg on hair_bang_11 and 14 deg on hair_bang_05
+    against 5; 5 cm: 1.040); the place along the spine kept monotone along a strand and the previous axis carried
+    where the width copy is weak (no effect). The deform is run11's. The unedited lock under v0.1 stretches there too
+    (p95 1.08). Left to the manager: the line holds on hair_bang_11 and on sh025, not where the hair mesh folds a
+    piece back.
+- After t84's second round (2026-11-22; the plan's "After 037b's recheck"; accept_v02b v1 / v2, pytest
+  `test_grooming_adapter_spines.py`):
+  - `groom_data` is read RAW (`data_text(node)` = `parm.unexpandedString()`; also `grooming_masks`): `evalParm`
+    expands a backslash, a backtick and `$`, so a lock or layer name `c\` broke the JSON (the node could not cook
+    until Undo), `cost $5` read back `cost ` and ``a`b`c`` `abc`. `parm.set(text)` already stored the text as given.
+  - Lock ids go through `_lock_id` / `_lock_ids` before anything is read: whole numbers (text of one is left), a bool
+    or a fraction refused, a duplicate counted once (rotate [L, L] turned L twice); `set_points` refuses a lock
+    given twice. A rotate axis is divided by its largest component first ((1e200, 1e200, 0) overflowed the norm).
+  - `tol_cm` in `config.STROKE_TOL_RANGE_CM` (0.01-10); a stroke over `config.STROKE_POINTS_MAX` (2000, cost in
+    config) is thinned evenly by index before the fit (`thin_stroke`: 100,000 points drew in 0.1 s; 400,000 took
+    159 s); a zero-length stroke is refused by draw as by redraw. A drawn lock's name is text, not only spaces, and
+    no other lock's (or missing lock's); `set_drawn` refuses a taper outside 0-1 as `draw_lock` does.
+  - Roots under an edit (the manager's decision on part 2): an edit that leaves the root handle in place moves no
+    strand root; per strand id the root is the unedited lock's (accept e6, within 2e-7 cm). The edited lock is
+    regrown, and `region_join` / `root_place` (and their `groom_` copies) read the mesh as modelled (`mesh_pu`), not
+    `MESH_CARRIED`: reading the carried mesh, a turned or bent lock's mesh lay elsewhere over the skin, other skin read
+    as under floating mesh (`far_w`: roots sent to the start disc), the joins moved and `root_spread` dealt the ids out
+    again (hair_base_07 turned 25 deg: 78 % of roots moved by id, p95 9.3 cm, 16 % off its own root set). Where roots
+    sit is the regions' call; a moved root handle marks them out of date (U3 / U5). MESH_CARRIED is still read by
+    the mesh display and `region_mesh`.
+  - Known, left: the regrowth itself is chaotic in the last bit on a wide cap: hair_base_07's handles moved 1e-4 cm
+    move its strands up to 0.272 cm (43 % of points over 0.01 cm) with every root exact (hair_back_05 0.021 cm,
+    fringe 0.0002 cm). Carrying the unedited lock's cached strands onto the edited spine instead (the carry rule
+    `mesh_carry` uses, per strand point) would make a tiny edit a tiny move; see t79 report 9.3 for the cost.
+  - r1 / s5: 20 samples of the old build made from the COMMITTED ed7d0de (`t79/base7_suite` = git archive; t79's
+    base6_suite had a rebuilt HDA), graded against the largest difference between any two + 2 float32 steps.
+- The shot deform replaces v0.1's (B-3 decided by the user, 2026-11-22; plan "The cause, and the deform that replaces
+  v0.1's in shots"; t79 report 9.4-9.6, acceptance s6 = `tests/houdini/grooming/accept_v02b_deform.py`):
+  - Why: v0.1's Point Deform (radius `deform_radius` 2 cm, maxpt 100) gave a strand point the motion of every rest mesh
+    point within 2 cm, whatever lock it belonged to (47 % of the weight on average from other locks' pieces), and inside
+    a hooked fringe piece also the hook's other arm: 19 lock-frames folded on sh020, 10 on sh025, where the piece does
+    not fold. Capturing on the own piece alone left the hooks; any deform that follows each lock's own piece moves
+    every lock 0.15-1.5 cm p95 against v0.1, so "within 0.1 cm of v0.1" was dropped for shots (the manager).
+  - What: each strand point stores `dfu`, its place along its OWN piece (`pu` of the nearest face of that piece, on
+    MESH_CARRIED so an edited lock's strands find their place on its carried piece), and each strand its root's
+    neighbours on the rest hair mesh (`rnb` / `rnw`, any piece, within `config.ROOT_ANCHOR_CM`), in the capture loop
+    (`VEX_PIECE_U`; 4 bytes a point + 48 neighbours a strand where v0.1's capture was 800 B a point). `piece_samples`
+    (rest only) puts `config.PIECE_SAMPLES` places along every piece, from 2 sigma to 1 - 2 sigma of `pu` (whole windows:
+    a one-sided window at a piece's end sat inward by an amount that follows the point spacing, which a stretching piece
+    changes, and kinked strands 80 deg), each listing its Gaussian window's points; `piece_fit` (per frame, parallel
+    over the ~2,900 places) gives the window's mean in the frame and its best rotation (Kabsch by `svddecomp`; a local
+    linear fit of the centre was tried and dropped: it extrapolated the animated mesh's local jitter at the ends);
+    `piece_fk` rebuilds an EDITED lock's centreline from its root with those rotations (U4's rule, no stretch). A
+    strand point: e1(u) + (P - e0(u)) * rot(u), past the first / last place carried rigidly by it; its root zone takes
+    the translation of its root's neighbours with ONE rotation, the piece's at the strand's root (the root-zone rule,
+    2026-11-23; each point's own bent the root half up to 58 deg, v0.1 76), and blends into that over
+    `config.ROOT_BLEND` of the strand. One deform for edited and unedited locks; drawn locks pass it and keep the follicle (VEX_FOLLICLE);
+    an animated mesh of another point count keeps v0.1's answer (rest pose, `deform_ok`), and so does one with a point
+    that is not finite at that frame (`bad_points`, checked each frame in `ANIM_HAIR` / `ANIM_SCALP`; `deform_problem`
+    and the drawn locks' line say how many): one inf point of hair_bang_11's piece gave 5,302 NaN strands across 20
+    locks with no error (t84 round 3). Mesh / guide display parts are
+    still Point Deformed (their own mesh), so `deform_radius` now only drives those.
+  - A bad frame's message is of that frame: the panel keeps the scalp's line per data and frame (`adapter.current_frame`;
+    kept per data only, a bad frame's line stayed on good frames), and the point-count sentence is not added to it. What
+    is NOT covered: the panel does not re-read on a frame change (poll looks at the data), so scrubbing onto a bad frame
+    shows the hair at rest with no line until something refreshes it, `deform_problem` is read when Shot deform is
+    turned on and at publish, at the frame of that moment only, and the warnings inside the locked HDA reach no artist.
+  - Known coupling (t84 round 3): the root zone takes the translation of its root's mesh neighbours from ANY piece
+    within ROOT_ANCHOR_CM, so a piece moving on its own moves the root zones of the locks rooted near it: one piece
+    moved 5 cm moved 20 neighbouring locks' roots up to 1.25 cm (22-25 %; 50 cm gave 12.5 cm), median 0. Roots off
+    the animated scalp follow the lift of those neighbours (t79 9.15: root off vs the neighbours' centre's lift,
+    correlation 0.92-0.95; hair_bang_20 at sh020 10 its worst tenth's neighbours lift 0.69 cm, hair_back_03 at sh025
+    30 1.47 cm, own piece); turning the stand-off by the scalp's rotation instead of the piece's changes it by 0.25 cm
+    at most.
+  - An edited lock's root zone turns by the piece's rotation at its root's place on the piece AS MODELLED
+    (`VEX_PIECE_U` `rdfu_shift` = that place minus the place on the carried piece, 0 for a lock not edited): read on the
+    carried piece the place slid with the edit (hair_bang_19 turned 25 deg: up to 0.11 along a piece whose rotation
+    changes fast at the crumple), and its roots sat up to 0.20 cm from the unedited lock's in sh020 frame 10 (t84 round
+    3, by strand id). Now 0 by id. Unedited locks (control, 3 runs a build, every strand, sh020 10 / 25 and
+    sh025 5 / 25): `rdfu_shift` 0 on all; before against after identical but hair_bang_20 on sh025 (0.0059 cm), which
+    two runs of one build also differ by.
+  - Frame to frame, every pair (t79 9.18): s6 grades all consecutive pairs of the playbars (sh020 0-120, sh025 0-45; a
+    5-frame window had shown a worst of 1.09). As built 41 sh020 pairs are over 1.4 (worst 3.50, hair_base_20 52 -> 53),
+    sh025 none. 40 are the root zone's neighbours from other pieces (own-piece neighbours or no anchor: 1 left, the tip of
+    hair_bang_03 32 -> 33, not traced); own-piece neighbours move every lock and put more roots off the scalp, so not
+    built. Roots carried by the animated scalp (trial, not built): 0 roots over 0.1 cm, but 150 sh020 pairs over 1.4
+    (worst 18) and root-zone stretch to 2.3 x on hair_bang_20. A short window hid both: grade every pair.
+  - On sh025 13 back locks gain ~52 deg (max 58.6) of joint turn over rest on most strands near the root, under the fold
+    rule's 90 (t79 9.20). v0.1's deform (a3b2d08) has it, worse: 20 locks over 30, worst 76. Cause, by experiment: the
+    root zone turns each point's offset from its root (up to 13 cm) by that point's OWN rotation along the piece; one
+    rotation per strand (the root's) alone makes it 0 locks, 27 deg, and changes no other line: built (t79 9.21; s6
+    grades the joint turn on sh025, 30 deg). It moves the hair's distance to its own piece on sh025 by up to 0.18 cm
+    both ways (p95 0.230 -> 0.240, worst 0.36 -> 0.26) and costs 4-7 % a frame.
+  - Root zone by experiment (t79 9.20; nothing built): the scalp trial's jump is the polygon frame's float32 noise (a 0.09 cm
+    polygon turns 2.2 deg while the skin turns 0.03) times the 13 cm lever; the scalp's translation with the piece's rotation
+    does not jump (1 pair over 1.4 against 150). A zone over 0.7 of the strand takes the hair off its own piece (0.9 cm):
+    always read the hair-to-piece distance beside the joint and stretch lines. `scalp_patch` as first written fell back
+    silently where the scalp is coarse (forehead): an experiment that can fall back must count how often it did.
+  - A test that reads `groom_data` with `evalParm` makes Houdini evaluate a backtick in a lock name as an expression;
+    the failed expression stays in the process's error state and the next SOP verb reports it (t84 round 3:
+    ``a%(x)s${HIP}`b``, `grooming_masks._vertex_tables`' attribpromote raised). The tool reads it raw and is not
+    affected; tests must read it with `unexpandedString()`.
+  - VEX traps met: `vector(prim(...))` / `vector(point(...))` picks the float overload and copies one number into all
+    three (roots landed at (x, x, x)): read into typed variables. A rotation fitted to a root's neighbours alone is
+    ill-posed where they lie near one line (a ribbon's edge: 0.9 cm with no animation); fitted per root where they
+    spread enough it fixed sh025's roots but stretched the root zone (p95 1.10 against v0.1's 1.07): not kept. A
+    detail wrangle over every piece's points per frame cost 0.7-0.8 s; the rest-only sample lists + a parallel fit
+    0.1 s. Prototype nodes outside the HDA must be force-cooked per frame (an Object Merge of an inner node did not
+    pass time dependency on).
+  - An edited lock's rebuilt centreline takes its piece's own length change segment by segment (`piece_fk`; the plan
+    2026-11-23: the edit adds no stretch of its own): kept at rest length it was 2-4 % off the unedited lock where the
+    pieces stretch. A strand's place never goes back along it (`VEX_PIECE_U`).
+  - Lines (the plan, 2026-11-23, after the cause was traced: the animation stretches the pieces): unedited strand
+    length within 5 % (p95) of its piece's length ratio over the strand's span; edited median within 2 % of the
+    unedited lock's at that frame; roots within 0.1 cm (p95) of the animated scalp. s6 run19s6 (all 61 locks, sh020
+    frames 10 / 25 / 45 / 60 / 75 / 105 / 135, sh025 5 / 20 / 25 / 40 / 50): 0 folds (v0.1 19 / 10); nothing left behind;
+    every edited case (sh020's 20 fringe locks, sh025's 9) within 2 % of the unedited lock and 5 deg; output 1 0.29-0.43 s
+    a frame (v0.1 0.94-1.13). Not met, causes in t79 report 9.7: length against the piece on 36 / 5 lock-frames (v0.1 64 /
+    25; fringe bang_02/03/04/07/12/14/19/20, back_15); roots over 0.1 cm on 76 / 58 lock-frames (v0.1 78 / 30): the
+    animated hair mesh by the roots lifts off the head in the shot (hair_back_03 on sh025: p95 0.45 cm at rest, 1.40 at
+    frame 40), and roots that follow the mesh leave the scalp with it; with the animated scalp wired they could follow
+    the skin as drawn locks do (not built). Frame to frame (no jump asked): a strand's tip past its piece's last sample
+    rides that sample's rotation, which jitters with the end of the animated piece: hair_back_07 sh025 20 -> 21, tip
+    0.99 cm against the piece's 0.56.
+  - (b), the jump at a piece's end (the manager, 2026-11-23): the cause was 32-bit sums, not the end rotations. The
+    shots sit ~330 m from the origin and VEX sums positions in 32-bit floats: a window of ~2,600 points' centre was
+    0.34 cm off, by a different amount every frame, so an end place moved 0.95 cm where its points moved 0.53
+    (hair_back_07, sh025 20 -> 21: the tip 1.75 x its piece). Every sum of positions (`piece_samples`, `piece_fit`,
+    `VEX_PIECE_ROOT`) is now taken as offsets from the window's first point: the tip moves 0.57 cm, the frame-to-frame
+    worst 1.09 x. Tried and dropped: replacing a loosely fitting place's rotation by its neighbours', a limit on the turn
+    between places (45 deg), and freezing the rotation past the last well fitting place (fit residual over 0.25 of the
+    window's size): each folded fringe locks that did not fold (sh020 14 lock-frames, edited tip turn to 66 deg) or sh025
+    back locks. Left: hair_bang_20's tip crumples in sh020 frame 10 (fit residual 0.5-0.9 of the window), its places
+    flip 45-133 deg and the last strands draw a flat block (look4 `sh020_hair_bang_20_*_f0010_b.png`). Traced
+    (t79 9.13): the piece's last tenth folds back on itself and the hair follows it (on the piece within 0.2 cm, places
+    right to 0.011); points past the last sample are not the cause. Tried and dropped (t79 9.14): where residual / size
+    passed 0.5, points carried by their 8 nearest own-piece mesh points blended by the residual. The line is crossed
+    all shot long by sh025's 20 back locks (2.14 on hair_back_15, mid-lock): in 2.6-6 % of their point pairs the
+    distance changes over 20 % (p50 1.000), and back hair moved up to 16.4 cm. Why is NOT established (a part of the piece
+    moving apart, its points the nearest ones, was assumed, never tested). A residual line does not tell a tip folding back from a piece made of
+    parts; nearest points would have to be limited to the strand's own part and place.
+  - accept_v02b after the change: s1 grades the edited lock against the unedited one at that frame (the plan's line);
+    s5 (three-input scenes) grades the same strands and points a strand and no error, and reports the move from v0.1
+    (3.1 / 7.6 cm at most on sh020 / sh025), since the deform that replaced v0.1's moves every lock; r1 (rest) still
+    holds this build to the old build's own spread.
+- v0.2b lock redraw, B3 viewer state (2026-11-22; sandbox `tests/t81_points_state/`, `report.md` there; GUI acceptance
+  `tests/houdini/grooming/accept_v02b_gui.py`, pytest `tests/test_grooming_points_keys.py`):
+  - `apps/houdini/grooming_points_state.py`: ONE Python state `config.POINTS_STATE` for Edit points and Draw lock,
+    entered by name on the node as Paint is (selects the node, `_came_back` when Houdini drops it, ends on another
+    node selected, the node deleted (BeingDeleted), File > New / Open (`hipFile` BeforeClear / BeforeLoad), Esc from
+    anywhere (application filter)). It never writes the data: one adapter call a gesture on release (`set_points`,
+    `rotate_points`, `scale_points`, `redraw_lock`, `set_handle_count`, `draw_lock`), then the node cooks, or
+    `points_keys.HOOKS["write"](node, result)` does it for the panel. A move of handles of mesh locks goes as
+    `space="frame"` with the handles that did not move kept exactly (a moved root's cooked place on the skin is not its
+    stored place: given back in node space it read as moved again); drawn locks in node space; both in one
+    `hou.undos.group` when mixed.
+  - The panel's interface: `enter_points(node, ids)`, `enter_draw(node)`, `exit_tool()`, `set_mode(mode)`,
+    `set_locks(ids)`, `set_new_lock(width_cm, thick_cm, taper)`, `current_tool()`; `points_keys.STATE` (`tool`, `mode`,
+    `lock_ids`, `width_cm`, `thick_cm`, `taper`, plus `held`, `message`, `node`), `points_keys.HOOKS["tool"]` (a list
+    of callables, or one) on every change. Paint: `grooming_paint_state.enter` calls `yield_to_paint` (the record says
+    `paint`), its leave / end calls `paint_ended`; entering this tool calls `paint_exit` first.
+  - Gestures: drag a handle on the view plane through it; the root handle on the ray's hit on the frozen IN_SCALP
+    (`intersect`; a miss keeps it), other locks' roots `nearestPrim` onto it: 6e-6 cm off the skin at every event.
+    R / E PRESSED arm the next drag (rotate / scale about each lock's root; held through the drag or tapped before
+    it, the release is ignored, a second press disarms): Houdini's own R / E would take the viewport to its Edit /
+    scale tool, so they are hotkeys of the state's menu (`HOTKEY_CONTEXT`), and the press is seen by the application
+    filter. Rotate: the angle on the view plane through the root about the view direction; scale: x2 per 200 px
+    right. Shift + drag redraws the lock nearest the press (from the root handle the root stays; from the skin the
+    root moves there). minus / plus: one handle less / more on EACH lock (grouped by target count, one undo step).
+    Several locks: the same handle of each (`points_keys.map_handle`: root to root, tip to tip, the rest by share).
+  - Houdini sends a press and release without motion as ONE mouse event (`ui_event.reason()` Picked, the button
+    down, no release after it): handled as a whole click; read as a press it left a gesture open and the next move
+    closed it as a click elsewhere (t81 r11). A click on a handle keeps the selection; on hair (the spine nearest on
+    screen within 30 px, points behind the camera or outside the view left out) it selects that lock, Shift adds,
+    Ctrl toggles; on empty space it keeps the selection. A gesture whose button is no longer down when a key comes is
+    closed (`_drop_stale`).
+  - GUI tests of a state: map viewport pixels to the GL widget directly (x = widget x, y = height - widget y, read
+    live), not by moves read back from the state: after a flipbook the state's events lag and the read-back
+    calibration was garbage (r5); redraw the viewport after a flipbook before reading where a handle is (r4 / r7:
+    presses 30 px off); find the GL widget once before any state (the HUD's widget sits at the viewport's centre);
+    each step frames its own lock (run alone, a step used the default view: handles off screen, r15).

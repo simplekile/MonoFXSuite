@@ -313,7 +313,7 @@ def test_publish_record_fields():
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1234, "/obj/g/n", "22.0")
     assert rec["asset"] == "char_Helen" and rec["version"] == "v007"
     assert rec["locks"] == 1 and rec["strands"] == 1234 and rec["department"] == "grooming"
-    assert rec["masks"] == {} and rec["schema"] == 6
+    assert rec["masks"] == {} and rec["schema"] == 7
     rec = ga.publish_record("char_Helen", "v007", "x.usd", "s.hip", data, 1, "/obj/g/n", masks={"file": "m.bgeo"})
     assert rec["masks"] == {"file": "m.bgeo"}
 
@@ -375,6 +375,12 @@ def test_anim_mismatch_text():
     assert ga.anim_mismatch_text(196202, 196202) == ""
     assert ga.anim_mismatch_text(196102, 196202) == "Anim hair mesh: 196102 points, rest hair mesh 196202: no deform"
     assert "no prims named like" in ga.anim_mismatch_text(0, 196202)
+    assert ga.anim_mismatch_text(196202, 196202, 1) == "Anim hair mesh: 1 points not finite at this frame: no deform"
+    assert ga.anim_mismatch_text(196202, 196202, 0) == ""
+    assert "not finite" in ga.scalp_text(1, True, 10, 10, 3) and ga.scalp_text(1, True, 10, 10, 0) == ""
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert build.count("i@bad_points = bad;") == 2 and build.count("&& bad == 0;") == 2
     assert callable(ga.deform_problem)
 
 
@@ -956,3 +962,35 @@ def test_the_parms_own_callback_still_writes_the_note_with_undo_off(monkeypatch)
     n.parms[ga.LOOKUP_PARM].v = 1
     ga.on_lookup_changed(n)
     assert n.data[ga.LOOKUP_NOTE] == "on: set by hand" and fake.steps == []
+
+
+def test_latest_join_rule_is_in_root_pick_and_off_at_its_default():
+    """Latest join (v0.2b): root_pick reads each lock's join_limit (a settings prim attribute) and the mesh as modelled
+    (input 3, mesh_pu) for each own root's join; at 1, or when the attribute is not there, nothing is computed."""
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert 'float jl = hasprimattrib(2, "join_limit") ? prim(2, "join_limit", 0) : 1.0;' in build
+    assert "if (jl < 1) {" in build and "|| ujs[k] > jl;" in build
+    assert '_wrangle(sub, "root_pick", VEX_ROOT_PICK, DETAIL, [hairgen, frame, begin, mesh_pu])' in build
+    attrs = ga.lock_display_attribs(ga.model.GroomData(), [-1])
+    assert attrs["join_limit"] == [1.0]
+
+
+def test_edited_lock_root_zone_turns_at_its_modelled_place():
+    """t84 round 3: an edited lock's roots stay the unedited lock's in a shot: the capture records the root's place on
+    the piece as modelled against the carried one, and the root zone turns by the rotation there; the shift is taken
+    off with the capture's other attributes."""
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    assert 'f@rdfu_shift = rhp >= 0 ? primuv(3, "pu", rhp, ruv) - us[0] : 0.0;' in build
+    assert 'float dr = point(0, "dfu", primpoint(0, pr, 0)), sh = prim(0, "rdfu_shift", pr);' in build
+    assert 'CAPTURE_PRIM_ATTRIBS = "rnb rnw rc0 rc1 rok rdfu_shift"' in build
+
+
+def test_the_root_zone_keeps_one_rotation_per_strand():
+    """The root-zone rule (2026-11-23): the anchor turns the strand by the piece's rotation at its ROOT, never by each
+    point's own (which bent the root half by up to 58 deg, sh025)."""
+    import pathlib
+    build = (pathlib.Path(__file__).resolve().parents[1] / "tools/fx/grooming/build_hda.py").read_text("utf-8")
+    zone = build[build.index("ONE rotation for the whole zone"):build.index("vector at_root = rc1 + (@P - rc0) * Rr;")]
+    assert "primpoint(0, pr, 0)" in zone and "f@dfu" not in zone and "matrix3 Rr = R" not in zone

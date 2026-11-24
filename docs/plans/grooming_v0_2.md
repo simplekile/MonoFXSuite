@@ -993,6 +993,366 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   density layers, a control-point edit on a drawn lock, the redraw and rotate / scale gestures: not
   prototyped; each is a "Done when" item.
 
+**Design gate (t78, 2026-11-20; mockups in `sandbox/.../tests/t78_redraw_mockups/`). Decided by the user.**
+- **Mockup B**: a Tool bar at the panel's head (Select / Edit points / Draw lock / Paint) and under it a strip
+  with the settings of the tool in hand (drag mode Move / Rotate / Scale / Redraw, Handles `auto (N)` with
+  minus / plus, Reset, Done). One tool at a time shows in one place; Paint is entered from the same bar.
+- **The word "edited"** on a row and as a filter word means the lock's SHAPE was edited. A lock with its own
+  settings keeps its grey dot; its filter word becomes `own`. A drawn lock's row says `drawn`.
+- **A drawn lock's group**: the group of the lock that gave it most skin (it resolves that group's settings);
+  named `drawn_NN`.
+- **Deleting a drawn lock** gives its skin back to the neighbours in the same undo step, and the message names
+  the locks that took it (as Draw, U3).
+- Left as mocked unless the user's try says otherwise (the manager's call, 2026-11-20): `edited` in the
+  update blue and `drawn` in the "new" violet; keys Enter (Edit points), R / E / Shift + drag (rotate, scale,
+  redraw), minus / plus (handles), the wheel for a new lock's width; Draw lock stays on for the next lock;
+  Reset on a drawn lock returns the curve as drawn, and a drawn lock whose points were moved is also
+  `edited`.
+- **Paint's way in** (the user to the mockup session, 2026-11-20): the Tool bar's Paint cell REPLACES the Paint
+  button in a paint layer's Properties (one way in). The cell is usable with one paint layer selected, else
+  dimmed with the reason in its tooltip. B4 builds from `t78_redraw_mockups/b_toolbar.html` plus `review_b.md`
+  there (status colours, Done, Reset, Edit points with no lock selected, a click on hair in the viewport
+  selects that lock); where the two differ the review wins.
+
+**After B1's independent check (t80) and B2's interim report (t79); the manager, 2026-11-21.**
+- **The curve as drawn is kept** beside the moved one: `Lock.drawn_curve`, set by `add_drawn_lock`, saved
+  with the lock (no schema step: absent = the curve). `Lock.edited` is true for a drawn lock whose `curve`
+  differs from it; Reset puts `curve` back.
+- **At most 12 handles everywhere** (U1): a redraw and a drawn stroke take the fewest handles within
+  0.25 cm up to `HANDLES_MAX`; `STROKE_HANDLES_MAX` goes. A stroke 12 handles cannot hold is still taken
+  and the message says how far the lock lies from it (t80: a straight redraw stroke needed up to 22).
+- **One rule for a handle count out of range**: clamped to 4..12, on load too (t80 N2: a stored 13 became
+  "by length").
+- **Handing an orphan's state to a lock** replaces that lock's shape edit only when the orphan has one
+  (t80 N5: an orphan without an edit wiped the target's).
+- **A drawn lock's handle count** changes by a public function that refits its curve (t80 N6); same
+  message rule as a mesh lock.
+- **Garbage stays out of the cook** (t80 D3-D5): a zero or non-finite axis / factor leaves the handles as
+  they are; a stroke with a non-finite point raises; a drawn lock with a non-finite or zero-length curve is
+  refused; a loaded `source` outside `config.LOCK_SOURCES` reads as mesh.
+- **A density layer naming only a deleted drawn lock** stays, with no lock (t80 N4); B4's row says so.
+- **The shot deform of an edited lock** keeps its capture on the rest hair mesh (U4, v0.1's deform); the
+  carried mesh is for display, regions and QC.
+- **B4 as built (t82, 2026-11-22)**: the `edited` / `drawn` row words are neutral, not blue / violet (the
+  mockup's review wins over "left as mocked"); the strip's handle count is the adapter's (`lock_handles`); in
+  the radial menu Scalp X-ray moved into Display to free a slot for Draw lock; "Skin from" shows only for a
+  lock drawn in this session (not stored).
+- **U4 changed by the user (2026-11-22, on t83's flipbooks)**: v0.1's deform is NOT accepted for an edited
+  lock. `hair_bang_11` with its tip moved 5 cm hooks back at the tip on sh020 frame 60, and moved 2 cm it
+  hangs inside its piece's curve. An edited lock in a shot must keep the shape the artist gave it, carried
+  by the animation: at every frame the edited lock differs from the unedited lock as it does at rest (the
+  move seen in the lock's own moving frame), with no hook, no stretch (strand length within 2 % of rest, as
+  a drawn lock) and roots as the unedited lock's. An unedited lock's deform stays byte-equal to v0.1's.
+  First step: compare the lock at rest with the lock in the shot, to tell what the deform adds.
+- **The edited lock's shot deform, checks (the manager, 2026-11-22, from B2's t79/u4 numbers)**: where the
+  piece bends in the shot, "same offset" and "no stretch" cannot both hold (a fixed offset from a bending
+  centreline stretched strands up to 13 %). No stretch wins: the edited spine is rebuilt from its root,
+  each rest segment turned by the unedited spine's local rotation with its length kept. Graded: strand
+  length within 2 % of rest; roots as the unedited lock's; no point left behind; the tip's turn against the
+  unedited lock within 5 deg of its value at rest (the hook the user saw: 22 deg at rest became 59-92);
+  the offset change in the moving frame within 0.25 cm p95 on sh025, where the piece moves rigidly
+  (measured 0.02-0.10, the unedited lock's own noise 0.02-0.05). On sh020 the offset change is reported per
+  frame, not graded (0.66-2.07 cm against noise 0.36-0.56).
+- **Limits are not moved to pass** (s3 drawn lock stretch 2 %, s5 unedited groom in shots): a failing
+  number is traced to its cause first, with the v0.1 locks beside it on the same shot as the baseline.
+- **After B2's fix round (t84, 2026-11-22)**: every adapter write that takes numbers refuses a value that is
+  not finite or past a limit, before anything is written (ValueError naming the limit, no undo step). The
+  limits live in `config.py`: a handle or stroke point within 300 cm of the lock's root, a stroke starting
+  within 5 cm of the skin, scale 0.1-10, a drawn lock 0.05-10 cm wide and 0.02-5 cm thick. A result within
+  `SPINE_STILL` of what is stored or measured writes nothing. `lock_spines(node, lock_ids)` is the public
+  read for the viewer state (B3 still reads the private rows; switch it when B3 is next touched). r1 / s5 are
+  graded against 7 runs of the old build: each new run within the old build's own spread + 2 float32 steps.
+- **B-3 decided by the user (2026-11-22, on t79's look3 sheets): v0.1's shot deform is fixed too.** On sh020
+  frame 75 the animated mesh piece of `hair_bang_05` bends smoothly while the unedited lock kinks into a Z and
+  the edited lock twists into a knot at the same place. 037b's recheck (t84): the fold is v0.1's capture, not
+  the animation (the piece keeps its length, arc ratio 0.996-1.010, and its turning within 32 deg, while the
+  unedited groom turns 50-146 deg more than at rest and stretches p95 1.02-1.09). On sh020 9 fringe locks
+  fold this way (32 lock-frames of 427), on sh025 6 locks at every frame (30 of 305). An edited lock fails
+  on 7 of sh020's 20 fringe locks (3 by length, 5 by tip turn), not on one.
+  This replaces "an unedited lock's deform stays byte-equal to v0.1's" (U4 above) for shots. The rest pose
+  stays equal to the old build (r1). New lines, all on sh020 and sh025:
+  - Where the animated mesh piece does not fold (turning along its centreline within 90 deg of rest, no new
+    kink over 90 deg), the unedited lock does not fold either: 0 capture-only folds (now 32 and 30).
+  - Unedited lock, same lock-frames: strand length p95 within 5 % of rest (now up to 9 %).
+  - Edited lock (tip 2 cm, turn 25 deg), every fringe lock of sh020 and the 9 locks of t84 on sh025, not two
+    locks: median length within 2 %, tip turn within 5 deg of its rest value. Where the animation itself
+    folds the piece (16 lock-frames on sh020), the numbers are reported, not graded.
+  - v0.1's own shot checks (roots on the animated scalp, no point left behind, deform_ok) keep their limits.
+- **The cause, and the deform that replaces v0.1's in shots (037's t79 section 9.4; the manager, 2026-11-22)**:
+  v0.1's Point Deform gives a strand point the motion of every rest-mesh point within 2 cm, whatever lock it
+  belongs to: 47 % of the capture weight comes from other locks' pieces on average (45-64 % on the fringe
+  locks that fold, up to 73 % on the base caps), and inside a hooked piece a point also takes the piece's
+  other arm. Capturing on the lock's own piece cuts sh020's capture-only folds from 29 to 11 but leaves the
+  hooks and makes two more locks fold. So the deform follows each lock's own piece by place along it (u),
+  not by 3D distance.
+  - "Stays within 0.1 cm of the old build" is dropped for shots: any deform that follows a lock's own piece
+    moves the locks that never folded by 0.15-1.5 cm p95 against v0.1, because v0.1 mixes neighbours' motion
+    into every lock. It cannot hold together with "no capture-only fold". Shots made with v0.1 will look
+    different; the user judges on old | new sheets. The rest pose stays equal to the old build (r1).
+  - The fold rule compares the hair with its own animated piece: the hair's turning over rest minus the
+    piece's turning over rest. sh025's back locks (piece +48 to +80 deg, v0.1's hair +90 to +113) are
+    graded by that.
+  - Reported beside the graded lines, per lock-frame: how far the hair lies from its own animated piece
+    against the same at rest, the move against v0.1, the frame-to-frame motion against the piece's (no
+    jump), and the frame cost (v0.1 about 1.0 s; over 1.5 s is reported as a problem, not hidden).
+  - Switching a lock between two deforms by frame is not done (it jumps).
+- **Length and root lines measured against the piece, not against rest (the manager, 2026-11-23, from 037's
+  s6 run17)**: the animation itself stretches the pieces (sh025's back pieces are 5.2-8.5 % longer than at
+  rest at every frame, sh020's fringe pieces stretch 1.2-1.4 x near their tips), and hair that follows its
+  piece stretches with it. A deform that keeps strand length instead moved hair off its piece. So:
+  - Unedited lock: strand length ratio within 5 % (p95) of its own piece's length ratio at that frame,
+    measured along the piece over the strand's span. The ratio against rest is reported.
+  - Edited lock: median strand length within 2 % of the unedited lock's at the same frame (the edit adds no
+    stretch of its own). Against rest it is reported. Tip turn as before.
+  - Roots: within 0.1 cm (p95 per lock-frame) of the animated scalp, the drawn lock's limit; v0.1 set no
+    absolute limit for mesh locks. The difference against v0.1 is reported.
+  These replace the three "against rest" readings above; the cause was traced first and no number was widened.
+- **Short strands joining a free-hanging lock late (the user, 2026-11-23, on look4's hair_bang_20 sheet:
+  "a tuft of fur under the lock"; fixed in v0.2b)**: v0.1 gives a lock the skin its mesh lies over and joins
+  each strand where the mesh lies over its root. On `hair_bang_02` / `03` / `19` / `20` the lower half hangs
+  close over skin the lock owns, so 36-46 % of their strands start 0.4-0.9 along the lock and are 0.39-0.57
+  of the lock's median length: a dark short tuft beside the ribbon, at rest and in shots, old build and
+  new. The reference v006 has none. The crown and base caps join late too (27-60 %) but their strands stay
+  0.75-0.86 of the median: hair lying along the scalp, v0.1's design, kept (moving every late join to the
+  start would take 50-60 % of the roots off the skin under the caps: the thin skin v0.1 fixed).
+  Rule (the manager, 2026-11-23, after 037's 9.11: no cut on length share or skin distance separates the
+  fringe's tuft from the caps, 42-46 % of the caps' strands are late too): a parameter like the other
+  built-in ones, with a per-group override: a root whose own join would fall past this share of its lock
+  starts the lock instead. Default 1 (off, v0.1's behaviour: every lock unchanged). The artist turns it
+  down on the group whose locks hang free (Helen's fringe: `START_SPAN` 0.3). It runs where roots are
+  picked for the start (`root_pick`), with each root's own join, before the roots are laid out: a late
+  root kept in place but joined at the start would make a hairpin, and `region_join`'s place is the region
+  prim's centre, not the root's. Strand counts per lock do not change.
+  Graded: with the parameter at its default every lock byte-equal to before at rest (r1) and grooming-check
+  unchanged; with Helen's fringe group at 0.3, on `hair_bang_02` / `03` / `19` / `20` no strand starts past
+  0.3 of its lock, the locks of other groups byte-equal, the start disc within `START_DENSITY_MAX`,
+  grooming-check on Helen passes at its limits (numbers that move are listed), roots under an edit (e6)
+  exact. Rest picture before | after | reference for the four locks, and the scalp under them from the
+  side (bare skin that shows is reported). The panel shows the parameter where it shows the others; if
+  that needs more than a row in the existing list, it is a panel task of its own (skill dcc-panel-design).
+- **Latest join as built (037, 8a5e516) and the thin-skin measure (the manager, 2026-11-23)**: the parameter
+  is `join_limit`, "Latest join" in the panel (one more row, per-group or per-lock override), default 1,
+  schema stays 7. At the default r1 and all 27 grooming-check numbers are unchanged. With Helen's fringe
+  group at 0.3 the tuft is gone at rest and in the shot, other groups byte-equal, strand counts unchanged;
+  at 0.5 part of it stays. The fringe's own skin goes from 22 % to 81 % bare (the reference v006: 97 %),
+  so grooming-check's `skin_thin_share` (0.017 -> 0.128, limit 0.05) and `lock_skin_thin_worst` (0.031 ->
+  0.414, limit 0.2) fail. The limits stay. Skin owned by a lock whose Latest join is under 1 is left out of
+  the two thin-skin numbers, as skin under floating mesh already is (the artist asked for its roots to move
+  to the lock's start), and is reported on its own line: its bare share, and how much of it has no hair of
+  any lock passing within 0.5 cm over it (bare at the skin's surface, not what a camera sees). That second number is graded: at
+  most 0.05 of that skin on Helen. Whether the look is right is the user's (the scalp picture).
+- **The flat block at a crumpling tip (report only until decided)**: on sh020 frame 10 hair_bang_20's
+  animated piece folds back on itself at the tip (its last tenth 0.30 -> 0.17 cm wide, the fit's residual
+  over window size 0.89, the rotation turning 45 then 133 deg between u 0.84 and 0.88); the hair follows
+  the hook. Fix to build: where the residual over size is above about 0.5, points are carried by their
+  nearest animated mesh points, blended in by the residual; every other rotation untouched. Graded: no new
+  fold, the edited-lock lines, frame-to-frame 1.4 x, and locks whose residual stays under the line
+  byte-equal to before in the shots.
+- **After 037's 9.14 (the manager, 2026-11-23)**: grooming-check's `latest_skin_uncovered` (skin under a
+  lock with Latest join under 1 that no hair passes within 0.5 cm, at most 0.05) is built (3a84bbe). On
+  Helen the fringe at 0.5 passes (0.003, part of the tuft stays), at 0.3 it fails (0.077, about 3 cm2 of
+  skin with no hair over it); the limit stays, the value is the artist's to choose per group or per lock.
+  The crumpling-tip fix was built and dropped: sh025's 20 back locks cross the residual line at every frame
+  and their hair moved up to 16 cm. Why it moved is NOT established (037's 9.17 withdraws "pieces made of
+  parts that move apart": measured is only that 2.6-6 % of point pairs on three back pieces change distance
+  by over 20 %); a new try starts from the cause. The flat block at hair_bang_20's tip on sh020 frame 10 stays, a known limit of v0.2b: the hair
+  follows a piece whose tip the animation folds back on itself.
+- **The jump at a piece's end (037's (b), a275757)**: it came from 32-bit sums, not from the end rotations:
+  the shots sit about 330 m from the origin and the centre of an end window came out 0.34-0.38 cm off, by a
+  different amount each frame. Positions are summed as offsets from the window's first point. Graded in s6:
+  frame-to-frame motion of the hair within 1.4 x its piece's on 5 consecutive frames of each shot, every
+  lock (worst now 1.09 x). Reported, not met: the tip zone's length (last 10 % of the strand) against the
+  piece on sh020's fringe (78 lock-frames, v0.1 149), and a flat block at hair_bang_20's tip on sh020 frame
+  10 where the animated piece's tip crumples.
+- **Open, the user's call**: mesh locks' roots following the animated scalp (input 4) as drawn locks do.
+  Roots sit up to 1.0-1.6 cm off the animated scalp in the shots (v0.1 too, on fewer lock-frames on sh025).
+  The cause is not established: 037 measured that a root's distance off the scalp follows how far its mesh
+  neighbours' centre rises off it (r 0.70-0.95, 3 locks, 2 frames); 037b measured the piece's root end no
+  further from the scalp in the shot than at rest on hair_bang_20 (1.04 cm both) and reads the error as the
+  root riding the piece's frame. "Following the animated scalp removes it" is a guess until tried; the trial
+  (an experiment, not a build) comes before the user decides.
+- **After 037b's third round (t84) and 037's 9.16-9.17 (the manager, 2026-11-23)**:
+  - A non-finite point in the animated hair mesh, like another point count, turns the deform off for that
+    frame with a message (6f3f176; it made 5,302 NaN strands in 20 locks with no message).
+  - An edited lock's roots are the unedited lock's by strand id in a shot too (df93331: the root zone turns
+    by the piece's rotation at the root's place on the piece as modelled; hair_bang_19 turned 25 deg sat
+    0.126 cm p95 off at sh020 frame 10, now 0). Measured by id on two cases at one frame; the re-check does
+    hair_bang_03 and hair_bang_20 turned 25 deg and other frames. Unedited locks: no effect seen on 4 frames
+    (3 runs a build, every strand).
+  - Edited lock's length, which reading the plan means: the ratio. (edited at the frame / edited at rest) over
+    (unedited at the frame / unedited at rest), median, within 2 %. An edit changes the lock's own length at
+    rest (a tip moved 2 cm: 0.90-1.07); "the edit adds no stretch of its own" is about the frame, not that.
+  - Known coupling, by design: the root zone of a lock takes the translation of the animated mesh points
+    within 1.5 cm of each root, of any piece. A piece moved 5 cm against its neighbours moves the root zone
+    of the 20 locks rooted within 5.2 cm of it by up to 1.25 cm (22-25 % of the move; 037b). "Each lock
+    follows its own piece" holds past the root zone only.
+  - Frame-to-frame 1.4 x: NOT met on frames s6 did not grade: hair_base_20 on sh020 60 -> 61 at 1.406 (hair
+    0.119 cm, piece 0.085; 1.21-1.36 on 62-64), reproduced by 037 with s6's own measure. The limit stays.
+    s6 grades every consecutive pair of both shots (or says what it cost and which pairs it took); the cause
+    is traced before anything else is done about it (the coupling above is a guess).
+  - The fold line names its piece centreline: the piece's turning is read along `pu`, the parameter the hair
+    is carried by (s6). On hair_bang_20 at sh020 frame 10 that gives hair kink 93.0 against piece kink 104.7
+    (no fold); 037b's bins by nearest spine place put the piece under 90 and count one. Both say the piece
+    itself folds there: it is the crumpling tip, the known limit, and it sits at the line. Shown to the user
+    at User look.
+  - The drawn-lock name with a backtick that failed once in 037b's sequence is the harness (`evalParm` on
+    groom_data leaves a failed expression that the next SOP verb reports); the tool reads raw. Tests read
+    it with `unexpandedString()`.
+- **The root zone, after 037's 9.18 (the manager, 2026-11-23; nothing built, the limits stay)**: s6 now
+  grades every consecutive pair of both playbars (sh020 0-120, sh025 0-45; ddab10f).
+  - Frame-to-frame 1.4 x is NOT met: sh020 41 of 8,540 lock-pairs, worst 3.50 (hair_base_20 52 -> 53, hair
+    0.142 cm against the piece's 0.041; hair_base_20 24 pairs, hair_base_21 16, hair_bang_03 1); sh025 0,
+    worst 1.05. "1.406, once" and "worst 1.09" were five-frame windows. By experiment 40 of the 41 come from
+    the root zone taking the translation of other pieces' mesh points (own-piece neighbours, or no root
+    anchor at all, leave 1). The last (hair_bang_03 32 -> 33, 1.415, the strand tip) is not traced.
+  - Own-piece neighbours is not a clean fix: every lock moves, roots over 0.1 cm on sh025 go 9 / 12 -> 18 / 17
+    lock-frames (frames 5 / 30), the worst on sh020 frame 10 0.79 -> 1.13 cm.
+  - Roots carried by the animated scalp (trial, in-process, 4 frames, 61 locks): roots over 0.1 cm 11 / 11 /
+    9 / 12 -> 0 on all four; folds 0; but frame-to-frame worse (sh020 41 -> 150 pairs, worst 18.0, the 20
+    back locks' root zone; sh025 0 -> 8), and the first third of fringe strands stretches (hair_bang_20
+    frame 10 2.30 x rest against 1.45 now). Why the root zone jumps while the piece is nearly still is not
+    traced. Not tested: edited and drawn locks, cost, the look. As tried it is not buildable.
+  - Seen while measuring: on sh025 13 back locks gain about 52 deg (max 58.6) of joint turn over rest in the
+    root half on every strand at frames 5 and 30; under the fold line's 90, so nothing fails. Without the
+    root anchor 25 deg, under the scalp trial 18. Whether v0.1 had it is not tested. Goes to User look.
+  - So the root anchor is where three lines meet (frame-to-frame, roots on the scalp, this kink) and none of
+    the three variants meets all of them. Next is tracing, not building: why the scalp-carried root zone
+    jumps, what in the anchor makes the turn and whether v0.1 has it, the three lines with no anchor at all,
+    and hair_bang_03's tip. A root-zone rule is chosen from those results and written here before it is
+    built.
+  - Edited roots by strand id: 0.0 on hair_bang_03 / 19 / 20 (turn 25 deg, tip 2 cm) at sh020 10 / 25 / 60;
+    the build before the fix 0.007-0.126 p95 on the same cases. Not tested: the other 58 locks, sh025.
+- **The root-zone rule (the manager, 2026-11-23, from 037's 9.20; four frames to choose on, sh020 45 / 60 / 75
+  and sh025 20 / 40 held out)**. Traced: the scalp trial jumped because the frame of a 0.087 cm wide scalp
+  polygon turns 2.23 deg on float32 steps of its corners (13 cm from the root that is 0.5 cm); with the
+  piece's rotation instead 150 pairs over 1.4 become 1. The joint turn in the root half (sh025, 13 locks over
+  30 deg, worst 58.6; v0.1 has it worse: 20 locks, worst 76) comes from the anchor turning an offset of up
+  to 13 cm by each point's own rotation along the piece.
+  - Built now, part one: the root zone keeps ONE rotation per strand, the piece's rotation at the root's
+    place as modelled. Read on the trial: joint turn over 30 deg 13 -> 0 locks (worst 27), no other line
+    changes (frame-to-frame stays 41 pairs on sh020, roots over 0.1 cm stay).
+  - Part two, the user's call (the open question above): the root zone's translation taken from the
+    animated scalp where input 4 is good, else the neighbours' as now. Read on the trial: frame-to-frame 1
+    pair on sh020 (hair_bang_03's tip, not the root zone), roots over 0.1 cm 0 on every frame, folds 0. Its
+    cost is on sh020's crumpling fringe (hair_bang_20 / 19): the first 35 % of the strand stretches up to
+    2.25 x rest (1.45 now), worst joint turn 43-55 deg (20-35 now), on held-out frames too. Whether that is
+    the root zone or hair_bang_20's crumpling piece is not known. The user chooses on pictures (part one |
+    part one + two, hair_bang_19 / 20 on sh020 10 / 75 and the back locks on sh025 30).
+  - Not chosen: own-piece neighbours, no anchor (roots worse on sh025), the scalp polygon's own frame, a
+    zone of 0.7 of the strand (hair 0.9 cm off its piece on sh025), a zone of 4 cm.
+  - Not known: edited and drawn locks under part two, input 4 bad or with another point count, the cost a
+    frame, other shots, why hair_bang_03's last place turns 20 deg in one frame (the one pair left).
+- **Root-zone rule, part one as built (037, 7bf276d; 9.21)**: s6 grades the joint turn over rest in the root
+  half on sh025 (30 deg): 0 locks on frames 5 / 20 / 25 / 30 / 40 / 50, worst 27.3 (the build before: 13
+  locks, 58.6); sh020 reported (hair_bang_20 frame 10: 32.3). Every other s6 count as before (folds 0,
+  length 35 / 5, tip 78 / 0, roots 74 / 57, frame-to-frame 41 / 0 pairs, edited 0 failing); hair-to-piece
+  on sh025 moves both ways (p95 0.230 -> 0.240, worst 0.36 -> 0.26). Cost +4-7 % a frame. s6's sh020 run
+  died once of two with a native segfault in hython (cause unknown): s6 is run again before it is trusted.
+  Part two on the trial, for the user's choice (sheets in t79 `part17/sheets`): falls back exactly with input
+  4 not wired, another point count or non-finite; edited roots by id 0.0; drawn locks unchanged; +12-19 % a
+  frame. Found: the fringe flares in the pictures (hair_bang_19 frame 75, hair_bang_20 frame 10); the
+  edited 2 % length line fails 2 cases (hair_bang_19 / 20 turned 25 deg, sh020 frame 60, 2.23 / 2.06 %); a
+  bad scalp on one frame jumps mesh locks up to 1.54 cm for that frame; with no drawn lock the panel says
+  nothing about the fallback. Not tested: sh025 with input 4 bad, an edited drawn lock, a publish, other
+  shots.
+- **A bad frame is found when it is reached (known limit of v0.2b, the manager, 2026-11-23)**: the deform's
+  message (`deform_problem`: another point count, a non-finite point) and the publish preflight read the
+  current frame only, and the panel does not re-read on a frame change. The panel's line belongs to the
+  frame it was read at and a non-finite point has its own sentence (22fedb1). Checking a frame range before
+  a publish or a render is a task of its own, not in v0.2b.
+- **Root-zone part two goes to a later version (decided by the user, 2026-11-24)**: v0.2b closes with part
+  one (7bf276d). This answers "Open, the user's call: mesh locks' roots following the animated scalp" and
+  "Part two, the user's call" above: not in v0.2b. Why (the trial, t79 9.20-9.21): it trades two number
+  lines for a fringe that flares in the pictures (first 35 % of the strand up to 2.25 x rest against 1.45,
+  joint turn 43-55 deg against 20-35 on sh020's hair_bang_19 / 20), 2 edited-length cases over 2 %, a 1.54 cm
+  jump on a one-frame bad scalp with no line in the panel, +12-19 % a frame, and it is not tried on an edited
+  drawn lock, a publish or other shots.
+  Known limits of v0.2b, recorded, their limits not moved (numbers at 7bf276d, s6 run31p):
+  - Frame-to-frame 1.4 x is not met on sh020: 41 of 8,540 lock-pairs over (hair_base_20 24, hair_base_21 16,
+    hair_bang_03 1; worst 3.50, hair_base_20 52 -> 53); sh025 0 (worst 1.05). 40 are the root zone taking the
+    translation of other pieces' mesh points; hair_bang_03 32 -> 33 (its tip) is not traced.
+  - Mesh locks' roots sit over 0.1 cm (p95) off the animated scalp on 74 / 57 lock-frames of sh020 / sh025
+    (worst 1.40 cm, hair_back_03 on sh025); the cause is not established.
+  Both are shown to the user at User look. Part two is listed under "Not in v0.2" with what a build must
+  answer first.
+- **Root-zone part one, independent re-check (043, t85, 2026-11-24; code 7bf276d against df93331, the
+  committed HDA, both shots lock-frame by lock-frame): PASS.** Joint turn on sh025: 0 of 366 lock-frames over
+  30 deg, worst 27.3 (hair_back_13), the build before 78 (13 locks x 6 frames, worst 58.6); the checker's own
+  measure on the strand's points agrees (27.2). No s6 line gains or loses a lock-frame; r1 passes (3 runs,
+  0.00216 cm, limit 0.002192); edited roots by id on all 61 locks at rest, sh020 10 / 25 / 60 and sh025
+  20 / 30: 0.00076 cm at most (line 0.001); a moved root handle, a drawn lock with input 4 wired or not,
+  another point count, a non-finite point, Latest join 0.3 in a shot: no error, no NaN, nothing left behind.
+  Corrections to the numbers above:
+  - sh025's counts with frame 30 (s6 grades six frames since 7bf276d) are length 6, surface 12, roots 69
+    lock-frames of 366, equal on both builds; "5 / 10 / 57" were five frames. So the roots limit reads 74 / 69.
+  - Cost is +9.7 % a frame (0.352 against 0.321 s, sh020 20-27, alone, three A/B pairs), not +4-7 %.
+  - The joint line's margin depends on the measure: with each strand resampled by length (24 points, the
+    first 12) hair_back_13 reads 32.4 deg, one lock over 30 (the build before: 58 on both). The line stays
+    s6's (the strand's own points, 27.3); hair_back_13 is shown at User look with the 52 -> 27 deg locks.
+  - The hython segfault inside s6 did not repeat: 0 of 10 runs of sh020 on this build (5 one after another,
+    5 in parallel), 0 of 1 on the build before. Not explained and not excluded as the build's; every hython
+    still segfaults on exit after its JSON is written (Houdini's shutdown, known).
+- **The part's independent check (044, t86, 2026-11-24, head 1ffbef4, the committed HDA): 31 of the 32
+  "Done when" lines PASS, 0 FAIL, 1 not covered (the user's own try).** pytest 1372 passed, 3 skipped;
+  `accept_v02b.py` 35 checks pass and only s6 fails, on the known limits above with the same numbers (41
+  pairs, roots 74 / 69, length 35 / 6, tip 78; joint turn sh025 0 over 30, worst 27.3); `accept_v02b_gui.py`
+  20 of 20; grooming-check on fresh Helen (parms at default) 27 of 27 equal to t55, and passes on a moved +
+  rotated + redrawn + drawn groom with no limit moved; full cook 0.990 x the build before v0.2b; everything
+  at once on one scene (edits, two drawn locks, v0.2a layers, Latest join 0.5) through undo / redo, save /
+  reopen, Detect, Update regions, publish and read-back; the mid-run segfault of s6 did not repeat (0 of 2).
+  Found, and what is done with each (the manager):
+  - The group Properties pane is clipped on the right at 760 px, scale 1 (20 widgets overflow, 437 px in
+    about 420; none at 820 / 900 or at scale 1.5; the build before v0.2b: none at 760). A panel rule, so it
+    is fixed before the PR (a fix round and its re-check).
+  - Deleting a drawn lock costs 0.84 s in the panel call + 0.20 s of recook (Draw: 0.22 s). No limit was set
+    for it; recorded as a known limit of v0.2b (t82 measured 5.0 s before the B2 fix).
+  - Reading a publish back is three calls, not one: `import_spines` brings edits and drawn locks (the "Done
+    when" line, met), the groups' settings (Latest join) and `import_masks` (layers) are read apart; with
+    all three the hair is 0.0 cm from the published. Recorded; one call for a whole publish is not in v0.2b.
+  - Notes for the next checker: `qc_metrics.py --fresh` on `helen_v01.hiplc` as saved fails 4 checks because
+    the scene is not at default parms (`accept_lib.fresh` first); a drawn lock's hair is 0.83 of its set
+    width (limit 0.8); a scene with a v0.2a paint layer owning part of the fringe fails
+    `lock_start_share_worst` and `lock_outside_worst` with or without v0.2b's edits (the layer's locks).
+  Not tested by the check: a hand on a mouse or pen, the docked panel's Tool bar driving the viewer state in
+  the GUI (t82 did), "no strand starts past 0.3" under Latest join (its measure did not discriminate; t84
+  round 3 checked counts and the other groups), other shots.
+- **The 760 px clip fixed and re-checked (045, 80e3c17, t87; 045b, t88; 2026-11-24): PASS, merged.** Cause:
+  the SETTINGS heading's hint asked for 401 px on one line, and the row words widened the tree. The hint
+  wraps; rows with the levels-below column go compact under `COMPACT_BELOW_PX` (594 x scale). The checker's
+  own grabs (708 a build, group and All locks every 20 px from 400 to 1240, scales 1 / 1.25 / 1.5 / 2): 0
+  overflow on every state asked; the base was also cut at 700-740 and 780-880; lock, drawn lock and layer
+  panes pixel-identical; 7,470 resize / selection steps with 0 problems; the three new tests fail on the
+  old `ui.py`. pytest 1382 passed, 3 skipped.
+  Left as known limits of the panel (all of them in the build before the fix too; not v0.2b's lines):
+  - a group name of 40 characters with no space still pushes the pane wider (the title label does not
+    elide or break inside a word);
+  - dragging the tree / Properties divider does not rebuild the rows (only a window resize or a new
+    selection does), so a column dragged under the whole-row need scrolls sideways;
+  - the 594 line is 3-9 px above the whole rows' real need, so the levels-below column goes a few px early
+    (a group at 900 px scale 1, 880 px at 1.25), and the hint sits 1 px further right at scale 1.
+  Not tested: Houdini's own face. The grabs and the 594 line are measured with Segoe UI offscreen (Inter is
+  not installed outside Houdini); with Inter the whole rows may need more and a thin band could be cut again.
+  The user's try at User look covers a group selected at several panel widths. `grab_offscreen.py`'s OVERFLOW
+  compares a widget with the window, not with its scroll viewport: use the test's `minimumSizeHint` rule.
+- **After 037b's recheck (t84 second round), the manager's decisions**:
+  - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
+    sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
+    with those names.
+  - One edit per lock: duplicate ids in one call count once. Ids are whole numbers (a bool is refused).
+  - A rotate axis is normalised by its largest component first. `tol_cm` is guarded like every number.
+  - A stroke of more than `config.STROKE_POINTS_MAX` points is thinned before the fit (400,000 points took
+    159 s). A zero-length stroke is refused by `draw_lock` as by `redraw_lock`.
+  - A drawn lock's name is a non-empty string no other lock has. `set_drawn` refuses a taper outside 0-1 as
+    `draw_lock` does.
+  - An edit that leaves the root handle where it is does not move a strand's root: per strand id the root
+    equals the unedited lock's at rest (t84: `hair_base_07` turned 25 deg moved 78 % of its roots, 16 % of
+    them off the lock's own root set; a spine moved 0.0001 cm moved hair 0.27 cm). Trace first; if the cause
+    is the hair being regrown instead of carried, report it with numbers before changing it.
+  - r1 / s5 are graded against the largest difference between any two runs of the old build over at least
+    20 samples, not the spread of 7 (1 run in 8 failed by chance). After the deform fix s5 is the "stays
+    where it was" line above.
+  - Soft coercions that corrupt nothing (a number given as text, a list read by its first number) are left.
+
 **Build, split by files** (U1-U4 are answered above; the panel waits for its mockup pick).
 - **B1 Model and logic**: `tools/fx/grooming/model.py`, `logic.py`, `config.py`, their pytest files. Schema 7
   (`Lock.spine`, the lock's own handle count (empty = the default by length), a drawn lock's curve, width,
@@ -1055,8 +1415,14 @@ of the product was changed. Numbers are Helen's, hython unless said.**
 - A lock shows the default number of handles for its length (one every 8 cm, at least 4, at most 12) until
   a number is set for it; the set number is kept with the lock through save / reopen and Detect.
 - Changing the number of handles on an edited lock keeps its shape: the spine after the change lies within
-  0.1 cm of the spine before it, for more handles and for fewer down to 4 (a limit to confirm in the build:
-  fewer handles cannot hold every edit; the check states what it measured).
+  0.25 cm of the spine before it (`config.RESAMPLE_TOL_CM`; set by the manager 2026-11-20 from B1's t77:
+  5 -> 8 -> 5 on Helen's spines 0.017-0.058 cm a step, 0.22 cm on the 89.6 cm lock turned 25 deg; the first
+  0.1 cm was not measured). Fewer handles cannot hold every edit: past the limit the change is still made
+  and the message line says how far the spine moved. Read with t80's numbers (61 spines): more handles
+  holds a tip move (worst 0.12 cm) and most turns (0.51 cm worst, 2.3 % over); fewer handles often does
+  not (12 -> 4 after a 2 cm tip move: 1.46 cm). The acceptance check names the edits it tries: 5 -> 8 -> 5
+  after a tip move and after a 25 deg turn within the limit, and one 12 -> 4 case whose message must give
+  the true distance.
 - A lock drawn on bare skin grows density x max(its skin, its cross-section) strands within 15 %, roots on
   the skin, hair width within 20 % of the set width at four stations, no error or warning on the node.
 - Draw is one undo step that also gives the lock its footprint (0.5 x its width round its root): it has hair
@@ -1207,6 +1573,15 @@ pie menu with C, the layout; not built: hiding shelves per desk (needs a shelf s
 Several characters in one shot, batch over shots, shot mode reading a publish; colour layers and
 melanin; Karma live preview; custom team effects; Unreal export; sim and body collision. The cut
 lines decided for these in `grooming_v0_1.md` (cache paths per character and instance) stay.
+
+**Root-zone part two** (moved out of v0.2b by the user, 2026-11-24; v0.2b "The root-zone rule" and "Root-zone
+part two goes to a later version"): a mesh lock's root zone takes its translation from the animated scalp
+(input 4) where it is good, else from its mesh neighbours as now, with part one's one rotation per strand.
+On the trial it puts the roots on the skin (0 lock-frames over 0.1 cm) and leaves 1 frame-to-frame pair on
+sh020. Before it is built: why sh020's fringe flares under it (the root zone, or hair_bang_19 / 20's
+crumpling pieces), the 2 edited-length cases, a line in the panel when it falls back, a one-frame bad scalp
+(1.54 cm jump), an edited drawn lock, a publish, sh025 with input 4 bad, other shots, and a per-strand scalp
+lookup's cost. The untraced pair (hair_bang_03's tip, 32 -> 33) is its own trace.
 
 ## Before v0.2a starts
 
