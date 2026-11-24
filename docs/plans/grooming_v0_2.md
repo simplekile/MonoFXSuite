@@ -1260,6 +1260,21 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   current frame only, and the panel does not re-read on a frame change. The panel's line belongs to the
   frame it was read at and a non-finite point has its own sentence (22fedb1). Checking a frame range before
   a publish or a render is a task of its own, not in v0.2b.
+- **Root-zone part two goes to a later version (decided by the user, 2026-11-24)**: v0.2b closes with part
+  one (7bf276d). This answers "Open, the user's call: mesh locks' roots following the animated scalp" and
+  "Part two, the user's call" above: not in v0.2b. Why (the trial, t79 9.20-9.21): it trades two number
+  lines for a fringe that flares in the pictures (first 35 % of the strand up to 2.25 x rest against 1.45,
+  joint turn 43-55 deg against 20-35 on sh020's hair_bang_19 / 20), 2 edited-length cases over 2 %, a 1.54 cm
+  jump on a one-frame bad scalp with no line in the panel, +12-19 % a frame, and it is not tried on an edited
+  drawn lock, a publish or other shots.
+  Known limits of v0.2b, recorded, their limits not moved (numbers at 7bf276d, s6 run31p):
+  - Frame-to-frame 1.4 x is not met on sh020: 41 of 8,540 lock-pairs over (hair_base_20 24, hair_base_21 16,
+    hair_bang_03 1; worst 3.50, hair_base_20 52 -> 53); sh025 0 (worst 1.05). 40 are the root zone taking the
+    translation of other pieces' mesh points; hair_bang_03 32 -> 33 (its tip) is not traced.
+  - Mesh locks' roots sit over 0.1 cm (p95) off the animated scalp on 74 / 57 lock-frames of sh020 / sh025
+    (worst 1.40 cm, hair_back_03 on sh025); the cause is not established.
+  Both are shown to the user at User look. Part two is listed under "Not in v0.2" with what a build must
+  answer first.
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
@@ -1499,6 +1514,15 @@ pie menu with C, the layout; not built: hiding shelves per desk (needs a shelf s
 Several characters in one shot, batch over shots, shot mode reading a publish; colour layers and
 melanin; Karma live preview; custom team effects; Unreal export; sim and body collision. The cut
 lines decided for these in `grooming_v0_1.md` (cache paths per character and instance) stay.
+
+**Root-zone part two** (moved out of v0.2b by the user, 2026-11-24; v0.2b "The root-zone rule" and "Root-zone
+part two goes to a later version"): a mesh lock's root zone takes its translation from the animated scalp
+(input 4) where it is good, else from its mesh neighbours as now, with part one's one rotation per strand.
+On the trial it puts the roots on the skin (0 lock-frames over 0.1 cm) and leaves 1 frame-to-frame pair on
+sh020. Before it is built: why sh020's fringe flares under it (the root zone, or hair_bang_19 / 20's
+crumpling pieces), the 2 edited-length cases, a line in the panel when it falls back, a one-frame bad scalp
+(1.54 cm jump), an edited drawn lock, a publish, sh025 with input 4 bad, other shots, and a per-strand scalp
+lookup's cost. The untraced pair (hair_bang_03's tip, 32 -> 33) is its own trace.
 
 ## Before v0.2a starts
 
