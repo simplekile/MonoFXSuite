@@ -1316,6 +1316,24 @@ of the product was changed. Numbers are Helen's, hython unless said.**
   Not tested by the check: a hand on a mouse or pen, the docked panel's Tool bar driving the viewer state in
   the GUI (t82 did), "no strand starts past 0.3" under Latest join (its measure did not discriminate; t84
   round 3 checked counts and the other groups), other shots.
+- **The 760 px clip fixed and re-checked (045, 80e3c17, t87; 045b, t88; 2026-11-24): PASS, merged.** Cause:
+  the SETTINGS heading's hint asked for 401 px on one line, and the row words widened the tree. The hint
+  wraps; rows with the levels-below column go compact under `COMPACT_BELOW_PX` (594 x scale). The checker's
+  own grabs (708 a build, group and All locks every 20 px from 400 to 1240, scales 1 / 1.25 / 1.5 / 2): 0
+  overflow on every state asked; the base was also cut at 700-740 and 780-880; lock, drawn lock and layer
+  panes pixel-identical; 7,470 resize / selection steps with 0 problems; the three new tests fail on the
+  old `ui.py`. pytest 1382 passed, 3 skipped.
+  Left as known limits of the panel (all of them in the build before the fix too; not v0.2b's lines):
+  - a group name of 40 characters with no space still pushes the pane wider (the title label does not
+    elide or break inside a word);
+  - dragging the tree / Properties divider does not rebuild the rows (only a window resize or a new
+    selection does), so a column dragged under the whole-row need scrolls sideways;
+  - the 594 line is 3-9 px above the whole rows' real need, so the levels-below column goes a few px early
+    (a group at 900 px scale 1, 880 px at 1.25), and the hint sits 1 px further right at scale 1.
+  Not tested: Houdini's own face. The grabs and the 594 line are measured with Segoe UI offscreen (Inter is
+  not installed outside Houdini); with Inter the whole rows may need more and a thin band could be cut again.
+  The user's try at User look covers a group selected at several panel widths. `grab_offscreen.py`'s OVERFLOW
+  compares a widget with the window, not with its scroll viewport: use the test's `minimumSizeHint` rule.
 - **After 037b's recheck (t84 second round), the manager's decisions**:
   - groom_data is read back raw: a name with a backslash, a backtick or `$` broke or changed it (`write_data`
     sets the parm, `read_data` read it with `evalParm`; old code, reachable from the panel's rename). Test
